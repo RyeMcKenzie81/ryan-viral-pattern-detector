@@ -116,17 +116,50 @@ def score_text_fidelity(output_html: str, source_markdown: str) -> float:
     return _text_similarity(output_tokens, md_tokens)
 
 
+def score_text_fidelity_precision(output_html: str, source_markdown: str) -> float:
+    """Precision-based text fidelity for surgery pipeline.
+
+    Measures what fraction of markdown tokens appear in the output HTML.
+    Unlike Jaccard, this does NOT penalize extra tokens in the output
+    (surgery preserves nav/footer text that markdown lacks).
+
+    Returns:
+        Precision score 0.0-1.0 (fraction of markdown tokens found in output).
+    """
+    from .invariants import _tokenize_visible_text
+
+    output_tokens = _tokenize_visible_text(output_html)
+    output_set = set(t.lower() for t in output_tokens)
+
+    # Tokenize markdown
+    md_text = re.sub(r'[#*`\[\]()!]', ' ', source_markdown)
+    md_words = re.split(r'\s+', md_text.lower().strip())
+    md_tokens = [w for w in md_words if w]
+
+    if not md_tokens:
+        return 1.0
+
+    found = sum(1 for t in md_tokens if t in output_set)
+    return found / len(md_tokens)
+
+
 def score_visual_fidelity(
     original_screenshot: bytes,
     output_screenshot: bytes,
+    crop_height: int | None = None,
 ) -> float:
     """Score visual fidelity between original and output screenshots.
 
     Uses SSIM (scikit-image) if available, else MAD fallback.
+    Both images are cropped (not resized) to the same dimensions from the
+    top-left corner, so tall outputs are compared honestly against the
+    original's viewport instead of being squished.
 
     Args:
         original_screenshot: PNG bytes of original page.
         output_screenshot: PNG bytes of rendered output.
+        crop_height: Optional explicit height to crop both images to.
+            If None, uses ``min(original_height, output_height)``.
 
     Returns:
         Similarity score 0.0-1.0.
@@ -141,10 +174,14 @@ def score_visual_fidelity(
     img_orig = Image.open(io.BytesIO(original_screenshot)).convert('L')
     img_out = Image.open(io.BytesIO(output_screenshot)).convert('L')
 
-    # Resize to same dimensions
-    target_size = (min(img_orig.width, img_out.width), min(img_orig.height, img_out.height))
-    img_orig = img_orig.resize(target_size)
-    img_out = img_out.resize(target_size)
+    # Crop both images to the same dimensions from the top-left corner.
+    # This avoids distortion when the output is much taller than the original.
+    target_w = min(img_orig.width, img_out.width)
+    target_h = min(img_orig.height, img_out.height)
+    if crop_height is not None:
+        target_h = min(target_h, crop_height)
+    img_orig = img_orig.crop((0, 0, target_w, target_h))
+    img_out = img_out.crop((0, 0, target_w, target_h))
 
     arr_orig = np.array(img_orig, dtype=np.float64)
     arr_out = np.array(img_out, dtype=np.float64)

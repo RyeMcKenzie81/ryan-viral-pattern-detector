@@ -344,6 +344,7 @@ def _compute_phase_metrics(
     source_markdown: str,
     prev_metrics: Optional[PhaseMetrics],
     compute_fidelity: bool = False,
+    is_surgery: bool = False,
 ) -> PhaseMetrics:
     """Compute base metrics for a phase snapshot."""
     from .invariants import extract_slots, tokenize_visible_text, text_similarity
@@ -353,10 +354,15 @@ def _compute_phase_metrics(
     section_count = _count_sections(html)
 
     # Text fidelity vs source
+    # Surgery mode uses precision (doesn't penalize extra nav/footer text)
     text_fidelity = None
     if compute_fidelity and source_markdown:
-        from .eval_harness import score_text_fidelity
-        text_fidelity = score_text_fidelity(html, source_markdown)
+        if is_surgery:
+            from .eval_harness import score_text_fidelity_precision
+            text_fidelity = score_text_fidelity_precision(html, source_markdown)
+        else:
+            from .eval_harness import score_text_fidelity
+            text_fidelity = score_text_fidelity(html, source_markdown)
 
     # Delta vs previous phase
     slots_added = None
@@ -863,9 +869,67 @@ def diagnose_phases(
                 issues=[f"Diagnostic error: {e}"],
             ))
 
+    # --- Surgery pipeline mode ---
+    # Auto-detect from snapshot keys and add surgery-specific diagnostics
+    is_surgery = "phase_s0_sanitized" in snapshots
+
+    if is_surgery:
+        _SURGERY_PHASES = [
+            ("phase_s0_sanitized", "S0 — Sanitize"),
+            ("phase_s1_segmented", "S1 — Section Mapping"),
+            ("phase_s2_classified", "S2 — Element Classification"),
+            ("phase_s3_scoped", "S3 — CSS Scoping"),
+            ("phase_s4_final", "S4 — Visual QA"),
+        ]
+        for phase_key, phase_label in _SURGERY_PHASES:
+            if phase_key not in snapshots:
+                continue
+            try:
+                html = snapshots[phase_key]
+                metrics = _compute_phase_metrics(
+                    phase_label, html, source_markdown,
+                    prev_metrics,
+                    compute_fidelity=(phase_key == "phase_s4_final"),
+                    is_surgery=True,
+                )
+                metrics._raw_html = html
+                all_metrics.append(metrics)
+
+                # Surgery phases always pass if they have output
+                verdict = PhaseVerdict(
+                    phase_name=phase_label,
+                    passed=bool(html and len(html) > 100),
+                    issues=[] if html else ["Empty output"],
+                )
+                if phase_key == "phase_s4_final":
+                    # Final surgery check: need at least 1 slot
+                    if metrics.slot_count < 1:
+                        verdict.passed = False
+                        verdict.issues.append("0 data-slot attributes in final output")
+                all_verdicts.append(verdict)
+                prev_metrics = metrics
+            except Exception as e:
+                logger.error(f"{phase_label} diagnostic failed: {e}")
+                m = PhaseMetrics(
+                    phase_name=phase_label,
+                    html_size=0, slot_count=0, slot_names=frozenset(),
+                    section_count=0, image_count=0, css_chars=0,
+                )
+                m._raw_html = ""
+                all_metrics.append(m)
+                all_verdicts.append(PhaseVerdict(
+                    phase_name=phase_label, passed=False,
+                    issues=[f"Diagnostic error: {e}"],
+                ))
+
     # Final Output — use the last available phase snapshot
     final_html = ""
-    for key in ("phase_4_final", "phase_3_refined", "phase_2_content"):
+    final_candidates = (
+        ["phase_s4_final", "phase_s3_scoped", "phase_s2_classified"]
+        if is_surgery else
+        ["phase_4_final", "phase_3_refined", "phase_2_content"]
+    )
+    for key in final_candidates:
         if key in snapshots:
             final_html = snapshots[key]
             break
@@ -875,8 +939,10 @@ def diagnose_phases(
             metrics = _compute_phase_metrics(
                 "Final Output", final_html, source_markdown,
                 None, compute_fidelity=True,
+                is_surgery=is_surgery,
             )
             metrics.extras["has_lp_mockup_wrapper"] = _has_lp_mockup_wrapper(final_html)
+            metrics.extras["pipeline_mode"] = "surgery" if is_surgery else "reconstruct"
             metrics._raw_html = final_html
             all_metrics.append(metrics)
             all_verdicts.append(_verdict_final(metrics, thresholds, phase2_slot_count))

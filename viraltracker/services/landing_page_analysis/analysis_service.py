@@ -22,6 +22,21 @@ from viraltracker.services.landing_page_analysis.utils import parse_llm_json as 
 logger = logging.getLogger(__name__)
 
 
+def _firecrawl_html_fallback(scraper, url: str) -> str:
+    """Fallback: fetch full HTML via FireCrawl when Playwright is unavailable."""
+    try:
+        html_result = scraper.scrape_url(
+            url,
+            formats=["html"],
+            only_main_content=False,
+            wait_for=2000,
+        )
+        return html_result.html or ""
+    except Exception as e:
+        logger.warning(f"FireCrawl HTML fallback failed (non-fatal): {e}")
+        return ""
+
+
 class LandingPageAnalysisService:
     """Orchestrates the landing page analysis pipeline (Skills 1-4).
 
@@ -65,7 +80,7 @@ class LandingPageAnalysisService:
     # ------------------------------------------------------------------
 
     # Max page_html size before extracting <head> only
-    _MAX_PAGE_HTML_SIZE = 2 * 1024 * 1024  # 2MB
+    _MAX_PAGE_HTML_SIZE = 10 * 1024 * 1024  # 10MB (raised for surgery pipeline)
 
     def scrape_landing_page(self, url: str) -> Dict[str, Any]:
         """Scrape a URL via FireCrawl, returning markdown + screenshot + page HTML."""
@@ -86,18 +101,27 @@ class LandingPageAnalysisService:
         if not result.success:
             raise ValueError(f"Failed to scrape {url}: {result.error}")
 
-        # Second scrape: full HTML with <head> CSS (v4)
+        # --- Stage 2: Post-JS DOM via Playwright (primary) or FireCrawl (fallback) ---
         page_html = ""
         try:
-            html_result = scraper.scrape_url(
-                url,
-                formats=["html"],
-                only_main_content=False,
-                wait_for=2000,
-            )
-            page_html = html_result.html or ""
+            from .page_capture import capture_rendered_page, PlaywrightNotInstalledError
+            capture = capture_rendered_page(url)
+            if capture:
+                page_html = capture.dom_html
+                logger.info(
+                    f"Playwright DOM capture: {len(page_html):,} chars, "
+                    f"visible_text={capture.visible_text_len:,}, "
+                    f"{capture.capture_time_ms}ms"
+                )
+            else:
+                logger.info("Playwright capture returned None, falling back to FireCrawl")
+                page_html = _firecrawl_html_fallback(scraper, url)
+        except PlaywrightNotInstalledError:
+            logger.info("Playwright not installed, using FireCrawl HTML")
+            page_html = _firecrawl_html_fallback(scraper, url)
         except Exception as e:
-            logger.warning(f"HTML scrape failed (non-fatal): {e}")
+            logger.warning(f"Playwright capture failed: {e}")
+            page_html = _firecrawl_html_fallback(scraper, url)
 
         # Dual-scrape consistency check
         if page_html and result.markdown:

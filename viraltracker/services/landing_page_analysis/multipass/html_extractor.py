@@ -364,7 +364,18 @@ def _scope_selector_block(
     scoped_parts = []
     for part in parts:
         part = part.strip()
-        if part:
+        if not part:
+            continue
+        # Rewrite body/html selectors to target the scope class itself
+        # (there's no <body>/<html> inside .lp-mockup)
+        lower = part.lower()
+        if lower == "body" or lower == "html":
+            scoped_parts.append(scope_class)
+        elif lower.startswith("body ") or lower.startswith("body>"):
+            scoped_parts.append(f"{scope_class} {part[4:].lstrip()}")
+        elif lower.startswith("html ") or lower.startswith("html>"):
+            scoped_parts.append(f"{scope_class} {part[4:].lstrip()}")
+        else:
             scoped_parts.append(f"{scope_class} {part}")
 
     scoped_selector = ", ".join(scoped_parts)

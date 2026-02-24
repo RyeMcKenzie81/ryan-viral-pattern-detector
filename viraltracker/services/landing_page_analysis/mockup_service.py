@@ -53,11 +53,17 @@ _CSS_MOZ_BINDING_RE = re.compile(r'-moz-binding\s*:', re.IGNORECASE)
 _CSS_BEHAVIOR_RE = re.compile(r'\bbehavior\s*:', re.IGNORECASE)
 
 
-def _sanitize_css_block(raw_css: str) -> str:
+def _sanitize_css_block(raw_css: str, is_surgery_mode: bool = False) -> str:
     """Sanitize CSS content from <style> blocks.
 
     Strips known attack vectors while preserving layout-critical CSS
     (media queries, keyframes, pseudo-selectors, gradients).
+
+    Args:
+        raw_css: Raw CSS text.
+        is_surgery_mode: When True, preserve url() values with https:// scheme
+            (surgery pipeline preserves original page CSS with background images
+            and font references that must be kept).
 
     Returns empty string if the block is fully rejected (breakout/HTML injection).
     """
@@ -88,12 +94,15 @@ def _sanitize_css_block(raw_css: str) -> str:
     css = _CSS_IMPORT_RE.sub('', raw_css)
     css = _CSS_CHARSET_RE.sub('', css)
 
-    # STRIP url() values (run until stable to handle nested/repeated patterns)
-    for _ in range(10):
-        new_css = _CSS_URL_RE.sub('/* url-stripped */', css)
-        if new_css == css:
-            break
-        css = new_css
+    # STRIP url() values — in surgery mode, preserve safe HTTPS urls
+    if is_surgery_mode:
+        css = _strip_unsafe_css_urls(css)
+    else:
+        for _ in range(10):
+            new_css = _CSS_URL_RE.sub('/* url-stripped */', css)
+            if new_css == css:
+                break
+            css = new_css
 
     # STRIP legacy JS vectors
     css = _CSS_EXPRESSION_RE.sub('/* expression-stripped */ (', css)
@@ -101,6 +110,39 @@ def _sanitize_css_block(raw_css: str) -> str:
     css = _CSS_BEHAVIOR_RE.sub('/* behavior-stripped */:', css)
 
     return css
+
+
+# Regex to extract url value from url() for surgery-mode filtering
+_CSS_URL_VALUE_RE = re.compile(
+    r'\burl\s*\(\s*'
+    r'(?:"([^"]*)"|\'([^\']*)\'|([^)]*?))'
+    r'\s*\)',
+    re.IGNORECASE,
+)
+
+
+def _strip_unsafe_css_urls(css: str) -> str:
+    """Strip only unsafe url() values — keep HTTPS URLs.
+
+    Surgery pipeline preserves original page CSS. Allow all https:// URLs
+    (including CDNs). Block javascript:, data: > 1KB, and http:// schemes.
+    """
+    def _filter_url(match: re.Match) -> str:
+        url_val = match.group(1) or match.group(2) or match.group(3) or ""
+        url_val = url_val.strip()
+
+        # Allow https:// URLs
+        if url_val.startswith("https://"):
+            return match.group(0)
+
+        # Allow small data: URIs (inline SVG icons, etc.)
+        if url_val.startswith("data:") and len(url_val) < 1024:
+            return match.group(0)
+
+        # Block everything else
+        return "/* url-stripped */"
+
+    return _CSS_URL_VALUE_RE.sub(_filter_url, css)
 
 
 # ---------------------------------------------------------------------------
@@ -175,14 +217,22 @@ class _InlineStyleUrlStripper(HTMLParser):
         return ''.join(self.parts)
 
 
-def _strip_url_from_inline_styles(html: str) -> str:
+def _strip_url_from_inline_styles(html: str, is_surgery_mode: bool = False) -> str:
     """Strip url() only within style attribute values.
 
     Uses parser-based style attribute rewriting to handle all quoting
     styles and edge cases. Does NOT alter visible text content.
+
+    Args:
+        html: HTML string.
+        is_surgery_mode: When True, preserve HTTPS url() values in inline styles.
     """
     if 'url(' not in html.lower():
         return html  # Fast path: no url() anywhere
+
+    if is_surgery_mode:
+        # In surgery mode, preserve HTTPS urls in inline styles
+        return html
 
     stripper = _InlineStyleUrlStripper()
     try:
@@ -208,12 +258,18 @@ _ALLOWED_TAGS = [
     "br", "hr", "blockquote", "pre", "code",
     # Lists
     "ul", "ol", "li",
+    # Definition lists
+    "dl", "dt", "dd",
     # Tables
     "table", "tr", "td", "th", "thead", "tbody",
     # Media (images only, no external loading)
     "img", "figure", "figcaption", "picture", "source",
-    # Interactive (display only)
-    "a", "button",
+    # SVG (safe subset — dangerous elements stripped in S0 sanitizer)
+    "svg", "path", "g", "circle", "rect", "line", "polyline", "polygon",
+    "ellipse", "text", "tspan", "defs", "clipPath", "clippath", "mask",
+    "symbol", "title",
+    # Interactive / Disclosure
+    "a", "button", "details", "summary",
     # Forms (display only)
     "input", "label", "select", "option", "textarea", "form",
 ]
@@ -221,13 +277,29 @@ _ALLOWED_TAGS = [
 _ALLOWED_ATTRS = {
     "*": ["class", "id", "style", "data-slot", "data-section", "role", "aria-label"],
     "a": ["href", "target", "rel"],
-    "img": ["src", "alt", "width", "height", "srcset", "sizes", "loading", "data-bg-image"],
+    "img": [
+        "src", "alt", "width", "height", "srcset", "sizes", "loading", "data-bg-image",
+        "data-src", "data-srcset", "data-lazy-src",
+    ],
     "source": ["srcset", "sizes", "media", "type"],
     "picture": [],
     "meta": ["charset", "name", "content"],
     "input": ["type", "placeholder", "value", "name"],
     "td": ["colspan", "rowspan"],
     "th": ["colspan", "rowspan"],
+    # SVG attributes
+    "svg": ["viewBox", "viewbox", "xmlns", "width", "height", "fill", "stroke"],
+    "path": ["d", "fill", "stroke", "stroke-width", "stroke-linecap", "stroke-linejoin"],
+    "g": ["transform", "fill", "stroke"],
+    "circle": ["cx", "cy", "r", "fill", "stroke"],
+    "rect": ["x", "y", "width", "height", "rx", "ry", "fill", "stroke"],
+    "line": ["x1", "y1", "x2", "y2", "stroke"],
+    "polyline": ["points", "fill", "stroke"],
+    "polygon": ["points", "fill", "stroke"],
+    "ellipse": ["cx", "cy", "rx", "ry", "fill", "stroke"],
+    "clipPath": ["id"],
+    "clippath": ["id"],
+    "symbol": ["id", "viewBox", "viewbox"],
 }
 
 _ALLOWED_CSS_PROPERTIES = [
@@ -367,6 +439,10 @@ class MockupService:
         self._usage_tracker = None
         self._user_id: Optional[str] = None
         self._organization_id: Optional[str] = None
+        #: When True, preserve HTTPS url() values in CSS sanitization
+        #: (surgery pipeline output has original page CSS that should keep
+        #: background images and font references).
+        self.is_surgery_mode: bool = False
 
     # ------------------------------------------------------------------
     # Usage tracking
@@ -848,7 +924,7 @@ class MockupService:
             strip=True,
         )
         # Strip url() from inline style attrs only (not from visible text)
-        cleaned = _strip_url_from_inline_styles(cleaned)
+        cleaned = _strip_url_from_inline_styles(cleaned, self.is_surgery_mode)
         # Validate img src attributes (safety check for URLs)
         cleaned = self._sanitize_img_src(cleaned)
         return cleaned
@@ -1272,6 +1348,7 @@ class MockupService:
     # ------------------------------------------------------------------
 
     _MAX_HTML_CHARS = 80_000
+    _MAX_HTML_CHARS_SURGERY = 200_000  # Raised for surgery output
 
     def _rewrite_html_for_brand(
         self,
@@ -1294,12 +1371,13 @@ class MockupService:
         from viraltracker.services.agent_tracking import run_agent_sync_with_tracking
 
         # Prompt size guardrail — truncate at tag boundary (Fix 3)
+        max_chars = self._MAX_HTML_CHARS_SURGERY if self.is_surgery_mode else self._MAX_HTML_CHARS
         html_input = page_body
-        if len(html_input) > self._MAX_HTML_CHARS:
+        if len(html_input) > max_chars:
             logger.warning(
-                f"Page body {len(html_input)} chars exceeds {self._MAX_HTML_CHARS}, truncating"
+                f"Page body {len(html_input)} chars exceeds {max_chars}, truncating"
             )
-            html_input = self._truncate_html_at_boundary(html_input, self._MAX_HTML_CHARS)
+            html_input = self._truncate_html_at_boundary(html_input, max_chars)
 
         brand_context = self._build_brand_context(brand_profile)
         directions = self._build_blueprint_directions(blueprint)
@@ -1727,7 +1805,7 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
         # Sanitize each block
         sanitized_parts = []
         for content in style_contents:
-            sanitized = _sanitize_css_block(content)
+            sanitized = _sanitize_css_block(content, self.is_surgery_mode)
             if sanitized.strip():
                 sanitized_parts.append(sanitized)
         sanitized_css = '\n'.join(sanitized_parts)
@@ -1756,7 +1834,7 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
 
         # 2. Re-sanitize CSS (defense-in-depth: DB rows may be old/pre-sanitization)
         if page_css:
-            page_css = _sanitize_css_block(page_css)
+            page_css = _sanitize_css_block(page_css, self.is_surgery_mode)
 
         # 3. Strip wrapper normally
         body = self._strip_mockup_wrapper(wrapped_html)

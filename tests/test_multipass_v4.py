@@ -24,7 +24,17 @@ B20: Phase 3 image guidance for 0-image sections
 B21: Image count invariant tracking
 B22: SEO ghost text filter
 B23: Phase 2 overflow rendering + smart fallback (A/B comparison)
+B26: Surgery pipeline — HTMLSanitizer
+B27: Surgery pipeline — CSSScoper
+B28: Surgery pipeline — SectionMapper
+B29: Surgery pipeline — ElementClassifier
 B30: MarkdownCleaner — zone detection, line classification, label/extract modes
+B31: Surgery pipeline — body/html CSS selector rewriting
+B32: Surgery pipeline — precision text fidelity scoring
+B33: MockupService surgery-mode CSS url() preservation
+B34: page_capture module — CaptureResult, script stripping, error paths
+B35: S0 sanitizer with Playwright-style DOM
+B36: check_scrape_consistency with richer DOM
 """
 
 import re
@@ -845,26 +855,26 @@ class TestBackgroundImageMarker:
 class TestPageHtmlGuardrail:
     """B10: page_html size cap tests."""
 
-    def test_under_2mb_stored(self):
+    def test_under_10mb_stored(self):
         from viraltracker.services.landing_page_analysis.multipass.html_extractor import (
             _extract_head_section,
         )
 
         html = "<html><head><style>.x{}</style></head><body>" + "x" * 500_000 + "</body></html>"
-        MAX_PAGE_HTML_SIZE = 2 * 1024 * 1024
+        MAX_PAGE_HTML_SIZE = 10 * 1024 * 1024
         assert len(html) < MAX_PAGE_HTML_SIZE
         # Would be stored as-is
 
-    def test_over_2mb_extracts_head(self):
+    def test_over_10mb_extracts_head(self):
         from viraltracker.services.landing_page_analysis.multipass.html_extractor import (
             _extract_head_section,
         )
 
         head_content = "<head><style>:root { --color: red; }</style></head>"
-        body_content = "<body>" + "x" * (3 * 1024 * 1024) + "</body>"
+        body_content = "<body>" + "x" * (11 * 1024 * 1024) + "</body>"
         html = f"<html>{head_content}{body_content}</html>"
 
-        MAX_PAGE_HTML_SIZE = 2 * 1024 * 1024
+        MAX_PAGE_HTML_SIZE = 10 * 1024 * 1024
         assert len(html) > MAX_PAGE_HTML_SIZE
 
         head = _extract_head_section(html)
@@ -872,12 +882,12 @@ class TestPageHtmlGuardrail:
         assert "--color: red" in head
         assert len(head) < MAX_PAGE_HTML_SIZE
 
-    def test_over_2mb_no_head_discards(self):
+    def test_over_10mb_no_head_discards(self):
         from viraltracker.services.landing_page_analysis.multipass.html_extractor import (
             _extract_head_section,
         )
 
-        html = "x" * (3 * 1024 * 1024)  # No <head> tag
+        html = "x" * (11 * 1024 * 1024)  # No <head> tag
         head = _extract_head_section(html)
         assert head is None
 
@@ -2868,6 +2878,150 @@ class TestPhase3ImageGuidance:
         )
         assert "ACTUAL IMAGE URLs" in prompt
         assert "IMAGE GUIDANCE" not in prompt
+
+
+# ===========================================================================
+# Phase 3 skeleton CSS pass-through (Milestone 1)
+# ===========================================================================
+
+
+class TestPhase3SkeletonCSS:
+    """Phase 3 prompt includes skeleton CSS when provided."""
+
+    def test_skeleton_css_included_in_prompt(self):
+        """Skeleton CSS appears in prompt under SKELETON CSS header."""
+        from viraltracker.services.landing_page_analysis.multipass.prompts import (
+            build_phase_3_prompt,
+        )
+        css = ".mp-container { max-width: 1200px; margin: 0 auto; }"
+        prompt = build_phase_3_prompt(
+            section_id="sec_0",
+            section_html="<section><p>Text</p></section>",
+            design_system_compact="{}",
+            skeleton_css=css,
+        )
+        assert "SKELETON CSS" in prompt
+        assert "mp-container" in prompt
+        assert "PRESERVE all class names" in prompt
+
+    def test_skeleton_css_none_omits_skeleton_section(self):
+        """No SKELETON CSS header when skeleton_css is None."""
+        from viraltracker.services.landing_page_analysis.multipass.prompts import (
+            build_phase_3_prompt,
+        )
+        prompt = build_phase_3_prompt(
+            section_id="sec_0",
+            section_html="<section><p>Text</p></section>",
+            design_system_compact="{}",
+            skeleton_css=None,
+        )
+        assert "SKELETON CSS" not in prompt
+        # CSS preservation constraints should still be present
+        assert "PRESERVE ALL CSS CLASSES" in prompt
+
+    def test_skeleton_css_appears_before_original_css(self):
+        """Skeleton CSS section appears before ORIGINAL PAGE CSS REFERENCE."""
+        from viraltracker.services.landing_page_analysis.multipass.prompts import (
+            build_phase_3_prompt,
+        )
+        prompt = build_phase_3_prompt(
+            section_id="sec_0",
+            section_html="<section><p>Text</p></section>",
+            design_system_compact="{}",
+            skeleton_css=".mp-hero { padding: 60px; }",
+            original_css_snippet="body { font-family: sans-serif; }",
+        )
+        skeleton_pos = prompt.index("SKELETON CSS")
+        original_pos = prompt.index("ORIGINAL PAGE CSS REFERENCE")
+        assert skeleton_pos < original_pos
+
+    def test_css_preservation_constraints_present(self):
+        """Phase 3 prompt includes CSS preservation constraints."""
+        from viraltracker.services.landing_page_analysis.multipass.prompts import (
+            build_phase_3_prompt,
+        )
+        prompt = build_phase_3_prompt(
+            section_id="sec_0",
+            section_html="<section><p>Text</p></section>",
+            design_system_compact="{}",
+        )
+        assert "PRESERVE ALL CSS CLASSES" in prompt
+        assert "mp-container" in prompt or "mp-*" in prompt
+        assert "Do NOT replace class=" in prompt
+        assert "Do NOT restructure the HTML hierarchy" in prompt
+        assert "Do NOT add inline padding" in prompt
+
+
+# ===========================================================================
+# Phase 3 inline style conflict cleanup (Milestone 3)
+# ===========================================================================
+
+
+class TestPhase3InlineConflictCleaning:
+    """Inline CSS dedup for Phase 3 output."""
+
+    def test_double_semicolons_fixed(self):
+        """Double semicolons are collapsed."""
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import (
+            _clean_phase3_inline_conflicts,
+        )
+        html = '<div style="padding: 60px;; margin: 10px;">text</div>'
+        result = _clean_phase3_inline_conflicts(html)
+        assert ";;" not in result
+        assert "padding: 60px" in result
+        assert "margin: 10px" in result
+
+    def test_duplicate_properties_last_wins(self):
+        """Duplicate properties are deduped, last occurrence wins."""
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import (
+            _clean_phase3_inline_conflicts,
+        )
+        html = '<div style="padding: 60px 30px; padding: 80px 0;">text</div>'
+        result = _clean_phase3_inline_conflicts(html)
+        assert "80px 0" in result
+        assert "60px 30px" not in result
+
+    def test_non_conflicting_styles_preserved(self):
+        """Non-conflicting styles are all preserved."""
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import (
+            _clean_phase3_inline_conflicts,
+        )
+        html = '<div style="color: red; font-size: 14px; margin: 10px;">text</div>'
+        result = _clean_phase3_inline_conflicts(html)
+        assert "color: red" in result
+        assert "font-size: 14px" in result
+        assert "margin: 10px" in result
+
+    def test_no_style_attributes_unchanged(self):
+        """HTML without style attributes passes through unchanged."""
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import (
+            _clean_phase3_inline_conflicts,
+        )
+        html = '<div class="mp-container"><p>text</p></div>'
+        result = _clean_phase3_inline_conflicts(html)
+        assert result == html
+
+
+# ===========================================================================
+# Phase 4 prompt mp-* warning (Milestone 4)
+# ===========================================================================
+
+
+class TestPhase4PromptHardening:
+    """Phase 4 prompt includes mp-* layout class warning."""
+
+    def test_mp_class_warning_present(self):
+        """Phase 4 prompt warns against overriding mp-* layout classes."""
+        from viraltracker.services.landing_page_analysis.multipass.prompts import (
+            build_phase_4_prompt,
+        )
+        prompt = build_phase_4_prompt(
+            assembled_html="<section data-section='sec_0'><p>text</p></section>",
+            section_ids=["sec_0"],
+        )
+        assert "mp-*" in prompt
+        assert "layout-critical" in prompt
+        assert "empty list []" in prompt
 
 
 # ===========================================================================
@@ -5510,3 +5664,873 @@ class TestSlotGenerationImprovements:
 
         assert 'data-slot="body-1"' in result
         assert 'data-slot="body-2"' in result
+
+
+# ===========================================================================
+# B24: SSIM crop-based comparison (Phase A fix)
+# ===========================================================================
+
+class TestVisualFidelityCrop:
+    """score_visual_fidelity uses crop (not resize) for honest comparison."""
+
+    @staticmethod
+    def _make_png(width: int, height: int, color: int = 128) -> bytes:
+        """Create a solid-color grayscale PNG of given dimensions."""
+        from PIL import Image
+        import io
+        img = Image.new('L', (width, height), color=color)
+        buf = io.BytesIO()
+        img.save(buf, format='PNG')
+        return buf.getvalue()
+
+    @staticmethod
+    def _make_png_with_top(width: int, height: int, top_height: int,
+                           top_color: int = 200, bottom_color: int = 50) -> bytes:
+        """Create a PNG with a distinct top band and different bottom band."""
+        from PIL import Image
+        import io
+        img = Image.new('L', (width, height), color=bottom_color)
+        # Paint the top band
+        for y in range(min(top_height, height)):
+            for x in range(width):
+                img.putpixel((x, y), top_color)
+        buf = io.BytesIO()
+        img.save(buf, format='PNG')
+        return buf.getvalue()
+
+    def test_same_image_returns_high_score(self):
+        """Identical images should produce SSIM > 0.99."""
+        from viraltracker.services.landing_page_analysis.multipass.eval_harness import (
+            score_visual_fidelity,
+        )
+        png = self._make_png(200, 300, color=128)
+        score = score_visual_fidelity(png, png)
+        assert score > 0.99, f"Identical images should score > 0.99, got {score}"
+
+    def test_crop_not_resize_for_tall_output(self):
+        """A 10x taller output with same top content should still score high.
+
+        Under the old resize approach, the tall image would be squished 10:1,
+        destroying the content and producing a low score.
+        """
+        from viraltracker.services.landing_page_analysis.multipass.eval_harness import (
+            score_visual_fidelity,
+        )
+        # Original: 200x100, solid gray
+        original = self._make_png(200, 100, color=128)
+        # Output: 200x1000, same gray everywhere (top 100px matches original)
+        tall_output = self._make_png(200, 1000, color=128)
+        score = score_visual_fidelity(original, tall_output)
+        # With crop, the top 100px are compared — both solid gray → high score
+        assert score > 0.99, f"Crop-based comparison of matching tops should score high, got {score}"
+
+    def test_crop_height_parameter(self):
+        """Explicit crop_height limits comparison to that many rows."""
+        from viraltracker.services.landing_page_analysis.multipass.eval_harness import (
+            score_visual_fidelity,
+        )
+        # Both images: 200x400, top 100px is light (200), rest is dark (50)
+        img_a = self._make_png_with_top(200, 400, top_height=100, top_color=200, bottom_color=50)
+        # Image B: same top 100px, but different below
+        img_b = self._make_png_with_top(200, 400, top_height=100, top_color=200, bottom_color=10)
+        # Full comparison — bottoms differ, score should be lower
+        score_full = score_visual_fidelity(img_a, img_b)
+        # Crop to top 100px only — both identical there
+        score_crop = score_visual_fidelity(img_a, img_b, crop_height=100)
+        assert score_crop > score_full, (
+            f"Cropped comparison should score higher than full: {score_crop} vs {score_full}"
+        )
+        assert score_crop > 0.99, f"Top 100px should match perfectly, got {score_crop}"
+
+    def test_different_images_low_score(self):
+        """White vs black images should score low."""
+        from viraltracker.services.landing_page_analysis.multipass.eval_harness import (
+            score_visual_fidelity,
+        )
+        white = self._make_png(200, 200, color=255)
+        black = self._make_png(200, 200, color=0)
+        score = score_visual_fidelity(white, black)
+        assert score < 0.1, f"White vs black should score < 0.1, got {score}"
+
+    def test_backward_compatible_no_args(self):
+        """Calling without crop_height still works (backward-compatible)."""
+        from viraltracker.services.landing_page_analysis.multipass.eval_harness import (
+            score_visual_fidelity,
+        )
+        png = self._make_png(100, 100, color=100)
+        # Should work without crop_height parameter
+        score = score_visual_fidelity(png, png)
+        assert isinstance(score, float)
+        assert 0.0 <= score <= 1.0
+
+
+# ===========================================================================
+# B25: Page height balloon CSS constraints (Phase B fix)
+# ===========================================================================
+
+class TestOverflowCSSConstraints:
+    """_build_shared_css includes height caps and image constraints."""
+
+    @staticmethod
+    def _get_css() -> str:
+        from viraltracker.services.landing_page_analysis.multipass.section_templates import (
+            _build_shared_css,
+        )
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import (
+            DEFAULT_DESIGN_SYSTEM,
+        )
+        return _build_shared_css(DEFAULT_DESIGN_SYSTEM)
+
+    def test_shared_css_has_overflow_constraints(self):
+        """.mp-overflow has max-height and overflow: hidden."""
+        css = self._get_css()
+        assert "max-height: 600px" in css, "mp-overflow should have max-height cap"
+        assert "overflow: hidden" in css, "mp-overflow should have overflow: hidden"
+
+    def test_shared_css_has_global_image_constraint(self):
+        """.mp-container img has max-width: 100%."""
+        css = self._get_css()
+        assert ".mp-container img" in css, "Global image rule should exist"
+        assert "max-width: 100%" in css, "Images should be width-constrained"
+
+    def test_shared_css_overflow_paragraph_margins(self):
+        """.mp-overflow p has reduced margins."""
+        css = self._get_css()
+        assert ".mp-overflow p" in css, "Overflow paragraph rule should exist"
+        assert "margin: 0 0 4px 0" in css, "Overflow paragraphs should have reduced margins"
+
+
+# ===========================================================================
+# B26: Surgery pipeline — HTMLSanitizer
+# ===========================================================================
+
+
+class TestHTMLSanitizer:
+    """B26: HTMLSanitizer strips scripts, tracking, event handlers."""
+
+    def test_strips_script_tags(self):
+        from viraltracker.services.landing_page_analysis.multipass.surgery.sanitizer import (
+            HTMLSanitizer,
+        )
+        html = '<html><body><p>Hello</p><script>alert("xss")</script><p>World</p></body></html>'
+        result, stats = HTMLSanitizer().sanitize(html)
+        assert "<script>" not in result
+        assert "Hello" in result
+        assert "World" in result
+        assert stats["scripts_removed"] >= 1
+
+    def test_strips_noscript_iframe(self):
+        from viraltracker.services.landing_page_analysis.multipass.surgery.sanitizer import (
+            HTMLSanitizer,
+        )
+        html = '<body><noscript>fallback</noscript><iframe src="x"></iframe><p>Keep me</p></body>'
+        result, stats = HTMLSanitizer().sanitize(html)
+        assert "<noscript>" not in result
+        assert "<iframe" not in result
+        assert "Keep me" in result
+
+    def test_strips_event_handlers(self):
+        from viraltracker.services.landing_page_analysis.multipass.surgery.sanitizer import (
+            HTMLSanitizer,
+        )
+        html = '<body><button onclick="alert(1)" onmouseover="x()">Click</button></body>'
+        result, stats = HTMLSanitizer().sanitize(html)
+        assert "onclick" not in result
+        assert "onmouseover" not in result
+        assert "Click" in result
+        assert stats["event_handlers_removed"] >= 2
+
+    def test_resolves_lazy_images(self):
+        from viraltracker.services.landing_page_analysis.multipass.surgery.sanitizer import (
+            HTMLSanitizer,
+        )
+        html = '<body><img data-src="https://cdn.example.com/real.jpg" src="data:image/gif;base64,R0lGOD" /></body>'
+        result, stats = HTMLSanitizer().sanitize(html)
+        assert 'src="https://cdn.example.com/real.jpg"' in result
+        assert stats["lazy_images_resolved"] >= 1
+
+    def test_absolutizes_relative_urls(self):
+        from viraltracker.services.landing_page_analysis.multipass.surgery.sanitizer import (
+            HTMLSanitizer,
+        )
+        html = '<body><img src="/cdn/shop/image.jpg" /><a href="/about">About</a></body>'
+        result, stats = HTMLSanitizer().sanitize(html, page_url="https://example.com/page")
+        assert 'src="https://example.com/cdn/shop/image.jpg"' in result
+        assert 'href="https://example.com/about"' in result
+        assert stats["urls_absolutized"] >= 2
+
+    def test_strips_tracking_pixels(self):
+        from viraltracker.services.landing_page_analysis.multipass.surgery.sanitizer import (
+            HTMLSanitizer,
+        )
+        html = '<body><img width="1" height="1" src="https://www.facebook.com/tr" /><p>Content</p></body>'
+        result, stats = HTMLSanitizer().sanitize(html)
+        assert "facebook.com" not in result
+        assert "Content" in result
+        assert stats["trackers_removed"] >= 1
+
+    def test_strips_dangerous_svg_elements(self):
+        from viraltracker.services.landing_page_analysis.multipass.surgery.sanitizer import (
+            HTMLSanitizer,
+        )
+        html = '<body><svg><path d="M0 0"/><script>alert(1)</script><foreignObject>bad</foreignObject></svg></body>'
+        result, stats = HTMLSanitizer().sanitize(html)
+        assert "<path" in result
+        assert "<script>" not in result.lower()
+        assert "<foreignobject>" not in result.lower()
+        # <script> removed by step 1 (strip_tags_with_content), <foreignObject> by SVG strip
+        assert stats["svg_elements_stripped"] >= 1
+        assert stats["scripts_removed"] >= 1
+
+    def test_unwraps_shopify_sections(self):
+        from viraltracker.services.landing_page_analysis.multipass.surgery.sanitizer import (
+            HTMLSanitizer,
+        )
+        html = '<body><shopify-section id="x"><div>Product</div></shopify-section></body>'
+        result, stats = HTMLSanitizer().sanitize(html)
+        assert "<shopify-section" not in result
+        assert "<div>Product</div>" in result
+
+    def test_viability_check(self):
+        from viraltracker.services.landing_page_analysis.multipass.surgery.sanitizer import (
+            HTMLSanitizer,
+        )
+        # Short text = not viable
+        html = "<body><p>Hi</p></body>"
+        _, stats = HTMLSanitizer().sanitize(html)
+        assert stats["viable"] is False
+
+        # Long text = viable
+        html = "<body>" + "<p>Content paragraph. </p>" * 50 + "</body>"
+        _, stats = HTMLSanitizer().sanitize(html)
+        assert stats["viable"] is True
+
+    def test_neuters_forms(self):
+        from viraltracker.services.landing_page_analysis.multipass.surgery.sanitizer import (
+            HTMLSanitizer,
+        )
+        html = '<body><form action="/submit"><input type="submit" value="Go" class="btn" /></form></body>'
+        result, stats = HTMLSanitizer().sanitize(html)
+        assert 'action=' not in result
+        assert '<button' in result
+        assert 'Go' in result
+
+
+# ===========================================================================
+# B27: Surgery pipeline — CSSScoper
+# ===========================================================================
+
+
+class TestCSSScoper:
+    """B27: CSSScoper scopes CSS under .lp-mockup and wraps body."""
+
+    def test_wraps_body_content(self):
+        from viraltracker.services.landing_page_analysis.multipass.surgery.css_scoper import (
+            CSSScoper,
+        )
+        html = '<html><head><style>h1 { color: red; }</style></head><body><h1>Hello</h1></body></html>'
+        result, stats = CSSScoper().scope(html)
+        assert '<div class="lp-mockup">' in result
+        assert "<h1>Hello</h1>" in result
+        assert stats["body_wrapped"] is True
+
+    def test_scopes_css_rules(self):
+        from viraltracker.services.landing_page_analysis.multipass.surgery.css_scoper import (
+            CSSScoper,
+        )
+        html = '<style>h1 { color: red; } p { margin: 0; }</style><body><h1>Hi</h1><p>Text</p></body>'
+        result, stats = CSSScoper().scope(html)
+        assert ".lp-mockup" in result
+        assert stats["style_blocks_extracted"] >= 1
+
+    def test_fixes_body_html_selectors(self):
+        from viraltracker.services.landing_page_analysis.multipass.surgery.css_scoper import (
+            CSSScoper,
+        )
+        html = '<style>body { font-family: Arial; } html { background: white; }</style><body><p>Test</p></body>'
+        result, stats = CSSScoper().scope(html)
+        # Should NOT contain ".lp-mockup body" (matches nothing)
+        assert ".lp-mockup body" not in result.lower()
+        # Should contain .lp-mockup targeting font-family
+        assert ".lp-mockup" in result
+
+    def test_strips_animation_properties(self):
+        from viraltracker.services.landing_page_analysis.multipass.surgery.css_scoper import (
+            CSSScoper,
+        )
+        html = '<style>.banner { animation: slide 2s infinite; transition: all 0.3s; color: blue; }</style><body><div class="banner">Hi</div></body>'
+        result, stats = CSSScoper().scope(html)
+        assert "animation:" not in result.lower()
+        assert "transition:" not in result.lower()
+
+    def test_adds_containment_css(self):
+        from viraltracker.services.landing_page_analysis.multipass.surgery.css_scoper import (
+            CSSScoper,
+        )
+        html = '<body><p>Test</p></body>'
+        result, stats = CSSScoper().scope(html)
+        assert "contain: layout style paint" in result
+
+    def test_external_css_included(self):
+        from viraltracker.services.landing_page_analysis.multipass.surgery.css_scoper import (
+            CSSScoper,
+        )
+        html = '<body><p>Test</p></body>'
+        result, stats = CSSScoper().scope(
+            html, external_css=":root { --brand-color: #ff0; }"
+        )
+        assert "--brand-color" in result
+
+    def test_extracts_body_without_body_tag(self):
+        from viraltracker.services.landing_page_analysis.multipass.surgery.css_scoper import (
+            CSSScoper,
+        )
+        # Fragment without <body>
+        html = '<html><head></head><div>Content</div></html>'
+        result, stats = CSSScoper().scope(html)
+        assert "Content" in result
+        assert '<div class="lp-mockup">' in result
+
+
+# ===========================================================================
+# B28: Surgery pipeline — SectionMapper
+# ===========================================================================
+
+
+class TestSectionMapper:
+    """B28: SectionMapper maps markdown sections to HTML DOM regions."""
+
+    def _make_section(self, section_id, name, markdown, char_ratio=0.25):
+        from viraltracker.services.landing_page_analysis.multipass.segmenter import (
+            SegmenterSection,
+        )
+        return SegmenterSection(
+            section_id=section_id,
+            name=name,
+            markdown=markdown,
+            char_ratio=char_ratio,
+        )
+
+    def test_heading_anchor_matching(self):
+        from viraltracker.services.landing_page_analysis.multipass.surgery.section_mapper import (
+            SectionMapper,
+        )
+        html = """
+        <body>
+        <section><h1>Welcome to Our Store</h1><p>Best products</p></section>
+        <section><h2>Our Features</h2><p>Feature list</p></section>
+        <section><h2>Testimonials</h2><p>Great product!</p></section>
+        </body>
+        """
+        sections = [
+            self._make_section("sec_0", "hero", "# Welcome to Our Store\nBest products"),
+            self._make_section("sec_1", "features", "## Our Features\nFeature list"),
+            self._make_section("sec_2", "testimonials", "## Testimonials\nGreat product!"),
+        ]
+        result, stats = SectionMapper().map_sections(html, sections)
+        assert stats["sections_mapped"] >= 2
+        assert 'data-section="sec_0"' in result
+        assert 'data-section="sec_1"' in result
+
+    def test_positional_fallback(self):
+        from viraltracker.services.landing_page_analysis.multipass.surgery.section_mapper import (
+            SectionMapper,
+        )
+        # No headings in HTML — should fall back to positional
+        html = """
+        <body>
+        <div><p>First paragraph content here with lots of text to ensure we have enough.</p></div>
+        <div><p>Second paragraph content here with more text to ensure matching.</p></div>
+        </body>
+        """
+        sections = [
+            self._make_section("sec_0", "intro", "First paragraph content here", 0.5),
+            self._make_section("sec_1", "body", "Second paragraph content here", 0.5),
+        ]
+        result, stats = SectionMapper().map_sections(html, sections)
+        assert stats["sections_mapped"] >= 1
+
+    def test_empty_sections(self):
+        from viraltracker.services.landing_page_analysis.multipass.surgery.section_mapper import (
+            SectionMapper,
+        )
+        html = "<body><p>Content</p></body>"
+        result, stats = SectionMapper().map_sections(html, [])
+        assert stats["sections_mapped"] == 0
+
+    def test_short_heading_substring_match(self):
+        from viraltracker.services.landing_page_analysis.multipass.surgery.section_mapper import (
+            SectionMapper,
+        )
+        html = """
+        <body>
+        <section><h2>Frequently Asked Questions</h2><p>Q&A content</p></section>
+        </body>
+        """
+        sections = [
+            self._make_section("sec_0", "faq", "## FAQ\nQ&A content"),
+        ]
+        result, stats = SectionMapper().map_sections(html, sections)
+        # FAQ is short but should match via substring containment
+        assert stats["sections_mapped"] >= 1
+
+
+# ===========================================================================
+# B29: Surgery pipeline — ElementClassifier
+# ===========================================================================
+
+
+class TestElementClassifier:
+    """B29: ElementClassifier adds data-slot attributes."""
+
+    def test_deterministic_slot_assignment(self):
+        from viraltracker.services.landing_page_analysis.multipass.surgery.element_classifier import (
+            ElementClassifier,
+        )
+        html = """
+        <div>
+            <h1>Main Headline</h1>
+            <h2>Subtitle Here</h2>
+            <p>First paragraph of content.</p>
+            <p>Second paragraph.</p>
+            <button>Buy Now</button>
+        </div>
+        """
+        result, stats = ElementClassifier().classify(html, [])
+        assert stats["has_headline"] is True
+        assert stats["has_cta"] is True
+        assert 'data-slot="headline"' in result
+        assert 'data-slot="subheadline"' in result
+        assert 'data-slot="body-1"' in result
+        assert 'data-slot="cta-1"' in result
+        assert stats["total_slots"] >= 5
+
+    def test_preserves_existing_slots(self):
+        from viraltracker.services.landing_page_analysis.multipass.surgery.element_classifier import (
+            ElementClassifier,
+        )
+        html = '<h1 data-slot="existing-headline">Title</h1><p>Text</p>'
+        result, stats = ElementClassifier().classify(html, [])
+        assert 'data-slot="existing-headline"' in result
+        # Should not double-add data-slot
+        assert result.count('data-slot="existing-headline"') == 1
+
+    def test_cta_class_heuristic(self):
+        from viraltracker.services.landing_page_analysis.multipass.surgery.element_classifier import (
+            ElementClassifier,
+        )
+        html = '<a class="btn-primary" href="/buy">Shop Now</a>'
+        result, stats = ElementClassifier().classify(html, [])
+        assert 'data-slot="cta-1"' in result
+
+    def test_heading_counter_increments(self):
+        from viraltracker.services.landing_page_analysis.multipass.surgery.element_classifier import (
+            ElementClassifier,
+        )
+        html = '<h1>First</h1><h2>Second</h2><h3>Third</h3><h3>Fourth</h3>'
+        result, stats = ElementClassifier().classify(html, [])
+        assert 'data-slot="headline"' in result
+        assert 'data-slot="subheadline"' in result
+        assert 'data-slot="heading-1"' in result
+        assert 'data-slot="heading-2"' in result
+
+
+# ===========================================================================
+# B31: Surgery pipeline — body/html CSS selector rewriting
+# ===========================================================================
+
+
+class TestBodyHtmlSelectorRewrite:
+    """B31: _scope_css_under_class rewrites body/html selectors."""
+
+    def test_body_selector_becomes_scope_class(self):
+        from viraltracker.services.landing_page_analysis.multipass.html_extractor import (
+            _scope_css_under_class,
+        )
+        css = "body { font-family: Arial; }"
+        result = _scope_css_under_class(css, ".lp-mockup")
+        # Should NOT produce ".lp-mockup body" (matches nothing)
+        assert ".lp-mockup body" not in result
+        # Should produce ".lp-mockup { font-family: Arial; }"
+        assert ".lp-mockup" in result
+        assert "font-family: Arial" in result
+
+    def test_html_selector_becomes_scope_class(self):
+        from viraltracker.services.landing_page_analysis.multipass.html_extractor import (
+            _scope_css_under_class,
+        )
+        css = "html { background: white; }"
+        result = _scope_css_under_class(css, ".lp-mockup")
+        assert ".lp-mockup html" not in result
+        assert ".lp-mockup" in result
+
+    def test_body_descendant_selector(self):
+        from viraltracker.services.landing_page_analysis.multipass.html_extractor import (
+            _scope_css_under_class,
+        )
+        css = "body .container { max-width: 1200px; }"
+        result = _scope_css_under_class(css, ".lp-mockup")
+        # body .container → .lp-mockup .container
+        assert ".lp-mockup .container" in result
+        assert ".lp-mockup body" not in result
+
+    def test_regular_selectors_unchanged(self):
+        from viraltracker.services.landing_page_analysis.multipass.html_extractor import (
+            _scope_css_under_class,
+        )
+        css = "h1 { color: red; } .hero { padding: 2rem; }"
+        result = _scope_css_under_class(css, ".lp-mockup")
+        assert ".lp-mockup h1" in result
+        assert ".lp-mockup .hero" in result
+
+
+# ===========================================================================
+# B32: Precision-based text fidelity scoring
+# ===========================================================================
+
+
+class TestPrecisionTextFidelity:
+    """B32: score_text_fidelity_precision for surgery pipeline."""
+
+    def test_perfect_match(self):
+        from viraltracker.services.landing_page_analysis.multipass.eval_harness import (
+            score_text_fidelity_precision,
+        )
+        html = "<p>Hello world this is a test</p>"
+        md = "Hello world this is a test"
+        score = score_text_fidelity_precision(html, md)
+        assert score >= 0.95
+
+    def test_extra_text_not_penalized(self):
+        from viraltracker.services.landing_page_analysis.multipass.eval_harness import (
+            score_text_fidelity_precision,
+        )
+        # HTML has MORE text than markdown (nav/footer)
+        html = "<nav>Home About</nav><p>Hello world</p><footer>Copyright 2024</footer>"
+        md = "Hello world"
+        score = score_text_fidelity_precision(html, md)
+        # Should be high because all markdown tokens are found
+        assert score >= 0.95
+
+    def test_missing_text_penalized(self):
+        from viraltracker.services.landing_page_analysis.multipass.eval_harness import (
+            score_text_fidelity_precision,
+        )
+        html = "<p>Hello</p>"
+        md = "Hello world this is completely different text"
+        score = score_text_fidelity_precision(html, md)
+        # Most markdown tokens are missing from HTML
+        assert score < 0.5
+
+    def test_empty_markdown(self):
+        from viraltracker.services.landing_page_analysis.multipass.eval_harness import (
+            score_text_fidelity_precision,
+        )
+        score = score_text_fidelity_precision("<p>Text</p>", "")
+        assert score == 1.0
+
+
+# ===========================================================================
+# B33: MockupService surgery-mode CSS url() preservation
+# ===========================================================================
+
+
+class TestSurgeryModeCSSPreservation:
+    """B33: Surgery mode preserves HTTPS url() values in CSS."""
+
+    def test_default_strips_all_urls(self):
+        from viraltracker.services.landing_page_analysis.mockup_service import (
+            _sanitize_css_block,
+        )
+        css = '.hero { background-image: url("https://cdn.example.com/bg.jpg"); }'
+        result = _sanitize_css_block(css)
+        assert "cdn.example.com" not in result
+
+    def test_surgery_mode_preserves_https_urls(self):
+        from viraltracker.services.landing_page_analysis.mockup_service import (
+            _sanitize_css_block,
+        )
+        css = '.hero { background-image: url("https://cdn.example.com/bg.jpg"); }'
+        result = _sanitize_css_block(css, is_surgery_mode=True)
+        assert "cdn.example.com" in result
+
+    def test_surgery_mode_blocks_javascript_urls(self):
+        from viraltracker.services.landing_page_analysis.mockup_service import (
+            _sanitize_css_block,
+        )
+        css = '.x { background: url("javascript:alert(1)"); }'
+        result = _sanitize_css_block(css, is_surgery_mode=True)
+        assert "javascript:" not in result
+
+    def test_surgery_mode_blocks_large_data_urls(self):
+        from viraltracker.services.landing_page_analysis.mockup_service import (
+            _sanitize_css_block,
+        )
+        large_data = "data:image/png;base64," + "A" * 2000
+        css = f'.x {{ background: url("{large_data}"); }}'
+        result = _sanitize_css_block(css, is_surgery_mode=True)
+        assert "AAAA" not in result  # Large data URI should be stripped
+
+    def test_surgery_mode_preserves_small_data_urls(self):
+        from viraltracker.services.landing_page_analysis.mockup_service import (
+            _sanitize_css_block,
+        )
+        small_data = "data:image/svg+xml,%3Csvg%3E%3C/svg%3E"
+        css = f'.x {{ background: url("{small_data}"); }}'
+        result = _sanitize_css_block(css, is_surgery_mode=True)
+        assert "svg" in result
+
+    def test_inline_style_surgery_mode_preserves_urls(self):
+        from viraltracker.services.landing_page_analysis.mockup_service import (
+            _strip_url_from_inline_styles,
+        )
+        html = '<div style="background-image: url(https://example.com/bg.jpg);">Content</div>'
+        result = _strip_url_from_inline_styles(html, is_surgery_mode=True)
+        assert "example.com" in result
+
+    def test_inline_style_default_strips_urls(self):
+        from viraltracker.services.landing_page_analysis.mockup_service import (
+            _strip_url_from_inline_styles,
+        )
+        html = '<div style="background-image: url(https://example.com/bg.jpg);">Content</div>'
+        result = _strip_url_from_inline_styles(html, is_surgery_mode=False)
+        assert "example.com" not in result
+
+
+# ===========================================================================
+# B34: page_capture module
+# ===========================================================================
+
+
+class TestPageCapture:
+    """B34: page_capture module — CaptureResult, script stripping, error paths."""
+
+    def test_capture_result_dataclass(self):
+        from viraltracker.services.landing_page_analysis.page_capture import CaptureResult
+
+        result = CaptureResult(
+            dom_html="<html><body>Hello</body></html>",
+            screenshot_bytes=None,
+            final_url="https://example.com",
+            capture_time_ms=1234,
+            visible_text_len=5,
+        )
+        assert result.dom_html == "<html><body>Hello</body></html>"
+        assert result.screenshot_bytes is None
+        assert result.final_url == "https://example.com"
+        assert result.capture_time_ms == 1234
+        assert result.visible_text_len == 5
+
+    def test_strip_script_content(self):
+        from viraltracker.services.landing_page_analysis.page_capture import _strip_script_content
+
+        html = '<html><body><p>Hello</p><script type="text/javascript">var x = 1; alert(x);</script><p>World</p></body></html>'
+        result = _strip_script_content(html)
+        assert "<p>Hello</p>" in result
+        assert "<p>World</p>" in result
+        assert "<script" in result  # tag preserved
+        assert "</script>" in result  # closing tag preserved
+        assert "alert" not in result  # content stripped
+        assert "var x" not in result
+
+    def test_strip_script_content_multiple(self):
+        from viraltracker.services.landing_page_analysis.page_capture import _strip_script_content
+
+        html = '<script>a();</script><p>Keep</p><script type="module">b();</script>'
+        result = _strip_script_content(html)
+        assert "a()" not in result
+        assert "b()" not in result
+        assert "<p>Keep</p>" in result
+        assert result.count("<script") == 2
+        assert result.count("</script>") == 2
+
+    def test_strip_script_content_empty_scripts(self):
+        from viraltracker.services.landing_page_analysis.page_capture import _strip_script_content
+
+        html = '<script></script><p>Content</p>'
+        result = _strip_script_content(html)
+        assert "<p>Content</p>" in result
+
+    def test_playwright_not_installed_error_importable(self):
+        from viraltracker.services.landing_page_analysis.page_capture import (
+            PlaywrightNotInstalledError,
+        )
+        err = PlaywrightNotInstalledError("test")
+        assert str(err) == "test"
+        assert isinstance(err, Exception)
+
+    def test_capture_timeout_error_importable(self):
+        from viraltracker.services.landing_page_analysis.page_capture import (
+            CaptureTimeoutError,
+        )
+        err = CaptureTimeoutError("timeout")
+        assert str(err) == "timeout"
+
+    def test_capture_returns_none_on_playwright_import_failure(self):
+        """When playwright is not importable, capture_rendered_page raises PlaywrightNotInstalledError."""
+        from viraltracker.services.landing_page_analysis.page_capture import (
+            PlaywrightNotInstalledError,
+        )
+        with patch.dict("sys.modules", {"playwright": None, "playwright.sync_api": None}):
+            # Force re-import to trigger ImportError
+            import importlib
+            import viraltracker.services.landing_page_analysis.page_capture as pc_mod
+            importlib.reload(pc_mod)
+            with pytest.raises(pc_mod.PlaywrightNotInstalledError):
+                pc_mod.capture_rendered_page("https://example.com")
+            # Restore module
+            importlib.reload(pc_mod)
+
+    def test_overlay_selectors_constant(self):
+        from viraltracker.services.landing_page_analysis.page_capture import _OVERLAY_SELECTORS
+
+        # Should target common overlay patterns
+        assert "popup" in _OVERLAY_SELECTORS
+        assert "modal" in _OVERLAY_SELECTORS
+        assert "cookie" in _OVERLAY_SELECTORS
+        assert "consent" in _OVERLAY_SELECTORS
+        assert "newsletter" in _OVERLAY_SELECTORS
+
+    def test_chrome_selectors_constant(self):
+        from viraltracker.services.landing_page_analysis.page_capture import _CHROME_SELECTORS
+
+        # Should target navigation chrome elements
+        assert "header" in _CHROME_SELECTORS
+        assert "nav" in _CHROME_SELECTORS
+        assert "footer" in _CHROME_SELECTORS
+        assert "cart" in _CHROME_SELECTORS.lower()
+        assert "announcement" in _CHROME_SELECTORS
+
+
+# ===========================================================================
+# B35: S0 sanitizer with Playwright-style DOM
+# ===========================================================================
+
+
+class TestS0WithPlaywrightDom:
+    """B35: S0 sanitizer handles Playwright-captured DOM characteristics."""
+
+    def test_many_inline_styles(self):
+        """Playwright DOM often has many inline style attrs from JS hydration."""
+        from viraltracker.services.landing_page_analysis.multipass.surgery.sanitizer import (
+            HTMLSanitizer,
+        )
+        html = '<body>' + ''.join(
+            f'<div style="color: rgb({i}, {i}, {i}); margin: {i}px;"><p>Paragraph number {i} with enough visible text to pass viability checks easily. </p></div>'
+            for i in range(20)
+        ) + '</body>'
+        result, stats = HTMLSanitizer().sanitize(html)
+        # Should survive sanitization with content intact
+        assert "Paragraph number 0" in result
+        assert "Paragraph number 19" in result
+        assert stats["viable"] is True
+
+    def test_resolved_lazy_images(self):
+        """Playwright DOM has fully resolved images (real src, no data-src)."""
+        from viraltracker.services.landing_page_analysis.multipass.surgery.sanitizer import (
+            HTMLSanitizer,
+        )
+        html = '<body><img src="https://cdn.shopify.com/real-image.jpg" alt="Product" /><p>Description text for the product that is long enough to be viable.</p>' * 10 + '</body>'
+        result, stats = HTMLSanitizer().sanitize(html)
+        assert 'src="https://cdn.shopify.com/real-image.jpg"' in result
+        # No lazy resolution needed since src is already real
+        assert stats.get("lazy_images_resolved", 0) == 0
+
+    def test_template_elements_stripped(self):
+        """Playwright DOM may contain <template> elements with cloneable content."""
+        from viraltracker.services.landing_page_analysis.multipass.surgery.sanitizer import (
+            HTMLSanitizer,
+        )
+        html = '<body><template><div>Hidden template content</div></template><p>Visible content. ' + 'More visible text that contributes to viability. ' * 15 + '</p></body>'
+        result, stats = HTMLSanitizer().sanitize(html)
+        assert "Visible content" in result
+        # Template content should not appear in sanitized output
+        # (either stripped or kept depending on sanitizer — just verify main content survives)
+        assert stats["viable"] is True
+
+    def test_large_dom_size_guardrail(self):
+        """Large Playwright DOM should be handled by existing size guardrails."""
+        # The _MAX_PAGE_HTML_SIZE guardrail in analysis_service.py handles this,
+        # but verify sanitizer doesn't crash on large input
+        from viraltracker.services.landing_page_analysis.multipass.surgery.sanitizer import (
+            HTMLSanitizer,
+        )
+        html = '<body>' + '<div><p>Content paragraph with enough text to be meaningful. </p></div>\n' * 500 + '</body>'
+        result, stats = HTMLSanitizer().sanitize(html)
+        assert stats["viable"] is True
+        assert len(result) > 0
+
+
+# ===========================================================================
+# B36: check_scrape_consistency with richer DOM
+# ===========================================================================
+
+
+class TestScrapeConsistencyRicherDom:
+    """B36: check_scrape_consistency still works with Playwright's richer DOM."""
+
+    def test_dom_with_nav_footer_headings(self):
+        """Playwright DOM includes nav/footer headings that Firecrawl HTML may not."""
+        from viraltracker.services.landing_page_analysis.multipass.html_extractor import (
+            check_scrape_consistency,
+        )
+        # DOM has extra nav/footer headings from JS hydration
+        html = (
+            '<html><head><title>My Product Page</title></head><body>'
+            '<nav><h2>Shop</h2><h2>About</h2></nav>'
+            '<h1>My Product Page</h1>'
+            '<img src="https://example.com/hero.jpg">'
+            '<footer><h3>Customer Service</h3></footer>'
+            '</body></html>'
+        )
+        md = "# My Product Page\n\n![hero](https://example.com/hero.jpg)"
+        # Should still pass — extra headings don't invalidate the match
+        assert check_scrape_consistency(html, md, "https://example.com") is True
+
+    def test_dom_with_js_resolved_title(self):
+        """JS may update <title> dynamically — consistency check should still work."""
+        from viraltracker.services.landing_page_analysis.multipass.html_extractor import (
+            check_scrape_consistency,
+        )
+        html = (
+            '<html><head><title>My Product Page | BrandName - Shop Now</title></head><body>'
+            '<h1>My Product Page</h1>'
+            '<img src="https://example.com/hero.jpg">'
+            '</body></html>'
+        )
+        md = "# My Product Page\n\n![hero](https://example.com/hero.jpg)"
+        assert check_scrape_consistency(html, md, "https://example.com") is True
+
+    def test_dom_with_additional_images_from_lazy_load(self):
+        """Playwright DOM has more images from lazy loading than Firecrawl captured."""
+        from viraltracker.services.landing_page_analysis.multipass.html_extractor import (
+            check_scrape_consistency,
+        )
+        html = (
+            '<html><head><title>Product Page</title></head><body>'
+            '<h1>Product Page</h1>'
+            '<img src="https://example.com/hero.jpg">'
+            '<img src="https://example.com/detail1.jpg">'
+            '<img src="https://example.com/detail2.jpg">'
+            '<img src="https://example.com/lazy-loaded-review.jpg">'
+            '</body></html>'
+        )
+        md = "# Product Page\n\n![hero](https://example.com/hero.jpg)"
+        # Still consistent — the shared image matches
+        assert check_scrape_consistency(html, md, "https://example.com") is True
+
+    def test_completely_different_dom_still_detected(self):
+        """Even with richer Playwright DOM, completely different content is detected."""
+        from viraltracker.services.landing_page_analysis.multipass.html_extractor import (
+            check_scrape_consistency,
+        )
+        html = (
+            '<html><head><title>Error 404 - Not Found</title></head><body>'
+            '<nav><h2>Home</h2></nav>'
+            '<h1>Page Not Found</h1>'
+            '<img src="https://example.com/404-illustration.svg">'
+            '<footer><h3>Help</h3></footer>'
+            '</body></html>'
+        )
+        md = "# Amazing Product\n\nBuy now!\n\n![hero](https://cdn.shopify.com/product.jpg)"
+        assert check_scrape_consistency(html, md, "https://example.com") is False

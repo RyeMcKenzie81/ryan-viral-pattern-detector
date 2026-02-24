@@ -248,12 +248,22 @@ def main():
             if render_html_to_png and not args.skip_visual and screenshot_bytes:
                 snapshots = mockup_svc.get_phase_snapshots()
                 if snapshots:
-                    phase_order = [
-                        "phase_1_skeleton",
-                        "phase_2_content",
-                        "phase_3_refined",
-                        "phase_4_final",
-                    ]
+                    # Auto-detect pipeline mode from snapshot keys
+                    if "phase_s0_sanitized" in snapshots:
+                        phase_order = [
+                            "phase_s0_sanitized",
+                            "phase_s1_segmented",
+                            "phase_s2_classified",
+                            "phase_s3_scoped",
+                            "phase_s4_final",
+                        ]
+                    else:
+                        phase_order = [
+                            "phase_1_skeleton",
+                            "phase_2_content",
+                            "phase_3_refined",
+                            "phase_4_final",
+                        ]
                     for phase_key in phase_order:
                         phase_html = snapshots.get(phase_key)
                         if not phase_html:

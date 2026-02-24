@@ -70,6 +70,9 @@ MULTIPASS_PHASE3_MODE = os.environ.get("MULTIPASS_PHASE3_MODE", "fullpage")
 # Phase 1 mode: "original" (LLM skeleton), "template" (classify+templates), "v2" (Gemini sees, Claude builds)
 MULTIPASS_PHASE1_MODE = os.environ.get("MULTIPASS_PHASE1_MODE", "template")
 
+# Pipeline mode: "reconstruct" (original v4), "surgery" (new v5 — operate on original HTML)
+MULTIPASS_PIPELINE_MODE = os.environ.get("MULTIPASS_PIPELINE_MODE", "reconstruct")
+
 # Claude model for skeleton codegen (Step 1C)
 MULTIPASS_SKELETON_MODEL = os.environ.get(
     "MULTIPASS_SKELETON_MODEL", Config.DEFAULT_MODEL
@@ -1065,6 +1068,36 @@ def _fix_v2_skeleton_css(skeleton_html: str, design_system: Dict) -> str:
     return skeleton_html
 
 
+def _clean_phase3_inline_conflicts(html: str) -> str:
+    """Remove duplicate CSS properties from inline style attributes.
+
+    Phase 3 Gemini sometimes appends new style properties to existing
+    inline styles, producing declarations like:
+      style="padding: 60px 30px;; padding: 80px 0;"
+
+    This function:
+    1. Removes double semicolons
+    2. Deduplicates CSS properties (keeps last occurrence)
+    """
+    def _dedup_style(match: re.Match) -> str:
+        style_val = match.group(1)
+        # Fix double semicolons
+        style_val = re.sub(r';{2,}', ';', style_val)
+        # Parse individual declarations and deduplicate (last wins)
+        props: dict[str, str] = {}
+        for decl in style_val.split(';'):
+            decl = decl.strip()
+            if not decl or ':' not in decl:
+                continue
+            prop, _, value = decl.partition(':')
+            props[prop.strip().lower()] = f"{prop.strip()}: {value.strip()}"
+        if not props:
+            return match.group(0)
+        return f'style="{"; ".join(props.values())}"'
+
+    return re.sub(r'style="([^"]*)"', _dedup_style, html)
+
+
 # ---------------------------------------------------------------------------
 # Placeholder contract: layout_type → expected placeholder suffixes
 # ---------------------------------------------------------------------------
@@ -1248,6 +1281,24 @@ class MultiPassPipeline:
             Complete HTML string (raw, no post-processing).
         """
         self._start_time = time.time()
+
+        # ----- Surgery pipeline routing -----
+        # When mode is "surgery" and we have page_html with a <body>,
+        # route to the surgery pipeline instead of reconstruction.
+        if (MULTIPASS_PIPELINE_MODE == "surgery"
+                and page_html
+                and '<body' in (page_html[:200000].lower())):
+            from .surgery.pipeline import SurgeryPipeline
+            surgery = SurgeryPipeline(self._gemini, self._progress)
+            result = await surgery.generate(
+                screenshot_b64, page_markdown, page_url or "",
+                element_detection, page_html,
+            )
+            self.phase_snapshots.update(surgery.phase_snapshots)
+            if result:
+                return result
+            # Empty result = surgery fallback → continue with reconstruction
+            logger.info("Surgery pipeline returned empty — falling back to reconstruction")
 
         # Pre-segmentation cleanup: classify nav/footer/artifact lines
         clean_result = classify_markdown(page_markdown, mode="extract")
@@ -2449,6 +2500,12 @@ class MultiPassPipeline:
                 except Exception as e:
                     logger.debug(f"Image URL extraction failed (non-fatal): {e}")
 
+            # Extract skeleton CSS for v2 awareness (mp-* class definitions)
+            skeleton_css = None
+            style_match = re.search(r'<style[^>]*>(.*?)</style>', content_html, re.DOTALL)
+            if style_match:
+                skeleton_css = style_match.group(1).strip()[:4096]  # 4KB cap
+
             # Prepare CSS snippet for per-section prompts
             css_snippet = None
             if responsive_css:
@@ -2498,6 +2555,7 @@ class MultiPassPipeline:
                     image_urls,
                     section_images=section_images,
                     original_css_snippet=css_snippet,
+                    skeleton_css=skeleton_css,
                 )
 
                 tasks.append({
@@ -2598,6 +2656,9 @@ class MultiPassPipeline:
                     re.DOTALL,
                 )
                 assembled = section_re.sub(refined, assembled, count=1)
+
+            # Clean up any inline style conflicts from Phase 3
+            assembled = _clean_phase3_inline_conflicts(assembled)
 
             stats = {
                 "sections_refined": len(refined_sections),

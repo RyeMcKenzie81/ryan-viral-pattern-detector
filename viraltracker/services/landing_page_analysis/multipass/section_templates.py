@@ -326,7 +326,12 @@ p.mp-stat-number {{ font-size: 2.5rem; font-weight: 700; color: {accent}; displa
 p.mp-stat-label {{ font-size: 0.9rem; opacity: 0.8; display: block; margin: 0; }}
 
 /* Overflow content alongside structured items (spans full grid width) */
-.mp-overflow {{ grid-column: 1 / -1; text-align: left; margin-top: 24px; }}
+.mp-overflow {{ grid-column: 1 / -1; text-align: left; margin-top: 24px; max-height: 600px; overflow: hidden; }}
+.mp-overflow p {{ margin: 0 0 4px 0; }}
+.mp-overflow img {{ max-width: 100%; height: auto; display: block; margin: 4px 0; }}
+
+/* Global image constraint */
+.mp-container img {{ max-width: 100%; height: auto; }}
 
 /* Logo bar */
 .mp-logo-bar img {{ max-height: 48px; object-fit: contain; }}

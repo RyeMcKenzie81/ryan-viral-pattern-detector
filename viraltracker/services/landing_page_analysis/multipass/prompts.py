@@ -237,6 +237,7 @@ def build_phase_3_prompt(
     image_urls: Optional[List[Dict]] = None,
     section_images: Optional[List] = None,
     original_css_snippet: Optional[str] = None,
+    skeleton_css: Optional[str] = None,
 ) -> str:
     """Phase 3: Per-Section Visual Refinement.
 
@@ -250,6 +251,8 @@ def build_phase_3_prompt(
         image_urls: Optional legacy image URLs (fallback if no section_images).
         section_images: Optional per-section PageImage list from ImageRegistry (v4).
         original_css_snippet: Optional CSS snippet from original page (v4).
+        skeleton_css: Optional CSS from the skeleton's <style> block (v2).
+            Contains mp-* class definitions that control layout.
     """
     images_section = ""
     if section_images:
@@ -294,6 +297,15 @@ def build_phase_3_prompt(
             "AND the image clearly belongs to THIS section's content (not a neighboring section).\n"
         )
 
+    skeleton_css_section = ""
+    if skeleton_css:
+        skeleton_css_section = (
+            f"\n## SKELETON CSS (defines layout classes used in this section)\n"
+            f"These CSS rules define the structure of this section. "
+            f"PRESERVE all class names and rely on these definitions.\n"
+            f"```css\n{skeleton_css}\n```\n"
+        )
+
     css_section = ""
     if original_css_snippet:
         css_section = (
@@ -310,7 +322,7 @@ Refine the HTML to match the screenshot's visual details more closely.
 
 ## DESIGN SYSTEM
 {design_system_compact}
-{images_section}{css_section}
+{images_section}{skeleton_css_section}{css_section}
 ## REFINEMENT RULES
 1. Match visual layout from the screenshot: element positions, sizes, spacing
 2. Match colors, fonts, backgrounds from the screenshot
@@ -327,7 +339,13 @@ Refine the HTML to match the screenshot's visual details more closely.
 - Do NOT add new text that isn't in the current HTML
 - Do NOT use background-image: url(...) in CSS (it will be stripped by the sanitizer)
 - Keep data-bg-image="true" on images that have it
-- ONLY adjust: CSS styles, layout properties, image elements, structural wrappers
+- PRESERVE ALL CSS CLASSES — especially mp-* prefixed classes (e.g., mp-container, mp-grid-3, mp-hero-text)
+  * Do NOT replace class="..." with inline style="" attributes
+  * Do NOT remove or rename CSS classes
+  * If a class is defined in the skeleton stylesheet, it controls layout — do NOT override with inline styles
+- Do NOT restructure the HTML hierarchy (keep parent-child nesting intact, do not flatten or consolidate elements)
+- Do NOT add inline padding, margin, width, or height when the element already uses mp-* layout classes
+- ONLY adjust: CSS color values, font-size, specific visual properties not controlled by layout classes
 
 ## OUTPUT
 Return ONLY the refined HTML fragment for this section (no explanation, no code fences).
@@ -385,6 +403,10 @@ Return ONLY valid JSON (no explanation, no code fences) as a list of patches:
 - tag[data-section='sec_N'] - match by tag and section ID
 Do NOT use complex CSS selectors, pseudo-classes, or combinators.
 Do NOT use human-readable section names like 'hero' or 'features' -- use sec_N IDs only.
+
+IMPORTANT: Do NOT use css_fix patches to override layout properties (padding, margin, display, grid-*, flex-*)
+on elements using mp-* CSS classes. These classes are layout-critical and interdependent.
+If you notice layout issues, return an empty list [] rather than attempting to fix grid/flexbox alignment.
 
 SECTIONS IN THIS HTML: {sections_str}
 

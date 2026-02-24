@@ -75,12 +75,110 @@ def _create_run_dir(prefix: str = "run") -> Path:
     return run_dir
 
 
+def _generate_visual_comparison(
+    run_dir: Path,
+    page_url: str,
+    phase_order: list[str],
+    visual_scores: dict[str, float],
+    trajectory: str | None,
+) -> None:
+    """Generate an HTML report comparing original screenshot with each phase render.
+
+    The report embeds images as base64 data URIs so it's self-contained and
+    can be opened in any browser without a server.
+    """
+    orig_png = run_dir / "original_screenshot.png"
+    if not orig_png.exists():
+        logger.warning("No original screenshot in run dir, skipping comparison HTML")
+        return
+
+    orig_b64 = base64.b64encode(orig_png.read_bytes()).decode()
+
+    phase_cards = []
+    prev_score = None
+    for phase_key in phase_order:
+        score = visual_scores.get(phase_key)
+        if score is None:
+            continue
+        render_path = run_dir / f"{phase_key}_render.png"
+        if not render_path.exists():
+            continue
+        render_b64 = base64.b64encode(render_path.read_bytes()).decode()
+        delta_html = ""
+        if prev_score is not None:
+            delta = score - prev_score
+            color = "#22c55e" if delta > 0 else "#ef4444" if delta < 0 else "#888"
+            delta_html = f' <span style="color:{color}">({delta:+.4f})</span>'
+        prev_score = score
+        # Color-code the score
+        if score >= 0.8:
+            score_color = "#22c55e"
+        elif score >= 0.5:
+            score_color = "#f59e0b"
+        else:
+            score_color = "#ef4444"
+        label = phase_key.replace("_", " ").title()
+        phase_cards.append(f"""
+        <div class="phase-card">
+            <h3>{label}</h3>
+            <div class="score" style="color:{score_color}">SSIM: {score:.4f}{delta_html}</div>
+            <div class="compare">
+                <div class="img-col">
+                    <h4>Original</h4>
+                    <img src="data:image/png;base64,{orig_b64}" />
+                </div>
+                <div class="img-col">
+                    <h4>{label}</h4>
+                    <img src="data:image/png;base64,{render_b64}" />
+                </div>
+            </div>
+        </div>""")
+
+    traj_html = ""
+    if trajectory:
+        traj_color = {"improving": "#22c55e", "regressing": "#ef4444", "flat": "#888"}.get(trajectory, "#888")
+        traj_html = f'<p class="trajectory">Trajectory: <span style="color:{traj_color}">{trajectory}</span></p>'
+
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Visual Comparison — {page_url}</title>
+<style>
+body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; margin: 20px; background: #111; color: #eee; }}
+h1 {{ font-size: 1.4rem; }}
+h2 {{ font-size: 1.1rem; color: #aaa; font-weight: 400; }}
+.trajectory {{ font-size: 1.2rem; font-weight: 600; }}
+.phase-card {{ background: #1a1a1a; border-radius: 8px; padding: 16px; margin: 24px 0; border: 1px solid #333; }}
+.phase-card h3 {{ margin: 0 0 4px 0; }}
+.score {{ font-size: 1.3rem; font-weight: 700; margin-bottom: 12px; }}
+.compare {{ display: flex; gap: 16px; }}
+.img-col {{ flex: 1; min-width: 0; }}
+.img-col h4 {{ margin: 0 0 8px 0; font-size: 0.85rem; color: #999; }}
+.img-col img {{ width: 100%; border: 1px solid #333; border-radius: 4px; }}
+</style>
+</head>
+<body>
+<h1>Visual Comparison</h1>
+<h2>{page_url} &mdash; {run_dir.name}</h2>
+{traj_html}
+{''.join(phase_cards)}
+</body>
+</html>"""
+
+    report_path = run_dir / "visual_comparison.html"
+    report_path.write_text(html)
+    logger.info(f"Visual comparison saved to: {report_path}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Test multipass pipeline locally")
     parser.add_argument("--page-id", help="Specific analysis ID to test")
     parser.add_argument("--url", help="Find most recent analysis for this URL")
     parser.add_argument("--single-pass", action="store_true", help="Also run single-pass for comparison")
     parser.add_argument("--rescrape", action="store_true", help="Re-fetch page_html if missing from DB (uses FireCrawl)")
+    parser.add_argument("--playwright-dom", action="store_true",
+        help="Re-capture page_html via Playwright (post-JS DOM) and update DB")
     parser.add_argument("--visual", action="store_true", help="Render phase screenshots and compute SSIM scores")
     parser.add_argument(
         "--phase1-mode",
@@ -165,8 +263,42 @@ def main():
         except Exception as e:
             logger.warning(f"Re-scrape failed: {e}")
 
-    # Load screenshot
-    screenshot_bytes = analysis_svc._load_screenshot(screenshot_path)
+    # Re-capture page_html via Playwright if --playwright-dom requested
+    playwright_screenshot_bytes = None
+    if args.playwright_dom and url and url.startswith("http"):
+        logger.info("Capturing post-JS DOM via Playwright...")
+        try:
+            from viraltracker.services.landing_page_analysis.page_capture import (
+                capture_rendered_page,
+            )
+            old_len = len(page_html) if page_html else 0
+            capture = capture_rendered_page(url, capture_screenshot=True)
+            if capture:
+                page_html = capture.dom_html
+                playwright_screenshot_bytes = capture.screenshot_bytes
+                logger.info(
+                    f"Playwright DOM: {len(page_html):,} chars "
+                    f"(was {old_len:,} from FireCrawl), "
+                    f"visible_text={capture.visible_text_len:,}, "
+                    f"{capture.capture_time_ms}ms"
+                )
+                # Update DB so future runs use Playwright DOM
+                supabase.table("landing_page_analyses").update(
+                    {"page_html": page_html}
+                ).eq("id", page_id).execute()
+                logger.info("Updated DB with Playwright DOM")
+            else:
+                logger.warning("Playwright capture returned None, keeping existing page_html")
+        except Exception as e:
+            logger.warning(f"Playwright capture failed: {e}")
+
+    # Load screenshot — prefer Playwright full-page screenshot (no height
+    # truncation) over Firecrawl's screenshot which may be cropped.
+    if playwright_screenshot_bytes:
+        screenshot_bytes = playwright_screenshot_bytes
+        logger.info(f"Using Playwright full-page screenshot: {len(screenshot_bytes):,} bytes")
+    else:
+        screenshot_bytes = analysis_svc._load_screenshot(screenshot_path)
     if not screenshot_bytes:
         logger.error("Failed to load screenshot")
         sys.exit(1)
@@ -238,6 +370,7 @@ def main():
             "visual": args.visual,
             "single_pass": args.single_pass,
             "rescrape": args.rescrape,
+            "playwright_dom": args.playwright_dom,
         },
         "pipeline_version": "template_v4",
         "page_url": url,
@@ -265,6 +398,10 @@ def main():
             snap_path.write_text(html)
             logger.info(f"  {key}: {len(html)} chars -> {snap_path.name}")
 
+        # Save original screenshot for comparison
+        if screenshot_bytes:
+            (run_dir / "original_screenshot.png").write_bytes(screenshot_bytes)
+
         # Visual scoring (--visual flag)
         visual_scores = {}
         if args.visual:
@@ -280,12 +417,22 @@ def main():
                     score_visual_fidelity,
                 )
 
-                phase_order = [
-                    "phase_1_skeleton",
-                    "phase_2_content",
-                    "phase_3_refined",
-                    "phase_4_final",
-                ]
+                # Auto-detect pipeline mode from snapshot keys
+                if "phase_s0_sanitized" in snapshots:
+                    phase_order = [
+                        "phase_s0_sanitized",
+                        "phase_s1_segmented",
+                        "phase_s2_classified",
+                        "phase_s3_scoped",
+                        "phase_s4_final",
+                    ]
+                else:
+                    phase_order = [
+                        "phase_1_skeleton",
+                        "phase_2_content",
+                        "phase_3_refined",
+                        "phase_4_final",
+                    ]
                 prev_ssim = None
                 for phase_key in phase_order:
                     phase_html = snapshots.get(phase_key)
@@ -320,6 +467,12 @@ def main():
                     logger.info(f"  Trajectory: {trajectory}")
                 else:
                     trajectory = None
+
+                # Generate HTML visual comparison report
+                if visual_scores and screenshot_bytes:
+                    _generate_visual_comparison(
+                        run_dir, url, phase_order, visual_scores, trajectory,
+                    )
 
             except ImportError as e:
                 logger.warning(f"Visual scoring unavailable: {e}")
