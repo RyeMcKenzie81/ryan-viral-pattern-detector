@@ -208,7 +208,11 @@ async def route_to_ad_intelligence_agent(
     ctx.deps.result_cache.custom.pop("ad_intelligence_result", None)
 
     logger.info(f"Routing to Ad Intelligence Agent: {query}")
-    result = await ad_intelligence_agent.run(query, deps=ctx.deps)
+    handler_factory = ctx.deps.result_cache.custom.get("_make_event_handler")
+    handler = handler_factory("Ad Intelligence") if handler_factory else None
+    result = await ad_intelligence_agent.run(
+        query, deps=ctx.deps, event_stream_handler=handler
+    )
 
     # Return raw ChatRenderer markdown, bypassing sub-agent LLM paraphrase
     cached = ctx.deps.result_cache.custom.get("ad_intelligence_result")

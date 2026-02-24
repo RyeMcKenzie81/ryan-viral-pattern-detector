@@ -110,6 +110,10 @@ async def on_chat_start():
             user_id=user_id,
             organization_id=org_id,
         )
+        # Register Chainlit event handler factory for sub-agent streaming
+        from viraltracker.chainlit_app.streaming import make_chainlit_event_handler
+        deps.result_cache.custom["_make_event_handler"] = make_chainlit_event_handler
+
         cl.user_session.set("deps", deps)
         cl.user_session.set("message_history", [])
         cl.user_session.set("tool_results", [])
