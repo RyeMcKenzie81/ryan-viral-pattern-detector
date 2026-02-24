@@ -16,6 +16,7 @@ Chat-first UX with slash commands:
 12 thin tools delegating to AdIntelligenceService facade.
 """
 
+import asyncio
 import json
 import logging
 from datetime import date
@@ -29,6 +30,21 @@ from ...core.config import Config
 from ...services.ad_intelligence.hook_analysis_service import HookAnalysisService
 
 logger = logging.getLogger(__name__)
+
+
+def _run_blocking_async(coro):
+    """Run an async coroutine that internally blocks with sync I/O.
+
+    Creates a new event loop on the current thread (called via asyncio.to_thread).
+    This frees the main event loop for socket.io keepalive pings during
+    long-running service calls like full_analysis (~134s).
+    """
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
+
 
 ad_intelligence_agent = Agent(
     model=Config.get_model("orchestrator"),
@@ -179,13 +195,24 @@ async def analyze_account(
 
     config = RunConfig(days_back=days_back)
 
-    result = await ctx.deps.ad_intelligence.full_analysis(
-        brand_id=UUID(brand_id),
-        org_id=ctx.deps.ad_intelligence.supabase.table("brands").select(
-            "organization_id"
-        ).eq("id", brand_id).limit(1).execute().data[0]["organization_id"],
-        config=config,
-        goal=goal or None,
+    # Fetch org_id (sync supabase call — fast but still blocking)
+    org_result = ctx.deps.ad_intelligence.supabase.table("brands").select(
+        "organization_id"
+    ).eq("id", brand_id).limit(1).execute()
+    org_id = org_result.data[0]["organization_id"]
+
+    # Run full_analysis in a thread to free the main event loop.
+    # full_analysis is async-def but internally blocks with sync Supabase I/O
+    # for ~2 minutes. Running it in a thread allows socket.io keepalive pings
+    # to flow, preventing Chainlit "Could not reach the server" disconnects.
+    result = await asyncio.to_thread(
+        _run_blocking_async,
+        ctx.deps.ad_intelligence.full_analysis(
+            brand_id=UUID(brand_id),
+            org_id=org_id,
+            config=config,
+            goal=goal or None,
+        ),
     )
 
     # Cache brand context and run_id for follow-up queries

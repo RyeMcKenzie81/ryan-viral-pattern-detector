@@ -36,6 +36,15 @@ from viraltracker.chainlit_app.streaming import stream_agent_run
 
 logger = logging.getLogger(__name__)
 
+# Increase socket.io ping_timeout so the client tolerates longer gaps between pings.
+# Default is 20s; agent tool calls can block the event loop for 30s+.
+# The server communicates this to the client during the initial handshake.
+try:
+    from chainlit.server import sio
+    sio.eio.ping_timeout = 120
+except Exception:
+    pass
+
 
 # ==========================================================================
 # Conversation Context (ported from 00_Agent_Chat.py)
