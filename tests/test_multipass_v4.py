@@ -4799,3 +4799,503 @@ class TestMarkdownCleaner:
         # Post-heading footer
         labels_post = [cl.label for cl in result.classified_lines if cl.zone == "post_heading" and cl.text.strip()]
         assert "footer" in labels_post
+
+
+# ===========================================================================
+# Phase 1 v2: Skeleton Validation
+# ===========================================================================
+
+
+class TestPhase1SkeletonValidation:
+    """Skeleton validation against LAYOUT_PLACEHOLDER_MAP contract."""
+
+    def test_valid_skeleton_passes(self):
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import (
+            _validate_skeleton,
+            LAYOUT_PLACEHOLDER_MAP,
+        )
+        from viraltracker.services.landing_page_analysis.multipass.layout_analyzer import (
+            LayoutHint,
+        )
+
+        skeleton = (
+            '<style>.mp-container { max-width: 1200px; }</style>\n'
+            '<section data-section="sec_0" class="mp-hero-centered">'
+            '<div class="mp-container">{{sec_0}}</div>'
+            '</section>\n'
+            '<section data-section="sec_1" class="mp-feature-grid">'
+            '<div>{{sec_1_header}}</div><div>{{sec_1_items}}</div>'
+            '</section>'
+        )
+        layout_map = {
+            "sec_0": LayoutHint(layout_type="hero_centered"),
+            "sec_1": LayoutHint(layout_type="feature_grid"),
+        }
+        result = _validate_skeleton(skeleton, layout_map, 2)
+        assert result.valid, f"Expected valid, got errors: {result.errors}"
+
+    def test_missing_placeholder_fails(self):
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import (
+            _validate_skeleton,
+        )
+        from viraltracker.services.landing_page_analysis.multipass.layout_analyzer import (
+            LayoutHint,
+        )
+
+        skeleton = (
+            '<style>.x{}</style>\n'
+            '<section data-section="sec_0">{{sec_0}}</section>\n'
+            '<section data-section="sec_1">{{sec_1_header}}</section>'  # Missing _items
+        )
+        layout_map = {
+            "sec_0": LayoutHint(layout_type="hero_centered"),
+            "sec_1": LayoutHint(layout_type="feature_grid"),
+        }
+        result = _validate_skeleton(skeleton, layout_map, 2)
+        assert not result.valid
+        assert any("sec_1_items" in e for e in result.errors)
+
+    def test_missing_section_attr_fails(self):
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import (
+            _validate_skeleton,
+        )
+        from viraltracker.services.landing_page_analysis.multipass.layout_analyzer import (
+            LayoutHint,
+        )
+
+        skeleton = (
+            '<style>.x{}</style>\n'
+            '<section data-section="sec_0">{{sec_0}}</section>\n'
+            '<section>{{sec_1}}</section>'  # Missing data-section
+        )
+        layout_map = {
+            "sec_0": LayoutHint(layout_type="generic"),
+            "sec_1": LayoutHint(layout_type="generic"),
+        }
+        result = _validate_skeleton(skeleton, layout_map, 2)
+        assert not result.valid
+        assert any("Missing data-section" in e for e in result.errors)
+
+    def test_missing_style_block_fails(self):
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import (
+            _validate_skeleton,
+        )
+        from viraltracker.services.landing_page_analysis.multipass.layout_analyzer import (
+            LayoutHint,
+        )
+
+        skeleton = (
+            '<section data-section="sec_0">{{sec_0}}</section>'
+        )
+        layout_map = {"sec_0": LayoutHint(layout_type="generic")}
+        result = _validate_skeleton(skeleton, layout_map, 1)
+        assert not result.valid
+        assert any("style" in e.lower() for e in result.errors)
+
+    def test_lp_mockup_wrapper_fails(self):
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import (
+            _validate_skeleton,
+        )
+        from viraltracker.services.landing_page_analysis.multipass.layout_analyzer import (
+            LayoutHint,
+        )
+
+        skeleton = (
+            '<style>.x{}</style>\n'
+            '<div class="lp-mockup">'
+            '<section data-section="sec_0">{{sec_0}}</section>'
+            '</div>'
+        )
+        layout_map = {"sec_0": LayoutHint(layout_type="generic")}
+        result = _validate_skeleton(skeleton, layout_map, 1)
+        assert not result.valid
+        assert any("lp-mockup" in e for e in result.errors)
+
+    def test_unclosed_section_fails(self):
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import (
+            _validate_skeleton,
+        )
+        from viraltracker.services.landing_page_analysis.multipass.layout_analyzer import (
+            LayoutHint,
+        )
+
+        skeleton = (
+            '<style>.x{}</style>\n'
+            '<section data-section="sec_0">{{sec_0}}'  # No closing tag
+        )
+        layout_map = {"sec_0": LayoutHint(layout_type="generic")}
+        result = _validate_skeleton(skeleton, layout_map, 1)
+        assert not result.valid
+        assert any("Unclosed" in e for e in result.errors)
+
+    def test_orphaned_placeholder_warns(self):
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import (
+            _validate_skeleton,
+        )
+        from viraltracker.services.landing_page_analysis.multipass.layout_analyzer import (
+            LayoutHint,
+        )
+
+        skeleton = (
+            '<style>.x{}</style>\n'
+            '<section data-section="sec_0">{{sec_0}}{{unknown_placeholder}}</section>'
+        )
+        layout_map = {"sec_0": LayoutHint(layout_type="generic")}
+        result = _validate_skeleton(skeleton, layout_map, 1)
+        assert result.valid  # Orphans are warnings, not errors
+        assert len(result.warnings) > 0
+
+    def test_hero_split_placeholders(self):
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import (
+            _validate_skeleton,
+        )
+        from viraltracker.services.landing_page_analysis.multipass.layout_analyzer import (
+            LayoutHint,
+        )
+
+        skeleton = (
+            '<style>.x{}</style>\n'
+            '<section data-section="sec_0">'
+            '<div>{{sec_0_text}}</div><div>{{sec_0_image}}</div>'
+            '</section>'
+        )
+        layout_map = {"sec_0": LayoutHint(layout_type="hero_split")}
+        result = _validate_skeleton(skeleton, layout_map, 1)
+        assert result.valid
+
+    def test_footer_columns_placeholders(self):
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import (
+            _validate_skeleton,
+        )
+        from viraltracker.services.landing_page_analysis.multipass.layout_analyzer import (
+            LayoutHint,
+        )
+
+        skeleton = (
+            '<style>.x{}</style>\n'
+            '<section data-section="sec_0">'
+            '<div>{{sec_0_items}}</div>'
+            '</section>'
+        )
+        layout_map = {"sec_0": LayoutHint(layout_type="footer_columns")}
+        result = _validate_skeleton(skeleton, layout_map, 1)
+        assert result.valid
+
+    def test_layout_placeholder_map_completeness(self):
+        """All LAYOUT_TYPES have entries in LAYOUT_PLACEHOLDER_MAP."""
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import (
+            LAYOUT_PLACEHOLDER_MAP,
+        )
+        from viraltracker.services.landing_page_analysis.multipass.layout_analyzer import (
+            LAYOUT_TYPES,
+        )
+
+        for lt in LAYOUT_TYPES:
+            assert lt in LAYOUT_PLACEHOLDER_MAP, f"Missing {lt} in LAYOUT_PLACEHOLDER_MAP"
+
+
+# ===========================================================================
+# Phase 1 v2: Layout Fusion
+# ===========================================================================
+
+
+class TestPhase1LayoutFusion:
+    """Layout signal fusion from HTML, Gemini, and content patterns."""
+
+    def test_html_only_fusion(self):
+        from viraltracker.services.landing_page_analysis.multipass.layout_analyzer import (
+            LayoutHint, fuse_layout_signals,
+        )
+
+        html_hints = {
+            "sec_0": LayoutHint(layout_type="hero_centered", confidence=0.6),
+            "sec_1": LayoutHint(layout_type="feature_grid", confidence=0.8, column_count=3),
+        }
+        sections = [
+            FakeSection("sec_0", "Hero", "# Welcome\n\nHello world"),
+            FakeSection("sec_1", "Features", "### Feature 1\nDesc\n### Feature 2\nDesc\n### Feature 3\nDesc"),
+        ]
+        result = fuse_layout_signals(html_hints, None, sections)
+
+        assert "sec_0" in result
+        assert "sec_1" in result
+        assert isinstance(result["sec_0"], LayoutHint)
+
+    def test_gemini_override(self):
+        from viraltracker.services.landing_page_analysis.multipass.layout_analyzer import (
+            LayoutHint, fuse_layout_signals,
+        )
+
+        html_hints = {
+            "sec_0": LayoutHint(layout_type="content_block", confidence=0.3),
+        }
+        gemini_audit = [
+            {"section_index": 0, "layout_confirmation": "hero_centered",
+             "columns": 1, "has_prominent_image": False, "image_position": "none"},
+        ]
+        sections = [
+            FakeSection("sec_0", "Hero", "# Welcome\n\nContent here"),
+        ]
+        result = fuse_layout_signals(html_hints, gemini_audit, sections)
+        # Gemini has higher combined weight → hero_centered wins
+        assert result["sec_0"].layout_type == "hero_centered"
+
+    def test_hero_split_upgrade(self):
+        from viraltracker.services.landing_page_analysis.multipass.layout_analyzer import (
+            LayoutHint, fuse_layout_signals,
+        )
+
+        html_hints = {
+            "sec_0": LayoutHint(
+                layout_type="hero_centered", confidence=0.5,
+                has_image=True, column_count=2,
+            ),
+        }
+        gemini_audit = [
+            {"section_index": 0, "layout_confirmation": "hero_centered",
+             "columns": 2, "has_prominent_image": True, "image_position": "right"},
+        ]
+        sections = [
+            FakeSection("sec_0", "Hero", "# Welcome\n\n![img](x.jpg)\n\nContent"),
+        ]
+        result = fuse_layout_signals(html_hints, gemini_audit, sections)
+        assert result["sec_0"].layout_type == "hero_split"
+        assert result["sec_0"].column_count == 2
+
+    def test_returns_layout_hint_type(self):
+        from viraltracker.services.landing_page_analysis.multipass.layout_analyzer import (
+            LayoutHint, fuse_layout_signals,
+        )
+
+        sections = [FakeSection("sec_0", "Content", "# Just text\n\nParagraph")]
+        result = fuse_layout_signals({}, None, sections)
+        assert isinstance(result["sec_0"], LayoutHint)
+
+    def test_content_pattern_integration(self):
+        from viraltracker.services.landing_page_analysis.multipass.layout_analyzer import (
+            LayoutHint, fuse_layout_signals,
+        )
+
+        # FAQ-like markdown
+        md = "## FAQ\n\n### What is this?\nAnswer 1\n\n### How does it work?\nAnswer 2\n\n### Why use it?\nAnswer 3"
+        sections = [FakeSection("sec_0", "FAQ", md)]
+        result = fuse_layout_signals({}, None, sections)
+        # Content pattern should detect FAQ
+        assert result["sec_0"].layout_type in ("faq_list", "generic")
+
+
+# ===========================================================================
+# Phase 1 v2: Phase 2 Contract
+# ===========================================================================
+
+
+class TestPhase1Phase2Contract:
+    """Skeleton → assembler handoff contract tests."""
+
+    def test_placeholder_naming_matches_templates(self):
+        """LAYOUT_PLACEHOLDER_MAP matches section_templates PLACEHOLDER_SUFFIXES."""
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import (
+            LAYOUT_PLACEHOLDER_MAP,
+        )
+        from viraltracker.services.landing_page_analysis.multipass.section_templates import (
+            PLACEHOLDER_SUFFIXES,
+        )
+
+        # Verify all suffixes used in LAYOUT_PLACEHOLDER_MAP are defined
+        all_suffixes = set()
+        for suffixes in LAYOUT_PLACEHOLDER_MAP.values():
+            all_suffixes.update(suffixes)
+
+        defined_suffixes = set(PLACEHOLDER_SUFFIXES.values())
+        for suffix in all_suffixes:
+            assert suffix in defined_suffixes, \
+                f"Suffix '{suffix}' used in LAYOUT_PLACEHOLDER_MAP but not in PLACEHOLDER_SUFFIXES"
+
+    def test_template_skeleton_has_correct_placeholders(self):
+        """Template skeleton generates correct placeholders per layout type."""
+        from viraltracker.services.landing_page_analysis.multipass.section_templates import (
+            build_skeleton_from_templates,
+        )
+        from viraltracker.services.landing_page_analysis.multipass.layout_analyzer import (
+            LayoutHint,
+        )
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import (
+            LAYOUT_PLACEHOLDER_MAP, DEFAULT_DESIGN_SYSTEM,
+        )
+
+        sections = [
+            FakeSection("sec_0", "Hero", "# Hero"),
+            FakeSection("sec_1", "Features", "## Features"),
+            FakeSection("sec_2", "Footer", "## Footer"),
+        ]
+        layout_map = {
+            "sec_0": LayoutHint(layout_type="hero_split"),
+            "sec_1": LayoutHint(layout_type="feature_grid", column_count=3),
+            "sec_2": LayoutHint(layout_type="footer_columns"),
+        }
+
+        skeleton = build_skeleton_from_templates(sections, layout_map, DEFAULT_DESIGN_SYSTEM)
+
+        # Check hero_split has text + image placeholders
+        assert "{{sec_0_text}}" in skeleton
+        assert "{{sec_0_image}}" in skeleton
+
+        # Check feature_grid has header + items
+        assert "{{sec_1_header}}" in skeleton
+        assert "{{sec_1_items}}" in skeleton
+
+        # Check footer_columns has items only
+        assert "{{sec_2_items}}" in skeleton
+
+    def test_shared_css_injection(self):
+        """_build_shared_css produces mp-* class definitions."""
+        from viraltracker.services.landing_page_analysis.multipass.section_templates import (
+            _build_shared_css,
+        )
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import (
+            DEFAULT_DESIGN_SYSTEM,
+        )
+
+        css = _build_shared_css(DEFAULT_DESIGN_SYSTEM)
+        assert ".mp-container" in css
+        assert ".mp-grid-2" in css
+        assert ".mp-grid-3" in css
+        assert ".mp-feature-card" in css
+        assert ".mp-faq-item" in css
+        assert ".mp-stat" in css
+        assert "<style>" in css
+
+    def test_section_map_is_dict_of_normalized_box(self):
+        """boxes_from_char_ratios returns proper NormalizedBox objects."""
+        from viraltracker.services.landing_page_analysis.multipass.cropper import (
+            NormalizedBox, boxes_from_char_ratios,
+        )
+
+        sections = [
+            FakeSection("sec_0", "Hero", "# Hero\n\nContent"),
+            FakeSection("sec_1", "Features", "## Features\n\nMore content"),
+        ]
+        boxes = boxes_from_char_ratios(sections)
+        section_map = {box.section_id: box for box in boxes}
+
+        assert isinstance(section_map, dict)
+        for key, val in section_map.items():
+            assert isinstance(key, str)
+            assert isinstance(val, NormalizedBox)
+            assert 0.0 <= val.y_start_pct <= 1.0
+            assert 0.0 <= val.y_end_pct <= 1.0
+
+    def test_build_section_contexts_output(self):
+        """build_section_contexts produces expected dict structure."""
+        from viraltracker.services.landing_page_analysis.multipass.layout_analyzer import (
+            LayoutHint, build_section_contexts,
+        )
+
+        sections = [
+            FakeSection("sec_0", "Hero", "# Welcome\n\nHello world"),
+            FakeSection("sec_1", "Features", "## Features\n\n### F1\nDesc"),
+        ]
+        layout_map = {
+            "sec_0": LayoutHint(layout_type="hero_centered"),
+            "sec_1": LayoutHint(layout_type="feature_grid", column_count=3),
+        }
+        contexts = build_section_contexts(sections, layout_map)
+
+        assert len(contexts) == 2
+        assert contexts[0]["section_id"] == "sec_0"
+        assert contexts[0]["layout_type"] == "hero_centered"
+        assert contexts[1]["section_id"] == "sec_1"
+        assert contexts[1]["layout_type"] == "feature_grid"
+        assert "markdown_excerpt" in contexts[0]
+
+    def test_phase1_mode_env_var(self):
+        """MULTIPASS_PHASE1_MODE env var is parsed correctly."""
+        import os
+        from viraltracker.services.landing_page_analysis.multipass import pipeline
+
+        # Default should be "template"
+        assert hasattr(pipeline, 'MULTIPASS_PHASE1_MODE')
+        assert pipeline.MULTIPASS_PHASE1_MODE in ("original", "template", "v2")
+
+
+# ===========================================================================
+# Phase 1 v2: Fallback Cascade
+# ===========================================================================
+
+
+class TestPhase1FallbackCascade:
+    """Fallback cascade for v2 pipeline."""
+
+    def test_validation_failure_triggers_template_fallback(self):
+        """Invalid skeleton should trigger fallback to template skeleton."""
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import (
+            _validate_skeleton, _build_fallback_skeleton,
+        )
+        from viraltracker.services.landing_page_analysis.multipass.layout_analyzer import (
+            LayoutHint,
+        )
+
+        # Invalid skeleton (missing style, missing placeholders)
+        bad_skeleton = '<div>Not a valid skeleton</div>'
+        layout_map = {"sec_0": LayoutHint(layout_type="generic")}
+        result = _validate_skeleton(bad_skeleton, layout_map, 1)
+        assert not result.valid
+
+        # Fallback should produce valid output
+        sections = [FakeSection("sec_0", "Content", "# Content")]
+        fallback = _build_fallback_skeleton(sections)
+        assert '<section data-section="sec_0"' in fallback
+        assert '{{sec_0}}' in fallback
+
+    def test_template_fallback_produces_valid_output(self):
+        """Template fallback with fused layout_map produces valid skeleton."""
+        from viraltracker.services.landing_page_analysis.multipass.section_templates import (
+            build_skeleton_from_templates,
+        )
+        from viraltracker.services.landing_page_analysis.multipass.layout_analyzer import (
+            LayoutHint,
+        )
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import (
+            _validate_skeleton, DEFAULT_DESIGN_SYSTEM,
+        )
+
+        sections = [
+            FakeSection("sec_0", "Hero", "# Hero"),
+            FakeSection("sec_1", "FAQ", "## FAQ"),
+        ]
+        layout_map = {
+            "sec_0": LayoutHint(layout_type="hero_centered"),
+            "sec_1": LayoutHint(layout_type="faq_list"),
+        }
+
+        skeleton = build_skeleton_from_templates(
+            sections, layout_map, DEFAULT_DESIGN_SYSTEM
+        )
+        result = _validate_skeleton(skeleton, layout_map, 2)
+        assert result.valid, f"Template fallback invalid: {result.errors}"
+
+    def test_bare_fallback_always_valid(self):
+        """_build_fallback_skeleton always produces valid output."""
+        from viraltracker.services.landing_page_analysis.multipass.pipeline import (
+            _build_fallback_skeleton,
+        )
+
+        sections = [
+            FakeSection(f"sec_{i}", f"Section {i}", f"# Section {i}")
+            for i in range(5)
+        ]
+        skeleton = _build_fallback_skeleton(sections)
+
+        assert '<style>' in skeleton
+        for i in range(5):
+            assert f'data-section="sec_{i}"' in skeleton
+            assert f'{{{{sec_{i}}}}}' in skeleton
+
+    def test_token_costs_include_claude_opus(self):
+        """claude-opus-4-6 must be in TOKEN_COSTS."""
+        from viraltracker.core.config import Config
+
+        cost = Config.get_token_cost("claude-opus-4-6")
+        assert cost != (0.0, 0.0), "claude-opus-4-6 should have non-zero costs"
+        cost = Config.get_token_cost("claude-sonnet-4-6")
+        assert cost != (0.0, 0.0), "claude-sonnet-4-6 should have non-zero costs"

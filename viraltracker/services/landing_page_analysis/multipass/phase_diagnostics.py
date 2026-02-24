@@ -110,6 +110,16 @@ class PhaseDiagnosticReport:
                     f"Sections: {metrics.section_count}  |  "
                     f"Skeleton: {metrics.html_size:,} chars"
                 )
+                # v2 sub-step timings
+                v2_telemetry = extras.get("v2_telemetry")
+                if v2_telemetry:
+                    fb = v2_telemetry.get("fallback_level", "?")
+                    timings = v2_telemetry.get("step_timings", {})
+                    t_parts = [f"{k}={v:.1f}s" for k, v in timings.items()]
+                    detail_parts.append(
+                        f"v2 mode: fallback_level={fb}  |  "
+                        + "  ".join(t_parts)
+                    )
             elif metrics.phase_name == "Phase 2 — Content Assembly":
                 detail_parts.append(
                     f"Slots: {metrics.slot_count}  |  "
@@ -717,6 +727,18 @@ def diagnose_phases(
             )
             metrics.extras["placeholder_count"] = _count_placeholders(html)
             metrics.extras["expected_sections"] = expected_section_count
+            # Capture v2 sub-step telemetry if present
+            v2_telemetry_key = "phase_1_v2_telemetry"
+            if v2_telemetry_key in snapshots:
+                try:
+                    import json as _json
+                    v2_raw = snapshots[v2_telemetry_key]
+                    # Parse from the HTML wrapper
+                    code_match = re.search(r'<code>(.*?)</code>', v2_raw, re.DOTALL)
+                    if code_match:
+                        metrics.extras["v2_telemetry"] = _json.loads(code_match.group(1))
+                except Exception:
+                    pass
             metrics._raw_html = html
             all_metrics.append(metrics)
             all_verdicts.append(_verdict_phase1(metrics, thresholds))

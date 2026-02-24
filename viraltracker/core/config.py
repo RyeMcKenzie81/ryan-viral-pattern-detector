@@ -91,7 +91,9 @@ class Config:
         # Anthropic
         "claude-opus-4-5-20251101": (15.00, 75.00),
         "claude-opus-4-5": (15.00, 75.00),  # Alias
+        "claude-opus-4-6": (15.00, 75.00),
         "claude-sonnet-4-5-20250929": (3.00, 15.00),
+        "claude-sonnet-4-6": (3.00, 15.00),
         "claude-sonnet-4-20250514": (3.00, 15.00),
         "claude-sonnet-4": (3.00, 15.00),  # Alias
         # OpenAI

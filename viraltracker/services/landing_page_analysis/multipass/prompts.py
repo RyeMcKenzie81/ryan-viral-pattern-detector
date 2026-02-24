@@ -18,6 +18,10 @@ PHASE_4_PROMPT_VERSION = "v1"
 PHASE_1_CLASSIFY_PROMPT_VERSION = "v4"
 PHASE_3_CSS_PROMPT_VERSION = "v3"
 
+# v2 pipeline prompt versions (Gemini sees, Claude builds)
+PHASE_1A_VISUAL_AUDIT_VERSION = "v1"
+PHASE_1C_SKELETON_CODEGEN_VERSION = "v1"
+
 PROMPT_VERSIONS = {
     0: PHASE_0_PROMPT_VERSION,
     1: PHASE_1_PROMPT_VERSION,
@@ -516,6 +520,161 @@ REQUIREMENTS:
 - Templates will build the HTML from your classifications
 
 Output ONLY the JSON, no explanation."""
+
+
+# ---------------------------------------------------------------------------
+# v2 pipeline prompts (Gemini sees, Claude builds)
+# ---------------------------------------------------------------------------
+
+
+def build_phase_1a_visual_audit_prompt(
+    section_names: List[str],
+    section_count: int,
+    layout_hints_summary: Optional[str] = None,
+) -> str:
+    """Phase 1A (v2 Pipeline): Gemini Visual Audit.
+
+    Gemini describes what it sees per section — natural language visual
+    descriptions. Does NOT produce code, bounding boxes, or HTML.
+
+    Args:
+        section_names: List of section names from segmenter.
+        section_count: Number of sections expected.
+        layout_hints_summary: Optional summary of HTML analysis hints.
+    """
+    sections_list = "\n".join(f"  {i}. {name}" for i, name in enumerate(section_names))
+
+    hints_block = ""
+    if layout_hints_summary:
+        hints_block = (
+            "\n## HTML ANALYSIS HINTS (from deterministic analysis)\n"
+            "These are suggestions — override if the screenshot shows otherwise:\n"
+            f"{layout_hints_summary}\n"
+        )
+
+    return f"""Analyze this landing page screenshot and describe the visual layout of each section.
+
+The page has been segmented into {section_count} sections:
+{sections_list}
+{hints_block}
+{_LAYOUT_TYPES_DESC}
+
+Return ONLY valid JSON (no explanation, no code fences) with this exact structure:
+{{
+  "sections": [
+    {{
+      "section_index": 0,
+      "visual_description": "Full-width hero with centered heading, 4 stat callouts below, green CTA button",
+      "layout_confirmation": "hero_centered",
+      "columns": 1,
+      "has_prominent_image": false,
+      "image_position": "none",
+      "background": "dark",
+      "distinctive_features": "stat callout row beneath main heading"
+    }}
+  ]
+}}
+
+## FIELD RULES
+- section_index: 0-indexed, matching the section list above
+- visual_description: 1-2 sentence natural language description of what you see
+- layout_confirmation: Your best layout_type classification from the list above
+- columns: Number of content columns visible (1-4)
+- has_prominent_image: true if a large product/hero image is visible
+- image_position: "left", "right", "center", "background", or "none"
+- background: "light", "dark", "colored", or "image"
+- distinctive_features: Notable visual elements (grids, cards, accordion, etc.)
+
+## IMPORTANT
+- Describe ONLY what you see — do NOT generate HTML or code
+- If a section is not visible in the screenshot, set layout_confirmation to "generic"
+- Produce exactly {section_count} section entries
+
+Output ONLY the JSON, no explanation."""
+
+
+def build_phase_1c_skeleton_codegen_prompt(
+    design_system_json: str,
+    section_contexts: List[Dict],
+    extracted_css_snippet: Optional[str] = None,
+) -> str:
+    """Phase 1C (v2 Pipeline): Claude Skeleton Codegen.
+
+    Claude receives structured descriptions (NOT the screenshot) and
+    generates clean HTML/CSS skeleton with placeholders.
+
+    Args:
+        design_system_json: JSON string of the design system.
+        section_contexts: List of section context dicts from Step 1B.
+        extracted_css_snippet: Optional CSS from the original page.
+    """
+    # Build the placeholder contract per layout type
+    placeholder_contract = """
+## PLACEHOLDER CONTRACT (CRITICAL — follow exactly)
+
+Each section gets specific placeholders based on its layout_type:
+
+| layout_type        | Placeholders                              |
+|--------------------|-------------------------------------------|
+| hero_centered      | {{sec_N}}                                 |
+| hero_split         | {{sec_N_text}} + {{sec_N_image}}          |
+| feature_grid       | {{sec_N_header}} + {{sec_N_items}}        |
+| testimonial_cards  | {{sec_N_header}} + {{sec_N_items}}        |
+| faq_list           | {{sec_N_header}} + {{sec_N_items}}        |
+| pricing_table      | {{sec_N_header}} + {{sec_N_items}}        |
+| logo_bar           | {{sec_N_header}} + {{sec_N_items}}        |
+| stats_row          | {{sec_N_header}} + {{sec_N_items}}        |
+| cta_banner         | {{sec_N}}                                 |
+| content_block      | {{sec_N}}                                 |
+| nav_bar            | {{sec_N}}                                 |
+| footer_columns     | {{sec_N_items}}                           |
+| generic            | {{sec_N}}                                 |
+
+Where N is the 0-indexed section number (sec_0, sec_1, etc.).
+"""
+
+    # Format section contexts
+    sections_block = json.dumps(section_contexts, indent=2)
+
+    css_block = ""
+    if extracted_css_snippet:
+        css_block = (
+            "\n## ORIGINAL PAGE CSS (reference for style matching)\n"
+            f"```css\n{extracted_css_snippet[:3000]}\n```\n"
+        )
+
+    return f"""Generate a complete HTML skeleton for a landing page based on the section descriptions below.
+
+## DESIGN SYSTEM
+{design_system_json}
+
+## SECTION DESCRIPTIONS
+{sections_block}
+{css_block}
+{placeholder_contract}
+
+## OUTPUT REQUIREMENTS
+
+1. Generate a single `<style>` block at the top with all CSS
+2. For each section, generate a `<section data-section="sec_N">` element
+3. Inside each section, place the EXACT placeholders from the contract above
+4. Use `mp-*` CSS class prefix for all custom classes (e.g., mp-container, mp-grid-3)
+5. Center content with `max-width: 1200px; margin: 0 auto`
+6. Apply design system colors, fonts, and spacing
+7. Use CSS Grid or Flexbox for multi-column layouts
+8. Include responsive breakpoint at 768px that stacks columns
+
+## CRITICAL CONSTRAINTS
+- Each <section> MUST have data-section="sec_N" attribute
+- Use ONLY the exact placeholder names from the contract — no variants
+- Do NOT include a .lp-mockup wrapper div (added externally)
+- Do NOT include responsive CSS media queries (injected externally)
+- Do NOT include any actual text content — only placeholders
+- The skeleton must be valid HTML with proper nesting
+
+## OUTPUT
+Return ONLY the HTML (no explanation, no code fences).
+Start with <style> and end with the last </section>."""
 
 
 def build_phase_3_css_prompt_fullpage(

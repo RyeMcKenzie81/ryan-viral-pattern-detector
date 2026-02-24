@@ -48,6 +48,8 @@ from .prompts import (
     build_phase_0_prompt,
     build_phase_1_prompt,
     build_phase_1_classify_prompt,
+    build_phase_1a_visual_audit_prompt,
+    build_phase_1c_skeleton_codegen_prompt,
     build_phase_2_prompt,
     build_phase_3_prompt,
     build_phase_3_css_prompt_fullpage,
@@ -64,6 +66,14 @@ USE_TEMPLATE_PIPELINE = os.environ.get(
 
 # Phase 3 mode: "fullpage" (1 LLM call), "per_section" (N calls), "disabled"
 MULTIPASS_PHASE3_MODE = os.environ.get("MULTIPASS_PHASE3_MODE", "fullpage")
+
+# Phase 1 mode: "original" (LLM skeleton), "template" (classify+templates), "v2" (Gemini sees, Claude builds)
+MULTIPASS_PHASE1_MODE = os.environ.get("MULTIPASS_PHASE1_MODE", "template")
+
+# Claude model for skeleton codegen (Step 1C)
+MULTIPASS_SKELETON_MODEL = os.environ.get(
+    "MULTIPASS_SKELETON_MODEL", Config.DEFAULT_MODEL
+)
 
 logger = logging.getLogger(__name__)
 
@@ -138,21 +148,36 @@ class PipelineRateLimiter:
         self._call_count = 0
         self._consecutive_successes = 0
 
-    async def acquire(self):
-        """Acquire concurrency slot, then pace before dispatch."""
-        await self._sem.acquire()
-        async with self._lock:
-            now = asyncio.get_event_loop().time()
-            min_delay = 60.0 / self._current_rpm
-            elapsed = now - self._last_call_time
-            if elapsed < min_delay:
-                await asyncio.sleep(min_delay - elapsed)
-            self._last_call_time = asyncio.get_event_loop().time()
-            self._call_count += 1
+    async def acquire(self, provider: str = "gemini"):
+        """Acquire concurrency slot, then pace before dispatch.
 
-    def release(self, success: bool = True, rate_limited: bool = False):
-        """Release concurrency slot and update adaptive pacing."""
+        Args:
+            provider: API provider ("gemini" or "anthropic"). Different
+                      providers have independent rate limits so only Gemini
+                      calls are paced relative to each other.
+        """
+        await self._sem.acquire()
+        if provider == "gemini":
+            async with self._lock:
+                now = asyncio.get_event_loop().time()
+                min_delay = 60.0 / self._current_rpm
+                elapsed = now - self._last_call_time
+                if elapsed < min_delay:
+                    await asyncio.sleep(min_delay - elapsed)
+                self._last_call_time = asyncio.get_event_loop().time()
+        self._call_count += 1
+
+    def release(self, success: bool = True, rate_limited: bool = False, provider: str = "gemini"):
+        """Release concurrency slot and update adaptive pacing.
+
+        Args:
+            success: Whether the call succeeded.
+            rate_limited: Whether the call was rate-limited.
+            provider: API provider ("gemini" or "anthropic").
+        """
         self._sem.release()
+        if provider != "gemini":
+            return  # Only adapt pacing for Gemini calls
         if rate_limited:
             self._consecutive_successes = 0
             self._current_rpm = max(self._current_rpm - 5, self._min_rpm)
@@ -970,6 +995,126 @@ def _build_fallback_skeleton(sections: List[SegmenterSection]) -> str:
     return '\n'.join(parts)
 
 
+# ---------------------------------------------------------------------------
+# Placeholder contract: layout_type → expected placeholder suffixes
+# ---------------------------------------------------------------------------
+
+LAYOUT_PLACEHOLDER_MAP = {
+    "hero_centered": [""],              # {{sec_N}}
+    "hero_split": ["_text", "_image"],  # {{sec_N_text}}, {{sec_N_image}}
+    "feature_grid": ["_header", "_items"],
+    "testimonial_cards": ["_header", "_items"],
+    "faq_list": ["_header", "_items"],
+    "pricing_table": ["_header", "_items"],
+    "logo_bar": ["_header", "_items"],
+    "stats_row": ["_header", "_items"],
+    "cta_banner": [""],
+    "content_block": [""],
+    "nav_bar": [""],
+    "footer_columns": ["_items"],
+    "generic": [""],
+}
+
+
+@dataclass
+class SkeletonValidationResult:
+    """Result from skeleton HTML validation."""
+    valid: bool
+    errors: List[str] = field(default_factory=list)
+    warnings: List[str] = field(default_factory=list)
+
+
+def _validate_skeleton(
+    skeleton_html: str,
+    layout_map: Dict[str, Any],
+    section_count: int,
+) -> SkeletonValidationResult:
+    """Validate Claude's skeleton HTML against the Phase 2 contract.
+
+    Checks:
+    1. Every section has data-section="sec_N" attribute
+    2. Every section contains its expected placeholder(s) per layout_type
+    3. No orphaned placeholders outside expected set
+    4. Valid HTML structure (no unclosed tags)
+    5. Has <style> block with CSS
+    6. Does NOT contain .lp-mockup wrapper (added externally)
+
+    Args:
+        skeleton_html: The skeleton HTML to validate.
+        layout_map: Dict of sec_id → LayoutHint with layout_type.
+        section_count: Expected number of sections.
+
+    Returns:
+        SkeletonValidationResult with valid flag and error details.
+    """
+    errors: List[str] = []
+    warnings: List[str] = []
+
+    # Check 1: data-section attributes
+    found_sections = re.findall(r'data-section="(sec_\d+)"', skeleton_html)
+    found_set = set(found_sections)
+    expected_set = {f"sec_{i}" for i in range(section_count)}
+
+    missing_sections = expected_set - found_set
+    if missing_sections:
+        errors.append(f"Missing data-section attrs: {sorted(missing_sections)}")
+
+    # Check duplicates
+    if len(found_sections) != len(found_set):
+        from collections import Counter
+        dupes = [s for s, c in Counter(found_sections).items() if c > 1]
+        errors.append(f"Duplicate data-section attrs: {dupes}")
+
+    # Check 2: Expected placeholders per layout_type
+    for sec_id in sorted(expected_set):
+        hint = layout_map.get(sec_id)
+        if hint is None:
+            continue
+        layout_type = hint.layout_type if hasattr(hint, 'layout_type') else str(hint)
+        expected_suffixes = LAYOUT_PLACEHOLDER_MAP.get(layout_type, [""])
+
+        for suffix in expected_suffixes:
+            placeholder = "{{" + sec_id + suffix + "}}"
+            if placeholder not in skeleton_html:
+                errors.append(f"Missing placeholder {placeholder} for {sec_id} ({layout_type})")
+
+    # Check 3: Orphaned placeholders
+    all_placeholders = re.findall(r'\{\{([^}]+)\}\}', skeleton_html)
+    expected_placeholders = set()
+    for sec_id in expected_set:
+        hint = layout_map.get(sec_id)
+        layout_type = "generic"
+        if hint and hasattr(hint, 'layout_type'):
+            layout_type = hint.layout_type
+        suffixes = LAYOUT_PLACEHOLDER_MAP.get(layout_type, [""])
+        for suffix in suffixes:
+            expected_placeholders.add(sec_id + suffix)
+
+    orphaned = [p for p in all_placeholders if p not in expected_placeholders]
+    if orphaned:
+        warnings.append(f"Orphaned placeholders: {orphaned[:5]}")
+
+    # Check 4: Basic HTML well-formedness (unclosed section tags)
+    open_sections = len(re.findall(r'<section\b', skeleton_html, re.IGNORECASE))
+    close_sections = len(re.findall(r'</section>', skeleton_html, re.IGNORECASE))
+    if open_sections != close_sections:
+        errors.append(f"Unclosed section tags: {open_sections} open vs {close_sections} close")
+
+    # Check 5: Has <style> block
+    if '<style' not in skeleton_html.lower():
+        errors.append("Missing <style> block")
+
+    # Check 6: No .lp-mockup wrapper (added externally)
+    if 'class="lp-mockup"' in skeleton_html or "class='lp-mockup'" in skeleton_html:
+        errors.append("Skeleton contains .lp-mockup wrapper (should be added externally)")
+
+    return SkeletonValidationResult(
+        valid=len(errors) == 0,
+        errors=errors,
+        warnings=warnings,
+    )
+
+
 class MultiPassPipeline:
     """Orchestrates the 5-phase multipass HTML generation pipeline."""
 
@@ -1123,8 +1268,8 @@ class MultiPassPipeline:
                         )
                         responsive_css = ResponsiveCSS()
 
-                    # Template pipeline: enhanced CSS extraction + layout analysis
-                    if USE_TEMPLATE_PIPELINE:
+                    # Template/v2 pipeline: enhanced CSS extraction + layout analysis
+                    if USE_TEMPLATE_PIPELINE or MULTIPASS_PHASE1_MODE == "v2":
                         # Head-only guard: skip if HTML has no <body>
                         has_body = '<body' in page_html.lower()[:50000]
 
@@ -1203,15 +1348,17 @@ class MultiPassPipeline:
                                 extracted_css.inlined_html = ""
 
             # -----------------------------------------------------------
-            # Template pipeline guard: fall back when no page_html
+            # Pipeline mode selection
             # -----------------------------------------------------------
-            use_templates_this_run = USE_TEMPLATE_PIPELINE
-            if USE_TEMPLATE_PIPELINE and not page_html:
+            phase1_mode = MULTIPASS_PHASE1_MODE
+            use_templates_this_run = USE_TEMPLATE_PIPELINE or phase1_mode == "v2"
+            if use_templates_this_run and not page_html:
                 self._lf.warning(
-                    "Template pipeline enabled but no page_html — "
+                    "Template/v2 pipeline enabled but no page_html — "
                     "falling back to original pipeline path"
                 )
                 use_templates_this_run = False
+                phase1_mode = "original"
 
             # -----------------------------------------------------------
             # Phase 0: Design System Extraction
@@ -1234,9 +1381,18 @@ class MultiPassPipeline:
             # -----------------------------------------------------------
             # Phase 1: Layout Skeleton + Bounding Boxes
             # -----------------------------------------------------------
-            layout_map = {}  # Populated by template pipeline path
+            layout_map = {}  # Populated by template/v2 pipeline path
 
-            if use_templates_this_run:
+            if phase1_mode == "v2":
+                # v2 pipeline: Gemini sees, Claude builds
+                self._report_progress(1, "Phase 1 v2: visual audit + skeleton codegen...")
+                skeleton_html, section_map, layout_map = await self._run_phase_1_v2(
+                    screenshot_b64, design_system, sections,
+                    layout_hints=layout_hints,
+                    extracted_css=extracted_css,
+                    page_html=page_html,
+                )
+            elif use_templates_this_run:
                 # Template pipeline: classification + deterministic skeleton
                 self._report_progress(1, "Classifying layouts...")
                 skeleton_html, section_map, layout_map = await self._run_phase_1_classify(
@@ -1631,6 +1787,265 @@ class MultiPassPipeline:
             if sid in section_ids
         }
         return skeleton, section_map, layout_map
+
+    async def _run_phase_1_v2(
+        self,
+        screenshot_b64: str,
+        design_system: Dict,
+        sections: List[SegmenterSection],
+        layout_hints: Optional[Dict] = None,
+        extracted_css: Optional[object] = None,
+        page_html: Optional[str] = None,
+    ) -> Tuple[str, Dict[str, NormalizedBox], Dict]:
+        """Phase 1 v2: Gemini Sees, Claude Builds.
+
+        4-step sub-pipeline:
+          1A: Gemini Visual Audit (1 API call)
+          1B: Deterministic Layout Fusion (0 API calls)
+          1C: Claude Skeleton Codegen (1 API call)
+          1D: Deterministic Validation (0 API calls)
+
+        Fallback cascade:
+          Level 0: Claude skeleton passes validation
+          Level 1: Claude retry with error feedback
+          Level 2: Template skeleton with fused layout_map
+          Level 3: Template skeleton with layout_hints only
+          Level 4: Bare fallback skeleton
+
+        Returns:
+            (skeleton_html, section_map, layout_map)
+        """
+        from .layout_analyzer import fuse_layout_signals, build_section_contexts
+        from .section_templates import build_skeleton_from_templates, _build_shared_css
+
+        with self._lf.span(
+            "multipass_phase_1_v2",
+            phase="gemini_sees_claude_builds",
+            segmenter_section_count=len(sections),
+        ):
+            step_timings: Dict[str, float] = {}
+
+            # -----------------------------------------------------------
+            # Step 1A: Gemini Visual Audit
+            # -----------------------------------------------------------
+            gemini_audit = None
+            t0 = time.time()
+            try:
+                # Build layout hints summary for the prompt
+                hints_summary = ""
+                if layout_hints:
+                    hint_lines = []
+                    for sec_id, hint in layout_hints.items():
+                        if hasattr(hint, 'layout_type'):
+                            hint_lines.append(
+                                f"  - {sec_id}: {hint.layout_type} "
+                                f"(confidence={hint.confidence:.2f})"
+                            )
+                    hints_summary = "\n".join(hint_lines)
+
+                section_names = [s.name for s in sections]
+                audit_prompt = build_phase_1a_visual_audit_prompt(
+                    section_names, len(sections), hints_summary or None
+                )
+                response = await self._call_gemini_vision(
+                    PHASE_MODELS[1], screenshot_b64, audit_prompt
+                )
+                audit_result = _parse_json_response(response)
+                gemini_audit = audit_result.get("sections", [])
+                self.phase_snapshots["phase_1a_visual_audit"] = _wrap_json_as_html(audit_result)
+                self._lf.info(
+                    "Step 1A OK: {section_count} sections described",
+                    section_count=len(gemini_audit),
+                )
+            except Exception as e:
+                self._lf.warning(
+                    "Step 1A failed: {error}, proceeding with HTML hints only",
+                    error=str(e),
+                )
+                gemini_audit = None
+            step_timings["1a_visual_audit"] = time.time() - t0
+
+            # -----------------------------------------------------------
+            # Step 1B: Deterministic Layout Fusion
+            # -----------------------------------------------------------
+            t0 = time.time()
+            layout_map = fuse_layout_signals(
+                html_hints=layout_hints or {},
+                gemini_audit=gemini_audit,
+                sections=sections,
+            )
+            self.phase_snapshots["phase_1b_layout_fusion"] = _wrap_json_as_html({
+                sec_id: {
+                    "layout_type": h.layout_type,
+                    "column_count": h.column_count,
+                    "has_image": h.has_image,
+                    "confidence": h.confidence,
+                    "signals": h.detection_signals,
+                }
+                for sec_id, h in layout_map.items()
+            })
+
+            # Build section_map from char ratios (deterministic)
+            boxes = boxes_from_char_ratios(sections)
+            section_map = {box.section_id: box for box in boxes}
+
+            # Build rich section contexts for Claude
+            section_contexts = build_section_contexts(
+                sections, layout_map, gemini_audit, page_html
+            )
+            step_timings["1b_layout_fusion"] = time.time() - t0
+            self._lf.info(
+                "Step 1B OK: {layout_count} layouts fused in {ms:.0f}ms",
+                layout_count=len(layout_map),
+                ms=step_timings["1b_layout_fusion"] * 1000,
+            )
+
+            # -----------------------------------------------------------
+            # Step 1C: Claude Skeleton Codegen
+            # -----------------------------------------------------------
+            t0 = time.time()
+            skeleton_html = None
+            fallback_level = 0
+
+            # Extract CSS snippet for Claude
+            css_snippet = None
+            if extracted_css and hasattr(extracted_css, 'design_tokens'):
+                try:
+                    dt = extracted_css.design_tokens
+                    css_parts = []
+                    if dt.colors:
+                        top_colors = sorted(dt.colors.items(), key=lambda x: x[1], reverse=True)[:5]
+                        css_parts.append("/* Top colors: " + ", ".join(f"{c[0]}({c[1]})" for c in top_colors) + " */")
+                    if dt.fonts:
+                        css_parts.append("/* Fonts: " + ", ".join(dt.fonts.keys()) + " */")
+                    css_snippet = "\n".join(css_parts) if css_parts else None
+                except Exception:
+                    pass
+
+            try:
+                codegen_prompt = build_phase_1c_skeleton_codegen_prompt(
+                    json.dumps(design_system, indent=2),
+                    section_contexts,
+                    css_snippet,
+                )
+                raw_skeleton = await self._call_claude_text(codegen_prompt)
+                raw_skeleton = _strip_code_fences(raw_skeleton)
+
+                # -----------------------------------------------------------
+                # Step 1D: Deterministic Validation
+                # -----------------------------------------------------------
+                validation = _validate_skeleton(raw_skeleton, layout_map, len(sections))
+
+                if validation.valid:
+                    skeleton_html = raw_skeleton
+                    fallback_level = 0
+                    self._lf.info("Step 1C+1D OK: Claude skeleton passed validation")
+                else:
+                    # Level 1: Retry with error feedback
+                    self._lf.warning(
+                        "Step 1D validation failed: {errors}, retrying with feedback",
+                        errors=str(validation.errors[:3]),
+                    )
+                    retry_prompt = (
+                        codegen_prompt
+                        + "\n\n## VALIDATION ERRORS FROM PREVIOUS ATTEMPT\n"
+                        + "Fix these issues:\n"
+                        + "\n".join(f"- {e}" for e in validation.errors)
+                        + "\n\nReturn the corrected HTML."
+                    )
+                    try:
+                        retry_skeleton = await self._call_claude_text(retry_prompt)
+                        retry_skeleton = _strip_code_fences(retry_skeleton)
+                        retry_validation = _validate_skeleton(
+                            retry_skeleton, layout_map, len(sections)
+                        )
+                        if retry_validation.valid:
+                            skeleton_html = retry_skeleton
+                            fallback_level = 1
+                            self._lf.info("Step 1D retry OK: Claude skeleton passed on retry")
+                        else:
+                            self._lf.warning(
+                                "Step 1D retry also failed: {errors}",
+                                errors=str(retry_validation.errors[:3]),
+                            )
+                    except Exception as e:
+                        self._lf.warning(
+                            "Step 1C retry failed: {error}", error=str(e)
+                        )
+
+            except Exception as e:
+                self._lf.warning(
+                    "Step 1C failed: {error}", error=str(e)
+                )
+
+            step_timings["1c_skeleton_codegen"] = time.time() - t0
+
+            # -----------------------------------------------------------
+            # Fallback cascade
+            # -----------------------------------------------------------
+            if skeleton_html is None:
+                # Level 2: Template skeleton with fused layout_map
+                try:
+                    skeleton_html = build_skeleton_from_templates(
+                        sections, layout_map, design_system, extracted_css
+                    )
+                    fallback_level = 2
+                    self._lf.info("Fallback level 2: template skeleton with fused layout_map")
+                except Exception as e:
+                    self._lf.warning(
+                        "Fallback level 2 failed: {error}", error=str(e)
+                    )
+
+            if skeleton_html is None:
+                # Level 3: Template skeleton with layout_hints only
+                try:
+                    skeleton_html = build_skeleton_from_templates(
+                        sections, layout_hints or {}, design_system, extracted_css
+                    )
+                    fallback_level = 3
+                    self._lf.info("Fallback level 3: template skeleton with layout_hints")
+                except Exception as e:
+                    self._lf.warning(
+                        "Fallback level 3 failed: {error}", error=str(e)
+                    )
+
+            if skeleton_html is None:
+                # Level 4: Bare fallback skeleton
+                skeleton_html = _build_fallback_skeleton(sections)
+                fallback_level = 4
+                self._lf.info("Fallback level 4: bare fallback skeleton")
+
+            # -----------------------------------------------------------
+            # CSS injection: add _build_shared_css() for mp-* classes
+            # -----------------------------------------------------------
+            if fallback_level <= 1:
+                # Claude's skeleton — inject shared CSS for mp-* classes
+                shared_css = _build_shared_css(design_system)
+                if '</style>' in skeleton_html:
+                    # Inject shared CSS after the first </style> tag
+                    skeleton_html = skeleton_html.replace(
+                        '</style>', f'</style>\n{shared_css}', 1
+                    )
+                else:
+                    # Prepend shared CSS
+                    skeleton_html = f'{shared_css}\n{skeleton_html}'
+
+            # Store telemetry
+            self.phase_snapshots["phase_1_v2_telemetry"] = _wrap_json_as_html({
+                "fallback_level": fallback_level,
+                "step_timings": step_timings,
+                "gemini_audit_available": gemini_audit is not None,
+                "layout_map_count": len(layout_map),
+                "skeleton_chars": len(skeleton_html),
+            })
+
+            self._lf.info(
+                "Phase 1 v2 complete: fallback_level={fallback_level}, "
+                "skeleton_chars={skeleton_chars}",
+                fallback_level=fallback_level,
+                skeleton_chars=len(skeleton_html),
+            )
+            return skeleton_html, section_map, layout_map
 
     async def _run_phase_1_classify(
         self,
@@ -2265,6 +2680,55 @@ class MultiPassPipeline:
                 self._limiter.release(success=False)
                 self._lf.error(
                     "Gemini text call #{call_number} FAILED: {error}",
+                    call_number=self._limiter.call_count,
+                    error=str(e),
+                )
+                raise
+
+    async def _call_claude_text(
+        self, prompt: str, system_prompt: str = "", model: Optional[str] = None
+    ) -> str:
+        """Call Claude API for text generation with rate limiting.
+
+        Uses PydanticAI Agent with lazy import (avoids import-time side effects).
+
+        Args:
+            prompt: User prompt text.
+            system_prompt: Optional system prompt.
+            model: Model ID override (default: MULTIPASS_SKELETON_MODEL).
+
+        Returns:
+            Model response text.
+        """
+        from pydantic_ai import Agent
+
+        model_id = model or MULTIPASS_SKELETON_MODEL
+
+        await self._limiter.acquire(provider="anthropic")
+        with self._lf.span(
+            "multipass_claude_call",
+            call_type="text",
+            model=model_id,
+            call_number=self._limiter.call_count,
+        ):
+            try:
+                agent = Agent(
+                    f"anthropic:{model_id}",
+                    system_prompt=system_prompt or "You are a precise HTML/CSS code generator.",
+                )
+                result = await agent.run(prompt)
+                response_text = result.output if hasattr(result, 'output') else str(result.data)
+                self._limiter.release(success=True, provider="anthropic")
+                self._lf.info(
+                    "Claude text call #{call_number} OK: {response_chars} chars",
+                    call_number=self._limiter.call_count,
+                    response_chars=len(response_text),
+                )
+                return response_text
+            except Exception as e:
+                self._limiter.release(success=False, provider="anthropic")
+                self._lf.error(
+                    "Claude text call #{call_number} FAILED: {error}",
                     call_number=self._limiter.call_count,
                     error=str(e),
                 )

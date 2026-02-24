@@ -82,7 +82,18 @@ def main():
     parser.add_argument("--single-pass", action="store_true", help="Also run single-pass for comparison")
     parser.add_argument("--rescrape", action="store_true", help="Re-fetch page_html if missing from DB (uses FireCrawl)")
     parser.add_argument("--visual", action="store_true", help="Render phase screenshots and compute SSIM scores")
+    parser.add_argument(
+        "--phase1-mode",
+        choices=["original", "template", "v2"],
+        default=None,
+        help="Override MULTIPASS_PHASE1_MODE (original, template, v2)",
+    )
     args = parser.parse_args()
+
+    # Apply phase1-mode override before importing pipeline
+    if args.phase1_mode:
+        os.environ["MULTIPASS_PHASE1_MODE"] = args.phase1_mode
+        logger.info(f"Phase 1 mode overridden to: {args.phase1_mode}")
 
     from viraltracker.core.database import get_supabase_client
     from viraltracker.services.landing_page_analysis.mockup_service import MockupService

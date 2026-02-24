@@ -512,6 +512,207 @@ def _infer_column_count(layout_type: str, card_count: int) -> int:
     return defaults.get(layout_type, 1)
 
 
+# ---------------------------------------------------------------------------
+# Layout fusion (v2 pipeline: Step 1B)
+# ---------------------------------------------------------------------------
+
+# Signal weights for multi-source fusion
+_WEIGHT_HTML = 0.4
+_WEIGHT_GEMINI = 0.4
+_WEIGHT_CONTENT = 0.2
+
+# Content pattern → layout_type mapping
+_PATTERN_TO_LAYOUT = {
+    "feature_list": "feature_grid",
+    "testimonial_list": "testimonial_cards",
+    "faq_list": "faq_list",
+    "stats_list": "stats_row",
+    "logo_list": "logo_bar",
+}
+
+
+def fuse_layout_signals(
+    html_hints: Dict[str, LayoutHint],
+    gemini_audit: Optional[List[Dict]],
+    sections: list,
+) -> Dict[str, LayoutHint]:
+    """Fuse HTML analysis, Gemini visual audit, and content pattern signals.
+
+    Combines three sources with weighted confidence to produce the final
+    layout_map used by downstream phases.
+
+    Args:
+        html_hints: Dict of sec_id → LayoutHint from analyze_html_layout().
+        gemini_audit: Optional list of Gemini visual audit section dicts.
+        sections: List of SegmenterSection objects.
+
+    Returns:
+        Dict of sec_id → LayoutHint with fused classifications.
+    """
+    from .content_patterns import detect_content_pattern
+
+    result: Dict[str, LayoutHint] = {}
+
+    for i, section in enumerate(sections):
+        sec_id = section.section_id
+
+        # Collect candidates from each source with weighted confidence
+        candidates: Dict[str, float] = {}
+        signals: List[str] = []
+
+        # Source 1: HTML analysis (weight 0.4)
+        html_hint = html_hints.get(sec_id)
+        if html_hint and html_hint.layout_type != "generic" and html_hint.confidence > 0:
+            lt = html_hint.layout_type
+            candidates[lt] = candidates.get(lt, 0) + html_hint.confidence * _WEIGHT_HTML
+            signals.append(f"html:{lt}({html_hint.confidence:.2f})")
+
+        # Source 2: Gemini visual audit (weight 0.4)
+        gemini_section = None
+        if gemini_audit:
+            for gs in gemini_audit:
+                if gs.get("section_index") == i:
+                    gemini_section = gs
+                    break
+        if gemini_section:
+            g_layout = gemini_section.get("layout_confirmation", "generic")
+            if g_layout in LAYOUT_TYPES and g_layout != "generic":
+                candidates[g_layout] = candidates.get(g_layout, 0) + _WEIGHT_GEMINI
+                signals.append(f"gemini:{g_layout}")
+
+        # Source 3: Content pattern detection (weight 0.2)
+        # Use html_hint as bias if available
+        pattern = detect_content_pattern(section, html_hint)
+        if pattern.pattern_type != "prose":
+            cp_layout = _PATTERN_TO_LAYOUT.get(pattern.pattern_type)
+            if cp_layout:
+                candidates[cp_layout] = candidates.get(cp_layout, 0) + _WEIGHT_CONTENT
+                signals.append(f"content:{pattern.pattern_type}")
+
+        # Select winner
+        if candidates:
+            best_type = max(candidates, key=candidates.get)
+            best_conf = candidates[best_type]
+        else:
+            best_type = "generic"
+            best_conf = 0.0
+
+        if best_conf < 0.15:
+            best_type = "generic"
+
+        # Determine column count
+        col_count = 1
+        if html_hint and html_hint.column_count > 1:
+            col_count = html_hint.column_count
+        if gemini_section and gemini_section.get("columns", 1) > 1:
+            g_cols = gemini_section["columns"]
+            col_count = max(col_count, g_cols)
+        if col_count == 1:
+            col_count = _infer_column_count(best_type, 0)
+
+        # Determine image presence and position
+        has_image = False
+        text_pos = "left"
+        if html_hint:
+            has_image = html_hint.has_image
+        if gemini_section:
+            has_image = has_image or gemini_section.get("has_prominent_image", False)
+            img_pos = gemini_section.get("image_position", "none")
+            if img_pos == "right":
+                text_pos = "left"
+            elif img_pos == "left":
+                text_pos = "right"
+
+        # Hero refinement: upgrade hero_centered → hero_split when multi-column + image
+        if best_type == "hero_centered" and has_image and col_count >= 2:
+            best_type = "hero_split"
+            col_count = 2
+            signals.append("fused:hero_split_upgrade")
+
+        result[sec_id] = LayoutHint(
+            layout_type=best_type,
+            column_count=col_count,
+            text_position=text_pos,
+            has_image=has_image,
+            confidence=min(best_conf, 1.0),
+            detection_signals=signals,
+        )
+
+    return result
+
+
+def build_section_contexts(
+    sections: list,
+    layout_map: Dict[str, LayoutHint],
+    gemini_audit: Optional[List[Dict]] = None,
+    page_html: Optional[str] = None,
+) -> List[Dict]:
+    """Build rich section context dicts for Claude skeleton codegen.
+
+    Each context provides everything Claude needs to generate a section's
+    HTML without seeing the screenshot.
+
+    Args:
+        sections: List of SegmenterSection objects.
+        layout_map: Dict of sec_id → LayoutHint from fuse_layout_signals().
+        gemini_audit: Optional Gemini visual audit results.
+        page_html: Optional original page HTML for snippet extraction.
+
+    Returns:
+        List of section context dicts (one per section, in order).
+    """
+    # Build HTML region map for snippets
+    html_snippets: Dict[str, str] = {}
+    if page_html:
+        html_snippets = _match_sections_to_html(page_html, sections)
+
+    contexts: List[Dict] = []
+    for i, section in enumerate(sections):
+        sec_id = section.section_id
+        hint = layout_map.get(sec_id, LayoutHint())
+
+        # Visual description from Gemini
+        visual_desc = ""
+        if gemini_audit:
+            for gs in gemini_audit:
+                if gs.get("section_index") == i:
+                    visual_desc = gs.get("visual_description", "")
+                    break
+
+        # Markdown excerpt (first 500 chars)
+        md_excerpt = section.markdown[:500]
+        if len(section.markdown) > 500:
+            md_excerpt += "\n[... truncated]"
+
+        # Count items from content pattern
+        from .content_patterns import detect_content_pattern
+        pattern = detect_content_pattern(section, hint)
+        item_count = len(pattern.items) if pattern.items else 0
+
+        # HTML snippet (first 1000 chars)
+        html_snippet = html_snippets.get(sec_id, "")[:1000]
+
+        ctx = {
+            "section_index": i,
+            "section_id": sec_id,
+            "name": section.name,
+            "layout_type": hint.layout_type,
+            "column_count": hint.column_count,
+            "has_image": hint.has_image,
+            "text_position": hint.text_position,
+            "visual_description": visual_desc,
+            "item_count": item_count,
+            "markdown_excerpt": md_excerpt,
+        }
+
+        if html_snippet:
+            ctx["html_snippet"] = html_snippet
+
+        contexts.append(ctx)
+
+    return contexts
+
+
 class _RepetitionParser(HTMLParser):
     """Count repeated similar child elements."""
 
