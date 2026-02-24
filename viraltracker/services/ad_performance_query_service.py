@@ -454,44 +454,71 @@ class AdPerformanceQueryService:
                 },
             }
 
-        # Collect unique landing_page_ids
+        # Collect unique landing_page_ids for LP metadata
         lp_ids = list(set(
             r["landing_page_id"] for r in classified
             if r.get("landing_page_id")
         ))
         lp_map = self._fetch_landing_pages(lp_ids) if lp_ids else {}
 
-        # Group by landing_page_id
+        # Fetch destination URLs for ads without landing_page_id (fallback)
+        ads_without_lp = list(set(
+            r["meta_ad_id"] for r in classified
+            if not r.get("landing_page_id") and r.get("meta_ad_id")
+        ))
+        dest_map = self._fetch_ad_destinations(ads_without_lp) if ads_without_lp else {}
+
+        # Group by landing page — use LP id when available, else destination URL
         buckets: Dict[str, Dict] = defaultdict(lambda: {
             "spend": 0, "impressions": 0, "link_clicks": 0,
             "purchases": 0, "purchase_value": 0, "ad_ids": set(),
+            "url": "", "page_title": "", "product_name": "",
+            "is_lp_id": False,
         })
 
         for row in classified:
-            lp_id = row.get("landing_page_id") or "unclassified"
-            b = buckets[lp_id]
+            lp_id = row.get("landing_page_id")
+            aid = row.get("meta_ad_id")
+
+            if lp_id:
+                # Keyed by LP UUID — has full metadata
+                key = lp_id
+                lp_info = lp_map.get(lp_id, {})
+                b = buckets[key]
+                b["url"] = lp_info.get("url", "")
+                b["page_title"] = lp_info.get("page_title", "")
+                b["product_name"] = lp_info.get("resolved_product_name", "")
+                b["is_lp_id"] = True
+            else:
+                # Fallback: group by destination URL
+                dest_url = dest_map.get(aid, "")
+                key = f"url:{dest_url}" if dest_url else "unclassified"
+                b = buckets[key]
+                if dest_url:
+                    b["url"] = dest_url
+
             b["spend"] += float(row.get("spend") or 0)
             b["impressions"] += int(row.get("impressions") or 0)
             b["link_clicks"] += int(row.get("link_clicks") or 0)
             b["purchases"] += int(row.get("purchases") or 0)
             b["purchase_value"] += float(row.get("purchase_value") or 0)
-            if row.get("meta_ad_id"):
-                b["ad_ids"].add(row["meta_ad_id"])
+            if aid:
+                b["ad_ids"].add(aid)
 
         items = []
-        for lp_id, b in buckets.items():
+        for key, b in buckets.items():
             spend = b["spend"]
             imp = b["impressions"]
             clicks = b["link_clicks"]
             purchases = b["purchases"]
             pv = b["purchase_value"]
 
-            lp_info = lp_map.get(lp_id, {})
+            url = b["url"] or ("Unclassified" if key == "unclassified" else "Unknown")
             items.append({
-                "landing_page_id": lp_id,
-                "url": lp_info.get("url", "Unclassified" if lp_id == "unclassified" else "Unknown"),
-                "page_title": lp_info.get("page_title", ""),
-                "product_name": lp_info.get("resolved_product_name", ""),
+                "landing_page_id": key if b["is_lp_id"] else "",
+                "url": url,
+                "page_title": b["page_title"],
+                "product_name": b["product_name"],
                 "spend": spend,
                 "impressions": imp,
                 "link_clicks": clicks,
@@ -573,6 +600,20 @@ class AdPerformanceQueryService:
         ))
         lp_map = self._fetch_landing_pages(lp_ids) if lp_ids else {}
 
+        # Also try to match destination URLs to brand_landing_pages for product info
+        ads_without_lp = list(set(
+            r["meta_ad_id"] for r in classified
+            if not r.get("landing_page_id") and r.get("meta_ad_id")
+        ))
+        dest_map = self._fetch_ad_destinations(ads_without_lp) if ads_without_lp else {}
+
+        # Build URL -> LP lookup for destination URL fallback
+        url_to_lp: Dict[str, Dict] = {}
+        if dest_map:
+            unique_urls = list(set(u for u in dest_map.values() if u))
+            if unique_urls:
+                url_to_lp = self._fetch_landing_pages_by_url(brand_id, unique_urls)
+
         # Group by product name
         buckets: Dict[str, Dict] = defaultdict(lambda: {
             "spend": 0, "impressions": 0, "link_clicks": 0,
@@ -582,7 +623,17 @@ class AdPerformanceQueryService:
         for row in classified:
             lp_id = row.get("landing_page_id")
             lp_info = lp_map.get(lp_id, {}) if lp_id else {}
-            product_name = lp_info.get("resolved_product_name") or "Unknown Product"
+            product_name = lp_info.get("resolved_product_name")
+
+            # Fallback: try matching destination URL to a known LP for product info
+            if not product_name and not lp_id:
+                aid = row.get("meta_ad_id")
+                dest_url = dest_map.get(aid, "")
+                if dest_url:
+                    url_lp_info = url_to_lp.get(dest_url, {})
+                    product_name = url_lp_info.get("resolved_product_name")
+
+            product_name = product_name or "Unknown Product"
 
             b = buckets[product_name]
             b["spend"] += float(row.get("spend") or 0)
@@ -853,6 +904,114 @@ class AdPerformanceQueryService:
             }
 
         return lp_map
+
+    def _fetch_landing_pages_by_url(
+        self, brand_id: str, urls: List[str]
+    ) -> Dict[str, Dict]:
+        """Fetch landing pages by canonical_url for product resolution.
+
+        Used as fallback when landing_page_id is NULL but we have a
+        destination URL from meta_ad_destinations.
+
+        Args:
+            brand_id: Brand UUID string.
+            urls: List of canonical URLs to match.
+
+        Returns:
+            Dict mapping URL to {url, page_title, product_name, product_id, resolved_product_name}.
+        """
+        if not urls:
+            return {}
+
+        all_lps: List[Dict] = []
+        batch_size = 500
+        for i in range(0, len(urls), batch_size):
+            batch = urls[i:i + batch_size]
+            result = (
+                self.supabase.table("brand_landing_pages")
+                .select("id, url, canonical_url, page_title, product_name, product_id")
+                .eq("brand_id", brand_id)
+                .in_("canonical_url", batch)
+                .execute()
+            )
+            if result.data:
+                all_lps.extend(result.data)
+
+        if not all_lps:
+            return {}
+
+        # Resolve product names
+        product_ids = list(set(
+            lp["product_id"] for lp in all_lps if lp.get("product_id")
+        ))
+        product_names: Dict[str, str] = {}
+        if product_ids:
+            for i in range(0, len(product_ids), batch_size):
+                batch = product_ids[i:i + batch_size]
+                result = (
+                    self.supabase.table("products")
+                    .select("id, name")
+                    .in_("id", batch)
+                    .execute()
+                )
+                if result.data:
+                    for p in result.data:
+                        product_names[p["id"]] = p["name"]
+
+        url_map: Dict[str, Dict] = {}
+        for lp in all_lps:
+            pid = lp.get("product_id")
+            resolved = product_names.get(pid) if pid else None
+            if not resolved:
+                resolved = lp.get("product_name")
+
+            canonical = lp.get("canonical_url") or lp.get("url", "")
+            url_map[canonical] = {
+                "url": lp.get("url", ""),
+                "page_title": lp.get("page_title", ""),
+                "product_name": lp.get("product_name"),
+                "product_id": pid,
+                "resolved_product_name": resolved,
+            }
+
+        return url_map
+
+    def _fetch_ad_destinations(self, ad_ids: List[str]) -> Dict[str, str]:
+        """Batch-fetch destination URLs from meta_ad_destinations.
+
+        Fallback for ads where landing_page_id is NULL in classifications
+        but the actual URL exists in meta_ad_destinations.
+
+        Args:
+            ad_ids: List of meta_ad_id strings.
+
+        Returns:
+            Dict mapping meta_ad_id to canonical_url (or destination_url).
+        """
+        if not ad_ids:
+            return {}
+
+        dest_map: Dict[str, str] = {}
+        batch_size = 500
+        for i in range(0, len(ad_ids), batch_size):
+            batch = ad_ids[i:i + batch_size]
+            result = (
+                self.supabase.table("meta_ad_destinations")
+                .select("meta_ad_id, destination_url, canonical_url")
+                .in_("meta_ad_id", batch)
+                .execute()
+            )
+            if result.data:
+                for row in result.data:
+                    aid = row.get("meta_ad_id")
+                    if aid and aid not in dest_map:
+                        dest_map[aid] = (
+                            row.get("canonical_url")
+                            or row.get("destination_url")
+                            or ""
+                        )
+
+        return dest_map
 
     def _aggregate_by_ad(self, rows: List[Dict]) -> List[Dict]:
         """Aggregate daily rows into per-ad summaries.

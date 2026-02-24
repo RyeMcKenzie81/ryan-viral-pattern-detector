@@ -1948,9 +1948,17 @@ async def get_breakdown_by_landing_page(
     for i, item in enumerate(items, 1):
         url = item.get("url") or "Unknown"
         title = item.get("page_title") or ""
-        display = title[:35] if title else url[:35]
-        if len(title or url) > 35:
-            display += "..."
+        # Show title if available, otherwise show URL path
+        if title:
+            display = title[:40]
+            if len(title) > 40:
+                display += "..."
+        else:
+            # Strip protocol for cleaner display
+            display_url = url.replace("https://", "").replace("http://", "")
+            display = display_url[:45]
+            if len(display_url) > 45:
+                display += "..."
         cpa_str = f"${item['cpa']:,.2f}" if item['cpa'] > 0 else "-"
         lines.append(
             f"| {i} | {display} | "
