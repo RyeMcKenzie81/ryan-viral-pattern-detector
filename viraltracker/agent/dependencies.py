@@ -40,6 +40,7 @@ from ..services.belief_analysis_service import BeliefAnalysisService
 from ..services.usage_tracker import UsageTracker
 from ..services.ad_intelligence.ad_intelligence_service import AdIntelligenceService
 from ..services.meta_ads_service import MetaAdsService
+from ..services.ad_performance_query_service import AdPerformanceQueryService
 
 logger = logging.getLogger(__name__)
 
@@ -130,6 +131,7 @@ class AgentDependencies(BaseModel):
     sora: SoraService
     ad_intelligence: AdIntelligenceService
     meta_ads: MetaAdsService
+    ad_performance_query: AdPerformanceQueryService
     docs: Optional[DocService] = None
     project_name: str = "yakety-pack-instagram"
     result_cache: ResultCache = Field(default_factory=ResultCache)
@@ -301,6 +303,10 @@ class AgentDependencies(BaseModel):
         )
         logger.info("AdIntelligenceService initialized")
 
+        # Initialize AdPerformanceQueryService for conversational performance queries
+        ad_performance_query = AdPerformanceQueryService(supabase)
+        logger.info("AdPerformanceQueryService initialized")
+
         return cls(
             twitter=twitter,
             gemini=gemini,
@@ -328,6 +334,7 @@ class AgentDependencies(BaseModel):
             sora=sora,
             ad_intelligence=ad_intelligence,
             meta_ads=meta_ads,
+            ad_performance_query=ad_performance_query,
             docs=docs,
             project_name=project_name
         )

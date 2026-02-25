@@ -13,9 +13,10 @@ Chat-first UX with slash commands:
 - /hooks_for_lp: Get best hooks for a landing page
 - /rec_done, /rec_ignore, /rec_note: Manage recommendations
 
-12 thin tools delegating to AdIntelligenceService facade.
+19 thin tools delegating to AdIntelligenceService and AdPerformanceQueryService.
 """
 
+import asyncio
 import json
 import logging
 from datetime import date
@@ -30,10 +31,37 @@ from ...services.ad_intelligence.hook_analysis_service import HookAnalysisServic
 
 logger = logging.getLogger(__name__)
 
+
+def _run_blocking_async(coro):
+    """Run an async coroutine that internally blocks with sync I/O.
+
+    Creates a new event loop on the current thread (called via asyncio.to_thread).
+    This frees the main event loop for socket.io keepalive pings during
+    long-running service calls like full_analysis (~134s).
+    """
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
+
+
 ad_intelligence_agent = Agent(
     model=Config.get_model("orchestrator"),
     deps_type=AgentDependencies,
-    system_prompt="""You are the Ad Intelligence Agent for the ViralTracker system.
+)
+
+
+@ad_intelligence_agent.system_prompt
+async def _build_system_prompt(ctx: RunContext[AgentDependencies]) -> str:
+    """Build system prompt with current date injected."""
+    today = date.today().isoformat()
+    return f"""You are the Ad Intelligence Agent for the ViralTracker system.
+
+**Today's date is {today}.** Use this when interpreting relative dates like "yesterday",
+"last week", "this month", etc. For relative time queries, prefer using `days_back`
+(e.g., days_back=1 for yesterday, days_back=7 for last week). Only use explicit
+`date_start`/`date_end` when the user specifies exact dates (e.g., "January 2026").
 
 Your role is to analyze Meta ad account performance and provide actionable insights.
 
@@ -73,8 +101,22 @@ Your role is to analyze Meta ad account performance and provide actionable insig
 - When users ask about "hooks" or "which hooks work", use hook_analysis or top_hooks
 - When users ask about "hooks for a landing page" or "best hooks for LP", use hooks_for_lp
 - For follow-up questions about a previous analysis, use the brand_id from context
+
+**Performance Queries** — Direct ad performance data:
+- Top/bottom ads by any metric (ROAS, spend, CTR, CPC, conversion_rate, etc.)
+- Account summaries with period-over-period comparison
+- Campaign and adset breakdowns
+- Individual ad deep dives with daily trends
+- Performance by media type (video vs image vs carousel)
+- Performance by landing page / offer variant
+- Performance by product
+- All breakdown tools support optional awareness_level filtering
+- Supports both `days_back` and explicit `date_start`/`date_end` for custom ranges
+
+**When to use performance queries vs. analyze_account:**
+- `get_top_ads` / `get_account_summary` / `get_campaign_breakdown` / `get_ad_details` → Quick data lookups ("what are my top ads?", "how much did I spend?", "show me January results")
+- `analyze_account` → Deep 4-layer diagnostics with classification, baselines, and recommendations ("what's wrong with my account?", "which ads should I kill?")
 """
-)
 
 
 @ad_intelligence_agent.tool(
@@ -1311,4 +1353,847 @@ async def hooks_for_lp(
         return f"Failed to get hooks for landing page: {e}"
 
 
-logger.info("Ad Intelligence Agent initialized with 12 tools")
+# =============================================================================
+# Performance Query Tools (Phase 8)
+# =============================================================================
+
+
+@ad_intelligence_agent.tool(
+    metadata={
+        'category': 'Performance',
+        'platform': 'Meta',
+        'use_cases': [
+            'Rank ads by ROAS, spend, CTR, or any metric',
+            'Find worst performing ads',
+            'Filter by status or minimum spend',
+        ],
+        'examples': [
+            'What are my top 5 ads by ROAS?',
+            'Show worst ads by CPC with at least $50 spend',
+            'Top 10 active ads by conversion rate',
+        ],
+    }
+)
+async def get_top_ads(
+    ctx: RunContext[AgentDependencies],
+    brand_id: str,
+    sort_by: str = "roas",
+    days_back: int = 30,
+    limit: int = 10,
+    sort_order: str = "desc",
+    status_filter: str = "all",
+    min_spend: float = 0.0,
+    campaign_name_filter: str = "",
+    date_start: Optional[str] = None,
+    date_end: Optional[str] = None,
+) -> str:
+    """Get top or bottom ads ranked by a performance metric.
+
+    Use this for questions like "what are my best ads?" or "show worst performers".
+    For deep diagnostics (what's wrong, which ads to kill), use analyze_account instead.
+
+    Args:
+        ctx: Run context with AgentDependencies.
+        brand_id: Brand UUID string.
+        sort_by: Metric to rank by. Valid: roas, spend, ctr, cpc, cpm, purchases,
+            purchase_value, conversion_rate, impressions, reach, link_clicks,
+            add_to_carts, frequency.
+        days_back: Days to look back (default 30). Ignored if date_start/date_end set.
+        limit: Number of ads to return (default 10).
+        sort_order: 'desc' for top/best, 'asc' for bottom/worst.
+        status_filter: 'all', 'active', or 'paused'.
+        min_spend: Minimum spend threshold (e.g., 50.0 for $50+).
+        campaign_name_filter: Filter to a specific campaign by name substring.
+        date_start: Explicit start date, ISO format (e.g., '2026-01-01').
+        date_end: Explicit end date, ISO format (e.g., '2026-01-31').
+
+    Returns:
+        Formatted markdown table with top/bottom ads.
+    """
+    valid_sort_options = [
+        "roas", "spend", "ctr", "cpc", "cpm", "purchases", "purchase_value",
+        "conversion_rate", "impressions", "reach", "link_clicks", "add_to_carts",
+        "frequency",
+    ]
+    if sort_by not in valid_sort_options:
+        return f"Invalid sort_by '{sort_by}'. Valid options: {valid_sort_options}"
+
+    valid_orders = ["desc", "asc"]
+    if sort_order not in valid_orders:
+        return f"Invalid sort_order '{sort_order}'. Valid options: {valid_orders}"
+
+    valid_statuses = ["all", "active", "paused"]
+    if status_filter not in valid_statuses:
+        return f"Invalid status_filter '{status_filter}'. Valid options: {valid_statuses}"
+
+    try:
+        result = ctx.deps.ad_performance_query.get_top_ads(
+            brand_id=brand_id,
+            sort_by=sort_by,
+            days_back=days_back,
+            limit=limit,
+            sort_order=sort_order,
+            status_filter=status_filter,
+            min_spend=min_spend,
+            campaign_name_filter=campaign_name_filter,
+            date_start=date_start,
+            date_end=date_end,
+        )
+    except Exception as e:
+        logger.error(f"get_top_ads failed: {e}")
+        return f"Failed to query top ads: {e}"
+
+    ads = result["ads"]
+    meta = result["meta"]
+
+    if not ads:
+        return (
+            f"No ads found for the given filters.\n"
+            f"Period: {meta['date_start']} to {meta['date_end']}"
+        )
+
+    # Format as markdown table
+    direction = "Top" if sort_order == "desc" else "Bottom"
+    metric_labels = {
+        "roas": "ROAS", "spend": "Spend", "ctr": "CTR", "cpc": "CPC",
+        "cpm": "CPM", "purchases": "Purchases", "purchase_value": "Revenue",
+        "conversion_rate": "Conv Rate", "impressions": "Impressions",
+        "reach": "Reach", "link_clicks": "Clicks", "add_to_carts": "ATCs",
+        "frequency": "Frequency",
+    }
+
+    lines = [
+        f"## {direction} {meta['returned']} Ads by {metric_labels.get(sort_by, sort_by)}",
+        f"*Period: {meta['date_start']} to {meta['date_end']} | "
+        f"{meta['total_matching']} ads matched filters*\n",
+        "| # | Ad Name | Spend | ROAS | CTR | CPC | Purchases | Status |",
+        "|---|---------|-------|------|-----|-----|-----------|--------|",
+    ]
+
+    for i, ad in enumerate(ads, 1):
+        name = (ad["ad_name"] or "Unknown")[:40]
+        if len(ad.get("ad_name", "") or "") > 40:
+            name += "..."
+        status = (ad.get("ad_status") or "-").title()
+        lines.append(
+            f"| {i} | {name} | "
+            f"${ad['spend']:,.2f} | "
+            f"{ad['roas']:.2f}x | "
+            f"{ad['ctr']:.2f}% | "
+            f"${ad['cpc']:.2f} | "
+            f"{ad['purchases']} | "
+            f"{status} |"
+        )
+
+    output = "\n".join(lines)
+    ctx.deps.result_cache.custom["ad_intelligence_result"] = {
+        "tool_name": "get_top_ads",
+        "rendered_markdown": output,
+    }
+    return output
+
+
+@ad_intelligence_agent.tool(
+    metadata={
+        'category': 'Performance',
+        'platform': 'Meta',
+        'use_cases': [
+            'Account-level spend and performance summary',
+            'Period-over-period comparison',
+        ],
+        'examples': [
+            'How much did I spend this week?',
+            'Compare this month to last month',
+            'What was my ROAS last week?',
+        ],
+    }
+)
+async def get_account_summary(
+    ctx: RunContext[AgentDependencies],
+    brand_id: str,
+    days_back: int = 30,
+    compare_previous: bool = False,
+    date_start: Optional[str] = None,
+    date_end: Optional[str] = None,
+) -> str:
+    """Get account-level performance summary with optional period comparison.
+
+    Use this for "how much did I spend?" or "compare this week to last week".
+    For deep diagnostics, use analyze_account instead.
+
+    Args:
+        ctx: Run context with AgentDependencies.
+        brand_id: Brand UUID string.
+        days_back: Days to look back (default 30). Ignored if date_start/date_end set.
+        compare_previous: If true, also shows the previous period of same length
+            and percentage changes.
+        date_start: Explicit start date, ISO format (e.g., '2026-01-01').
+        date_end: Explicit end date, ISO format (e.g., '2026-01-31').
+
+    Returns:
+        Formatted markdown with account summary and optional comparison.
+    """
+    try:
+        result = ctx.deps.ad_performance_query.get_account_summary(
+            brand_id=brand_id,
+            days_back=days_back,
+            compare_previous=compare_previous,
+            date_start=date_start,
+            date_end=date_end,
+        )
+    except Exception as e:
+        logger.error(f"get_account_summary failed: {e}")
+        return f"Failed to query account summary: {e}"
+
+    cur = result["current"]
+    meta = result["meta"]
+
+    lines = [
+        f"## Account Summary",
+        f"*Period: {meta['date_start']} to {meta['date_end']} ({meta['days']} days)*\n",
+        "| Metric | Value |",
+        "|--------|-------|",
+        f"| Spend | ${cur['spend']:,.2f} |",
+        f"| Impressions | {cur['impressions']:,} |",
+        f"| Reach | {cur['reach']:,} |",
+        f"| Link Clicks | {cur['link_clicks']:,} |",
+        f"| CTR | {cur['ctr']:.2f}% |",
+        f"| CPC | ${cur['cpc']:.2f} |",
+        f"| CPM | ${cur['cpm']:.2f} |",
+        f"| Add to Carts | {cur['add_to_carts']:,} |",
+        f"| Purchases | {cur['purchases']:,} |",
+        f"| Revenue | ${cur['purchase_value']:,.2f} |",
+        f"| ROAS | {cur['roas']:.2f}x |",
+        f"| Conv. Rate | {cur['conversion_rate']:.2f}% |",
+        f"| Active Ads | {cur['unique_ads']} |",
+        f"| Active Campaigns | {cur['unique_campaigns']} |",
+    ]
+
+    if compare_previous and "previous" in result:
+        prev = result["previous"]
+        change = result["change"]
+        prev_meta = result["previous_meta"]
+
+        def _fmt_change(val: float) -> str:
+            if val > 0:
+                return f"+{val:.1f}%"
+            elif val < 0:
+                return f"{val:.1f}%"
+            return "0%"
+
+        # Metrics where lower is better
+        lower_is_better = {"cpc", "cpm"}
+
+        def _indicator(key: str, val: float) -> str:
+            if key in lower_is_better:
+                return "improved" if val < 0 else ("worsened" if val > 0 else "flat")
+            return "improved" if val > 0 else ("worsened" if val < 0 else "flat")
+
+        lines.append(
+            f"\n### vs Previous Period ({prev_meta['date_start']} to {prev_meta['date_end']})\n"
+        )
+        lines.append("| Metric | Current | Previous | Change |")
+        lines.append("|--------|---------|----------|--------|")
+
+        comparisons = [
+            ("Spend", "spend", "${:,.2f}"),
+            ("ROAS", "roas", "{:.2f}x"),
+            ("CTR", "ctr", "{:.2f}%"),
+            ("CPC", "cpc", "${:.2f}"),
+            ("Purchases", "purchases", "{:,}"),
+            ("Revenue", "purchase_value", "${:,.2f}"),
+            ("Conv. Rate", "conversion_rate", "{:.2f}%"),
+        ]
+
+        for label, key, fmt in comparisons:
+            c_val = cur.get(key, 0)
+            p_val = prev.get(key, 0)
+            chg = change.get(key, 0)
+            lines.append(
+                f"| {label} | {fmt.format(c_val)} | {fmt.format(p_val)} | {_fmt_change(chg)} |"
+            )
+
+    output = "\n".join(lines)
+    ctx.deps.result_cache.custom["ad_intelligence_result"] = {
+        "tool_name": "get_account_summary",
+        "rendered_markdown": output,
+    }
+    return output
+
+
+@ad_intelligence_agent.tool(
+    metadata={
+        'category': 'Performance',
+        'platform': 'Meta',
+        'use_cases': [
+            'Campaign-level performance breakdown',
+            'Adset-level performance breakdown',
+        ],
+        'examples': [
+            'Which campaigns are performing best?',
+            'Show campaign breakdown by ROAS',
+            'How are my ad sets doing?',
+        ],
+    }
+)
+async def get_campaign_breakdown(
+    ctx: RunContext[AgentDependencies],
+    brand_id: str,
+    level: str = "campaign",
+    days_back: int = 30,
+    sort_by: str = "spend",
+    limit: int = 20,
+    date_start: Optional[str] = None,
+    date_end: Optional[str] = None,
+) -> str:
+    """Get performance breakdown by campaign or adset level.
+
+    Use this for "which campaigns are best?" or "show adset performance".
+
+    Args:
+        ctx: Run context with AgentDependencies.
+        brand_id: Brand UUID string.
+        level: Aggregation level. Valid: 'campaign' or 'adset'.
+        days_back: Days to look back (default 30). Ignored if date_start/date_end set.
+        sort_by: Metric to sort by. Valid: roas, spend, ctr, cpc, cpm, purchases,
+            purchase_value, conversion_rate, impressions, link_clicks, add_to_carts.
+        limit: Number of items to return (default 20).
+        date_start: Explicit start date, ISO format (e.g., '2026-01-01').
+        date_end: Explicit end date, ISO format (e.g., '2026-01-31').
+
+    Returns:
+        Formatted markdown table with campaign or adset breakdown.
+    """
+    valid_levels = ["campaign", "adset"]
+    if level not in valid_levels:
+        return f"Invalid level '{level}'. Valid options: {valid_levels}"
+
+    valid_sort_options = [
+        "roas", "spend", "ctr", "cpc", "cpm", "purchases", "purchase_value",
+        "conversion_rate", "impressions", "link_clicks", "add_to_carts",
+    ]
+    if sort_by not in valid_sort_options:
+        return f"Invalid sort_by '{sort_by}'. Valid options: {valid_sort_options}"
+
+    try:
+        result = ctx.deps.ad_performance_query.get_campaign_breakdown(
+            brand_id=brand_id,
+            level=level,
+            days_back=days_back,
+            sort_by=sort_by,
+            limit=limit,
+            date_start=date_start,
+            date_end=date_end,
+        )
+    except Exception as e:
+        logger.error(f"get_campaign_breakdown failed: {e}")
+        return f"Failed to query campaign breakdown: {e}"
+
+    items = result["items"]
+    meta = result["meta"]
+
+    if not items:
+        return (
+            f"No {level} data found.\n"
+            f"Period: {meta['date_start']} to {meta['date_end']}"
+        )
+
+    level_title = "Campaign" if level == "campaign" else "Ad Set"
+    name_key = "campaign_name" if level == "campaign" else "adset_name"
+
+    lines = [
+        f"## {level_title} Breakdown",
+        f"*Period: {meta['date_start']} to {meta['date_end']} | "
+        f"{meta['total']} total {level}s*\n",
+        f"| # | {level_title} | Spend | ROAS | CTR | Purchases | Ads |",
+        f"|---|{'---' * len(level_title)}|-------|------|-----|-----------|-----|",
+    ]
+
+    for i, item in enumerate(items, 1):
+        name = (item.get(name_key) or "Unknown")[:35]
+        if len(item.get(name_key, "") or "") > 35:
+            name += "..."
+        lines.append(
+            f"| {i} | {name} | "
+            f"${item['spend']:,.2f} | "
+            f"{item['roas']:.2f}x | "
+            f"{item['ctr']:.2f}% | "
+            f"{item['purchases']} | "
+            f"{item['ad_count']} |"
+        )
+
+    output = "\n".join(lines)
+    ctx.deps.result_cache.custom["ad_intelligence_result"] = {
+        "tool_name": "get_campaign_breakdown",
+        "rendered_markdown": output,
+    }
+    return output
+
+
+@ad_intelligence_agent.tool(
+    metadata={
+        'category': 'Performance',
+        'platform': 'Meta',
+        'use_cases': [
+            'Deep dive into a specific ad',
+            'View daily trends for an ad',
+            'Look up ad by name or ID',
+        ],
+        'examples': [
+            'Tell me about ad 12345',
+            'Show me details for the collagen video ad',
+            'How is my "Summer Sale" ad performing?',
+        ],
+    }
+)
+async def get_ad_details(
+    ctx: RunContext[AgentDependencies],
+    brand_id: str,
+    ad_identifier: str,
+    days_back: int = 30,
+    date_start: Optional[str] = None,
+    date_end: Optional[str] = None,
+) -> str:
+    """Get detailed performance for a specific ad including daily trends.
+
+    Searches by Meta ad ID (exact match) or ad name (substring match).
+    Shows aggregate summary plus day-by-day performance trend.
+
+    Args:
+        ctx: Run context with AgentDependencies.
+        brand_id: Brand UUID string.
+        ad_identifier: Meta ad ID (exact) or ad name (substring search).
+        days_back: Days to look back (default 30). Ignored if date_start/date_end set.
+        date_start: Explicit start date, ISO format (e.g., '2026-01-01').
+        date_end: Explicit end date, ISO format (e.g., '2026-01-31').
+
+    Returns:
+        Formatted markdown with ad summary and daily trend table.
+    """
+    try:
+        result = ctx.deps.ad_performance_query.get_ad_details(
+            brand_id=brand_id,
+            ad_identifier=ad_identifier,
+            days_back=days_back,
+            date_start=date_start,
+            date_end=date_end,
+        )
+    except Exception as e:
+        logger.error(f"get_ad_details failed: {e}")
+        return f"Failed to query ad details: {e}"
+
+    ad = result.get("ad")
+    daily = result.get("daily", [])
+    meta = result.get("meta", {})
+
+    if not ad:
+        error = meta.get("error", "Ad not found")
+        suggestions = meta.get("suggestions", [])
+        if suggestions:
+            lines = [f"**{error}**\n", "Did you mean one of these?\n"]
+            for s in suggestions:
+                lines.append(f"- **{s['ad_name']}** (ID: `{s['meta_ad_id']}`, Spend: ${s['spend']:,.2f})")
+            return "\n".join(lines)
+        return error
+
+    # Ad summary
+    lines = [
+        f"## Ad Details: {ad['ad_name']}",
+        f"*ID: `{ad['meta_ad_id']}` | Status: {(ad.get('ad_status') or '-').title()} | "
+        f"Campaign: {ad.get('campaign_name', '-')}*\n",
+        "### Summary",
+        "| Metric | Value |",
+        "|--------|-------|",
+        f"| Spend | ${ad['spend']:,.2f} |",
+        f"| Impressions | {ad['impressions']:,} |",
+        f"| Reach | {ad.get('reach', 0):,} |",
+        f"| Link Clicks | {ad['link_clicks']:,} |",
+        f"| CTR | {ad['ctr']:.2f}% |",
+        f"| CPC | ${ad['cpc']:.2f} |",
+        f"| CPM | ${ad['cpm']:.2f} |",
+        f"| Purchases | {ad['purchases']} |",
+        f"| Revenue | ${ad.get('purchase_value', 0):,.2f} |",
+        f"| ROAS | {ad['roas']:.2f}x |",
+        f"| Conv. Rate | {ad.get('conversion_rate', 0):.2f}% |",
+    ]
+
+    # Daily trend
+    if daily:
+        lines.append(f"\n### Daily Trend ({meta.get('days_with_data', 0)} days)")
+        lines.append("| Date | Spend | ROAS | Clicks | Purchases |")
+        lines.append("|------|-------|------|--------|-----------|")
+
+        for day in daily:
+            lines.append(
+                f"| {day['date']} | "
+                f"${day['spend']:,.2f} | "
+                f"{day['roas']:.2f}x | "
+                f"{day['link_clicks']} | "
+                f"{day['purchases']} |"
+            )
+
+        # Video metrics if present
+        has_video = any(d.get("video_views", 0) > 0 for d in daily)
+        if has_video:
+            total_views = sum(d.get("video_views", 0) for d in daily)
+            avg_hook = sum(d.get("hook_rate", 0) for d in daily if d.get("hook_rate", 0) > 0)
+            hook_days = sum(1 for d in daily if d.get("hook_rate", 0) > 0)
+            avg_hold = sum(d.get("hold_rate", 0) for d in daily if d.get("hold_rate", 0) > 0)
+            hold_days = sum(1 for d in daily if d.get("hold_rate", 0) > 0)
+
+            lines.append("\n### Video Metrics")
+            lines.append(f"- **Total Video Views:** {total_views:,}")
+            if hook_days > 0:
+                lines.append(f"- **Avg Hook Rate:** {avg_hook / hook_days:.1%}")
+            if hold_days > 0:
+                lines.append(f"- **Avg Hold Rate:** {avg_hold / hold_days:.1%}")
+
+    output = "\n".join(lines)
+    ctx.deps.result_cache.custom["ad_intelligence_result"] = {
+        "tool_name": "get_ad_details",
+        "rendered_markdown": output,
+    }
+    return output
+
+
+# =============================================================================
+# Breakdown Tools (Phase 9 — Media Type, Landing Page, Product)
+# =============================================================================
+
+
+@ad_intelligence_agent.tool(
+    metadata={
+        'category': 'Performance',
+        'platform': 'Meta',
+        'use_cases': [
+            'Compare video vs image ad performance',
+            'See which media format works best',
+            'Break down performance by creative format',
+        ],
+        'examples': [
+            'How do video ads compare to image ads?',
+            'Compare video vs image ad performance',
+            'Which media type has the best ROAS?',
+        ],
+    }
+)
+async def get_breakdown_by_media_type(
+    ctx: RunContext[AgentDependencies],
+    brand_id: str,
+    days_back: int = 30,
+    awareness_level: Optional[str] = None,
+    date_start: Optional[str] = None,
+    date_end: Optional[str] = None,
+) -> str:
+    """Get performance breakdown by media type (video/image/carousel/other).
+
+    Shows aggregate spend, ROAS, CPA, CTR, and purchases for each media type.
+    Uses classification data to determine creative format. Only classified ads
+    are included in the breakdown.
+
+    Args:
+        ctx: Run context with AgentDependencies.
+        brand_id: Brand UUID string.
+        days_back: Days to look back (default 30). Ignored if date_start/date_end set.
+        awareness_level: Optional filter. Valid: unaware, problem_aware, solution_aware,
+            product_aware, most_aware. When set, only shows ads classified at that level.
+        date_start: Explicit start date, ISO format (e.g., '2026-01-01').
+        date_end: Explicit end date, ISO format (e.g., '2026-01-31').
+
+    Returns:
+        Formatted markdown table with media type breakdown.
+    """
+    valid_awareness_levels = [
+        "unaware", "problem_aware", "solution_aware", "product_aware", "most_aware",
+    ]
+    if awareness_level and awareness_level not in valid_awareness_levels:
+        return f"Invalid awareness_level '{awareness_level}'. Valid: {valid_awareness_levels}"
+
+    try:
+        result = ctx.deps.ad_performance_query.get_breakdown_by_media_type(
+            brand_id=brand_id,
+            days_back=days_back,
+            awareness_level=awareness_level,
+            date_start=date_start,
+            date_end=date_end,
+        )
+    except Exception as e:
+        logger.error(f"get_breakdown_by_media_type failed: {e}")
+        return f"Failed to query media type breakdown: {e}"
+
+    groups = result["groups"]
+    meta = result["meta"]
+
+    if not groups:
+        msg = meta.get("message", "No data found.")
+        return f"{msg}\nPeriod: {meta['date_start']} to {meta['date_end']}"
+
+    awareness_note = f" | Awareness: {awareness_level}" if awareness_level else ""
+    lines = [
+        f"## Performance by Media Type",
+        f"*Period: {meta['date_start']} to {meta['date_end']}{awareness_note}*\n",
+        "| Media Type | Ads | Spend | ROAS | CPA | CTR | Purchases | Revenue |",
+        "|------------|-----|-------|------|-----|-----|-----------|---------|",
+    ]
+
+    for g in groups:
+        cpa_str = f"${g['cpa']:,.2f}" if g['cpa'] > 0 else "-"
+        lines.append(
+            f"| {g['media_type']} | "
+            f"{g['ad_count']} | "
+            f"${g['spend']:,.2f} | "
+            f"{g['roas']:.2f}x | "
+            f"{cpa_str} | "
+            f"{g['ctr']:.2f}% | "
+            f"{g['purchases']} | "
+            f"${g['purchase_value']:,.2f} |"
+        )
+
+    output = "\n".join(lines)
+    ctx.deps.result_cache.custom["ad_intelligence_result"] = {
+        "tool_name": "get_breakdown_by_media_type",
+        "rendered_markdown": output,
+    }
+    return output
+
+
+@ad_intelligence_agent.tool(
+    metadata={
+        'category': 'Performance',
+        'platform': 'Meta',
+        'use_cases': [
+            'See which landing pages perform best',
+            'Break down performance by offer variant',
+            'Compare landing page ROAS and CPA',
+        ],
+        'examples': [
+            'Which landing pages have the best ROAS?',
+            'Break down performance by offer variant',
+            'Show me CPA by landing page',
+            'Which LPs convert best?',
+        ],
+    }
+)
+async def get_breakdown_by_landing_page(
+    ctx: RunContext[AgentDependencies],
+    brand_id: str,
+    days_back: int = 30,
+    sort_by: str = "spend",
+    limit: int = 20,
+    awareness_level: Optional[str] = None,
+    date_start: Optional[str] = None,
+    date_end: Optional[str] = None,
+) -> str:
+    """Get performance breakdown by landing page (offer variant).
+
+    Shows aggregate spend, ROAS, CPA, and purchases for ALL ad types
+    (video, image, carousel) per landing page. For video hook-specific
+    LP performance, use hook_analysis with analysis_type='by_lp' instead.
+
+    Ads without a classified landing page go into an "Unclassified" bucket.
+
+    Args:
+        ctx: Run context with AgentDependencies.
+        brand_id: Brand UUID string.
+        days_back: Days to look back (default 30). Ignored if date_start/date_end set.
+        sort_by: Metric to sort by. Valid: spend, roas, cpa, purchases, purchase_value,
+            ctr, cpc, impressions, ad_count.
+        limit: Number of landing pages to return (default 20).
+        awareness_level: Optional filter. Valid: unaware, problem_aware, solution_aware,
+            product_aware, most_aware.
+        date_start: Explicit start date, ISO format (e.g., '2026-01-01').
+        date_end: Explicit end date, ISO format (e.g., '2026-01-31').
+
+    Returns:
+        Formatted markdown table with landing page breakdown.
+    """
+    valid_awareness_levels = [
+        "unaware", "problem_aware", "solution_aware", "product_aware", "most_aware",
+    ]
+    if awareness_level and awareness_level not in valid_awareness_levels:
+        return f"Invalid awareness_level '{awareness_level}'. Valid: {valid_awareness_levels}"
+
+    valid_sort_options = [
+        "spend", "roas", "cpa", "purchases", "purchase_value",
+        "ctr", "cpc", "impressions", "ad_count",
+    ]
+    if sort_by not in valid_sort_options:
+        return f"Invalid sort_by '{sort_by}'. Valid options: {valid_sort_options}"
+
+    try:
+        result = ctx.deps.ad_performance_query.get_breakdown_by_landing_page(
+            brand_id=brand_id,
+            days_back=days_back,
+            sort_by=sort_by,
+            limit=limit,
+            awareness_level=awareness_level,
+            date_start=date_start,
+            date_end=date_end,
+        )
+    except Exception as e:
+        logger.error(f"get_breakdown_by_landing_page failed: {e}")
+        return f"Failed to query landing page breakdown: {e}"
+
+    items = result["items"]
+    meta = result["meta"]
+
+    if not items:
+        msg = meta.get("message", "No data found.")
+        return f"{msg}\nPeriod: {meta['date_start']} to {meta['date_end']}"
+
+    awareness_note = f" | Awareness: {awareness_level}" if awareness_level else ""
+    lines = [
+        f"## Performance by Landing Page",
+        f"*Period: {meta['date_start']} to {meta['date_end']}{awareness_note} | "
+        f"{meta['total']} total LPs*\n",
+        "| # | Landing Page | Ads | Spend | ROAS | CPA | Purchases |",
+        "|---|-------------|-----|-------|------|-----|-----------|",
+    ]
+
+    for i, item in enumerate(items, 1):
+        url = item.get("url") or "Unknown"
+        title = item.get("page_title") or ""
+        # Show title if available, otherwise show URL path
+        if title:
+            display = title[:40]
+            if len(title) > 40:
+                display += "..."
+        else:
+            # Strip protocol for cleaner display
+            display_url = url.replace("https://", "").replace("http://", "")
+            display = display_url[:45]
+            if len(display_url) > 45:
+                display += "..."
+        cpa_str = f"${item['cpa']:,.2f}" if item['cpa'] > 0 else "-"
+        lines.append(
+            f"| {i} | {display} | "
+            f"{item['ad_count']} | "
+            f"${item['spend']:,.2f} | "
+            f"{item['roas']:.2f}x | "
+            f"{cpa_str} | "
+            f"{item['purchases']} |"
+        )
+
+    output = "\n".join(lines)
+    ctx.deps.result_cache.custom["ad_intelligence_result"] = {
+        "tool_name": "get_breakdown_by_landing_page",
+        "rendered_markdown": output,
+    }
+    return output
+
+
+@ad_intelligence_agent.tool(
+    metadata={
+        'category': 'Performance',
+        'platform': 'Meta',
+        'use_cases': [
+            'See which products perform best',
+            'Compare product ad performance',
+            'Break down spend and ROAS by product',
+        ],
+        'examples': [
+            'Which products are performing best?',
+            'Show me CPA by product',
+            'Which products are most profitable?',
+            'Break down performance by product',
+        ],
+    }
+)
+async def get_breakdown_by_product(
+    ctx: RunContext[AgentDependencies],
+    brand_id: str,
+    days_back: int = 30,
+    sort_by: str = "spend",
+    limit: int = 20,
+    awareness_level: Optional[str] = None,
+    date_start: Optional[str] = None,
+    date_end: Optional[str] = None,
+) -> str:
+    """Get performance breakdown by product.
+
+    Groups ads by the product their landing page promotes. Uses product_id
+    for reliable grouping when available, falls back to product_name text.
+    Ads without product info go into "Unknown Product" bucket.
+
+    Args:
+        ctx: Run context with AgentDependencies.
+        brand_id: Brand UUID string.
+        days_back: Days to look back (default 30). Ignored if date_start/date_end set.
+        sort_by: Metric to sort by. Valid: spend, roas, cpa, purchases, purchase_value,
+            ctr, cpc, impressions, ad_count.
+        limit: Number of products to return (default 20).
+        awareness_level: Optional filter. Valid: unaware, problem_aware, solution_aware,
+            product_aware, most_aware.
+        date_start: Explicit start date, ISO format (e.g., '2026-01-01').
+        date_end: Explicit end date, ISO format (e.g., '2026-01-31').
+
+    Returns:
+        Formatted markdown table with product breakdown.
+    """
+    valid_awareness_levels = [
+        "unaware", "problem_aware", "solution_aware", "product_aware", "most_aware",
+    ]
+    if awareness_level and awareness_level not in valid_awareness_levels:
+        return f"Invalid awareness_level '{awareness_level}'. Valid: {valid_awareness_levels}"
+
+    valid_sort_options = [
+        "spend", "roas", "cpa", "purchases", "purchase_value",
+        "ctr", "cpc", "impressions", "ad_count",
+    ]
+    if sort_by not in valid_sort_options:
+        return f"Invalid sort_by '{sort_by}'. Valid options: {valid_sort_options}"
+
+    try:
+        result = ctx.deps.ad_performance_query.get_breakdown_by_product(
+            brand_id=brand_id,
+            days_back=days_back,
+            sort_by=sort_by,
+            limit=limit,
+            awareness_level=awareness_level,
+            date_start=date_start,
+            date_end=date_end,
+        )
+    except Exception as e:
+        logger.error(f"get_breakdown_by_product failed: {e}")
+        return f"Failed to query product breakdown: {e}"
+
+    items = result["items"]
+    meta = result["meta"]
+
+    if not items:
+        msg = meta.get("message", "No data found.")
+        return f"{msg}\nPeriod: {meta['date_start']} to {meta['date_end']}"
+
+    awareness_note = f" | Awareness: {awareness_level}" if awareness_level else ""
+    lines = [
+        f"## Performance by Product",
+        f"*Period: {meta['date_start']} to {meta['date_end']}{awareness_note} | "
+        f"{meta['total']} total products*\n",
+        "| # | Product | Ads | Spend | ROAS | CPA | Purchases | Revenue |",
+        "|---|---------|-----|-------|------|-----|-----------|---------|",
+    ]
+
+    for i, item in enumerate(items, 1):
+        name = (item.get("product_name") or "Unknown")[:30]
+        if len(item.get("product_name", "") or "") > 30:
+            name += "..."
+        cpa_str = f"${item['cpa']:,.2f}" if item['cpa'] > 0 else "-"
+        lines.append(
+            f"| {i} | {name} | "
+            f"{item['ad_count']} | "
+            f"${item['spend']:,.2f} | "
+            f"{item['roas']:.2f}x | "
+            f"{cpa_str} | "
+            f"{item['purchases']} | "
+            f"${item['purchase_value']:,.2f} |"
+        )
+
+    output = "\n".join(lines)
+    ctx.deps.result_cache.custom["ad_intelligence_result"] = {
+        "tool_name": "get_breakdown_by_product",
+        "rendered_markdown": output,
+    }
+    return output
+
+
+logger.info("Ad Intelligence Agent initialized with 19 tools")
