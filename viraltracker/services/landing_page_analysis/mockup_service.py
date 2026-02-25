@@ -622,56 +622,88 @@ class MockupService:
         analysis_mockup_html: Optional[str] = None,
         classification: Optional[Dict[str, Any]] = None,
         brand_profile: Optional[Dict[str, Any]] = None,
+        source_url: Optional[str] = None,
     ) -> Optional[str]:
         """Generate blueprint mockup by rewriting analysis HTML with brand copy.
 
-        Carries CSS from the analysis mockup through the rewrite pipeline.
-        Returns None if no analysis HTML is available (V1 wireframe path is
-        intentionally disabled to prevent leaking strategic instructions).
+        Uses a slot-based pipeline: extract slot text, send structured JSON to AI,
+        then programmatically inject rewritten text into the untouched template HTML.
+        Also replaces competitor brand name in non-slot text.
+
+        Args:
+            blueprint: Reconstruction blueprint with strategic directions.
+            analysis_mockup_html: Full analysis mockup HTML (with data-slot markers).
+            classification: Page classification data.
+            brand_profile: Full brand profile from BrandProfileService.
+            source_url: URL of the competitor page (for competitor name extraction).
+
+        Returns None if no analysis HTML is available.
         """
-        if analysis_mockup_html:
-            # Detect surgery output for CSS sanitization (preserves HTTPS urls)
-            self.is_surgery_mode = 'data-pipeline="surgery"' in analysis_mockup_html
-
-            # Extract CSS before stripping (re-sanitized for defense-in-depth)
-            page_body, page_css = self._extract_page_css_and_strip(analysis_mockup_html)
-
-            rewritten = None
-            if brand_profile and page_body.strip():
-                logger.info(
-                    "Starting AI rewrite for blueprint mockup "
-                    f"(brand={(brand_profile.get('brand_basics') or {}).get('name') or '?'}, "
-                    f"html_len={len(page_body)})"
-                )
-                # Let exceptions propagate — UI will show the error
-                rewritten = self._rewrite_html_for_brand(
-                    page_body, blueprint, brand_profile
-                )
-                logger.info("AI rewrite completed for blueprint mockup")
-            elif brand_profile:
-                logger.warning("Stripped page body is empty — skipping AI rewrite")
-            else:
-                logger.info(
-                    "No brand_profile provided — skipping AI rewrite, "
-                    "using stripped analysis HTML as fallback"
-                )
-
-            if rewritten:
-                inner = self._sanitize_html(rewritten)
-            else:
-                # Fallback: use analysis body as-is (STILL inject page_css)
-                inner = self._sanitize_html(page_body)
-
-            # page_css injected in ALL paths
-            return self._wrap_mockup(inner, classification, mode="blueprint", page_css=page_css)
-        else:
-            # Do NOT fall back to V1 wireframe — _render_html() renders
-            # brand_mapping fields that contain strategic instructions.
+        if not analysis_mockup_html:
             logger.warning(
                 "No analysis_mockup_html for blueprint mockup; "
                 "skipping V1 fallback to prevent instruction leak."
             )
             return None
+
+        self.is_surgery_mode = 'data-pipeline="surgery"' in analysis_mockup_html
+        page_body, page_css = self._extract_page_css_and_strip(analysis_mockup_html)
+
+        rewritten_body = page_body
+        if brand_profile and page_body.strip():
+            try:
+                brand_name_str = (brand_profile.get("brand_basics") or {}).get("name", "")
+                logger.info(
+                    f"Starting slot-based rewrite for blueprint mockup "
+                    f"(brand={brand_name_str or '?'}, html_len={len(page_body)})"
+                )
+
+                # 1. Extract slot names + current text content
+                slot_contents = self._extract_slots_with_content(page_body)
+                logger.info(f"Extracted {len(slot_contents)} slots with content")
+
+                # 2. Strip competitor brand name from template (BEFORE slot injection)
+                competitor_name = self._extract_competitor_name(
+                    blueprint, source_url=source_url, html=analysis_mockup_html
+                )
+                if competitor_name and brand_name_str:
+                    logger.info(f"Replacing competitor brand '{competitor_name}' with '{brand_name_str}'")
+                    rewritten_body = self._replace_competitor_brand(
+                        page_body, competitor_name, brand_name_str
+                    )
+                else:
+                    rewritten_body = page_body
+
+                if slot_contents:
+                    # 3. Map slots to blueprint sections
+                    slot_sections = self._map_slots_to_sections(page_body, blueprint)
+
+                    # 4. AI rewrite: JSON in, JSON out (no HTML sent to AI)
+                    rewritten_map = self._rewrite_slots_for_brand(
+                        slot_contents, slot_sections, blueprint, brand_profile
+                    )
+
+                    # 5. Programmatic slot injection (deterministic, no AI risk)
+                    rewritten_body = self._template_swap(
+                        rewritten_body, blueprint, brand_profile, slot_map=rewritten_map
+                    )
+                    logger.info("Slot-based rewrite completed successfully")
+                else:
+                    logger.warning("No data-slot elements found — brand name replace only")
+
+            except Exception as e:
+                logger.error(f"Slot-based rewrite failed: {e}, using analysis HTML as fallback")
+                rewritten_body = page_body
+        elif brand_profile:
+            logger.warning("Stripped page body is empty — skipping rewrite")
+        else:
+            logger.info(
+                "No brand_profile provided — skipping rewrite, "
+                "using stripped analysis HTML as fallback"
+            )
+
+        inner = self._sanitize_html(rewritten_body)
+        return self._wrap_mockup(inner, classification, mode="blueprint", page_css=page_css)
 
     # ------------------------------------------------------------------
     # Normalization — Element Detection (Phase 1)
@@ -1140,6 +1172,77 @@ class MockupService:
         collector.feed(html)
         return collector.slots
 
+    _VOID_ELEMENTS = frozenset([
+        'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input',
+        'link', 'meta', 'param', 'source', 'track', 'wbr',
+    ])
+
+    def _extract_slots_with_content(self, html: str) -> Dict[str, str]:
+        """Extract {slot_name: visible_text_content} from all data-slot elements.
+
+        Returns dict preserving document order. Deduplicates: first occurrence wins.
+        Skips void elements (input, img, br, etc.) since they have no text content.
+        """
+        void_elems = self._VOID_ELEMENTS
+
+        class _SlotContentExtractor(HTMLParser):
+            def __init__(self):
+                super().__init__(convert_charrefs=True)
+                self.slots: Dict[str, str] = {}
+                self._seen: set = set()
+                self._capturing: bool = False
+                self._capture_tag: str = ""
+                self._capture_depth: int = 0
+                self._capture_slot: str = ""
+                self._text_buf: list = []
+
+            def handle_starttag(self, tag, attrs):
+                if self._capturing:
+                    # Track depth of same-tag nesting inside captured slot
+                    if tag == self._capture_tag:
+                        self._capture_depth += 1
+                    return
+
+                attr_dict = dict(attrs)
+                slot_name = attr_dict.get("data-slot")
+                if slot_name and slot_name not in self._seen:
+                    self._seen.add(slot_name)
+                    if tag.lower() in void_elems:
+                        # Void elements have no inner content — record empty
+                        return
+                    self._capturing = True
+                    self._capture_tag = tag
+                    self._capture_depth = 1
+                    self._capture_slot = slot_name
+                    self._text_buf = []
+                elif slot_name and slot_name in self._seen:
+                    logger.warning(f"Duplicate data-slot '{slot_name}' — skipping")
+
+            def handle_endtag(self, tag):
+                if not self._capturing:
+                    return
+                if tag == self._capture_tag:
+                    self._capture_depth -= 1
+                    if self._capture_depth == 0:
+                        text = " ".join("".join(self._text_buf).split()).strip()
+                        self.slots[self._capture_slot] = text
+                        self._capturing = False
+                        self._capture_tag = ""
+                        self._capture_slot = ""
+                        self._text_buf = []
+
+            def handle_data(self, data):
+                if self._capturing:
+                    self._text_buf.append(data)
+
+        extractor = _SlotContentExtractor()
+        extractor.feed(html)
+        # If parser ended mid-capture (malformed HTML), save what we have
+        if extractor._capturing and extractor._capture_slot:
+            text = " ".join("".join(extractor._text_buf).split()).strip()
+            extractor.slots[extractor._capture_slot] = text
+        return extractor.slots
+
     def _validate_rewrite_structure(self, original_html: str, rewritten_html: str) -> None:
         """Validate that the rewritten HTML preserved the data-slot structure."""
         original_slots = set(self._extract_slot_names(original_html))
@@ -1370,6 +1473,256 @@ class MockupService:
         return html[:max_chars]
 
     # ------------------------------------------------------------------
+    # Competitor Brand Replacement
+    # ------------------------------------------------------------------
+
+    def _extract_competitor_name(
+        self, blueprint: Dict, source_url: Optional[str] = None, html: str = ""
+    ) -> Optional[str]:
+        """Extract competitor brand name from available sources.
+
+        Priority: source_url domain (refined via HTML text) > blueprint metadata > <title> tag.
+        Returns None if no reliable name can be extracted.
+        """
+        # 1. source_url parameter (most reliable — actual URL from analysis record)
+        if source_url:
+            domain_name = self._domain_to_brand_name(source_url)
+            if domain_name:
+                # Try to find a better-formatted version in the HTML text
+                # e.g., domain "bobanutrition" → find "Boba Nutrition" in text
+                refined = self._refine_name_from_html(domain_name, html)
+                if refined:
+                    return refined
+                return domain_name
+
+        # 2. Blueprint metadata competitor_url (may be free-text, not always a URL)
+        rb = blueprint
+        if "reconstruction_blueprint" in rb:
+            rb = rb["reconstruction_blueprint"]
+        meta = rb.get("metadata", rb.get("strategy_summary", {}))
+        comp_url = meta.get("competitor_url", meta.get("source_url", ""))
+        name = self._domain_to_brand_name(comp_url)
+        if name:
+            refined = self._refine_name_from_html(name, html)
+            return refined or name
+
+        # 3. <title> tag in the HTML
+        title_match = re.search(r'<title[^>]*>(.*?)</title>', html, re.IGNORECASE | re.DOTALL)
+        if title_match:
+            title_text = title_match.group(1).strip()
+            # Strip common suffixes
+            for suffix_pattern in [
+                r'\s*[\|\-\u2013\u2014]\s*Official\s*Site.*$',
+                r'\s*[\|\-\u2013\u2014]\s*Shop\s*Now.*$',
+                r'\s*[\|\-\u2013\u2014]\s*Home.*$',
+                r'\s*[\|\-\u2013\u2014]\s*#\d+.*$',
+                r'\s*[\|\-\u2013\u2014]\s*[^|]{0,30}$',
+            ]:
+                title_text = re.sub(suffix_pattern, '', title_text, flags=re.IGNORECASE).strip()
+            if 3 <= len(title_text) <= 40:
+                return title_text
+
+        return None
+
+    def _refine_name_from_html(self, domain_name: str, html: str) -> Optional[str]:
+        """Search HTML text for a properly-formatted version of a domain-derived name.
+
+        E.g., domain_name="Bobanutrition" → find "Boba Nutrition" in visible text.
+        Returns the properly-spaced/cased version, or None if not found.
+        """
+        if not html or not domain_name:
+            return None
+
+        # Build a pattern that allows optional spaces/hyphens between characters
+        # "Bobanutrition" → "B.o.b.a.?.n.u.t.r.i.t.i.o.n" won't work well
+        # Better: search for the domain chars with optional word breaks
+        clean = domain_name.replace(' ', '').replace('-', '').lower()
+        if len(clean) < 4:
+            return None
+
+        # Try to find word-broken version: insert optional space/hyphen between each char group
+        # Look for 2-word patterns like "Boba Nutrition", "Martin Clinic"
+        # Strategy: find all 2-3 word title-case phrases in text that contain the domain letters
+        # Simple approach: search for the domain's letters allowing a single space
+        for split_pos in range(3, len(clean) - 2):
+            left = re.escape(clean[:split_pos])
+            right = re.escape(clean[split_pos:])
+            pattern = left + r'[\s\-]' + right
+            match = re.search(pattern, html, re.IGNORECASE)
+            if match:
+                found = match.group(0).strip()
+                # Title-case normalize
+                if found[0].islower():
+                    found = found.title()
+                if len(found) >= 4:
+                    return found
+
+        return None
+
+    def _domain_to_brand_name(self, url: str) -> Optional[str]:
+        """Convert a URL to a likely brand name from the domain."""
+        if not url:
+            return None
+        url = url.strip()
+        # Reject strings that don't look like URLs (contain spaces, parentheses, etc.)
+        if ' ' in url or '(' in url or ')' in url:
+            return None
+        try:
+            parsed = urlparse(url if '://' in url else f'https://{url}')
+            domain = parsed.hostname or ""
+        except Exception:
+            return None
+
+        # Strip www and TLD
+        domain = re.sub(r'^www\.', '', domain)
+        domain = re.sub(r'\.(com|co|io|org|net|store|shop|health|life|us|ca|uk|au)(\.[a-z]{2})?$', '', domain)
+
+        if not domain or len(domain) < 3:
+            return None
+
+        # Split on hyphens
+        parts = domain.split('-')
+        # Split camelCase within parts
+        expanded = []
+        for part in parts:
+            # Insert space before uppercase letters (camelCase)
+            split_camel = re.sub(r'([a-z])([A-Z])', r'\1 \2', part)
+            expanded.append(split_camel)
+        name = ' '.join(expanded)
+        # Title case
+        name = name.title()
+        if len(name) < 3:
+            return None
+        return name
+
+    def _replace_competitor_brand(self, html: str, competitor_name: str, brand_name: str) -> str:
+        """Replace competitor brand in text nodes and safe attributes (alt, title, aria-label).
+
+        Uses HTMLParser to walk the DOM. NEVER replaces in class, id, href, src,
+        data-*, style attributes, or <style>/<script> blocks.
+        """
+        if not competitor_name or len(competitor_name) < 3:
+            return html
+
+        # Build replacement variants
+        variants = set()
+        variants.add(competitor_name)
+        variants.add(competitor_name.lower())
+        variants.add(competitor_name.upper())
+        # No-space variant
+        no_space = competitor_name.replace(' ', '')
+        variants.add(no_space)
+        variants.add(no_space.lower())
+        # Hyphenated variant
+        hyphenated = competitor_name.replace(' ', '-')
+        variants.add(hyphenated)
+        variants.add(hyphenated.lower())
+
+        # Build case-insensitive regex with word boundaries
+        escaped_variants = [re.escape(v) for v in sorted(variants, key=len, reverse=True)]
+        pattern = re.compile(r'\b(' + '|'.join(escaped_variants) + r')\b', re.IGNORECASE)
+
+        _SAFE_ATTRS = frozenset(['alt', 'title', 'aria-label'])
+
+        class _BrandReplacer(HTMLParser):
+            def __init__(self):
+                super().__init__(convert_charrefs=False)
+                self.parts: list = []
+                self._in_style = False
+                self._in_script = False
+
+            def _replace_text(self, text: str) -> str:
+                """Case-preserving replacement."""
+                def _repl(m):
+                    matched = m.group(0)
+                    if matched.isupper():
+                        return brand_name.upper()
+                    if matched.istitle() or matched[0].isupper():
+                        return brand_name
+                    return brand_name.lower()
+                return pattern.sub(_repl, text)
+
+            def handle_starttag(self, tag, attrs):
+                if tag in ('style',):
+                    self._in_style = True
+                if tag in ('script',):
+                    self._in_script = True
+
+                # Rebuild tag, replacing only safe attribute values
+                new_attrs = []
+                for name, value in attrs:
+                    if value and name.lower() in _SAFE_ATTRS:
+                        new_attrs.append((name, self._replace_text(value)))
+                    else:
+                        new_attrs.append((name, value))
+
+                # Reconstruct the start tag
+                parts = [f'<{tag}']
+                for name, value in new_attrs:
+                    if value is None:
+                        parts.append(f' {name}')
+                    else:
+                        parts.append(f' {name}="{_html_module.escape(value, quote=True)}"')
+                parts.append('>')
+                self.parts.append(''.join(parts))
+
+            def handle_endtag(self, tag):
+                if tag in ('style',):
+                    self._in_style = False
+                if tag in ('script',):
+                    self._in_script = False
+                self.parts.append(f'</{tag}>')
+
+            def handle_startendtag(self, tag, attrs):
+                # Self-closing tags — same safe-attr logic
+                new_attrs = []
+                for name, value in attrs:
+                    if value and name.lower() in _SAFE_ATTRS:
+                        new_attrs.append((name, self._replace_text(value)))
+                    else:
+                        new_attrs.append((name, value))
+                parts = [f'<{tag}']
+                for name, value in new_attrs:
+                    if value is None:
+                        parts.append(f' {name}')
+                    else:
+                        parts.append(f' {name}="{_html_module.escape(value, quote=True)}"')
+                parts.append(' />')
+                self.parts.append(''.join(parts))
+
+            def handle_data(self, data):
+                if self._in_style or self._in_script:
+                    self.parts.append(data)
+                else:
+                    self.parts.append(self._replace_text(data))
+
+            def handle_entityref(self, name):
+                self.parts.append(f'&{name};')
+
+            def handle_charref(self, name):
+                self.parts.append(f'&#{name};')
+
+            def handle_comment(self, data):
+                self.parts.append(f'<!--{data}-->')
+
+            def handle_decl(self, decl):
+                self.parts.append(f'<!{decl}>')
+
+            def unknown_decl(self, data):
+                self.parts.append(f'<!{data}>')
+
+            def get_result(self) -> str:
+                return ''.join(self.parts)
+
+        replacer = _BrandReplacer()
+        try:
+            replacer.feed(html)
+            return replacer.get_result()
+        except Exception:
+            logger.warning("HTMLParser failed in _replace_competitor_brand, returning as-is")
+            return html
+
+    # ------------------------------------------------------------------
     # AI HTML Rewrite (Blueprint Copywriting)
     # ------------------------------------------------------------------
 
@@ -1382,15 +1735,12 @@ class MockupService:
         blueprint: Dict[str, Any],
         brand_profile: Dict[str, Any],
     ) -> str:
-        """Rewrite ALL visible text in the page body HTML for the brand.
+        """DEPRECATED: Use _rewrite_slots_for_brand() + _template_swap() instead.
 
-        Args:
-            page_body: Stripped div-level page content (no html/head/body wrapper).
-            blueprint: Reconstruction blueprint with strategic directions.
-            brand_profile: Full brand profile from BrandProfileService.
+        Kept for backward compatibility. The new slot-based pipeline in
+        generate_blueprint_mockup() no longer calls this method.
 
-        Returns:
-            Rewritten div-level HTML (no html/head/body wrapper).
+        Rewrites ALL visible text in the page body HTML for the brand.
         """
         from pydantic_ai import Agent
         from viraltracker.core.config import Config
@@ -1490,6 +1840,239 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
         self._validate_rewrite_structure(page_body, raw)
 
         return raw
+
+    # ------------------------------------------------------------------
+    # Slot-Based AI Rewrite (Blueprint Copywriting v2)
+    # ------------------------------------------------------------------
+
+    _SLOT_REWRITE_SYSTEM_PROMPT = (
+        "You are an expert direct-response copywriter. You receive a structured JSON "
+        "payload describing a landing page's text slots grouped by section, along with "
+        "brand data and strategic directions.\n\n"
+        "Your job: rewrite EVERY slot's text for the target brand.\n\n"
+        "## Rules\n"
+        "- Return ONLY the rewrites dict mapping slot_name -> new plain text.\n"
+        "- EVERY input slot name MUST appear in your output. Missing slots = failure.\n"
+        "- Values MUST be plain text only. NO HTML tags. NO markdown formatting.\n"
+        "- NEVER use em dashes (\u2014) or en dashes (\u2013). Use commas, periods, colons, or semicolons.\n"
+        "- Match the brand's voice and tone throughout.\n"
+        "- Maintain congruence: every slot supports one cohesive argument across all sections.\n\n"
+        "## Slot Type Constraints\n"
+        "- headline: 5-15 words, punchy and benefit-driven\n"
+        "- subheadline: 10-25 words, expands on headline promise\n"
+        "- heading: 5-15 words, section-specific benefit or transition\n"
+        "- body: paragraph-length, persuasive copy matching section direction\n"
+        "- cta: 2-5 words, action verb first (e.g., 'Get Your Free Sample')\n"
+        "- testimonial: use real customer quotes from brand data when available\n"
+        "- feature: specific benefit or ingredient highlight, concise\n"
+        "- badge/price/guarantee: concise, factual, trust-building\n"
+    )
+
+    _MAX_SLOTS_PER_BATCH = 80
+
+    def _rewrite_slots_for_brand(
+        self,
+        slot_contents: Dict[str, str],
+        slot_sections: Dict[str, Dict],
+        blueprint: Dict,
+        brand_profile: Dict,
+    ) -> Dict[str, str]:
+        """AI rewrites slot text via structured JSON. Returns {slot_name: new_text}.
+
+        All returned values are plain text, HTML-escaped, and dash-sanitized.
+        """
+        import json
+        from pydantic import BaseModel, Field
+        from pydantic_ai import Agent
+        from pydantic_ai.settings import ModelSettings
+        from viraltracker.core.config import Config
+        from viraltracker.services.agent_tracking import run_agent_sync_with_tracking
+
+        class SlotRewriteResult(BaseModel):
+            rewrites: Dict[str, str] = Field(
+                description="Map of slot_name to rewritten plain text content. "
+                "Keys MUST exactly match the input slot names. "
+                "Values MUST be plain text only - no HTML tags, no markdown."
+            )
+
+        # Build brand context
+        bb = brand_profile.get("brand_basics") or {}
+        brand_data = {
+            "name": bb.get("name", ""),
+            "voice_tone": bb.get("voice_tone", bb.get("tone", "")),
+            "product": bb.get("product_name", bb.get("product", "")),
+            "benefits": bb.get("key_benefits", bb.get("benefits", [])),
+            "ingredients": bb.get("key_ingredients", bb.get("ingredients", [])),
+            "testimonials": bb.get("testimonials", []),
+            "statistics": bb.get("statistics", bb.get("stats", [])),
+            "guarantee": bb.get("guarantee", ""),
+            "offer": bb.get("offer", ""),
+        }
+
+        # Build page strategy from blueprint
+        rb = blueprint
+        if "reconstruction_blueprint" in rb:
+            rb = rb["reconstruction_blueprint"]
+        strategy = rb.get("strategy_summary", {})
+        page_strategy = {
+            "awareness_adaptation": strategy.get("awareness_adaptation", ""),
+            "tone_direction": strategy.get("tone_direction", strategy.get("brand_voice_recommendation", "")),
+            "primary_angle": strategy.get("primary_angle", strategy.get("core_argument", "")),
+        }
+
+        # Group slots by section (preserving order)
+        section_groups: Dict[str, list] = {}
+        for slot_name, content in slot_contents.items():
+            ctx = slot_sections.get(slot_name, {})
+            sec_key = ctx.get("section_name", "global")
+            flow = ctx.get("flow_order", 999)
+            group_key = f"{flow:04d}_{sec_key}"
+            if group_key not in section_groups:
+                section_groups[group_key] = {
+                    "section_name": sec_key,
+                    "copy_direction": ctx.get("copy_direction", ""),
+                    "brand_data": ctx.get("brand_mapping", {}),
+                    "slots": [],
+                }
+            slot_type = ctx.get("slot_type", self._infer_slot_type(slot_name))
+            # Word limit heuristic per type
+            max_words = {"headline": 15, "subheadline": 25, "heading": 15,
+                         "cta": 5, "badge": 8, "price": 8, "guarantee": 15,
+                         }.get(slot_type, 80)
+            section_groups[group_key]["slots"].append({
+                "name": slot_name,
+                "type": slot_type,
+                "current": content,
+                "max_words": max_words,
+            })
+
+        # Sort section groups by key (flow order)
+        ordered_groups = [section_groups[k] for k in sorted(section_groups.keys())]
+
+        # Batch by slot count
+        batches: list = []
+        current_batch: list = []
+        current_count = 0
+        for group in ordered_groups:
+            group_size = len(group["slots"])
+            if current_count + group_size > self._MAX_SLOTS_PER_BATCH and current_batch:
+                batches.append(current_batch)
+                current_batch = []
+                current_count = 0
+            current_batch.append(group)
+            current_count += group_size
+        if current_batch:
+            batches.append(current_batch)
+
+        all_rewrites: Dict[str, str] = {}
+        tone_summary = ""
+
+        for batch_idx, batch_sections in enumerate(batches):
+            payload = {
+                "page_strategy": page_strategy,
+                "brand": brand_data,
+                "sections": [{
+                    "section_name": g["section_name"],
+                    "copy_direction": g["copy_direction"],
+                    "brand_data": g["brand_data"],
+                    "slots": g["slots"],
+                } for g in batch_sections],
+            }
+            if batch_idx > 0 and tone_summary:
+                payload["prior_batch_tone"] = tone_summary
+
+            batch_slot_names = set()
+            for g in batch_sections:
+                for s in g["slots"]:
+                    batch_slot_names.add(s["name"])
+
+            agent = Agent(
+                model=Config.get_model("creative"),
+                output_type=SlotRewriteResult,
+                system_prompt=self._SLOT_REWRITE_SYSTEM_PROMPT,
+                retries=2,
+                output_retries=3,
+            )
+
+            try:
+                result = run_agent_sync_with_tracking(
+                    agent, json.dumps(payload, ensure_ascii=False),
+                    tracker=self._usage_tracker,
+                    user_id=self._user_id,
+                    organization_id=self._organization_id,
+                    tool_name="mockup_service",
+                    operation="slot_rewrite_batch",
+                    model_settings=ModelSettings(max_tokens=16384),
+                )
+
+                if result is None or result.output is None:
+                    raise ValueError("AI slot rewrite returned no result")
+
+                batch_rewrites = result.output.rewrites
+                if not batch_rewrites:
+                    raise ValueError("AI returned empty rewrites dict")
+
+                # Post-validation pipeline
+                validated: Dict[str, str] = {}
+                for name, value in batch_rewrites.items():
+                    if name not in batch_slot_names:
+                        logger.warning(f"AI hallucinated slot '{name}' — stripping")
+                        continue
+                    # Strip HTML tags
+                    clean = re.sub(r'<[^>]+>', '', str(value))
+                    # Sanitize dashes
+                    clean = _sanitize_dashes(clean)
+                    # HTML-escape for safe injection
+                    clean = _html_module.escape(clean)
+                    # CTA length check
+                    if name.startswith("cta") and len(clean) > 40:
+                        words = clean.split()
+                        truncated = []
+                        length = 0
+                        for w in words:
+                            if length + len(w) + 1 > 40:
+                                break
+                            truncated.append(w)
+                            length += len(w) + 1
+                        clean = " ".join(truncated) if truncated else words[0]
+                    validated[name] = clean
+
+                # Fill missing slots with original text
+                missing = batch_slot_names - set(validated.keys())
+                if missing:
+                    logger.warning(
+                        f"AI missed {len(missing)} slots in batch {batch_idx}: "
+                        f"{sorted(missing)[:10]}{'...' if len(missing) > 10 else ''}"
+                    )
+                    for name in missing:
+                        validated[name] = _html_module.escape(slot_contents.get(name, ""))
+
+                all_rewrites.update(validated)
+
+                # Build tone summary for subsequent batches
+                if batch_idx == 0 and batches.__len__() > 1:
+                    headline_val = validated.get("headline", "")
+                    tone_summary = (
+                        f"Brand: {brand_data['name']}. "
+                        f"Voice: {brand_data['voice_tone']}. "
+                        f"Headline written: {headline_val[:100]}. "
+                        f"Primary angle: {page_strategy.get('primary_angle', '')}."
+                    )
+
+            except Exception as e:
+                logger.error(f"Slot rewrite batch {batch_idx} failed: {e}")
+                # Fill all batch slots with original text (escaped)
+                for name in batch_slot_names:
+                    if name not in all_rewrites:
+                        all_rewrites[name] = _html_module.escape(
+                            slot_contents.get(name, "")
+                        )
+
+        if not all_rewrites:
+            logger.error("All slot rewrite batches failed — falling back to _build_slot_map")
+            return self._build_slot_map(blueprint)
+
+        return all_rewrites
 
     # ------------------------------------------------------------------
     # AI Vision Generation
@@ -2129,21 +2712,174 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
 
         return slot_content
 
+    def _infer_slot_type(self, slot_name: str) -> str:
+        """Infer semantic type from slot name convention."""
+        name = slot_name.lower()
+        if name == "headline":
+            return "headline"
+        if name == "subheadline":
+            return "subheadline"
+        if name.startswith("heading"):
+            return "heading"
+        if name.startswith("body"):
+            return "body"
+        if name.startswith("cta"):
+            return "cta"
+        if name.startswith("testimonial"):
+            return "testimonial"
+        if name.startswith("feature"):
+            return "feature"
+        if name.startswith("price"):
+            return "price"
+        if name.startswith("guarantee"):
+            return "guarantee"
+        if name.startswith("badge"):
+            return "badge"
+        return "body"  # safe default
+
+    def _map_slots_to_sections(self, html: str, blueprint: Dict) -> Dict[str, Dict]:
+        """Map slot_name -> {section_name, copy_direction, brand_mapping, flow_order, slot_type}.
+
+        Uses DOM-based data-section ancestry + named heuristic fallback for orphan slots.
+        """
+        # 1. Walk HTML to find slot -> data-section mapping
+        class _SlotSectionMapper(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self._section_stack: list = []  # stack of (section_id, tag, depth)
+                self.slot_to_section: Dict[str, Optional[str]] = {}
+
+            def handle_starttag(self, tag, attrs):
+                attr_dict = dict(attrs)
+                section_id = attr_dict.get("data-section")
+                if section_id:
+                    self._section_stack.append((section_id, tag, 1))
+                elif self._section_stack:
+                    sid, stag, depth = self._section_stack[-1]
+                    if tag == stag:
+                        self._section_stack[-1] = (sid, stag, depth + 1)
+
+                slot_name = attr_dict.get("data-slot")
+                if slot_name:
+                    if self._section_stack:
+                        self.slot_to_section[slot_name] = self._section_stack[-1][0]
+                    else:
+                        self.slot_to_section[slot_name] = None  # orphan
+
+            def handle_endtag(self, tag):
+                if self._section_stack:
+                    sid, stag, depth = self._section_stack[-1]
+                    if tag == stag:
+                        if depth <= 1:
+                            self._section_stack.pop()
+                        else:
+                            self._section_stack[-1] = (sid, stag, depth - 1)
+
+        mapper = _SlotSectionMapper()
+        mapper.feed(html)
+
+        # 2. Sort blueprint sections by flow_order
+        rb = blueprint
+        if "reconstruction_blueprint" in rb:
+            rb = rb["reconstruction_blueprint"]
+
+        def _safe_order(s):
+            try:
+                return int(s.get("flow_order", 999))
+            except (TypeError, ValueError):
+                return 999
+
+        bp_sections = sorted(rb.get("sections", []), key=_safe_order)
+
+        # 3. Build section_id -> blueprint_section mapping (positional)
+        unique_section_ids = []
+        seen_sections = set()
+        for slot_name, sec_id in mapper.slot_to_section.items():
+            if sec_id and sec_id not in seen_sections:
+                unique_section_ids.append(sec_id)
+                seen_sections.add(sec_id)
+
+        sec_id_to_bp: Dict[str, Dict] = {}
+        for idx, sec_id in enumerate(unique_section_ids):
+            if idx < len(bp_sections):
+                sec_id_to_bp[sec_id] = bp_sections[idx]
+
+        # 4. Build per-slot context
+        result: Dict[str, Dict] = {}
+        for slot_name, sec_id in mapper.slot_to_section.items():
+            slot_type = self._infer_slot_type(slot_name)
+            bp_sec = sec_id_to_bp.get(sec_id) if sec_id else None
+
+            if bp_sec:
+                result[slot_name] = {
+                    "section_name": bp_sec.get("section_name", "unknown"),
+                    "copy_direction": bp_sec.get("copy_direction", ""),
+                    "brand_mapping": bp_sec.get("brand_mapping", {}),
+                    "flow_order": bp_sec.get("flow_order", 999),
+                    "slot_type": slot_type,
+                }
+            else:
+                # Orphan slot — use heuristic fallback
+                fallback_section = self._resolve_orphan_slot(slot_name, bp_sections)
+                result[slot_name] = {
+                    "section_name": fallback_section.get("section_name", "global"),
+                    "copy_direction": fallback_section.get("copy_direction",
+                        "Replace competitor text with brand equivalent. Match the brand's voice and tone."),
+                    "brand_mapping": fallback_section.get("brand_mapping", {}),
+                    "flow_order": fallback_section.get("flow_order", 999),
+                    "slot_type": slot_type,
+                }
+
+        return result
+
+    def _resolve_orphan_slot(self, slot_name: str, bp_sections: List[Dict]) -> Dict:
+        """Resolve an orphan slot (not inside data-section) to a blueprint section."""
+        if not bp_sections:
+            return {}
+        name = slot_name.lower()
+        if name in ("headline", "subheadline"):
+            return bp_sections[0]
+        # heading-N / body-N → section N
+        import re as _re
+        m = _re.search(r'-(\d+)', name)
+        if m:
+            idx = int(m.group(1))
+            idx = min(idx, len(bp_sections) - 1)
+            return bp_sections[idx]
+        # cta → last section (conversion)
+        if name.startswith("cta"):
+            return bp_sections[-1]
+        # Default → first section
+        return bp_sections[0]
+
     def _template_swap(
         self,
         template_html: str,
         blueprint: Dict,
         brand_profile: Optional[Dict] = None,
+        slot_map: Optional[Dict[str, str]] = None,
     ) -> str:
         """Replace data-slot content using DOM-aware parsing.
 
         Uses HTMLParser to walk the HTML tree. When a data-slot element is found
-        whose name matches a blueprint slot, all inner content (including nested
-        tags) is discarded and replaced with the escaped brand_mapping value.
+        whose name matches a slot in the content map, all inner content (including
+        nested tags) is discarded and replaced with the escaped value.
+
+        Args:
+            template_html: HTML template with data-slot attributes.
+            blueprint: Reconstruction blueprint (used for _build_slot_map fallback).
+            brand_profile: Brand profile for color injection.
+            slot_map: Pre-built {slot_name: escaped_text} map (from AI rewrite).
+                If None, falls back to _build_slot_map(blueprint).
         """
-        slot_content = self._build_slot_map(blueprint)
+        if slot_map is not None:
+            slot_content = slot_map
+        else:
+            slot_content = self._build_slot_map(blueprint)
         if not slot_content:
             return template_html
+
+        void_elems = self._VOID_ELEMENTS
 
         class _SlotReplacer(HTMLParser):
             def __init__(self):
@@ -2161,13 +2897,15 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
                 attr_dict = dict(attrs)
                 slot_name = attr_dict.get("data-slot")
                 if slot_name and slot_name in slot_content:
-                    self.parts.append(self.get_starttag_text())
-                    self.parts.append(slot_content[slot_name])
-                    self._skip_depth = 1
-                    self._skip_tag = tag
+                    self.parts.append(self.get_starttag_text() or "")
+                    if tag.lower() not in void_elems:
+                        self.parts.append(slot_content[slot_name])
+                        self._skip_depth = 1
+                        self._skip_tag = tag
+                    # Void elements: emit the tag only, no content replacement
                     return
 
-                self.parts.append(self.get_starttag_text())
+                self.parts.append(self.get_starttag_text() or "")
 
             def handle_endtag(self, tag):
                 if self._skip_depth > 0:
@@ -2182,7 +2920,7 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
             def handle_startendtag(self, tag, attrs):
                 if self._skip_depth > 0:
                     return
-                self.parts.append(self.get_starttag_text())
+                self.parts.append(self.get_starttag_text() or "")
 
             def handle_data(self, data):
                 if self._skip_depth == 0:

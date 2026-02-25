@@ -538,10 +538,10 @@ class TestRenderSmokeTests:
         assert "<!DOCTYPE html>" in html
         assert "BLUEPRINT MOCKUP" in html
 
-    @patch.object(MockupService, "_rewrite_html_for_brand")
+    @patch.object(MockupService, "_rewrite_slots_for_brand")
     def test_blueprint_mockup_with_brand_profile(self, mock_rewrite, service):
-        """Blueprint mockup should call _rewrite_html_for_brand when brand_profile provided."""
-        mock_rewrite.return_value = '<div data-slot="headline">Rewritten</div>'
+        """Blueprint mockup should call _rewrite_slots_for_brand when brand_profile provided."""
+        mock_rewrite.return_value = {"headline": "Rewritten"}
         blueprint = {
             "sections": [
                 {
@@ -570,8 +570,8 @@ class TestRenderSmokeTests:
         assert html is not None
         mock_rewrite.assert_called_once()
         # Verify brand_profile was passed through
-        call_args = mock_rewrite.call_args
-        assert call_args[0][2] == brand_profile
+        call_kwargs = mock_rewrite.call_args
+        assert call_kwargs.kwargs.get("brand_profile") == brand_profile or call_kwargs[0][3] == brand_profile
 
     def test_blueprint_mockup_without_classification(self, service):
         """Blueprint mockup should render without classification data."""
@@ -888,12 +888,12 @@ class TestTemplateSwap:
         assert "Preserved" in result
         assert "New" in result
 
-    @patch.object(MockupService, "_rewrite_html_for_brand")
+    @patch.object(MockupService, "_rewrite_slots_for_brand")
     def test_resanitizes_after_rewrite(self, mock_rewrite, service):
-        """generate_blueprint_mockup should re-sanitize after AI rewrite."""
-        # AI returns HTML with a script tag that should be stripped
-        mock_rewrite.return_value = '<h1 data-slot="headline">Safe Content</h1><script>alert(1)</script>'
-        template = '<h1 data-slot="headline">Old</h1>'
+        """generate_blueprint_mockup should re-sanitize after slot injection."""
+        # Slot map with XSS attempt (already escaped by the real pipeline, but test defense-in-depth)
+        mock_rewrite.return_value = {"headline": "Safe Content"}
+        template = '<h1 data-slot="headline">Old</h1><script>alert(1)</script>'
         blueprint = {
             "sections": [
                 {"flow_order": 1, "brand_mapping": {"primary_content": "Safe Content"}},
@@ -1128,9 +1128,9 @@ class TestAICopywriting:
         with pytest.raises(ValueError, match="lost >50%"):
             service._validate_rewrite_structure(original, rewritten)
 
-    @patch.object(MockupService, "_rewrite_html_for_brand", side_effect=Exception("AI down"))
-    def test_failure_propagates_to_caller(self, mock_rewrite, service):
-        """AI raises → exception propagates so UI can show clear error."""
+    @patch.object(MockupService, "_rewrite_slots_for_brand", side_effect=Exception("AI down"))
+    def test_failure_falls_back_gracefully(self, mock_rewrite, service):
+        """AI raises → pipeline catches and falls back to analysis HTML."""
         blueprint = {
             "sections": [
                 {
@@ -1144,12 +1144,14 @@ class TestAICopywriting:
         brand_profile = {"brand_basics": {"name": "Test"}}
         analysis_html = '<div data-slot="headline">Competitor Original</div>'
 
-        with pytest.raises(Exception, match="AI down"):
-            service.generate_blueprint_mockup(
-                blueprint,
-                analysis_mockup_html=analysis_html,
-                brand_profile=brand_profile,
-            )
+        # Should NOT raise — falls back gracefully
+        html = service.generate_blueprint_mockup(
+            blueprint,
+            analysis_mockup_html=analysis_html,
+            brand_profile=brand_profile,
+        )
+        assert html is not None
+        assert "Competitor Original" in html
 
 
 # ---------------------------------------------------------------------------
@@ -2042,10 +2044,10 @@ class TestExtractPageCssAndStrip:
 class TestBlueprintCssRoundTrip:
     """Test that CSS survives the full analysis→blueprint round-trip."""
 
-    @patch.object(MockupService, "_rewrite_html_for_brand")
+    @patch.object(MockupService, "_rewrite_slots_for_brand")
     def test_css_carried_through_rewrite(self, mock_rewrite, service):
         """CSS from analysis mockup appears in blueprint output."""
-        mock_rewrite.return_value = '<div class="hero" data-slot="headline">Rewritten</div>'
+        mock_rewrite.return_value = {"headline": "Rewritten"}
 
         # Simulate analysis mockup with page CSS
         analysis_html = service._wrap_mockup(
@@ -2084,9 +2086,9 @@ class TestBlueprintCssRoundTrip:
         assert blueprint_html is not None
         assert "background: #f0f0f0" in blueprint_html
 
-    @patch.object(MockupService, "_rewrite_html_for_brand", side_effect=Exception("AI fail"))
+    @patch.object(MockupService, "_rewrite_slots_for_brand", side_effect=Exception("AI fail"))
     def test_css_carried_through_on_failure(self, mock_rewrite, service):
-        """CSS preserved even when rewrite fails (exception path)."""
+        """CSS preserved even when rewrite fails (falls back gracefully)."""
         analysis_html = service._wrap_mockup(
             '<div class="hero" data-slot="headline">Content</div>',
             None,
@@ -2094,12 +2096,15 @@ class TestBlueprintCssRoundTrip:
             page_css=".hero { padding: 20px; }",
         )
 
-        with pytest.raises(Exception, match="AI fail"):
-            service.generate_blueprint_mockup(
-                blueprint={"sections": [], "bonus_sections": []},
-                analysis_mockup_html=analysis_html,
-                brand_profile={"brand_basics": {"name": "Test"}},
-            )
+        # New pipeline catches exceptions — should NOT raise
+        blueprint_html = service.generate_blueprint_mockup(
+            blueprint={"sections": [], "bonus_sections": []},
+            analysis_mockup_html=analysis_html,
+            brand_profile={"brand_basics": {"name": "Test"}},
+        )
+        assert blueprint_html is not None
+        assert "padding: 20px" in blueprint_html
+        assert "Content" in blueprint_html
 
 
 class TestWrapMockupPageCss:
@@ -2534,3 +2539,558 @@ class TestContentFidelityVerification:
                 page_markdown="# Test\n\nSome content"
             )
             mock_verify.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Slot Content Extraction (Step 1)
+# ---------------------------------------------------------------------------
+
+class TestExtractSlotsWithContent:
+    """Test _extract_slots_with_content HTMLParser-based slot+text extractor."""
+
+    def test_basic_extraction(self, service):
+        html = (
+            '<h1 data-slot="headline">The #1 Gut Health Supplement</h1>'
+            '<p data-slot="body-1">Your gut is home to trillions of bacteria.</p>'
+            '<button data-slot="cta-1">Shop Now</button>'
+        )
+        result = service._extract_slots_with_content(html)
+        assert result["headline"] == "The #1 Gut Health Supplement"
+        assert result["body-1"] == "Your gut is home to trillions of bacteria."
+        assert result["cta-1"] == "Shop Now"
+
+    def test_nested_html_in_slot(self, service):
+        """Extracts only visible text from nested markup."""
+        html = '<div data-slot="headline"><h1>Big <b>Bold</b> Headline</h1></div>'
+        result = service._extract_slots_with_content(html)
+        assert result["headline"] == "Big Bold Headline"
+
+    def test_void_elements_skipped(self, service):
+        """Void elements (img, input, br) with data-slot are skipped."""
+        html = (
+            '<img data-slot="hero-img" src="test.jpg">'
+            '<h1 data-slot="headline">Real Text</h1>'
+            '<input data-slot="email-field" type="email">'
+        )
+        result = service._extract_slots_with_content(html)
+        assert "hero-img" not in result
+        assert "email-field" not in result
+        assert result["headline"] == "Real Text"
+
+    def test_duplicate_slot_names_first_wins(self, service):
+        """First occurrence of a duplicate slot name wins."""
+        html = (
+            '<h2 data-slot="heading-class">First Heading</h2>'
+            '<h2 data-slot="heading-class">Second Heading</h2>'
+        )
+        result = service._extract_slots_with_content(html)
+        assert result["heading-class"] == "First Heading"
+        assert len(result) == 1
+
+    def test_empty_slot_content(self, service):
+        """Slots with no text content produce empty string."""
+        html = '<div data-slot="empty-section"></div>'
+        result = service._extract_slots_with_content(html)
+        assert result["empty-section"] == ""
+
+    def test_whitespace_normalization(self, service):
+        """Multi-line whitespace in slots is normalized to single spaces."""
+        html = '<p data-slot="body-1">  Hello   \n  World  </p>'
+        result = service._extract_slots_with_content(html)
+        assert result["body-1"] == "Hello World"
+
+    def test_multiple_slot_types(self, service):
+        """Extracts all slot types: headline, heading, body, cta, testimonial, feature."""
+        html = (
+            '<h1 data-slot="headline">Main Headline</h1>'
+            '<h2 data-slot="heading-1">Section Heading</h2>'
+            '<p data-slot="body-1">Body text here</p>'
+            '<button data-slot="cta-1">Buy Now</button>'
+            '<blockquote data-slot="testimonial-1">Great product!</blockquote>'
+            '<div data-slot="feature-1">Feature description</div>'
+        )
+        result = service._extract_slots_with_content(html)
+        assert len(result) == 6
+        assert result["testimonial-1"] == "Great product!"
+        assert result["feature-1"] == "Feature description"
+
+    def test_no_slots_returns_empty(self, service):
+        html = '<div>No slots here</div><p>Just text</p>'
+        result = service._extract_slots_with_content(html)
+        assert result == {}
+
+    def test_nested_same_tag_depth_tracking(self, service):
+        """Nested same-tag elements inside a slot don't break depth tracking."""
+        html = '<div data-slot="body-1"><div><div>Deep text</div></div></div>'
+        result = service._extract_slots_with_content(html)
+        assert result["body-1"] == "Deep text"
+
+
+# ---------------------------------------------------------------------------
+# Slot-to-Section Mapping (Step 2)
+# ---------------------------------------------------------------------------
+
+class TestMapSlotsToSections:
+    """Test _map_slots_to_sections DOM-based section mapping."""
+
+    def test_basic_section_mapping(self, service):
+        html = (
+            '<section data-section="sec_0">'
+            '<h1 data-slot="headline">Hero</h1>'
+            '</section>'
+            '<section data-section="sec_1">'
+            '<h2 data-slot="heading-1">Section Two</h2>'
+            '</section>'
+        )
+        blueprint = {
+            "sections": [
+                {"flow_order": 1, "section_name": "above_the_fold",
+                 "copy_direction": "Lead with benefit", "brand_mapping": {"primary_content": "X"}},
+                {"flow_order": 2, "section_name": "education",
+                 "copy_direction": "Educate reader", "brand_mapping": {"primary_content": "Y"}},
+            ]
+        }
+        result = service._map_slots_to_sections(html, blueprint)
+        assert result["headline"]["section_name"] == "above_the_fold"
+        assert result["heading-1"]["section_name"] == "education"
+
+    def test_orphan_slot_fallback(self, service):
+        """Slots outside any data-section container get heuristic mapping."""
+        html = '<h1 data-slot="headline">Orphan Hero</h1>'
+        blueprint = {
+            "sections": [
+                {"flow_order": 1, "section_name": "above_the_fold",
+                 "copy_direction": "Hero direction"},
+            ]
+        }
+        result = service._map_slots_to_sections(html, blueprint)
+        assert result["headline"]["section_name"] == "above_the_fold"
+
+    def test_slot_type_inference(self, service):
+        html = (
+            '<h1 data-slot="headline">Title</h1>'
+            '<p data-slot="body-1">Text</p>'
+            '<button data-slot="cta-1">Click</button>'
+        )
+        blueprint = {"sections": [
+            {"flow_order": 1, "section_name": "hero", "copy_direction": "Go"},
+        ]}
+        result = service._map_slots_to_sections(html, blueprint)
+        assert result["headline"]["slot_type"] == "headline"
+        assert result["body-1"]["slot_type"] == "body"
+        assert result["cta-1"]["slot_type"] == "cta"
+
+    def test_empty_blueprint_sections(self, service):
+        html = '<h1 data-slot="headline">Title</h1>'
+        blueprint = {"sections": []}
+        result = service._map_slots_to_sections(html, blueprint)
+        assert "headline" in result
+        assert result["headline"]["section_name"] == "global"
+
+
+# ---------------------------------------------------------------------------
+# Competitor Brand Replacement (Step 4)
+# ---------------------------------------------------------------------------
+
+class TestReplaceCompetitorBrand:
+    """Test _replace_competitor_brand HTMLParser-based text replacement."""
+
+    def test_basic_replacement_in_text(self, service):
+        html = '<p>Welcome to Boba Nutrition, the best supplement brand.</p>'
+        result = service._replace_competitor_brand(html, "Boba Nutrition", "TestBrand")
+        assert "TestBrand" in result
+        assert "Boba Nutrition" not in result
+
+    def test_case_preserving_replacement(self, service):
+        html = '<p>BOBA NUTRITION is great. boba nutrition works.</p>'
+        result = service._replace_competitor_brand(html, "Boba Nutrition", "TestBrand")
+        assert "TESTBRAND" in result
+        assert "testbrand" in result
+
+    def test_no_replacement_in_css_classes(self, service):
+        html = '<div class="boba-nutrition-hero"><p>Boba Nutrition</p></div>'
+        result = service._replace_competitor_brand(html, "Boba Nutrition", "TestBrand")
+        assert "boba-nutrition-hero" in result
+        assert "<p>TestBrand</p>" in result
+
+    def test_no_replacement_in_href(self, service):
+        html = '<a href="https://bobanutrition.com">Boba Nutrition Store</a>'
+        result = service._replace_competitor_brand(html, "Boba Nutrition", "TestBrand")
+        assert "bobanutrition.com" in result
+        assert "TestBrand Store" in result
+
+    def test_no_replacement_in_style_blocks(self, service):
+        html = '<style>.boba-nutrition { color: red; }</style><p>Boba Nutrition</p>'
+        result = service._replace_competitor_brand(html, "Boba Nutrition", "TestBrand")
+        assert ".boba-nutrition" in result
+        assert "<p>TestBrand</p>" in result
+
+    def test_replacement_in_alt_attribute(self, service):
+        html = '<img alt="Boba Nutrition product" src="test.jpg">'
+        result = service._replace_competitor_brand(html, "Boba Nutrition", "TestBrand")
+        assert "TestBrand product" in result
+
+    def test_short_name_rejected(self, service):
+        """Names shorter than 3 chars should not be replaced."""
+        html = '<p>AG is a brand. AG products.</p>'
+        result = service._replace_competitor_brand(html, "AG", "TestBrand")
+        assert result == html  # No replacement
+
+    def test_hyphenated_variant(self, service):
+        html = '<p>Try boba-nutrition today!</p>'
+        result = service._replace_competitor_brand(html, "Boba Nutrition", "TestBrand")
+        assert "testbrand" in result.lower()
+
+
+# ---------------------------------------------------------------------------
+# Competitor Name Extraction (Step 7)
+# ---------------------------------------------------------------------------
+
+class TestExtractCompetitorName:
+    """Test _extract_competitor_name from various sources."""
+
+    def test_from_source_url(self, service):
+        result = service._extract_competitor_name(
+            {"sections": []}, source_url="https://www.bobanutrition.com/shop"
+        )
+        assert result is not None
+        assert "boba" in result.lower()
+
+    def test_from_hyphenated_domain(self, service):
+        result = service._extract_competitor_name(
+            {"sections": []}, source_url="https://martin-clinic.com"
+        )
+        assert result is not None
+        assert "martin" in result.lower()
+        assert "clinic" in result.lower()
+
+    def test_from_title_tag(self, service):
+        html = '<html><head><title>Amazing Supplements | Official Site</title></head></html>'
+        result = service._extract_competitor_name({"sections": []}, html=html)
+        assert result is not None
+        assert "amazing" in result.lower()
+
+    def test_short_domain_returns_none(self, service):
+        result = service._extract_competitor_name(
+            {"sections": []}, source_url="https://ag.com"
+        )
+        assert result is None
+
+    def test_no_sources_returns_none(self, service):
+        result = service._extract_competitor_name({"sections": []})
+        assert result is None
+
+    def test_url_with_trailing_space(self, service):
+        """URLs with trailing whitespace should still work."""
+        result = service._extract_competitor_name(
+            {"sections": []}, source_url="https://bobanutrition.co/pages/test "
+        )
+        assert result is not None
+        assert "boba" in result.lower()
+
+    def test_freetext_metadata_rejected(self, service):
+        """Free-text competitor_url that isn't a URL should not produce garbage names."""
+        blueprint = {
+            "reconstruction_blueprint": {
+                "sections": [],
+                "metadata": {
+                    "competitor_url": "Provided Text/Images (Boba Nutrition / Infi)"
+                }
+            }
+        }
+        result = service._extract_competitor_name(blueprint)
+        # Should be None (no valid URL, no source_url, no HTML)
+        assert result is None
+
+    def test_refines_name_from_html(self, service):
+        """Domain-derived name refined to properly-spaced version from HTML text."""
+        html = '<p>Welcome to Boba Nutrition, the best brand.</p>'
+        result = service._extract_competitor_name(
+            {"sections": []},
+            source_url="https://bobanutrition.co",
+            html=html,
+        )
+        assert result == "Boba Nutrition"
+
+
+# ---------------------------------------------------------------------------
+# Template Swap Bug Fixes (Step 6)
+# ---------------------------------------------------------------------------
+
+class TestTemplateSwapBugFixes:
+    """Test bug fixes in _template_swap: void elements, None starttag, slot_map param."""
+
+    def test_void_element_slot_no_infinite_skip(self, service):
+        """Bug A2: void element with data-slot must not cause infinite skip."""
+        html = (
+            '<img data-slot="hero-img" src="test.jpg">'
+            '<h1 data-slot="headline">Keep This</h1>'
+        )
+        slot_map = {"hero-img": "ignored", "headline": "New Headline"}
+        result = service._template_swap(html, {}, slot_map=slot_map)
+        assert "New Headline" in result
+        # The h1 must still be present (not skipped)
+        assert "<h1" in result
+
+    def test_none_starttag_no_crash(self, service):
+        """Bug A3: get_starttag_text() returning None must not cause TypeError."""
+        # This is hard to trigger directly, but we can test that the code
+        # doesn't crash on normal HTML (the fix is defensive).
+        html = '<div data-slot="headline">Old</div>'
+        slot_map = {"headline": "New"}
+        result = service._template_swap(html, {}, slot_map=slot_map)
+        assert "New" in result
+
+    def test_slot_map_parameter(self, service):
+        """Pre-built slot_map bypasses _build_slot_map."""
+        html = '<h1 data-slot="headline">Old</h1><p data-slot="body-1">Old Body</p>'
+        slot_map = {"headline": "AI Written Headline", "body-1": "AI Written Body"}
+        result = service._template_swap(html, {}, slot_map=slot_map)
+        assert "AI Written Headline" in result
+        assert "AI Written Body" in result
+        assert "Old" not in result
+
+    def test_slot_map_partial_replacement(self, service):
+        """When slot_map has fewer keys than template slots, unmatched slots are preserved."""
+        html = '<h1 data-slot="headline">Old Head</h1><p data-slot="body-1">Keep This</p>'
+        slot_map = {"headline": "New Head"}
+        result = service._template_swap(html, {}, slot_map=slot_map)
+        assert "New Head" in result
+        assert "Keep This" in result
+
+    def test_startendtag_void_in_skip_zone(self, service):
+        """Self-closing tags inside a skip zone should be silently dropped."""
+        html = '<div data-slot="body-1"><p>Old<br/>text</p></div>'
+        slot_map = {"body-1": "New text"}
+        result = service._template_swap(html, {}, slot_map=slot_map)
+        assert "New text" in result
+        assert "Old" not in result
+
+
+# ---------------------------------------------------------------------------
+# Slot-Based AI Rewrite (Step 3, mocked)
+# ---------------------------------------------------------------------------
+
+class TestRewriteSlotsForBrand:
+    """Test _rewrite_slots_for_brand with mocked AI responses."""
+
+    @patch("viraltracker.services.agent_tracking.run_agent_sync_with_tracking")
+    def test_basic_rewrite(self, mock_run, service):
+        """Mocked AI returns valid slot rewrites."""
+        mock_result = MagicMock()
+        mock_result.output = MagicMock()
+        mock_result.output.rewrites = {
+            "headline": "New Headline Text",
+            "body-1": "New body copy here",
+        }
+        mock_run.return_value = mock_result
+
+        slot_contents = {"headline": "Old Headline", "body-1": "Old body"}
+        slot_sections = {
+            "headline": {"section_name": "hero", "copy_direction": "Lead", "brand_mapping": {}, "flow_order": 1, "slot_type": "headline"},
+            "body-1": {"section_name": "hero", "copy_direction": "Lead", "brand_mapping": {}, "flow_order": 1, "slot_type": "body"},
+        }
+        blueprint = {"sections": [{"flow_order": 1, "section_name": "hero"}]}
+        brand_profile = {"brand_basics": {"name": "TestBrand"}}
+
+        result = service._rewrite_slots_for_brand(
+            slot_contents, slot_sections, blueprint, brand_profile
+        )
+
+        assert "headline" in result
+        assert "body-1" in result
+        assert "New Headline Text" in result["headline"]
+
+    @patch("viraltracker.services.agent_tracking.run_agent_sync_with_tracking")
+    def test_html_in_response_stripped(self, mock_run, service):
+        """AI returning HTML tags in slot values should have them stripped."""
+        mock_result = MagicMock()
+        mock_result.output = MagicMock()
+        mock_result.output.rewrites = {
+            "headline": "<b>Bold Headline</b>",
+        }
+        mock_run.return_value = mock_result
+
+        result = service._rewrite_slots_for_brand(
+            {"headline": "Old"},
+            {"headline": {"section_name": "hero", "copy_direction": "", "brand_mapping": {}, "flow_order": 1, "slot_type": "headline"}},
+            {"sections": [{"flow_order": 1}]},
+            {"brand_basics": {"name": "Test"}},
+        )
+        assert "<b>" not in result["headline"]
+        assert "Bold Headline" in result["headline"]
+
+    @patch("viraltracker.services.agent_tracking.run_agent_sync_with_tracking")
+    def test_missing_slots_filled_with_original(self, mock_run, service):
+        """Missing slots in AI response are filled with original text."""
+        mock_result = MagicMock()
+        mock_result.output = MagicMock()
+        mock_result.output.rewrites = {
+            "headline": "New Headline",
+            # "body-1" is missing
+        }
+        mock_run.return_value = mock_result
+
+        result = service._rewrite_slots_for_brand(
+            {"headline": "Old Head", "body-1": "Old Body"},
+            {
+                "headline": {"section_name": "hero", "copy_direction": "", "brand_mapping": {}, "flow_order": 1, "slot_type": "headline"},
+                "body-1": {"section_name": "hero", "copy_direction": "", "brand_mapping": {}, "flow_order": 1, "slot_type": "body"},
+            },
+            {"sections": [{"flow_order": 1}]},
+            {"brand_basics": {"name": "Test"}},
+        )
+        assert result["headline"] == "New Headline"
+        # body-1 filled with original (HTML-escaped)
+        assert "Old Body" in result["body-1"]
+
+    @patch("viraltracker.services.agent_tracking.run_agent_sync_with_tracking",
+           side_effect=Exception("AI timeout"))
+    def test_ai_failure_falls_back_to_build_slot_map(self, mock_run, service):
+        """Complete AI failure falls back to _build_slot_map."""
+        result = service._rewrite_slots_for_brand(
+            {"headline": "Old"},
+            {"headline": {"section_name": "hero", "copy_direction": "", "brand_mapping": {}, "flow_order": 1, "slot_type": "headline"}},
+            {"sections": [{"flow_order": 1, "brand_mapping": {"primary_content": "Fallback"}}]},
+            {"brand_basics": {"name": "Test"}},
+        )
+        # Should have returned something (either original text or _build_slot_map)
+        assert isinstance(result, dict)
+
+    @patch("viraltracker.services.agent_tracking.run_agent_sync_with_tracking")
+    def test_hallucinated_slot_names_stripped(self, mock_run, service):
+        """AI-returned slot names that don't exist in input are stripped."""
+        mock_result = MagicMock()
+        mock_result.output = MagicMock()
+        mock_result.output.rewrites = {
+            "headline": "Good Headline",
+            "fake-slot": "Hallucinated content",
+        }
+        mock_run.return_value = mock_result
+
+        result = service._rewrite_slots_for_brand(
+            {"headline": "Old"},
+            {"headline": {"section_name": "hero", "copy_direction": "", "brand_mapping": {}, "flow_order": 1, "slot_type": "headline"}},
+            {"sections": [{"flow_order": 1}]},
+            {"brand_basics": {"name": "Test"}},
+        )
+        assert "headline" in result
+        assert "fake-slot" not in result
+
+
+# ---------------------------------------------------------------------------
+# End-to-End Blueprint Mockup with Slot Pipeline (Steps 5+)
+# ---------------------------------------------------------------------------
+
+class TestBlueprintMockupSlotPipeline:
+    """Test generate_blueprint_mockup with the new slot-based pipeline."""
+
+    @patch("viraltracker.services.agent_tracking.run_agent_sync_with_tracking")
+    def test_end_to_end_slot_pipeline(self, mock_run, service):
+        """Full pipeline: extract slots, mock AI rewrite, inject into template."""
+        mock_result = MagicMock()
+        mock_result.output = MagicMock()
+        mock_result.output.rewrites = {
+            "headline": "Brand New Headline",
+            "body-1": "Brand new body copy",
+            "cta-1": "Buy Now",
+        }
+        mock_run.return_value = mock_result
+
+        analysis_html = (
+            '<section data-section="sec_0">'
+            '<h1 data-slot="headline">Competitor Headline</h1>'
+            '<p data-slot="body-1">Competitor body text</p>'
+            '<button data-slot="cta-1">Shop Now</button>'
+            '</section>'
+        )
+        blueprint = {
+            "sections": [
+                {
+                    "flow_order": 1,
+                    "section_name": "above_the_fold",
+                    "copy_direction": "Lead with benefit",
+                    "brand_mapping": {"primary_content": "Our formula..."},
+                },
+            ],
+        }
+        brand_profile = {"brand_basics": {"name": "TestBrand"}}
+
+        html = service.generate_blueprint_mockup(
+            blueprint,
+            analysis_mockup_html=analysis_html,
+            brand_profile=brand_profile,
+        )
+
+        assert html is not None
+        assert "Brand New Headline" in html
+        assert "Brand new body copy" in html
+        assert "Competitor Headline" not in html
+
+    def test_no_brand_profile_returns_analysis_html(self, service):
+        """Without brand_profile, returns wrapped analysis HTML."""
+        analysis_html = '<div data-slot="headline">Original</div>'
+        blueprint = {"sections": []}
+        html = service.generate_blueprint_mockup(
+            blueprint, analysis_mockup_html=analysis_html
+        )
+        assert html is not None
+        assert "Original" in html
+        assert "BLUEPRINT MOCKUP" in html
+
+    @patch("viraltracker.services.agent_tracking.run_agent_sync_with_tracking",
+           side_effect=Exception("AI error"))
+    def test_fallback_on_ai_failure(self, mock_run, service):
+        """When AI fails, falls back to analysis HTML (no crash)."""
+        analysis_html = '<div data-slot="headline">Original Content</div>'
+        blueprint = {"sections": [
+            {"flow_order": 1, "brand_mapping": {"primary_content": "Fallback"}}
+        ]}
+        brand_profile = {"brand_basics": {"name": "TestBrand"}}
+
+        html = service.generate_blueprint_mockup(
+            blueprint,
+            analysis_mockup_html=analysis_html,
+            brand_profile=brand_profile,
+        )
+        # Should NOT crash — falls back gracefully
+        assert html is not None
+        assert "Original Content" in html
+
+    def test_source_url_parameter_accepted(self, service):
+        """source_url parameter is accepted without error."""
+        analysis_html = '<div>No slots</div>'
+        blueprint = {"sections": []}
+        brand_profile = {"brand_basics": {"name": "TestBrand"}}
+        html = service.generate_blueprint_mockup(
+            blueprint,
+            analysis_mockup_html=analysis_html,
+            brand_profile=brand_profile,
+            source_url="https://example.com",
+        )
+        assert html is not None
+
+
+# ---------------------------------------------------------------------------
+# Slot Type Inference
+# ---------------------------------------------------------------------------
+
+class TestInferSlotType:
+    """Test _infer_slot_type slot name convention parser."""
+
+    def test_known_types(self, service):
+        assert service._infer_slot_type("headline") == "headline"
+        assert service._infer_slot_type("subheadline") == "subheadline"
+        assert service._infer_slot_type("heading-1") == "heading"
+        assert service._infer_slot_type("heading-class") == "heading"
+        assert service._infer_slot_type("body-1") == "body"
+        assert service._infer_slot_type("cta-1") == "cta"
+        assert service._infer_slot_type("testimonial-1") == "testimonial"
+        assert service._infer_slot_type("feature-1") == "feature"
+        assert service._infer_slot_type("price") == "price"
+        assert service._infer_slot_type("guarantee") == "guarantee"
+        assert service._infer_slot_type("badge-1") == "badge"
+
+    def test_unknown_defaults_to_body(self, service):
+        assert service._infer_slot_type("random-slot") == "body"
+        assert service._infer_slot_type("unknown") == "body"

@@ -2096,6 +2096,7 @@ def _render_blueprint_mockup_section(
                     analysis_mockup_html=analysis_html,
                     classification=classification,
                     brand_profile=brand_profile,
+                    source_url=linked_record.get("url", "") if linked_record else "",
                 )
 
             if html_str:
