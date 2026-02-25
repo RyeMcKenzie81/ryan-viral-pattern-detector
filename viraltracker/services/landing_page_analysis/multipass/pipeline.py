@@ -71,7 +71,7 @@ MULTIPASS_PHASE3_MODE = os.environ.get("MULTIPASS_PHASE3_MODE", "fullpage")
 MULTIPASS_PHASE1_MODE = os.environ.get("MULTIPASS_PHASE1_MODE", "template")
 
 # Pipeline mode: "reconstruct" (original v4), "surgery" (new v5 — operate on original HTML)
-MULTIPASS_PIPELINE_MODE = os.environ.get("MULTIPASS_PIPELINE_MODE", "reconstruct")
+MULTIPASS_PIPELINE_MODE = os.environ.get("MULTIPASS_PIPELINE_MODE", "surgery")
 
 # Claude model for skeleton codegen (Step 1C)
 MULTIPASS_SKELETON_MODEL = os.environ.get(

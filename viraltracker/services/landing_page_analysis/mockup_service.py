@@ -217,6 +217,16 @@ class _InlineStyleUrlStripper(HTMLParser):
         return ''.join(self.parts)
 
 
+class _SurgeryInlineStyleUrlStripper(_InlineStyleUrlStripper):
+    """Like _InlineStyleUrlStripper but only strips unsafe URLs (http, javascript, large data).
+
+    Preserves HTTPS and small data: URIs for surgery pipeline output.
+    """
+
+    def _strip_url_from_style(self, style_value: str) -> str:
+        return _strip_unsafe_css_urls(style_value)
+
+
 def _strip_url_from_inline_styles(html: str, is_surgery_mode: bool = False) -> str:
     """Strip url() only within style attribute values.
 
@@ -231,8 +241,14 @@ def _strip_url_from_inline_styles(html: str, is_surgery_mode: bool = False) -> s
         return html  # Fast path: no url() anywhere
 
     if is_surgery_mode:
-        # In surgery mode, preserve HTTPS urls in inline styles
-        return html
+        # Apply safe URL filtering (keep HTTPS, block http/javascript/large data)
+        stripper = _SurgeryInlineStyleUrlStripper()
+        try:
+            stripper.feed(html)
+            return stripper.get_result()
+        except Exception:
+            logger.warning("HTMLParser failed in surgery inline style filter, returning as-is")
+            return html
 
     stripper = _InlineStyleUrlStripper()
     try:
@@ -486,6 +502,9 @@ class MockupService:
         Returns:
             Standalone HTML string
         """
+        # Reset surgery mode flag (set by _generate_via_multipass if surgery runs)
+        self.is_surgery_mode = False
+
         if screenshot_b64 and use_multipass:
             raw_html = self._generate_via_multipass(
                 screenshot_b64,
@@ -607,6 +626,9 @@ class MockupService:
         intentionally disabled to prevent leaking strategic instructions).
         """
         if analysis_mockup_html:
+            # Detect surgery output for CSS sanitization (preserves HTTPS urls)
+            self.is_surgery_mode = 'data-pipeline="surgery"' in analysis_mockup_html
+
             # Extract CSS before stripping (re-sanitized for defense-in-depth)
             page_body, page_css = self._extract_page_css_and_strip(analysis_mockup_html)
 
@@ -1704,6 +1726,8 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
 
         # Expose phase snapshots for debugging/evaluation
         self._last_phase_snapshots = dict(pipeline.phase_snapshots)
+        # Detect surgery pipeline — set flag for CSS sanitization
+        self.is_surgery_mode = "phase_s0_sanitized" in self._last_phase_snapshots
         snapshot_summary = {
             k: len(v) for k, v in self._last_phase_snapshots.items()
         }

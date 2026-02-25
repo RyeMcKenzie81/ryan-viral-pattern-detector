@@ -5930,7 +5930,7 @@ class TestCSSScoper:
         )
         html = '<html><head><style>h1 { color: red; }</style></head><body><h1>Hello</h1></body></html>'
         result, stats = CSSScoper().scope(html)
-        assert '<div class="lp-mockup">' in result
+        assert '<div class="lp-mockup" data-pipeline="surgery">' in result
         assert "<h1>Hello</h1>" in result
         assert stats["body_wrapped"] is True
 
@@ -5989,7 +5989,7 @@ class TestCSSScoper:
         html = '<html><head></head><div>Content</div></html>'
         result, stats = CSSScoper().scope(html)
         assert "Content" in result
-        assert '<div class="lp-mockup">' in result
+        assert '<div class="lp-mockup" data-pipeline="surgery">' in result
 
 
 # ===========================================================================

@@ -125,7 +125,7 @@ class CSSScoper:
             stats["body_classes_transferred"] = body_classes
         else:
             class_attr = "lp-mockup"
-        wrapped = f'<div class="{class_attr}">\n{body_content}\n</div>'
+        wrapped = f'<div class="{class_attr}" data-pipeline="surgery">\n{body_content}\n</div>'
         stats["body_wrapped"] = True
 
         # 9. Build final HTML fragment
