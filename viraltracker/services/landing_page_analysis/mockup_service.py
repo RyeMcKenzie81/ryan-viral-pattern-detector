@@ -31,7 +31,8 @@ logger = logging.getLogger(__name__)
 # CSS block sanitizer (for <style> block content — distinct from bleach inline)
 # ---------------------------------------------------------------------------
 
-_CSS_MAX_SIZE = 100_000  # 100KB cap for CSS blocks
+_CSS_MAX_SIZE = 100_000  # 100KB cap for CSS blocks (AI-generated)
+_CSS_MAX_SIZE_SURGERY = 2_500_000  # 2.5MB cap for surgery pipeline (preserves original page CSS)
 
 # Patterns for dangerous CSS constructs
 _STYLE_BREAKOUT_RE = re.compile(r'<\s*/\s*style\b', re.IGNORECASE)
@@ -70,12 +71,15 @@ def _sanitize_css_block(raw_css: str, is_surgery_mode: bool = False) -> str:
     if not raw_css or not raw_css.strip():
         return ""
 
-    # Cap size
-    if len(raw_css) > _CSS_MAX_SIZE:
+    # Cap size — surgery pipeline preserves original page CSS which can be
+    # very large (1-2MB for Shopify/Replo pages); use a higher limit since
+    # the surgery pipeline already sanitizes CSS in S3.
+    max_size = _CSS_MAX_SIZE_SURGERY if is_surgery_mode else _CSS_MAX_SIZE
+    if len(raw_css) > max_size:
         logger.warning(
-            f"CSS block exceeds {_CSS_MAX_SIZE} bytes ({len(raw_css)}), truncating"
+            f"CSS block exceeds {max_size} bytes ({len(raw_css)}), truncating"
         )
-        raw_css = raw_css[:_CSS_MAX_SIZE]
+        raw_css = raw_css[:max_size]
 
     # REJECT entire block if contains </style breakout
     if _STYLE_BREAKOUT_RE.search(raw_css):

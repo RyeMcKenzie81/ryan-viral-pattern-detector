@@ -54,7 +54,8 @@ _KEEP_LINK_RELS = frozenset(["stylesheet"])
 # Popup/overlay class and id patterns
 _POPUP_PATTERNS = re.compile(
     r'\b(popup|modal|overlay|cookie[-_]?banner|cookie[-_]?consent|'
-    r'gdpr|newsletter[-_]?popup|exit[-_]?intent|lightbox)\b',
+    r'gdpr|newsletter[-_]?popup|exit[-_]?intent|lightbox|'
+    r'shopify-pc__banner|consent[-_]?tracking|privacy[-_]?banner)\b',
     re.IGNORECASE,
 )
 
