@@ -23,8 +23,30 @@ _MIN_VISIBLE_TEXT = 500
 
 # Tags to strip entirely (including contents)
 _STRIP_TAGS_WITH_CONTENT = frozenset([
-    "script", "noscript", "template", "iframe", "video", "audio",
+    "script", "noscript", "template", "audio",
 ])
+
+# Regex to convert <video> elements to poster/placeholder images.
+# Shopify/Replo themes often use autoplay muted loop videos as hero visuals.
+# Stripping them leaves empty containers; convert to <img> instead.
+_VIDEO_RE = re.compile(
+    r'<video\b([^>]*)>.*?</video\s*>|<video\b([^>]*)/\s*>',
+    re.DOTALL | re.IGNORECASE,
+)
+
+# Regex to convert <iframe> elements to placeholder images.
+# YouTube/Vimeo embeds are common on landing pages; stripping them entirely
+# loses semantic information. Convert to thumbnail/placeholder instead.
+_IFRAME_RE = re.compile(
+    r'<iframe\b([^>]*)>.*?</iframe\s*>|<iframe\b([^>]*)/\s*>',
+    re.DOTALL | re.IGNORECASE,
+)
+
+# Extract YouTube video ID from embed URL
+_YOUTUBE_ID_RE = re.compile(
+    r'youtube\.com/embed/([a-zA-Z0-9_-]{11})',
+    re.IGNORECASE,
+)
 
 # Link rel values to keep (stylesheets only)
 _KEEP_LINK_RELS = frozenset(["stylesheet"])
@@ -121,9 +143,17 @@ class HTMLSanitizer:
             "svg_elements_stripped": 0,
         }
 
-        # 1. Strip tags with content (script, noscript, template, iframe, video, audio)
+        # 1. Strip tags with content (script, noscript, template, audio)
         html, count = self._strip_tags_with_content(html)
         stats["scripts_removed"] = count
+
+        # 1b. Convert <video> elements to poster/placeholder images
+        html, vid_count = self._convert_videos_to_posters(html)
+        stats["videos_converted"] = vid_count
+
+        # 1c. Convert <iframe> embeds to thumbnail/placeholder images
+        html, iframe_count = self._convert_iframes_to_placeholders(html)
+        stats["iframes_converted"] = iframe_count
 
         # 2. Strip non-stylesheet <link> tags
         html = self._strip_non_stylesheet_links(html)
@@ -195,6 +225,125 @@ class HTMLSanitizer:
             matches = pattern.findall(html)
             count += len(matches)
             html = pattern.sub("", html)
+        return html, count
+
+    def _convert_videos_to_posters(self, html: str) -> Tuple[str, int]:
+        """Convert <video> elements to poster/placeholder images.
+
+        Shopify/Replo themes use autoplay muted loop videos as hero visuals.
+        Stripping them entirely leaves empty containers and hurts visual fidelity.
+        Instead, convert to <img> using the poster attribute when available, or
+        a styled placeholder div for videos without poster.
+        """
+        count = 0
+
+        def _replace_video(match: re.Match) -> str:
+            nonlocal count
+            attrs = match.group(1) or match.group(2) or ""
+
+            # Extract poster attribute
+            poster_match = re.search(
+                r'poster\s*=\s*["\']([^"\']+)["\']', attrs, re.IGNORECASE
+            )
+
+            # Extract style for dimensions
+            style_match = re.search(
+                r'style\s*=\s*["\']([^"\']+)["\']', attrs, re.IGNORECASE
+            )
+            style = style_match.group(1) if style_match else ""
+
+            # Extract explicit width/height
+            w_match = re.search(
+                r'width\s*=\s*["\']?(\d+)', attrs, re.IGNORECASE
+            )
+            h_match = re.search(
+                r'height\s*=\s*["\']?(\d+)', attrs, re.IGNORECASE
+            )
+
+            count += 1
+
+            if poster_match:
+                poster_url = poster_match.group(1)
+                img_style = style if style else "width:100%;height:auto"
+                w_attr = f' width="{w_match.group(1)}"' if w_match else ""
+                h_attr = f' height="{h_match.group(1)}"' if h_match else ""
+                return (
+                    f'<img src="{poster_url}" style="{img_style}" '
+                    f'data-was-video="true"{w_attr}{h_attr} loading="eager">'
+                )
+
+            # No poster — check for src to create a placeholder
+            src_match = re.search(
+                r'(?<!\w)src\s*=\s*["\']([^"\']+)["\']', attrs, re.IGNORECASE
+            )
+            # Use a placeholder div that preserves layout
+            placeholder_style = style if style else "width:100%;aspect-ratio:16/9"
+            if "background" not in placeholder_style:
+                placeholder_style += ";background:#e5e7eb"
+            src_note = ""
+            if src_match:
+                src_note = f' data-video-src="{src_match.group(1)}"'
+            return (
+                f'<div data-was-video="true"{src_note} '
+                f'style="{placeholder_style}"></div>'
+            )
+
+        html = _VIDEO_RE.sub(_replace_video, html)
+        return html, count
+
+    def _convert_iframes_to_placeholders(self, html: str) -> Tuple[str, int]:
+        """Convert <iframe> embeds to thumbnail/placeholder images.
+
+        YouTube/Vimeo embeds are common on landing pages. Stripping them
+        entirely loses semantic info about embedded content. Convert to
+        a thumbnail <img> (for YouTube) or labeled placeholder.
+        """
+        count = 0
+
+        def _replace_iframe(match: re.Match) -> str:
+            nonlocal count
+            attrs = match.group(1) or match.group(2) or ""
+
+            # Extract src
+            src_match = re.search(
+                r'(?<!\w)src\s*=\s*["\']([^"\']+)["\']', attrs, re.IGNORECASE
+            )
+            src_url = src_match.group(1) if src_match else ""
+
+            # Extract title
+            title_match = re.search(
+                r'title\s*=\s*["\']([^"\']+)["\']', attrs, re.IGNORECASE
+            )
+            title = title_match.group(1) if title_match else ""
+
+            count += 1
+
+            # YouTube embed — fill parent with thumbnail image.
+            # The iframe's parent container already defines the space
+            # (aspect-ratio via CSS), so we inherit sizing, not force our own.
+            yt_match = _YOUTUBE_ID_RE.search(src_url)
+            if yt_match:
+                video_id = yt_match.group(1)
+                thumb_url = f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"
+                alt = title if title else f"YouTube video {video_id}"
+                return (
+                    f'<img src="{thumb_url}" alt="{alt}" '
+                    f'data-was-iframe="youtube" data-video-id="{video_id}" '
+                    f'style="width:100%;height:100%;object-fit:cover" '
+                    f'loading="eager">'
+                )
+
+            # Other iframes — labeled placeholder filling parent
+            label = title if title else "Embedded content"
+            data_src = f' data-iframe-src="{src_url}"' if src_url else ""
+            return (
+                f'<div data-was-iframe="true"{data_src} '
+                f'style="width:100%;height:100%;background:#1a1a1a;'
+                f'display:flex;align-items:center;justify-content:center;'
+                f'color:#888;font-size:14px">{label}</div>'
+            )
+
+        html = _IFRAME_RE.sub(_replace_iframe, html)
         return html, count
 
     def _strip_non_stylesheet_links(self, html: str) -> str:
