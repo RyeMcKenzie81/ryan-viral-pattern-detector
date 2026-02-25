@@ -295,7 +295,7 @@ _ALLOWED_TAGS = [
 ]
 
 _ALLOWED_ATTRS = {
-    "*": ["class", "id", "style", "data-slot", "data-section", "role", "aria-label"],
+    "*": ["class", "id", "style", "data-slot", "data-section", "data-pipeline", "role", "aria-label"],
     "a": ["href", "target", "rel"],
     "img": [
         "src", "alt", "width", "height", "srcset", "sizes", "loading", "data-bg-image",
@@ -1374,7 +1374,7 @@ class MockupService:
     # ------------------------------------------------------------------
 
     _MAX_HTML_CHARS = 80_000
-    _MAX_HTML_CHARS_SURGERY = 200_000  # Raised for surgery output
+    _MAX_HTML_CHARS_SURGERY = 500_000  # Raised for surgery output (large Shopify/Replo pages)
 
     def _rewrite_html_for_brand(
         self,
