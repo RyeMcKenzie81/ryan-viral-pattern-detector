@@ -686,7 +686,7 @@ def _split_top_level_blocks(css: str) -> List[Tuple[str, str]]:
             # Find the at-rule type
             at_start = i
             j = i + 1
-            while j < n and css[j] not in (' ', '\t', '\n', '{'):
+            while j < n and css[j] not in (' ', '\t', '\n', '{', '('):
                 j += 1
             at_rule = css[i:j].lower()
 

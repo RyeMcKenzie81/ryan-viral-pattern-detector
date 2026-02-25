@@ -290,8 +290,8 @@ def _count_images(html: str) -> int:
 
 
 def _has_lp_mockup_wrapper(html: str) -> bool:
-    """Check for .lp-mockup wrapper div."""
-    return 'class="lp-mockup"' in html or "class='lp-mockup'" in html
+    """Check for .lp-mockup wrapper div (may include transferred body classes)."""
+    return 'class="lp-mockup' in html or "class='lp-mockup" in html
 
 
 def _unwrap_json_snapshot(html: str) -> dict:
