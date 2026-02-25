@@ -278,7 +278,7 @@ def capture_rendered_page(
         # Optional screenshot
         screenshot_bytes = None
         if capture_screenshot:
-            screenshot_bytes = page.screenshot(full_page=True)
+            screenshot_bytes = page.screenshot(full_page=True, timeout=15000)
 
         elapsed_ms = int((time.time() - start) * 1000)
 

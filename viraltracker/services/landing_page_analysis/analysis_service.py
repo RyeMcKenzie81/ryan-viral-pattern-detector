@@ -102,15 +102,21 @@ class LandingPageAnalysisService:
             raise ValueError(f"Failed to scrape {url}: {result.error}")
 
         # --- Stage 2: Post-JS DOM via Playwright (primary) or FireCrawl (fallback) ---
+        capture_method = "firecrawl"  # default
         page_html = ""
+        playwright_screenshot_b64 = None
         try:
             from .page_capture import capture_rendered_page, PlaywrightNotInstalledError
-            capture = capture_rendered_page(url)
+            capture = capture_rendered_page(url, capture_screenshot=True)
             if capture:
                 page_html = capture.dom_html
+                capture_method = "playwright"
+                if capture.screenshot_bytes:
+                    playwright_screenshot_b64 = base64.b64encode(capture.screenshot_bytes).decode("utf-8")
                 logger.info(
                     f"Playwright DOM capture: {len(page_html):,} chars, "
                     f"visible_text={capture.visible_text_len:,}, "
+                    f"screenshot={'yes' if playwright_screenshot_b64 else 'no'}, "
                     f"{capture.capture_time_ms}ms"
                 )
             else:
@@ -123,8 +129,8 @@ class LandingPageAnalysisService:
             logger.warning(f"Playwright capture failed: {e}")
             page_html = _firecrawl_html_fallback(scraper, url)
 
-        # Dual-scrape consistency check
-        if page_html and result.markdown:
+        # Dual-scrape consistency check (only for Firecrawl — Playwright asymmetry is expected)
+        if page_html and result.markdown and capture_method != "playwright":
             from .multipass.html_extractor import check_scrape_consistency
             if not check_scrape_consistency(page_html, result.markdown, url):
                 logger.warning("Dual-scrape drift detected, discarding page_html")
@@ -142,17 +148,20 @@ class LandingPageAnalysisService:
             else:
                 page_html = ""
 
-        # FireCrawl v4 returns a URL for screenshots — download and convert to base64
-        screenshot_b64 = None
-        if result.screenshot and result.screenshot.startswith("http"):
-            try:
-                resp = httpx.get(result.screenshot, timeout=30)
-                resp.raise_for_status()
-                screenshot_b64 = base64.b64encode(resp.content).decode("utf-8")
-            except Exception as e:
-                logger.warning(f"Failed to download screenshot: {e}")
-        elif result.screenshot:
-            screenshot_b64 = result.screenshot
+        # Prefer Playwright screenshot (higher quality, full-page)
+        screenshot_b64 = playwright_screenshot_b64
+
+        # Fall back to Firecrawl screenshot if Playwright didn't provide one
+        if not screenshot_b64 and result.screenshot:
+            if result.screenshot.startswith("http"):
+                try:
+                    resp = httpx.get(result.screenshot, timeout=30)
+                    resp.raise_for_status()
+                    screenshot_b64 = base64.b64encode(resp.content).decode("utf-8")
+                except Exception as e:
+                    logger.warning(f"Failed to download Firecrawl screenshot: {e}")
+            else:
+                screenshot_b64 = result.screenshot
 
         return {
             "url": url,
@@ -161,6 +170,7 @@ class LandingPageAnalysisService:
             "page_html": page_html,
             "source_type": "url",
             "source_id": None,
+            "capture_method": capture_method,
         }
 
     def load_from_competitor_lp(self, competitor_lp_id: str) -> Dict[str, Any]:
@@ -524,12 +534,15 @@ class LandingPageAnalysisService:
         from PIL import Image
         import io
 
+        # Allow large Playwright full-page screenshots (matches eval_harness.py)
+        Image.MAX_IMAGE_PIXELS = 300_000_000
+
         img = Image.open(io.BytesIO(image_bytes))
 
-        # Always scale down width to 1200px max for storage efficiency
-        if img.width > 1200:
-            ratio = 1200 / img.width
-            img = img.resize((1200, int(img.height * ratio)), Image.Resampling.LANCZOS)
+        # Always scale down width to 1280px max (matches Playwright viewport width)
+        if img.width > 1280:
+            ratio = 1280 / img.width
+            img = img.resize((1280, int(img.height * ratio)), Image.Resampling.LANCZOS)
 
         # Try PNG with optimize first
         buf = io.BytesIO()
