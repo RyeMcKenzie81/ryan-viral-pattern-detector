@@ -799,7 +799,7 @@ class InstagramContentService:
                 "resultsLimit": 1,
             }
             if username:
-                run_input["username"] = username
+                run_input["username"] = [username]
 
             # Use the Instagram post scraper actor for individual posts
             run = client.actor("apify/instagram-post-scraper").call(
