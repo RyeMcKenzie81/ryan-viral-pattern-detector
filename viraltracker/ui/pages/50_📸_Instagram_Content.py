@@ -175,11 +175,12 @@ with tab_accounts:
         # Batch actions
         col_scrape, col_outlier, col_download = st.columns(3)
         with col_scrape:
+            force_scrape = st.checkbox("Force re-scrape", key="ig_force_scrape", help="Skip min-interval check and re-scrape all accounts now")
             if st.button("Scrape All Active", type="primary", disabled=st.session_state.ig_scraping):
                 st.session_state.ig_scraping = True
                 with st.spinner("Scraping all active accounts..."):
                     try:
-                        result = service.scrape_all_active(brand_id, org_id, force=False)
+                        result = service.scrape_all_active(brand_id, org_id, force=force_scrape)
                         st.success(
                             f"Scraped {result['accounts_scraped']} accounts, "
                             f"{result['total_posts']} posts. "
