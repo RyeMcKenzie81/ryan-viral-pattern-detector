@@ -17,6 +17,7 @@
 | Surgery CSS Phase 1 | Fetch all external CSS (not just first-party) | Done | `CHECKPOINT_PHASE1_CSS_FETCH.md` |
 | Surgery CSS Phase 2 | Standalone HTML output (no CSS scoping) | Done | `CHECKPOINT_STANDALONE_HTML_PROPOSAL.md` |
 | Surgery CSS Phase 2 Integration | mockup_service, api/app.py, docstring fixes | Done | — |
+| Surgery Scroll Fix | Strip scroll-blocking classes + CSS override | Done | — |
 | **Manual QA** | **Test surgery pipeline E2E on multiple pages** | **Next** | — |
 
 ## Surgery Pipeline CSS Fix — Summary
@@ -45,6 +46,13 @@ S3 (CSS Scoping) was destroying visual quality by regex-prefixing all CSS rules 
 - Fixed double-wrapping in api/app.py public preview (detect full documents)
 - Updated docstrings in section_templates.py, html_extractor.py, pipeline.py
 
+**Scroll fix:**
+- Klaviyo injects `class="klaviyo-prevent-body-scrolling"` on `<body>` with
+  `body.klaviyo-prevent-body-scrolling{overflow:hidden !important}` — prevents scrolling
+- Strip known scroll-blocking classes from `<body>` during CSS consolidation
+- Append `html,body{overflow:auto !important;height:auto !important}` CSS override as fallback
+- Blocked classes: `klaviyo-prevent-body-scrolling`, `no-scroll`, `modal-open`, `overflow-hidden`
+
 ### Files Changed
 
 | File | Changes |
@@ -57,7 +65,7 @@ S3 (CSS Scoping) was destroying visual quality by regex-prefixing all CSS rules 
 | `multipass/section_templates.py` | Updated docstring |
 | `mockup_service.py` | Added `link` tag to bleach allowlist |
 | `api/app.py` | Fixed double-wrapping in public preview |
-| `tests/test_multipass_v4.py` | Updated CSS scoper tests, added fetch tests (408 total) |
+| `tests/test_multipass_v4.py` | Updated CSS scoper tests, added fetch + scroll tests (410 total) |
 
 ### Known Blockers Resolved
 
@@ -75,6 +83,15 @@ S3 (CSS Scoping) was destroying visual quality by regex-prefixing all CSS rules 
 | T2 | S4 prompt hardcodes `.lp-mockup` selectors | Updated prompts.py to use standard selectors |
 | T3 | Public preview double-wraps documents | api/app.py now detects full documents and serves as-is |
 | T5 | `is_surgery_mode` CSS limit fallback | `data-pipeline="surgery"` preserved on `<body>` tag |
+| T6 | Third-party scroll-blocking classes on `<body>` | Strip known classes + CSS override with `!important` |
+
+### Commits
+
+| Hash | Description |
+|------|-------------|
+| `8f4b8db` | feat: standalone HTML surgery output + full external CSS fetching |
+| `5b48a49` | fix: surgery pipeline integration — bleach allowlist, preview double-wrap, docstrings |
+| `7696d94` | fix: strip scroll-blocking classes from body tag in surgery output |
 
 ---
 
