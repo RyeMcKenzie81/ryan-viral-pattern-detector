@@ -59,6 +59,20 @@ _POPUP_PATTERNS = re.compile(
     re.IGNORECASE,
 )
 
+# Navigation chrome: Shopify section IDs containing header/footer/mega-menu.
+# Safety net for elements that survive Playwright DOM removal (e.g. Firecrawl
+# fallback path, or JS-injected elements after capture).
+_SHOPIFY_CHROME_ID_PATTERN = re.compile(
+    r'shopify-section[-_].*?(header|footer|mega[-_]?menu|announcement)',
+    re.IGNORECASE,
+)
+
+# Anti-scraping overlay signature: extreme z-index + transparent text color
+_ANTI_SCRAPE_STYLE_RE = re.compile(
+    r'z-index:\s*\d{8,}.*?color:\s*transparent',
+    re.IGNORECASE | re.DOTALL,
+)
+
 # Inline event handler attributes
 _EVENT_HANDLER_RE = re.compile(
     r'\s+on[a-z]+\s*=\s*(?:"[^"]*"|\'[^\']*\'|[^\s>]+)',
@@ -171,6 +185,11 @@ class HTMLSanitizer:
         if detected_overlays:
             from ..popup_filter import PopupFilter
             html = PopupFilter().filter(html, detected_overlays)
+
+        # 4c. Strip navigation chrome (header, footer, mega-menu, anti-scraping overlays).
+        # Safety net for elements that survived Playwright capture removal.
+        html, count = self._strip_chrome_elements(html)
+        stats["chrome_removed"] = count
 
         # 5. Resolve lazy-loaded images
         html, count = self._resolve_lazy_images(html)
@@ -476,6 +495,72 @@ class HTMLSanitizer:
                 pos = next_close.end()
 
         return pos
+
+    def _strip_chrome_elements(self, html: str) -> Tuple[str, int]:
+        """Strip navigation chrome and anti-scraping overlays from HTML.
+
+        Catches Shopify theme elements that survived Playwright DOM removal:
+        - Sections with IDs matching header/footer/mega-menu/announcement
+        - Anti-scraping overlay divs (extreme z-index + transparent text)
+        - Bare <header>, <nav>, <footer> semantic tags
+
+        Uses the same _find_matching_close() pattern as _strip_popup_elements().
+        """
+        count = 0
+        result = html
+
+        # Pass 1: Remove elements by Shopify section ID pattern
+        for tag in ("div", "section"):
+            pattern = re.compile(
+                rf'<{tag}\b([^>]*)>',
+                re.IGNORECASE,
+            )
+            removals: List[Tuple[int, int]] = []
+            for m in pattern.finditer(result):
+                attrs = m.group(1)
+                id_match = re.search(
+                    r'id\s*=\s*["\']([^"\']*)["\']', attrs, re.IGNORECASE
+                )
+                id_val = id_match.group(1) if id_match else ""
+
+                # Shopify chrome section IDs
+                if id_val and _SHOPIFY_CHROME_ID_PATTERN.search(id_val):
+                    end = self._find_matching_close(result, tag, m.end())
+                    if end > m.start():
+                        removals.append((m.start(), end))
+                    continue
+
+                # Anti-scraping overlay (inline style with huge z-index + transparent)
+                style_match = re.search(
+                    r'style\s*=\s*["\']([^"\']*)["\']', attrs, re.IGNORECASE
+                )
+                if style_match and _ANTI_SCRAPE_STYLE_RE.search(style_match.group(1)):
+                    end = self._find_matching_close(result, tag, m.end())
+                    if end > m.start():
+                        removals.append((m.start(), end))
+
+            for start, end in reversed(removals):
+                result = result[:start] + result[end:]
+                count += 1
+
+        # Pass 2: Remove bare semantic chrome tags (<header>, <nav>, <footer>)
+        # These should have been removed by Playwright but may survive via
+        # Firecrawl fallback or dynamic injection.
+        for tag in ("header", "nav", "footer"):
+            pattern = re.compile(rf'<{tag}\b[^>]*>', re.IGNORECASE)
+            removals = []
+            for m in pattern.finditer(result):
+                end = self._find_matching_close(result, tag, m.end())
+                if end > m.start():
+                    removals.append((m.start(), end))
+            for start, end in reversed(removals):
+                result = result[:start] + result[end:]
+                count += 1
+
+        if count:
+            logger.info(f"S0: stripped {count} navigation chrome element(s)")
+
+        return result, count
 
     def _resolve_lazy_images(self, html: str) -> Tuple[str, int]:
         """Resolve lazy-loaded images: data-src → src, etc."""

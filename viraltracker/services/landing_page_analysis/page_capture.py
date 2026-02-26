@@ -58,6 +58,9 @@ _CHROME_SELECTORS = (
     "[class*='site-header'], [class*='site-footer'], "
     "[class*='main-nav'], [class*='main_nav'], "
     "[class*='announcement-bar'], [class*='promo-bar'], "
+    # Mega menus (Shopify theme dropdown navigation panels)
+    "[id*='mega-menu'], [id*='mega_menu'], [class*='mega-menu'], [class*='megamenu'], "
+    "[id*='shopify-section-mega'], "
     # Mobile menu drawers and icon sprite containers
     "[class*='mobile-menu'], [class*='mobile-nav'], [class*='menu-drawer'], "
     "[class*='icon-reference'], svg[aria-hidden='true'][class*='icon'], "
@@ -127,6 +130,28 @@ _REMOVE_HIDDEN_AND_SPRITES_JS = """(() => {
         }
     });
 
+    return removed;
+})()"""
+
+# JS snippet to remove anti-scraping overlay divs.
+# These are full-page overlays with extreme z-index and transparent text,
+# injected by Shopify themes to block content scrapers. They render as
+# invisible text junk when the page is captured as static HTML.
+_REMOVE_ANTI_SCRAPE_OVERLAYS_JS = """(() => {
+    let removed = 0;
+    document.querySelectorAll('div').forEach(el => {
+        const style = window.getComputedStyle(el);
+        const zIndex = parseInt(style.zIndex, 10);
+        // Anti-scraping overlays use z-index > 10^8 with transparent/invisible text
+        if (zIndex > 99999999 && (
+            style.color === 'transparent' ||
+            style.color === 'rgba(0, 0, 0, 0)' ||
+            style.opacity === '0'
+        )) {
+            el.remove();
+            removed++;
+        }
+    });
     return removed;
 })()"""
 
@@ -228,6 +253,11 @@ def capture_rendered_page(
         if hidden_removed:
             logger.info(f"Removed {hidden_removed} hidden/sprite elements")
 
+        # Remove anti-scraping overlay divs (huge z-index + transparent text)
+        anti_scrape_removed = page.evaluate(_REMOVE_ANTI_SCRAPE_OVERLAYS_JS)
+        if anti_scrape_removed:
+            logger.info(f"Removed {anti_scrape_removed} anti-scraping overlay(s)")
+
         # Auto-scroll to trigger lazy loading
         if scroll_to_load:
             for _ in range(15):
@@ -248,10 +278,12 @@ def capture_rendered_page(
             _OVERLAY_SELECTORS,
         )
         late_hidden = page.evaluate(_REMOVE_HIDDEN_AND_SPRITES_JS)
-        if late_chrome or late_overlays or late_hidden:
+        late_anti_scrape = page.evaluate(_REMOVE_ANTI_SCRAPE_OVERLAYS_JS)
+        if late_chrome or late_overlays or late_hidden or late_anti_scrape:
             logger.info(
                 f"Second pass removed {late_chrome} chrome, "
-                f"{late_overlays} overlays, {late_hidden} hidden"
+                f"{late_overlays} overlays, {late_hidden} hidden, "
+                f"{late_anti_scrape} anti-scrape"
             )
 
         # Quality check: visible text length
