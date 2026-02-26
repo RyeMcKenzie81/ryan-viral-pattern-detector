@@ -634,7 +634,7 @@ class InstagramAnalysisService:
                 "people_detected": parsed.get("people_detected", 0),
                 "has_talking_head": parsed.get("has_talking_head", False),
                 # Production
-                "video_duration_sec": parsed.get("video_duration_sec"),
+                "video_duration_sec": int(parsed["video_duration_sec"]) if parsed.get("video_duration_sec") is not None else None,
                 "production_quality": parsed.get("production_quality"),
                 "format_type": parsed.get("format_type"),
                 # Eval scores
