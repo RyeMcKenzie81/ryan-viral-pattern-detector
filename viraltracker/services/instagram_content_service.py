@@ -589,7 +589,7 @@ class InstagramContentService:
         self,
         brand_id: str,
         organization_id: str,
-        limit: int = 50,
+        limit: int = 100,
     ) -> Dict:
         """
         Download media for outlier posts that haven't been downloaded yet.
@@ -612,6 +612,13 @@ class InstagramContentService:
 
         account_ids = [w["account_id"] for w in watched]
 
+        # Build account_id -> username map for media downloads
+        account_username_map = {}
+        for w in watched:
+            acct = w.get("accounts") or {}
+            if acct.get("platform_username"):
+                account_username_map[w["account_id"]] = acct["platform_username"]
+
         # Find outlier posts without downloaded media
         # We check: is_outlier=true AND no instagram_media with status='downloaded'
         outlier_posts = []
@@ -628,6 +635,8 @@ class InstagramContentService:
                 .execute()
             )
             if result.data:
+                for p in result.data:
+                    p["_username"] = account_username_map.get(p.get("account_id"), "")
                 outlier_posts.extend(result.data)
 
         if not outlier_posts:
@@ -686,10 +695,11 @@ class InstagramContentService:
         post_id = post["id"]
         post_url = post.get("post_url", "")
         shortcode = post.get("post_id", "")
+        username = post.get("_username", "")
 
         # We need to get media URLs. Instagram CDN URLs expire, so we
         # try to re-scrape just this post to get fresh URLs
-        media_urls = self._get_media_urls_for_post(shortcode)
+        media_urls = self._get_media_urls_for_post(shortcode, username=username)
 
         if not media_urls:
             logger.warning(f"No media URLs found for post {post_id}")
@@ -763,7 +773,7 @@ class InstagramContentService:
 
         return any_downloaded
 
-    def _get_media_urls_for_post(self, shortcode: str) -> List[Dict]:
+    def _get_media_urls_for_post(self, shortcode: str, username: str = "") -> List[Dict]:
         """
         Get media URLs for a post by shortcode.
 
@@ -771,6 +781,7 @@ class InstagramContentService:
 
         Args:
             shortcode: Instagram post shortcode
+            username: Instagram username (required by Apify actor)
 
         Returns:
             List of {url, type} dicts
@@ -783,12 +794,16 @@ class InstagramContentService:
 
             client = ApifyClient(Config.APIFY_TOKEN)
 
+            run_input = {
+                "directUrls": [f"https://www.instagram.com/p/{shortcode}/"],
+                "resultsLimit": 1,
+            }
+            if username:
+                run_input["username"] = username
+
             # Use the Instagram post scraper actor for individual posts
             run = client.actor("apify/instagram-post-scraper").call(
-                run_input={
-                    "directUrls": [f"https://www.instagram.com/p/{shortcode}/"],
-                    "resultsLimit": 1,
-                },
+                run_input=run_input,
                 build="latest",
             )
 
