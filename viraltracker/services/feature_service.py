@@ -86,6 +86,10 @@ class FeatureKey:
     KNOWLEDGE_BASE = "knowledge_base"
     VEO_AVATARS = "veo_avatars"
     SORA_MVP = "sora_mvp"
+    # Video Tools
+    SECTION_VIDEO_TOOLS = "section_video_tools"
+    INSTAGRAM_CONTENT = "instagram_content"
+    VIDEO_STUDIO = "video_studio"
     # System
     AGENT_CATALOG = "agent_catalog"
     SCHEDULED_TASKS = "scheduled_tasks"
@@ -255,6 +259,10 @@ class FeatureService:
             FeatureKey.KNOWLEDGE_BASE,
             FeatureKey.VEO_AVATARS,
             FeatureKey.SORA_MVP,
+            # Video Tools pages
+            FeatureKey.SECTION_VIDEO_TOOLS,
+            FeatureKey.INSTAGRAM_CONTENT,
+            FeatureKey.VIDEO_STUDIO,
             # System pages
             FeatureKey.AGENT_CATALOG,
             FeatureKey.SCHEDULED_TASKS,

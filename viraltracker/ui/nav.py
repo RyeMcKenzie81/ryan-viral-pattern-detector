@@ -150,6 +150,10 @@ def _get_org_features_cached(org_id: str) -> Dict[str, bool]:
             FeatureKey.KNOWLEDGE_BASE: True,
             FeatureKey.VEO_AVATARS: True,
             FeatureKey.SORA_MVP: True,
+            # Video Tools pages
+            FeatureKey.SECTION_VIDEO_TOOLS: True,
+            FeatureKey.INSTAGRAM_CONTENT: True,
+            FeatureKey.VIDEO_STUDIO: True,
             # System pages
             FeatureKey.AGENT_CATALOG: True,
             FeatureKey.SCHEDULED_TASKS: True,
@@ -319,6 +323,16 @@ def build_navigation_pages() -> Dict[str, List[st.Page]]:
         content.append(st.Page("pages/99_🎥_Sora_MVP.py", title="Sora MVP", icon="🎥"))
     if content:
         pages["Content"] = content
+
+    # --- Video Tools ---
+    SK_VIDEO = "section_video_tools"
+    video_tools: List[st.Page] = []
+    if visible(SK_VIDEO, "instagram_content"):
+        video_tools.append(st.Page("pages/50_📸_Instagram_Content.py", title="Instagram Content", icon="📸"))
+    if visible(SK_VIDEO, "video_studio"):
+        video_tools.append(st.Page("pages/51_🎬_Video_Studio.py", title="Video Studio", icon="🎬"))
+    if video_tools:
+        pages["Video Tools"] = video_tools
 
     # --- System ---
     SK_SYSTEM = "section_system"
