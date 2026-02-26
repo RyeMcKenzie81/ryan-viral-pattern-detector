@@ -20,6 +20,11 @@ _ANIMATION_PROPS_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Override appended to end of CSS to ensure standalone documents scroll.
+# Third-party CSS (Klaviyo, etc.) often sets body{overflow:hidden} for widget
+# contexts. Stripping via regex is fragile on minified CSS, so we just override.
+_SCROLL_OVERRIDE_CSS = "\nhtml,body{overflow:auto !important;height:auto !important;}\n"
+
 # Match @import statements (handles URLs with semicolons inside quotes/parens)
 _IMPORT_RE = re.compile(
     r'@import\s+'
@@ -104,17 +109,20 @@ class CSSScoper:
         # 5. Strip animation/transition properties for deterministic rendering
         final_css = _ANIMATION_PROPS_RE.sub("", css_no_imports)
 
-        # 6. Escape </ sequences to prevent style breakout (XSS defense)
+        # 6. Append scroll override (third-party CSS often sets body{overflow:hidden})
+        final_css += _SCROLL_OVERRIDE_CSS
+
+        # 7. Escape </ sequences to prevent style breakout (XSS defense)
         final_css = final_css.replace('</', '<\\/')
 
         stats["css_total_chars"] = len(final_css)
 
-        # 7. Extract body classes, content, and <head> extras (meta, title, font links)
+        # 8. Extract body classes, content, and <head> extras (meta, title, font links)
         body_classes = self._extract_body_classes(html_no_styles)
         body_content = self._extract_body_content(html_no_styles)
         head_extras = self._extract_head_extras(html_no_styles)
 
-        # 8. Build complete standalone HTML document
+        # 9. Build complete standalone HTML document
         result = self._build_document(
             body_content=body_content,
             body_classes=body_classes,
@@ -230,8 +238,16 @@ class CSSScoper:
 
         return "\n".join(useful_tags)
 
+    # Classes that block scrolling when set on <body> by third-party scripts
+    _SCROLL_BLOCKING_CLASSES = frozenset([
+        "klaviyo-prevent-body-scrolling",
+        "no-scroll",
+        "modal-open",
+        "overflow-hidden",
+    ])
+
     def _extract_body_classes(self, html: str) -> str:
-        """Extract CSS classes from the <body> tag."""
+        """Extract CSS classes from the <body> tag, stripping scroll-blockers."""
         body_tag = re.search(r'<body\s[^>]*>', html, flags=re.IGNORECASE)
         if not body_tag:
             return ""
@@ -239,7 +255,13 @@ class CSSScoper:
             r'class="([^"]*)"', body_tag.group(0), flags=re.IGNORECASE
         )
         if class_match:
-            return class_match.group(1).strip()
+            classes = class_match.group(1).strip()
+            # Strip classes that block scrolling on standalone documents
+            filtered = " ".join(
+                c for c in classes.split()
+                if c not in self._SCROLL_BLOCKING_CLASSES
+            )
+            return filtered
         class_match_single = re.search(
             r"class='([^']*)'", body_tag.group(0), flags=re.IGNORECASE
         )

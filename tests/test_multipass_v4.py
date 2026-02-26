@@ -6735,6 +6735,37 @@ class TestCSSScoperXSSEscape:
         assert '<\\/style>' in result
 
 
+class TestCSSScoperScrollOverride:
+    """CSSScoper appends scroll override to prevent body{overflow:hidden} from breaking scrolling."""
+
+    def test_scroll_override_appended(self):
+        from viraltracker.services.landing_page_analysis.multipass.surgery.css_scoper import (
+            CSSScoper,
+        )
+
+        html = '<body><div>content</div></body>'
+        css = 'body{overflow:hidden;color:red;}'
+        scoper = CSSScoper()
+        result, _stats = scoper.scope(html, css)
+        # Override should appear after the original CSS (wins by cascade order)
+        assert 'overflow:auto !important' in result
+        assert 'height:auto !important' in result
+
+    def test_scroll_override_wins_cascade(self):
+        from viraltracker.services.landing_page_analysis.multipass.surgery.css_scoper import (
+            CSSScoper,
+        )
+
+        html = '<body><div>content</div></body>'
+        css = 'body{overflow:hidden;}'
+        scoper = CSSScoper()
+        result, _stats = scoper.scope(html, css)
+        # The override comes AFTER the original rule, so it wins
+        override_pos = result.find('overflow:auto !important')
+        original_pos = result.find('overflow:hidden')
+        assert override_pos > original_pos
+
+
 class TestFetchAllExternal:
     """Phase 1 CSS fix: fetch_all_external parameter and helpers."""
 
