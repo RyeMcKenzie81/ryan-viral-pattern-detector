@@ -483,6 +483,18 @@ class VideoRecreationService:
         Returns:
             List of scored candidate dicts.
         """
+        # Resolve real org_id from brand if superuser "all" mode
+        if organization_id == "all":
+            brand_result = (
+                self.supabase.table("brands")
+                .select("organization_id")
+                .eq("id", brand_id)
+                .limit(1)
+                .execute()
+            )
+            if brand_result.data:
+                organization_id = brand_result.data[0]["organization_id"]
+
         # Get analyzed posts for this brand (Instagram scrape source)
         query = (
             self.supabase.table("ad_video_analysis")
