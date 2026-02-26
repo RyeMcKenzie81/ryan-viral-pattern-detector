@@ -112,6 +112,7 @@ class InstagramContentService:
         account_data = {
             "platform_id": platform_id,
             "platform_username": username,
+            "handle": username,
         }
         account_result = (
             self.supabase.table("accounts")
