@@ -1,6 +1,6 @@
 # Landing Page Analyzer — Status
 
-**Last Updated:** 2026-02-10
+**Last Updated:** 2026-02-26
 
 ## Phase Overview
 
@@ -14,16 +14,80 @@
 | Phase 2B | Blueprint UI (Tab 3) | Done | `CHECKPOINT_PHASE_2.md` |
 | Phase 2C | Chunked streaming blueprint fix | Done | `CHECKPOINT_PHASE_2_CHUNKED_BLUEPRINT.md` |
 | Phase 2D | Persona selector for blueprint generation | Done | `CHECKPOINT_PERSONA_SELECTOR.md` |
-| **Manual QA** | **Test Phases 0-2D end-to-end** | **Next** | — |
+| Surgery CSS Phase 1 | Fetch all external CSS (not just first-party) | Done | `CHECKPOINT_PHASE1_CSS_FETCH.md` |
+| Surgery CSS Phase 2 | Standalone HTML output (no CSS scoping) | Done | `CHECKPOINT_STANDALONE_HTML_PROPOSAL.md` |
+| Surgery CSS Phase 2 Integration | mockup_service, api/app.py, docstring fixes | Done | — |
+| **Manual QA** | **Test surgery pipeline E2E on multiple pages** | **Next** | — |
 
-## What Needs Testing Now
+## Surgery Pipeline CSS Fix — Summary
 
-### Phase 0+1: Analysis Pipeline
+### Problem
+S3 (CSS Scoping) was destroying visual quality by regex-prefixing all CSS rules with `.lp-mockup`. This broke complex selectors, pseudo-elements, and media queries. Only 1/5 external stylesheets were fetched. SSIM was ~0.60.
+
+### Solution (2 phases)
+
+**Phase 1 — Fetch all external CSS:**
+- Increased external CSS fetch limit from 3→10 for surgery path
+- Added `fetch_raw_external_css()` to bypass CSS parsing/reordering
+- Added `_rewrite_css_urls()` for relative URL resolution
+- Increased max CSS response from 500KB→2MB
+- Result: Necessary but not sufficient (SSIM unchanged at 0.603)
+
+**Phase 2 — Standalone HTML (no CSS scoping):**
+- Rewrote `CSSScoper` to produce complete `<!DOCTYPE html>` documents
+- Removed `.lp-mockup` CSS prefixing entirely
+- Added `data-pipeline="surgery"` on `<body>` for downstream detection
+- Fixed CSS cascade order: external CSS first, then inline overrides
+- Result: **SSIM 0.604 → 0.772**
+
+**Integration fixes:**
+- Added `link` to `_ALLOWED_TAGS` in mockup_service.py (Google Fonts `<link>` preservation)
+- Fixed double-wrapping in api/app.py public preview (detect full documents)
+- Updated docstrings in section_templates.py, html_extractor.py, pipeline.py
+
+### Files Changed
+
+| File | Changes |
+|------|---------|
+| `multipass/surgery/css_scoper.py` | Complete rewrite — standalone HTML, no scoping |
+| `multipass/html_extractor.py` | `fetch_raw_external_css()`, URL rewriting, content-type validation |
+| `multipass/surgery/pipeline.py` | Uses raw CSS fetch, updated docstring |
+| `multipass/surgery/prompts.py` | Removed `.lp-mockup` from S4 prompt |
+| `multipass/phase_diagnostics.py` | `data-pipeline="surgery"` detection instead of `.lp-mockup` |
+| `multipass/section_templates.py` | Updated docstring |
+| `mockup_service.py` | Added `link` tag to bleach allowlist |
+| `api/app.py` | Fixed double-wrapping in public preview |
+| `tests/test_multipass_v4.py` | Updated CSS scoper tests, added fetch tests (408 total) |
+
+### Known Blockers Resolved
+
+| # | Blocker | Resolution |
+|---|---------|------------|
+| B1 | Bleach strips `<link>` tags | Added `link` to `_ALLOWED_TAGS` with href/rel/type/crossorigin attrs |
+| B2 | Non-surgery pipeline also uses `.lp-mockup` | Kept `.lp-mockup` for reconstruction path, only changed surgery |
+| B3 | `_strip_mockup_wrapper()` destroys `<style>` blocks | MockupService `_wrap_mockup()` is normalization boundary — safe |
+
+### Known Traps Resolved
+
+| # | Trap | Resolution |
+|---|------|------------|
+| T1 | Eval harness checks for `.lp-mockup` | Updated phase_diagnostics.py to check `data-pipeline="surgery"` |
+| T2 | S4 prompt hardcodes `.lp-mockup` selectors | Updated prompts.py to use standard selectors |
+| T3 | Public preview double-wraps documents | api/app.py now detects full documents and serves as-is |
+| T5 | `is_surgery_mode` CSS limit fallback | `data-pipeline="surgery"` preserved on `<body>` tag |
+
+---
+
+## Previous Phases
+
+### What Needs Testing (Phases 0-2D)
+
+#### Phase 0+1: Analysis Pipeline
 1. Brand Manager — verify brand voice/tone, colors, and product blueprint fields save correctly
 2. Tab 1 (Analyze) — scrape a URL and run the 4-skill pipeline end-to-end
 3. Tab 2 (Results) — verify analysis renders with all 4 sub-tabs (Classification, Elements, Gaps, Copy Scores)
 
-### Phase 2: Blueprint
+#### Phase 2: Blueprint
 4. Tab 3 (Blueprint) — select product, offer variant, and a completed analysis
 5. Generate a blueprint — verify 4-step progress and section accordion renders
 6. Check CONTENT NEEDED highlighting for brands with incomplete data
@@ -44,37 +108,6 @@
 INSERT INTO org_features (organization_id, feature_key, enabled)
 VALUES ('your-org-id', 'landing_page_analyzer', true);
 ```
-
-## Files Summary
-
-### New Files (16)
-| File | Purpose |
-|------|---------|
-| `migrations/2026-02-09_landing_page_blueprint_fields.sql` | Brand/product schema extensions |
-| `migrations/2026-02-09_landing_page_analyses.sql` | Analyses table |
-| `migrations/2026-02-09_landing_page_blueprints.sql` | Blueprints table |
-| `viraltracker/services/landing_page_analysis/__init__.py` | Package init + exports |
-| `viraltracker/services/landing_page_analysis/analysis_service.py` | Skills 1-4 pipeline |
-| `viraltracker/services/landing_page_analysis/brand_profile_service.py` | Brand data aggregation + gap detection |
-| `viraltracker/services/landing_page_analysis/blueprint_service.py` | Skill 5 orchestration |
-| `viraltracker/services/landing_page_analysis/models.py` | Pydantic output models |
-| `viraltracker/services/landing_page_analysis/utils.py` | Shared `parse_llm_json()` |
-| `viraltracker/services/landing_page_analysis/prompts/__init__.py` | Prompts package |
-| `viraltracker/services/landing_page_analysis/prompts/page_classifier.py` | Skill 1 prompt |
-| `viraltracker/services/landing_page_analysis/prompts/element_detector.py` | Skill 2 prompt |
-| `viraltracker/services/landing_page_analysis/prompts/gap_analyzer.py` | Skill 3 prompt |
-| `viraltracker/services/landing_page_analysis/prompts/copy_scorer.py` | Skill 4 prompt |
-| `viraltracker/services/landing_page_analysis/prompts/reconstruction.py` | Skill 5 prompt |
-| `viraltracker/ui/pages/33_🏗️_Landing_Page_Analyzer.py` | UI page (3 tabs) |
-
-### Modified Files (5)
-| File | Changes |
-|------|---------|
-| `viraltracker/services/feature_service.py` | Added `LANDING_PAGE_ANALYZER` to FeatureKey |
-| `viraltracker/services/web_scraping_service.py` | Added `screenshot` field to ScrapeResult |
-| `viraltracker/services/agent_tracking.py` | Added `run_agent_stream_with_tracking()` for long-running LLM calls |
-| `viraltracker/ui/nav.py` | Registered page 33 in Ads section |
-| `viraltracker/ui/pages/02_🏢_Brand_Manager.py` | Brand voice/colors + product blueprint fields UI |
 
 ## Tech Debt (deferred)
 - #16: Unit tests for Phase 1 (analysis_service, models)

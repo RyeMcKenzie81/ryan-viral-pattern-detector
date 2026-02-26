@@ -219,6 +219,13 @@ async def public_blueprint_preview(share_token: str, request: Request):
         raise HTTPException(status_code=404, detail="Blueprint not found or sharing disabled")
 
     html = result["html"]
+
+    # If HTML is already a complete document (from _wrap_mockup or surgery
+    # pipeline), serve it as-is to avoid double-wrapping.
+    if "<!DOCTYPE" in html[:100].upper() or "<html" in html[:100].lower():
+        return HTMLResponse(content=html)
+
+    # Legacy fragments: wrap in a minimal document shell
     wrapped = (
         "<!DOCTYPE html>\n<html>\n<head>\n"
         '  <meta charset="utf-8">\n'

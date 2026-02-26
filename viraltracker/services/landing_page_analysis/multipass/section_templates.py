@@ -7,7 +7,7 @@ Each template uses CSS classes (mp-* prefix) for layout properties
 to preserve responsive behavior. Inline styles are used only for
 non-responsive properties (colors, font-size, non-breakpoint padding).
 
-All templates work under the .lp-mockup wrapper div.
+Templates are used by both reconstruction (fragment) and surgery (standalone document) pipelines.
 """
 
 import logging

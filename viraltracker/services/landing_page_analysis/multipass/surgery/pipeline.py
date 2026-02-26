@@ -73,8 +73,8 @@ class SurgeryPipeline:
             page_html: Full page HTML from FireCrawl (required).
 
         Returns:
-            Complete HTML string with data-section, data-slot attributes
-            and CSS scoped under .lp-mockup.
+            Complete standalone HTML document with data-section, data-slot
+            attributes and all CSS consolidated in <head>.
         """
         self._start_time = time.time()
         api_calls = 0

@@ -293,11 +293,14 @@ _ALLOWED_TAGS = [
     "a", "button", "details", "summary",
     # Forms (display only)
     "input", "label", "select", "option", "textarea", "form",
+    # External resources (font CDN links preserved by surgery pipeline)
+    "link",
 ]
 
 _ALLOWED_ATTRS = {
     "*": ["class", "id", "style", "data-slot", "data-section", "data-pipeline", "role", "aria-label"],
     "a": ["href", "target", "rel"],
+    "link": ["href", "rel", "type", "crossorigin"],
     "img": [
         "src", "alt", "width", "height", "srcset", "sizes", "loading", "data-bg-image",
         "data-src", "data-srcset", "data-lazy-src",

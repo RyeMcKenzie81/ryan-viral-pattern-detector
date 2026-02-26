@@ -400,7 +400,7 @@ class CSSExtractor:
 
 
 # ---------------------------------------------------------------------------
-# CSS scoping under .lp-mockup
+# CSS scoping (used by reconstruction pipeline)
 # ---------------------------------------------------------------------------
 
 # CSS timing/easing keywords that are NOT animation names
