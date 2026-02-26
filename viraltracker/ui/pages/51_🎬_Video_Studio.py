@@ -418,10 +418,22 @@ with tab_recreation:
             st.markdown(f"**3. Clips** {'✅' if successful_clips else '⬜'}")
             if has_adapted and not has_clips:
                 mode = st.selectbox("Quality", ["std", "pro"], key="vs_kling_mode")
+                engine_choice = st.selectbox(
+                    "Engine",
+                    ["Auto (recommended)", "VEO only", "Kling only"],
+                    key="vs_engine_choice",
+                    help="Auto routes talking-head → Kling, B-roll → VEO. Use 'VEO only' if Kling keys are not configured.",
+                )
+                engine_override = None
+                if engine_choice == "VEO only":
+                    engine_override = "veo"
+                elif engine_choice == "Kling only":
+                    engine_override = "kling"
+
                 if st.button("Generate Video Clips"):
                     with st.spinner("Generating clips (this may take several minutes)..."):
                         result = _run_async(svc.generate_video_clips(
-                            selected_id, mode=mode
+                            selected_id, mode=mode, engine_override=engine_override
                         ))
                         if result:
                             st.success("Clips generated!")
