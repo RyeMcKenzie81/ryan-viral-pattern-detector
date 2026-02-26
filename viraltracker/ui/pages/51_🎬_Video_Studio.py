@@ -546,7 +546,15 @@ with tab_history:
 
                     if final_path:
                         st.markdown("**Final Video**: Available in storage")
-                        st.code(final_path, language=None)
+                        try:
+                            from viraltracker.config import get_supabase_client
+                            sb = get_supabase_client()
+                            parts = final_path.split("/", 1)
+                            signed = sb.storage.from_(parts[0]).create_signed_url(parts[1], 3600)
+                            if signed and signed.get("signedURL"):
+                                st.markdown(f"[Download Final Video]({signed['signedURL']})")
+                        except Exception:
+                            st.code(final_path, language=None)
 
                     overlays = cand.get("text_overlay_instructions")
                     if overlays:
