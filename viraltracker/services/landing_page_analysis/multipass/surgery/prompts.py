@@ -66,18 +66,18 @@ Focus on the most impactful differences:
 Rules:
 - ONLY suggest CSS changes (no HTML structure changes)
 - Use the PatchApplier format: each patch is a CSS rule with a selector
-- Target .lp-mockup scoped selectors
+- Use standard CSS selectors (class names, tag names, attribute selectors)
 - Maximum 10 patches
 - Each patch should be a complete CSS rule
 
 Respond with patches in this format:
 ```
 PATCH 1:
-selector: .lp-mockup .hero-section
+selector: .hero-section
 css: display: flex; flex-direction: column; align-items: center;
 
 PATCH 2:
-selector: .lp-mockup h1
+selector: h1
 css: font-size: 3rem; font-weight: 700;
 ```
 

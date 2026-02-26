@@ -155,22 +155,46 @@ class ResponsiveCSS:
     custom_properties: str = ""  # :root { --color-primary: ... }
     media_queries: str = ""  # @media (...) { ... }
     font_faces: str = ""  # @font-face { ... }
+    base_rules: str = ""  # Regular CSS rules (.class { ... })
+    keyframes: str = ""  # @keyframes animations
+    supports: str = ""  # @supports feature queries
 
     def to_css_block(self) -> str:
-        """Combine all CSS parts into a single block."""
+        """Combine all CSS parts into a single block.
+
+        Order follows CSS cascade correctness:
+        font-faces → custom_properties → keyframes → base_rules → supports → media_queries
+        """
         parts = []
         if self.font_faces:
             parts.append(self.font_faces)
         if self.custom_properties:
             parts.append(self.custom_properties)
+        if self.keyframes:
+            parts.append(self.keyframes)
+        if self.base_rules:
+            parts.append(self.base_rules)
+        if self.supports:
+            parts.append(self.supports)
         if self.media_queries:
             parts.append(self.media_queries)
         return "\n\n".join(parts)
 
 
-MAX_CSS_TOTAL_SIZE = 50 * 1024  # 50KB cap
-MAX_CSS_RESPONSE_BYTES = 500 * 1024  # 500KB per external stylesheet
+MAX_CSS_RESPONSE_BYTES = 2 * 1024 * 1024  # 2MB per external stylesheet
 _MAX_EXTERNAL_CSS_FETCHES = 3
+_MAX_EXTERNAL_CSS_FETCHES_ALL = 10  # When fetching all external (surgery path)
+
+# Platform-specific asset CDNs that serve page-specific CSS.
+# These are NOT generic library CDNs — they host first-party stylesheets
+# for sites built on these platforms.
+_PLATFORM_CDN_SUFFIXES = frozenset([
+    'website-files.com',        # Webflow
+    'cdn.shopify.com',          # Shopify
+    'squarespace-cdn.com',      # Squarespace
+    'wixstatic.com',            # Wix
+    'hubspot.net',              # HubSpot
+])
 
 # CDN domains to skip (not page-specific)
 _CDN_DOMAINS = frozenset([
@@ -181,44 +205,147 @@ _CDN_DOMAINS = frozenset([
     'kit.fontawesome.com', 'ajax.googleapis.com',
 ])
 
+# Font-only CDNs — always skip, browser loads via <link> at render time
+_FONT_ONLY_DOMAINS = frozenset([
+    'fonts.googleapis.com', 'fonts.gstatic.com',
+])
+
 
 class CSSExtractor:
     """Extract responsive CSS from original page HTML."""
 
     @classmethod
-    def extract(cls, original_html: str, page_url: str = "") -> ResponsiveCSS:
+    def fetch_raw_external_css(
+        cls, original_html: str, page_url: str = ""
+    ) -> str:
+        """Fetch ALL external stylesheets and return raw CSS text.
+
+        Unlike ``extract()``, this does NOT parse/categorize CSS — it returns
+        the raw CSS exactly as the CDN serves it, preserving cascade order.
+        Used by surgery pipeline where CSS ordering matters.
+
+        Args:
+            original_html: Full page HTML (to find ``<link>`` tags).
+            page_url: Page URL for resolving relative stylesheet URLs.
+
+        Returns:
+            Combined raw CSS text from all fetchable external stylesheets.
+        """
+        if not original_html or not page_url:
+            return ""
+
+        page_hostname = urlparse(page_url).hostname or ""
+        if not page_hostname:
+            return ""
+
+        link_urls = _extract_stylesheet_urls(original_html, page_url)
+        css_parts: List[str] = []
+        fetched = 0
+
+        for css_url in link_urls:
+            if fetched >= _MAX_EXTERNAL_CSS_FETCHES_ALL:
+                break
+            parsed = urlparse(css_url)
+            css_host = (parsed.hostname or "").lower()
+
+            # Skip font-only CDNs
+            if css_host in _FONT_ONLY_DOMAINS:
+                continue
+
+            # SSRF safety check
+            if not _is_safe_css_url(css_url):
+                continue
+
+            try:
+                css_text = _safe_fetch_css(
+                    css_url, page_hostname, first_party_only=False,
+                )
+                if css_text:
+                    css_text = _rewrite_css_urls(css_text, css_url)
+                    css_parts.append(css_text)
+                    fetched += 1
+                    logger.info(
+                        f"Fetched external CSS: {css_url[:80]}... "
+                        f"({len(css_text):,} chars)"
+                    )
+            except Exception as e:
+                logger.debug(f"External CSS fetch failed: {e}")
+
+        return "\n\n".join(css_parts)
+
+    @classmethod
+    def extract(
+        cls,
+        original_html: str,
+        page_url: str = "",
+        external_only: bool = False,
+        fetch_all_external: bool = False,
+    ) -> ResponsiveCSS:
         """Extract custom properties, media queries, and font-faces from HTML.
 
         Sources:
-        1. Inline <style> blocks (always available)
-        2. External first-party <link rel="stylesheet"> (best-effort fetch)
+        1. Inline <style> blocks (always available, skipped if external_only=True)
+        2. External <link rel="stylesheet"> (best-effort fetch)
+
+        Args:
+            original_html: Full page HTML.
+            page_url: Page URL for resolving relative stylesheet URLs.
+            external_only: If True, skip inline <style> extraction. Use this
+                when inline styles are already handled separately (e.g. surgery
+                pipeline where CSSScoper extracts inline styles).
+            fetch_all_external: If True, fetch ALL external stylesheets (not
+                just first-party). Used by surgery pipeline to capture CDN CSS
+                that the scoped fragment needs for visual fidelity.
         """
         if not original_html:
             return ResponsiveCSS()
 
         css_parts: List[str] = []
 
-        # Source 1: Inline <style> blocks
-        for match in re.finditer(
-            r'<style[^>]*>(.*?)</style>', original_html, re.DOTALL | re.IGNORECASE
-        ):
-            css_parts.append(match.group(1))
+        # Source 1: Inline <style> blocks (skip if external_only)
+        if not external_only:
+            for match in re.finditer(
+                r'<style[^>]*>(.*?)</style>', original_html, re.DOTALL | re.IGNORECASE
+            ):
+                css_parts.append(match.group(1))
 
-        # Source 2: External first-party stylesheets
+        # Source 2: External stylesheets
         page_hostname = urlparse(page_url).hostname or "" if page_url else ""
         if page_hostname:
             link_urls = _extract_stylesheet_urls(original_html, page_url)
+            max_fetches = (
+                _MAX_EXTERNAL_CSS_FETCHES_ALL if fetch_all_external
+                else _MAX_EXTERNAL_CSS_FETCHES
+            )
             fetched = 0
             for css_url in link_urls:
-                if fetched >= _MAX_EXTERNAL_CSS_FETCHES:
+                if fetched >= max_fetches:
                     break
                 parsed = urlparse(css_url)
                 css_host = parsed.hostname or ""
-                if not _is_first_party(css_host, page_hostname):
+
+                # Skip font-only CDNs (browser loads these via <link>)
+                if css_host in _FONT_ONLY_DOMAINS:
                     continue
+
+                if not fetch_all_external:
+                    # Original behavior: first-party only
+                    if not _is_first_party(css_host, page_hostname):
+                        continue
+                else:
+                    # Surgery path: fetch all, but still SSRF-safe
+                    if not _is_safe_css_url(css_url):
+                        continue
+
                 try:
-                    css_text = _safe_fetch_css(css_url, page_hostname)
+                    css_text = _safe_fetch_css(
+                        css_url,
+                        page_hostname,
+                        first_party_only=not fetch_all_external,
+                    )
                     if css_text:
+                        # Rewrite relative url() paths to absolute
+                        css_text = _rewrite_css_urls(css_text, css_url)
                         css_parts.append(css_text)
                         fetched += 1
                 except Exception as e:
@@ -238,6 +365,9 @@ class CSSExtractor:
         custom_props: List[str] = []
         media_queries: List[str] = []
         font_faces: List[str] = []
+        base_rules: List[str] = []
+        keyframes_list: List[str] = []
+        supports_list: List[str] = []
 
         # Extract top-level blocks using brace-depth tracking
         blocks = _split_top_level_blocks(raw_css)
@@ -252,23 +382,19 @@ class CSSExtractor:
                 media_queries.append(block_content)
             elif block_type == "root":
                 custom_props.append(block_content)
+            elif block_type == "rule":
+                base_rules.append(block_content)
+            elif block_type == "keyframes":
+                keyframes_list.append(block_content)
+            elif block_type == "supports":
+                supports_list.append(block_content)
 
         result.custom_properties = "\n".join(custom_props)
         result.media_queries = "\n".join(media_queries)
         result.font_faces = "\n".join(font_faces)
-
-        # Cap total size
-        total = result.to_css_block()
-        if len(total) > MAX_CSS_TOTAL_SIZE:
-            logger.warning(
-                f"Extracted CSS too large ({len(total)} bytes), truncating"
-            )
-            # Prioritize: custom_properties > media_queries > font_faces
-            result.font_faces = result.font_faces[: MAX_CSS_TOTAL_SIZE // 3]
-            result.media_queries = result.media_queries[: MAX_CSS_TOTAL_SIZE // 3]
-            result.custom_properties = result.custom_properties[
-                : MAX_CSS_TOTAL_SIZE // 3
-            ]
+        result.base_rules = "\n".join(base_rules)
+        result.keyframes = "\n".join(keyframes_list)
+        result.supports = "\n".join(supports_list)
 
         return result
 
@@ -804,6 +930,11 @@ def _is_first_party(css_hostname: str, page_hostname: str) -> bool:
     if page_hostname.endswith('.' + css_hostname):
         return True
 
+    # Platform CDN suffixes (serve page-specific CSS, not generic libraries)
+    for suffix in _PLATFORM_CDN_SUFFIXES:
+        if css_hostname == suffix or css_hostname.endswith('.' + suffix):
+            return True
+
     # Skip known CDNs
     if css_hostname in _CDN_DOMAINS:
         return False
@@ -837,9 +968,21 @@ def _is_safe_css_url(url: str) -> bool:
 
 
 def _safe_fetch_css(
-    url: str, page_hostname: str, max_redirects: int = 3
+    url: str,
+    page_hostname: str,
+    max_redirects: int = 3,
+    first_party_only: bool = True,
 ) -> Optional[str]:
-    """Fetch CSS with per-hop SSRF + first-party protection."""
+    """Fetch CSS with per-hop SSRF protection.
+
+    Args:
+        url: CSS file URL to fetch.
+        page_hostname: Original page hostname (for first-party checks).
+        max_redirects: Maximum number of redirects to follow.
+        first_party_only: If True (default), reject redirects that leave
+            first-party domain. Set False for surgery path where we
+            intentionally fetch third-party CSS.
+    """
     import httpx
 
     for hop in range(max_redirects + 1):
@@ -847,7 +990,7 @@ def _safe_fetch_css(
             return None
 
         parsed = urlparse(url)
-        if not _is_first_party(parsed.hostname, page_hostname):
+        if first_party_only and not _is_first_party(parsed.hostname, page_hostname):
             logger.warning(
                 f"CSS redirect left first-party domain: {parsed.hostname}"
             )
@@ -889,6 +1032,14 @@ def _safe_fetch_css(
                 if resp.status_code != 200:
                     return None
 
+                # Content-type validation: reject non-CSS responses
+                content_type = resp.headers.get("content-type", "")
+                if content_type and not _is_css_content_type(content_type):
+                    logger.debug(
+                        f"CSS fetch rejected: content-type={content_type}"
+                    )
+                    return None
+
                 # Check content-length header (early reject)
                 content_length = resp.headers.get("content-length")
                 if content_length:
@@ -925,6 +1076,36 @@ def _safe_fetch_css(
             return None
 
     return None  # Exhausted redirect hops
+
+
+def _is_css_content_type(content_type: str) -> bool:
+    """Check if content-type indicates CSS. Accepts text/css and text/plain."""
+    ct = content_type.lower().split(";")[0].strip()
+    return ct in ("text/css", "text/plain", "application/octet-stream", "")
+
+
+def _rewrite_css_urls(css_text: str, css_file_url: str) -> str:
+    """Rewrite relative url() paths in CSS to absolute URLs.
+
+    When CSS is fetched from a CDN like https://cdn.example.com/css/main.css,
+    relative references like url(../images/bg.png) must be resolved relative
+    to the CSS file's URL, not the page URL.
+    """
+    if not css_file_url:
+        return css_text
+
+    # Base URL for resolving: directory of the CSS file
+    css_base = css_file_url.rsplit("/", 1)[0] + "/"
+
+    def _resolve_url(match: re.Match) -> str:
+        raw = match.group(1).strip().strip("'\"")
+        # Skip data URIs, absolute URLs, and fragment-only refs
+        if raw.startswith(("data:", "http://", "https://", "#", "//")):
+            return match.group(0)
+        resolved = urljoin(css_base, raw)
+        return f"url({resolved})"
+
+    return re.sub(r'url\(([^)]+)\)', _resolve_url, css_text)
 
 
 # ---------------------------------------------------------------------------

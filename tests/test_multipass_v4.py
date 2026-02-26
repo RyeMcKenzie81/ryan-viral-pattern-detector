@@ -249,17 +249,93 @@ class TestCSSExtractor:
         assert "Inter" in result.font_faces
         assert "src stripped" in result.font_faces  # src should be stripped
 
-    def test_50kb_cap(self):
+    def test_parse_css_regular_rules_preserved(self):
         from viraltracker.services.landing_page_analysis.multipass.html_extractor import (
             CSSExtractor,
         )
 
-        # Create >50KB of CSS
-        big_css = ":root { " + " ".join(f"--var-{i}: #{i:06x};" for i in range(5000)) + " }"
-        html = f"<style>{big_css}</style>"
+        html = '<style>.hero { color: red; } .footer { margin: 0; }</style>'
+        result = CSSExtractor.extract(html)
+        assert ".hero { color: red; }" in result.base_rules
+        assert ".footer { margin: 0; }" in result.base_rules
+
+    def test_parse_css_keyframes_preserved(self):
+        from viraltracker.services.landing_page_analysis.multipass.html_extractor import (
+            CSSExtractor,
+        )
+
+        html = '<style>@keyframes fade { from { opacity: 0; } to { opacity: 1; } }</style>'
+        result = CSSExtractor.extract(html)
+        assert "@keyframes fade" in result.keyframes
+        assert "opacity" in result.keyframes
+
+    def test_parse_css_supports_preserved(self):
+        from viraltracker.services.landing_page_analysis.multipass.html_extractor import (
+            CSSExtractor,
+        )
+
+        html = '<style>@supports (display: grid) { .container { display: grid; } }</style>'
+        result = CSSExtractor.extract(html)
+        assert "@supports (display: grid)" in result.supports
+        assert ".container" in result.supports
+
+    def test_parse_css_mixed_all_types(self):
+        from viraltracker.services.landing_page_analysis.multipass.html_extractor import (
+            CSSExtractor,
+        )
+
+        html = '''<style>
+            @font-face { font-family: "Inter"; src: url(inter.woff2); }
+            :root { --color: blue; }
+            @keyframes slide { from { left: 0; } to { left: 100px; } }
+            .hero { color: red; }
+            @supports (display: flex) { .flex { display: flex; } }
+            @media (max-width: 768px) { .hero { font-size: 14px; } }
+        </style>'''
+        result = CSSExtractor.extract(html)
+        assert "Inter" in result.font_faces
+        assert "--color" in result.custom_properties
+        assert "@keyframes slide" in result.keyframes
+        assert ".hero { color: red; }" in result.base_rules
+        assert "@supports" in result.supports
+        assert "max-width: 768px" in result.media_queries
+
+    def test_parse_css_large_css_no_truncation(self):
+        from viraltracker.services.landing_page_analysis.multipass.html_extractor import (
+            CSSExtractor,
+        )
+
+        # Create ~500KB of CSS rules — should pass through without truncation
+        rules = "\n".join(f".class-{i} {{ color: #{i:06x}; }}" for i in range(10000))
+        html = f"<style>{rules}</style>"
         result = CSSExtractor.extract(html)
         total = result.to_css_block()
-        assert len(total) <= 60_000  # Some tolerance for the cap
+        # Should contain all rules without truncation
+        assert len(total) > 200_000
+        assert ".class-9999" in result.base_rules
+
+    def test_to_css_block_ordering(self):
+        from viraltracker.services.landing_page_analysis.multipass.html_extractor import (
+            ResponsiveCSS,
+        )
+
+        css = ResponsiveCSS(
+            font_faces="@font-face { font-family: X; }",
+            custom_properties=":root { --x: 1; }",
+            keyframes="@keyframes a { }",
+            base_rules=".a { color: red; }",
+            supports="@supports (display: grid) { }",
+            media_queries="@media (max-width: 768px) { }",
+        )
+        block = css.to_css_block()
+        # Verify cascade order: font-faces → custom_properties → keyframes → base_rules → supports → media_queries
+        ff_pos = block.index("@font-face")
+        cp_pos = block.index(":root")
+        kf_pos = block.index("@keyframes")
+        br_pos = block.index(".a {")
+        sp_pos = block.index("@supports")
+        mq_pos = block.index("@media")
+        assert ff_pos < cp_pos < kf_pos < br_pos < sp_pos < mq_pos
 
     def test_empty_html(self):
         from viraltracker.services.landing_page_analysis.multipass.html_extractor import (
@@ -4264,21 +4340,31 @@ class TestPhaseDiagnostics:
         assert "verdicts" in d
         assert isinstance(d["phases"], list)
 
-    def test_lp_mockup_wrapper_detection(self):
-        """Wrapper present -> has_lp_mockup_wrapper = True; stripped -> FAIL."""
+    def test_surgery_marker_detection(self):
+        """Surgery marker present -> has_surgery_marker = True; stripped -> FAIL."""
         from viraltracker.services.landing_page_analysis.multipass.phase_diagnostics import (
             diagnose_phases,
         )
-        # With wrapper
+        # With lp-mockup wrapper (legacy format — still detected)
         with_wrapper = _build_content_html(
             sections=3, slots_per_section=3, wrap_lp_mockup=True
         )
         snapshots = {"phase_4_final": with_wrapper}
         report = diagnose_phases(snapshots, source_markdown="Heading body content words enough for test fidelity comparison text")
         final_metrics = next(m for m in report.phases if "Final" in m.phase_name)
-        assert final_metrics.extras["has_lp_mockup_wrapper"] is True
+        assert final_metrics.extras["has_surgery_marker"] is True
 
-        # Without wrapper
+        # With data-pipeline="surgery" on a wrapping element (new format)
+        raw = _build_content_html(
+            sections=3, slots_per_section=3, wrap_lp_mockup=False
+        )
+        with_marker = f'<body data-pipeline="surgery">{raw}</body>'
+        snapshots_new = {"phase_4_final": with_marker}
+        report_new = diagnose_phases(snapshots_new, source_markdown="Heading body content words enough for test fidelity comparison text")
+        final_metrics_new = next(m for m in report_new.phases if "Final" in m.phase_name)
+        assert final_metrics_new.extras["has_surgery_marker"] is True
+
+        # Without any marker
         without_wrapper = _build_content_html(
             sections=3, slots_per_section=3, wrap_lp_mockup=False
         )
@@ -4286,7 +4372,7 @@ class TestPhaseDiagnostics:
         report2 = diagnose_phases(snapshots2, source_markdown="Heading body content words enough for test fidelity comparison text")
         final_verdict = next(v for v in report2.verdicts if "Final" in v.phase_name)
         assert not final_verdict.passed
-        assert any(".lp-mockup" in i for i in final_verdict.issues)
+        assert any("marker" in i.lower() for i in final_verdict.issues)
 
 
 # ===========================================================================
@@ -5922,37 +6008,42 @@ class TestHTMLSanitizer:
 
 
 class TestCSSScoper:
-    """B27: CSSScoper scopes CSS under .lp-mockup and wraps body."""
+    """B27: CSSScoper consolidates CSS into standalone HTML document."""
 
-    def test_wraps_body_content(self):
+    def test_produces_standalone_document(self):
         from viraltracker.services.landing_page_analysis.multipass.surgery.css_scoper import (
             CSSScoper,
         )
         html = '<html><head><style>h1 { color: red; }</style></head><body><h1>Hello</h1></body></html>'
         result, stats = CSSScoper().scope(html)
-        assert '<div class="lp-mockup" data-pipeline="surgery">' in result
+        assert '<!DOCTYPE html>' in result
+        assert '<body' in result
+        assert 'data-pipeline="surgery"' in result
         assert "<h1>Hello</h1>" in result
         assert stats["body_wrapped"] is True
 
-    def test_scopes_css_rules(self):
+    def test_consolidates_css_in_head(self):
         from viraltracker.services.landing_page_analysis.multipass.surgery.css_scoper import (
             CSSScoper,
         )
         html = '<style>h1 { color: red; } p { margin: 0; }</style><body><h1>Hi</h1><p>Text</p></body>'
         result, stats = CSSScoper().scope(html)
-        assert ".lp-mockup" in result
+        # CSS should be in <style> in <head>, not scoped
+        assert "color: red" in result
+        assert "margin: 0" in result
         assert stats["style_blocks_extracted"] >= 1
 
-    def test_fixes_body_html_selectors(self):
+    def test_preserves_css_selectors_unscoped(self):
         from viraltracker.services.landing_page_analysis.multipass.surgery.css_scoper import (
             CSSScoper,
         )
-        html = '<style>body { font-family: Arial; } html { background: white; }</style><body><p>Test</p></body>'
+        html = '<style>body { font-family: Arial; } .hero { padding: 2rem; }</style><body><p>Test</p></body>'
         result, stats = CSSScoper().scope(html)
-        # Should NOT contain ".lp-mockup body" (matches nothing)
-        assert ".lp-mockup body" not in result.lower()
-        # Should contain .lp-mockup targeting font-family
-        assert ".lp-mockup" in result
+        # CSS selectors should NOT be rewritten with .lp-mockup prefix
+        assert ".lp-mockup" not in result
+        # Original selectors preserved
+        assert "font-family: Arial" in result
+        assert ".hero" in result
 
     def test_strips_animation_properties(self):
         from viraltracker.services.landing_page_analysis.multipass.surgery.css_scoper import (
@@ -5962,14 +6053,6 @@ class TestCSSScoper:
         result, stats = CSSScoper().scope(html)
         assert "animation:" not in result.lower()
         assert "transition:" not in result.lower()
-
-    def test_adds_containment_css(self):
-        from viraltracker.services.landing_page_analysis.multipass.surgery.css_scoper import (
-            CSSScoper,
-        )
-        html = '<body><p>Test</p></body>'
-        result, stats = CSSScoper().scope(html)
-        assert "contain: layout style paint" in result
 
     def test_external_css_included(self):
         from viraltracker.services.landing_page_analysis.multipass.surgery.css_scoper import (
@@ -5989,7 +6072,34 @@ class TestCSSScoper:
         html = '<html><head></head><div>Content</div></html>'
         result, stats = CSSScoper().scope(html)
         assert "Content" in result
-        assert '<div class="lp-mockup" data-pipeline="surgery">' in result
+        assert 'data-pipeline="surgery"' in result
+
+    def test_removes_css_link_tags(self):
+        from viraltracker.services.landing_page_analysis.multipass.surgery.css_scoper import (
+            CSSScoper,
+        )
+        html = (
+            '<html><head>'
+            '<link rel="stylesheet" href="https://cdn.example.com/main.css">'
+            '<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter">'
+            '</head><body><p>Test</p></body></html>'
+        )
+        result, stats = CSSScoper().scope(html)
+        # CDN link should be removed (CSS is inlined)
+        assert "cdn.example.com" not in result
+        # Google Fonts link should be preserved
+        assert "fonts.googleapis.com" in result
+        assert stats["link_tags_removed"] >= 1
+        assert stats["link_tags_preserved"] >= 1
+
+    def test_transfers_body_classes(self):
+        from viraltracker.services.landing_page_analysis.multipass.surgery.css_scoper import (
+            CSSScoper,
+        )
+        html = '<body class="dark-theme compact"><p>Test</p></body>'
+        result, stats = CSSScoper().scope(html)
+        assert 'class="dark-theme compact"' in result
+        assert 'data-pipeline="surgery"' in result
 
 
 # ===========================================================================
@@ -6534,3 +6644,184 @@ class TestScrapeConsistencyRicherDom:
         )
         md = "# Amazing Product\n\nBuy now!\n\n![hero](https://cdn.shopify.com/product.jpg)"
         assert check_scrape_consistency(html, md, "https://example.com") is False
+
+
+class TestPlatformCDNRecognition:
+    """B37: _is_first_party() platform CDN suffix support."""
+
+    def test_is_first_party_webflow_cdn(self):
+        from viraltracker.services.landing_page_analysis.multipass.html_extractor import (
+            _is_first_party,
+        )
+
+        # Webflow CDN should be recognized as first-party
+        assert _is_first_party("cdn.prod.website-files.com", "offers.hike-footwear.com") is True
+
+    def test_is_first_party_shopify_cdn(self):
+        from viraltracker.services.landing_page_analysis.multipass.html_extractor import (
+            _is_first_party,
+        )
+
+        assert _is_first_party("cdn.shopify.com", "mystore.com") is True
+
+    def test_is_first_party_generic_cdn_still_blocked(self):
+        from viraltracker.services.landing_page_analysis.multipass.html_extractor import (
+            _is_first_party,
+        )
+
+        # Generic library CDNs should still be blocked
+        assert _is_first_party("cdnjs.cloudflare.com", "example.com") is False
+
+    def test_is_first_party_spoofed_suffix(self):
+        from viraltracker.services.landing_page_analysis.multipass.html_extractor import (
+            _is_first_party,
+        )
+
+        # Dot-prefix prevents partial match: evil-website-files.com should NOT match
+        assert _is_first_party("evil-website-files.com", "example.com") is False
+
+    def test_is_first_party_exact_and_subdomain(self):
+        from viraltracker.services.landing_page_analysis.multipass.html_extractor import (
+            _is_first_party,
+        )
+
+        # Existing behavior preserved
+        assert _is_first_party("example.com", "example.com") is True
+        assert _is_first_party("cdn.example.com", "example.com") is True
+        assert _is_first_party("other.com", "example.com") is False
+
+
+class TestExternalOnlyMode:
+    """B38: CSSExtractor external_only parameter."""
+
+    def test_extract_external_only_skips_inline(self):
+        from viraltracker.services.landing_page_analysis.multipass.html_extractor import (
+            CSSExtractor,
+        )
+
+        html = '<style>.inline { color: red; } :root { --x: 1; }</style>'
+        result = CSSExtractor.extract(html, external_only=True)
+        # Inline styles should be skipped
+        assert result.base_rules == ""
+        assert result.custom_properties == ""
+
+    def test_extract_default_includes_inline(self):
+        from viraltracker.services.landing_page_analysis.multipass.html_extractor import (
+            CSSExtractor,
+        )
+
+        html = '<style>.inline { color: red; } :root { --x: 1; }</style>'
+        result = CSSExtractor.extract(html)
+        # Default behavior includes inline styles
+        assert ".inline" in result.base_rules
+        assert "--x" in result.custom_properties
+
+
+class TestCSSScoperXSSEscape:
+    """B39: CSSScoper escapes </style> breakout in CSS."""
+
+    def test_css_scoper_escapes_style_breakout(self):
+        from viraltracker.services.landing_page_analysis.multipass.surgery.css_scoper import (
+            CSSScoper,
+        )
+
+        # CSS containing a malicious </style> breakout attempt
+        html = '<body><div>content</div></body>'
+        malicious_css = '.evil { content: "</style><script>alert(1)</script>"; }'
+        scoper = CSSScoper()
+        result, _stats = scoper.scope(html, malicious_css)
+        # The </style> should be escaped so it doesn't break out
+        assert '</style><script>' not in result
+        assert '<\\/style>' in result
+
+
+class TestFetchAllExternal:
+    """Phase 1 CSS fix: fetch_all_external parameter and helpers."""
+
+    @patch(
+        "viraltracker.services.landing_page_analysis.multipass.html_extractor._safe_fetch_css"
+    )
+    def test_fetch_all_external_bypasses_first_party(self, mock_fetch):
+        from viraltracker.services.landing_page_analysis.multipass.html_extractor import (
+            CSSExtractor,
+        )
+
+        mock_fetch.return_value = ".cdn-style { color: blue; }"
+        # Third-party CDN — normally skipped by first-party filter
+        html = '<link rel="stylesheet" href="https://cdn.commercespace.com/styles.css">'
+        result = CSSExtractor.extract(
+            html, "https://example.com", fetch_all_external=True,
+        )
+        mock_fetch.assert_called_once()
+        assert ".cdn-style" in result.base_rules
+
+    @patch(
+        "viraltracker.services.landing_page_analysis.multipass.html_extractor._safe_fetch_css"
+    )
+    def test_fetch_all_external_max_10(self, mock_fetch):
+        from viraltracker.services.landing_page_analysis.multipass.html_extractor import (
+            CSSExtractor,
+        )
+
+        mock_fetch.return_value = ".x { color: red; }"
+        html = ''.join(
+            f'<link rel="stylesheet" href="https://cdn{i}.example.com/s{i}.css">'
+            for i in range(15)
+        )
+        CSSExtractor.extract(html, "https://example.com", fetch_all_external=True)
+        assert mock_fetch.call_count == 10
+
+    @patch(
+        "viraltracker.services.landing_page_analysis.multipass.html_extractor._safe_fetch_css"
+    )
+    def test_fetch_all_skips_google_fonts(self, mock_fetch):
+        from viraltracker.services.landing_page_analysis.multipass.html_extractor import (
+            CSSExtractor,
+        )
+
+        mock_fetch.return_value = ".x { color: red; }"
+        html = (
+            '<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter">'
+            '<link rel="stylesheet" href="https://cdn.example.com/main.css">'
+        )
+        CSSExtractor.extract(html, "https://example.com", fetch_all_external=True)
+        # Only the non-font stylesheet should be fetched
+        assert mock_fetch.call_count == 1
+
+    def test_rewrite_css_urls_relative(self):
+        from viraltracker.services.landing_page_analysis.multipass.html_extractor import (
+            _rewrite_css_urls,
+        )
+
+        css = '.bg { background: url(../images/hero.png); }'
+        result = _rewrite_css_urls(css, "https://cdn.example.com/css/main.css")
+        assert "url(https://cdn.example.com/images/hero.png)" in result
+
+    def test_rewrite_css_urls_absolute_unchanged(self):
+        from viraltracker.services.landing_page_analysis.multipass.html_extractor import (
+            _rewrite_css_urls,
+        )
+
+        css = '.bg { background: url(https://cdn.example.com/img.png); }'
+        result = _rewrite_css_urls(css, "https://cdn.example.com/css/main.css")
+        assert "url(https://cdn.example.com/img.png)" in result
+
+    def test_rewrite_css_urls_data_uri_unchanged(self):
+        from viraltracker.services.landing_page_analysis.multipass.html_extractor import (
+            _rewrite_css_urls,
+        )
+
+        css = '.icon { background: url(data:image/svg+xml;base64,abc123); }'
+        result = _rewrite_css_urls(css, "https://cdn.example.com/css/main.css")
+        assert "data:image/svg+xml;base64,abc123" in result
+
+    def test_is_css_content_type(self):
+        from viraltracker.services.landing_page_analysis.multipass.html_extractor import (
+            _is_css_content_type,
+        )
+
+        assert _is_css_content_type("text/css") is True
+        assert _is_css_content_type("text/css; charset=utf-8") is True
+        assert _is_css_content_type("text/plain") is True
+        assert _is_css_content_type("text/html") is False
+        assert _is_css_content_type("application/javascript") is False

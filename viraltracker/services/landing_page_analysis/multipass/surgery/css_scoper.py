@@ -1,7 +1,9 @@
-"""Pass S3: CSS Isolation & Scoping (Deterministic).
+"""Pass S3: CSS Consolidation (Deterministic).
 
-Scopes all CSS under ``.lp-mockup`` so the page can be embedded
-without style conflicts. Wraps body content in a mockup div.
+Consolidates all CSS (inline + external) into a standalone HTML document.
+No CSS scoping or selector rewriting — CSS stays exactly as authored.
+The output is a complete ``<!DOCTYPE html>`` document that can be served
+at its own URL or rendered in an iframe.
 
 Zero LLM calls.
 """
@@ -12,12 +14,6 @@ from typing import List, Tuple
 
 logger = logging.getLogger(__name__)
 
-# CSS containment rules for .lp-mockup wrapper
-_CONTAINMENT_CSS = """\
-.lp-mockup { display: block; position: relative; overflow: hidden; contain: layout style paint; }
-.lp-mockup * { box-sizing: border-box; }
-"""
-
 # Animation/transition property patterns to strip
 _ANIMATION_PROPS_RE = re.compile(
     r'(?:animation|transition)(?:-[a-z-]+)?\s*:[^;]*;',
@@ -25,44 +21,48 @@ _ANIMATION_PROPS_RE = re.compile(
 )
 
 # Match @import statements (handles URLs with semicolons inside quotes/parens)
-# Patterns:  @import url("...");  @import url('...');  @import url(...);
-#            @import "...";       @import '...';
-# Trailing semicolon is optional (some pages omit it).
 _IMPORT_RE = re.compile(
     r'@import\s+'
     r'(?:'
-    r'url\(\s*(?:"[^"]*"|\'[^\']*\'|[^)]*)\s*\)'  # url("...") or url('...') or url(...)
-    r'|"[^"]*"'                                       # "..."
-    r"|'[^']*'"                                       # '...'
+    r'url\(\s*(?:"[^"]*"|\'[^\']*\'|[^)]*)\s*\)'
+    r'|"[^"]*"'
+    r"|'[^']*'"
     r')'
-    r'[^;\n]*;?',                                      # optional media query + optional semicolon
+    r'[^;\n]*;?',
     re.IGNORECASE,
 )
 
+# Font-only CDN domains whose <link> tags should be preserved
+_FONT_LINK_DOMAINS = frozenset([
+    'fonts.googleapis.com', 'fonts.gstatic.com',
+])
+
 
 class CSSScoper:
-    """Pass S3: Scope CSS under .lp-mockup and wrap body content."""
+    """Pass S3: Consolidate CSS into a standalone HTML document."""
 
     def scope(
         self,
         html: str,
         external_css: str = "",
     ) -> Tuple[str, dict]:
-        """Scope CSS and wrap HTML for embedding.
+        """Consolidate CSS and produce a standalone HTML document.
 
         Args:
-            html: Sanitized HTML (may be full document or fragment).
-            external_css: Additional CSS from CSSExtractor (media queries,
-                custom properties, font-faces).
+            html: Classified HTML (full document or fragment from S2).
+            external_css: Additional CSS from CSSExtractor (fetched external
+                stylesheets — media queries, custom properties, etc.).
 
         Returns:
-            (scoped_html, stats) where scoped_html is an embeddable fragment
-            with a single <style> block and .lp-mockup wrapper.
+            (standalone_html, stats) where standalone_html is a complete
+            ``<!DOCTYPE html>`` document with all CSS inlined in ``<head>``.
         """
         stats = {
             "style_blocks_extracted": 0,
             "css_total_chars": 0,
             "body_wrapped": False,
+            "link_tags_removed": 0,
+            "link_tags_preserved": 0,
         }
 
         # 1. Extract all <style> blocks from the HTML
@@ -80,99 +80,158 @@ class CSSScoper:
             flags=re.DOTALL | re.IGNORECASE,
         )
 
-        # 2. Combine all CSS (inline + external)
-        all_css_parts = style_parts[:]
+        # 2. Remove external <link rel="stylesheet"> tags (CSS is now inlined)
+        #    Preserve font-only CDN links (Google Fonts) for browser loading.
+        html_no_styles = self._remove_css_link_tags(html_no_styles, stats)
+
+        # 3. Combine all CSS: external FIRST, then inline overrides
+        #    This matches the original cascade: <link> loads framework CSS,
+        #    then <style> blocks provide page-specific overrides.
+        all_css_parts = []
         if external_css:
             all_css_parts.append(external_css)
+        all_css_parts.extend(style_parts)
 
         all_css = "\n".join(all_css_parts)
 
-        # 2b. Extract @import statements BEFORE scoping (they can't be scoped
-        #     and must appear before all other rules per CSS spec).
-        #     _scope_css_under_class silently drops @import, so we preserve them.
+        # 4. Extract @import statements (must appear before all other rules)
         import_statements = _IMPORT_RE.findall(all_css)
         css_no_imports = _IMPORT_RE.sub("", all_css)
 
         if import_statements:
             stats["import_statements_preserved"] = len(import_statements)
-            logger.debug(
-                f"S3: Preserved {len(import_statements)} @import statements"
-            )
 
-        # 3. Scope CSS rules (on CSS without @import)
-        from ..html_extractor import _scope_css_under_class
-        scoped_css = _scope_css_under_class(css_no_imports, ".lp-mockup")
+        # 5. Strip animation/transition properties for deterministic rendering
+        final_css = _ANIMATION_PROPS_RE.sub("", css_no_imports)
 
-        # 4. Rewrite body/html selectors that scope_css_under_class
-        #    would have turned into `.lp-mockup body` (matches nothing)
-        scoped_css = self._fix_body_html_selectors(scoped_css)
-
-        # 5. Strip animation/transition properties
-        scoped_css = _ANIMATION_PROPS_RE.sub("", scoped_css)
-
-        # 6. Add containment CSS
-        final_css = _CONTAINMENT_CSS + "\n" + scoped_css
+        # 6. Escape </ sequences to prevent style breakout (XSS defense)
+        final_css = final_css.replace('</', '<\\/')
 
         stats["css_total_chars"] = len(final_css)
 
-        # 7. Extract body classes and content
+        # 7. Extract body classes, content, and <head> extras (meta, title, font links)
         body_classes = self._extract_body_classes(html_no_styles)
         body_content = self._extract_body_content(html_no_styles)
+        head_extras = self._extract_head_extras(html_no_styles)
 
-        # 8. Wrap in .lp-mockup (transfer body classes so CSS rules match)
-        if body_classes:
-            class_attr = f'lp-mockup {body_classes}'
-            stats["body_classes_transferred"] = body_classes
-        else:
-            class_attr = "lp-mockup"
-        wrapped = f'<div class="{class_attr}" data-pipeline="surgery">\n{body_content}\n</div>'
+        # 8. Build complete standalone HTML document
+        result = self._build_document(
+            body_content=body_content,
+            body_classes=body_classes,
+            head_extras=head_extras,
+            import_statements=import_statements,
+            css=final_css,
+        )
+
         stats["body_wrapped"] = True
-
-        # 9. Build final HTML fragment
-        # @import must appear before all other rules, so they go in a
-        # separate <style> block to guarantee ordering.
-        parts = []
-        if import_statements:
-            imports_css = "\n".join(import_statements)
-            parts.append(f"<style>\n{imports_css}\n</style>")
-        parts.append(f"<style>\n{final_css}\n</style>")
-        parts.append(wrapped)
-        result = "\n".join(parts)
 
         return result, stats
 
-    def _fix_body_html_selectors(self, css: str) -> str:
-        """Fix body/html selectors that would scope to nothing.
+    def _remove_css_link_tags(self, html: str, stats: dict) -> str:
+        """Remove <link rel="stylesheet"> tags, preserving font CDN links."""
 
-        _scope_css_under_class turns ``body { font: ... }`` into
-        ``.lp-mockup body { font: ... }`` which matches nothing since
-        there's no <body> inside .lp-mockup.
+        def _check_link(match: re.Match) -> str:
+            tag = match.group(0)
+            href_match = re.search(r'href=["\']([^"\']+)["\']', tag)
+            if href_match:
+                from urllib.parse import urlparse
+                href = href_match.group(1)
+                parsed = urlparse(href)
+                hostname = (parsed.hostname or "").lower()
+                if hostname in _FONT_LINK_DOMAINS:
+                    stats["link_tags_preserved"] += 1
+                    return tag  # Keep font links
+            stats["link_tags_removed"] += 1
+            return ""
 
-        Rewrite these to target .lp-mockup itself.
+        return re.sub(
+            r'<link\b[^>]*rel=["\']stylesheet["\'][^>]*/?>',
+            _check_link,
+            html,
+            flags=re.IGNORECASE,
+        )
+
+    def _build_document(
+        self,
+        body_content: str,
+        body_classes: str,
+        head_extras: str,
+        import_statements: List[str],
+        css: str,
+    ) -> str:
+        """Build a complete HTML document with consolidated CSS."""
+        parts = ['<!DOCTYPE html>', '<html>', '<head>',
+                 '<meta charset="utf-8">',
+                 '<meta name="viewport" content="width=device-width, initial-scale=1">']
+
+        if head_extras:
+            parts.append(head_extras)
+
+        # @import must appear before all other rules
+        if import_statements:
+            imports_css = "\n".join(import_statements)
+            parts.append(f"<style>\n{imports_css}\n</style>")
+
+        if css:
+            parts.append(f"<style>\n{css}\n</style>")
+
+        parts.append('</head>')
+
+        # data-pipeline="surgery" goes on <body> for detection downstream
+        if body_classes:
+            parts.append(f'<body class="{body_classes}" data-pipeline="surgery">')
+        else:
+            parts.append('<body data-pipeline="surgery">')
+
+        parts.append(body_content)
+        parts.append('</body>')
+        parts.append('</html>')
+
+        return "\n".join(parts)
+
+    def _extract_head_extras(self, html: str) -> str:
+        """Extract useful <head> content: <title>, <meta>, font <link> tags.
+
+        Strips <style> and non-font <link> tags (already handled separately).
         """
-        # Match `.lp-mockup body` or `.lp-mockup html` (with optional
-        # combinators after) and replace just the body/html part
-        css = re.sub(
-            r'\.lp-mockup\s+body\b',
-            '.lp-mockup',
-            css,
-            flags=re.IGNORECASE,
+        head_match = re.search(
+            r'<head[^>]*>(.*?)</head>',
+            html,
+            flags=re.DOTALL | re.IGNORECASE,
         )
-        css = re.sub(
-            r'\.lp-mockup\s+html\b',
-            '.lp-mockup',
-            css,
+        if not head_match:
+            return ""
+
+        head_content = head_match.group(1)
+
+        # Extract useful tags: <title>, <meta>, preserved font <link> tags
+        useful_tags: List[str] = []
+        for tag_match in re.finditer(
+            r'<(title|meta|link)\b[^>]*/?>(?:[^<]*</\1>)?',
+            head_content,
             flags=re.IGNORECASE,
-        )
-        return css
+        ):
+            tag = tag_match.group(0)
+            tag_name = tag_match.group(1).lower()
+            # Skip non-font link tags (already removed by _remove_css_link_tags,
+            # but head content is extracted from original HTML)
+            if tag_name == "link":
+                href_match = re.search(r'href=["\']([^"\']+)["\']', tag)
+                if href_match:
+                    from urllib.parse import urlparse
+                    hostname = (urlparse(href_match.group(1)).hostname or "").lower()
+                    if hostname not in _FONT_LINK_DOMAINS:
+                        continue
+            # Skip charset/viewport meta (we add our own)
+            if tag_name == "meta":
+                if 'charset' in tag.lower() or 'viewport' in tag.lower():
+                    continue
+            useful_tags.append(tag)
+
+        return "\n".join(useful_tags)
 
     def _extract_body_classes(self, html: str) -> str:
-        """Extract CSS classes from the <body> tag.
-
-        These classes are transferred to the .lp-mockup wrapper so CSS
-        rules targeting body.class-name (scoped as .lp-mockup.class-name)
-        continue to work.
-        """
+        """Extract CSS classes from the <body> tag."""
         body_tag = re.search(r'<body\s[^>]*>', html, flags=re.IGNORECASE)
         if not body_tag:
             return ""
@@ -193,7 +252,6 @@ class CSSScoper:
 
         Handles Playwright-captured DOMs which often lack </body> closing tags.
         """
-        # Try to find <body>...</body> (with closing tag)
         body_match = re.search(
             r'<body[^>]*>(.*)</body>',
             html,
@@ -202,28 +260,19 @@ class CSSScoper:
         if body_match:
             return body_match.group(1).strip()
 
-        # Handle <body> without </body> (common in Playwright captures):
-        # extract everything after the <body...> opening tag
         body_open = re.search(r'<body[^>]*>', html, flags=re.IGNORECASE)
         if body_open:
             content = html[body_open.end():]
-            # Strip any trailing </html> if present
             content = re.sub(
                 r'</html\s*>\s*$', '', content, flags=re.IGNORECASE
             )
             return content.strip()
 
-        # No <body> tag at all — strip document wrappers
+        # No <body> tag — strip document wrappers
         result = html
-        result = re.sub(
-            r'<!DOCTYPE[^>]*>', '', result, flags=re.IGNORECASE
-        )
-        result = re.sub(
-            r'<html[^>]*>', '', result, flags=re.IGNORECASE
-        )
-        result = re.sub(
-            r'</html\s*>', '', result, flags=re.IGNORECASE
-        )
+        result = re.sub(r'<!DOCTYPE[^>]*>', '', result, flags=re.IGNORECASE)
+        result = re.sub(r'<html[^>]*>', '', result, flags=re.IGNORECASE)
+        result = re.sub(r'</html\s*>', '', result, flags=re.IGNORECASE)
         result = re.sub(
             r'<head[^>]*>.*?</head\s*>',
             '',

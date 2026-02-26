@@ -164,14 +164,13 @@ class SurgeryPipeline:
 
         from .css_scoper import CSSScoper
 
-        # Get external CSS from CSSExtractor
+        # Fetch ALL external CSS as raw text (preserve cascade order)
         external_css = ""
         try:
             from ..html_extractor import CSSExtractor
-            responsive_css = CSSExtractor.extract(
-                page_html, page_url, external_only=True
+            external_css = CSSExtractor.fetch_raw_external_css(
+                page_html, page_url,
             )
-            external_css = responsive_css.to_css_block()
         except Exception as e:
             logger.warning(f"S3: External CSS extraction failed: {e}")
 

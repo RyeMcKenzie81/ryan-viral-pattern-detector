@@ -177,7 +177,7 @@ class PhaseDiagnosticReport:
             elif metrics.phase_name == "Final Output":
                 fidelity = metrics.text_fidelity_vs_source
                 fid_str = f"{fidelity:.2f}" if fidelity is not None else "N/A"
-                wrapper = extras.get("has_lp_mockup_wrapper")
+                wrapper = extras.get("has_surgery_marker")
                 wrapper_str = "present" if wrapper else "MISSING"
                 detail_parts.append(
                     f"Slots: {metrics.slot_count}  |  "
@@ -185,7 +185,7 @@ class PhaseDiagnosticReport:
                 )
                 detail_parts.append(
                     f"Images: {metrics.image_count}  |  "
-                    f".lp-mockup: {wrapper_str}"
+                    f"surgery marker: {wrapper_str}"
                 )
 
             for dp in detail_parts:
@@ -290,8 +290,13 @@ def _count_images(html: str) -> int:
 
 
 def _has_lp_mockup_wrapper(html: str) -> bool:
-    """Check for .lp-mockup wrapper div (may include transferred body classes)."""
-    return 'class="lp-mockup' in html or "class='lp-mockup" in html
+    """Check for surgery pipeline marker (data-pipeline="surgery" or .lp-mockup)."""
+    return (
+        'data-pipeline="surgery"' in html
+        or "data-pipeline='surgery'" in html
+        or 'class="lp-mockup' in html
+        or "class='lp-mockup" in html
+    )
 
 
 def _unwrap_json_snapshot(html: str) -> dict:
@@ -609,8 +614,8 @@ def _verdict_final(
     if fidelity is not None and fidelity < thresholds.min_text_fidelity_final:
         issues.append(f"Text fidelity {fidelity:.2f} (threshold: {thresholds.min_text_fidelity_final})")
 
-    if not metrics.extras.get("has_lp_mockup_wrapper"):
-        issues.append(".lp-mockup wrapper missing — all scoped CSS is broken")
+    if not metrics.extras.get("has_surgery_marker"):
+        issues.append("Surgery marker missing (data-pipeline='surgery' or .lp-mockup)")
 
     # WARN: HTML well-formedness — check for unclosed tags
     raw_html = getattr(metrics, "_raw_html", "")
@@ -817,7 +822,7 @@ def diagnose_phases(
                 metrics.extras["unchanged_section_count"] = _count_unchanged_sections(
                     phase2_html, html
                 )
-            metrics.extras["has_lp_mockup_wrapper"] = _has_lp_mockup_wrapper(html)
+            metrics.extras["has_surgery_marker"] = _has_lp_mockup_wrapper(html)
             metrics._raw_html = html
             all_metrics.append(metrics)
             all_verdicts.append(
@@ -941,7 +946,7 @@ def diagnose_phases(
                 None, compute_fidelity=True,
                 is_surgery=is_surgery,
             )
-            metrics.extras["has_lp_mockup_wrapper"] = _has_lp_mockup_wrapper(final_html)
+            metrics.extras["has_surgery_marker"] = _has_lp_mockup_wrapper(final_html)
             metrics.extras["pipeline_mode"] = "surgery" if is_surgery else "reconstruct"
             metrics._raw_html = final_html
             all_metrics.append(metrics)
