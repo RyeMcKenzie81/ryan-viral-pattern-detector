@@ -110,7 +110,7 @@ col1, col2, col3, col4 = st.columns(4)
 col1.metric("Watched Accounts", stats["watched_accounts"])
 col2.metric("Total Posts", format_number(stats["total_posts"]))
 col3.metric("Outlier Posts", format_number(stats["outlier_posts"]))
-col4.metric("Media Downloaded", format_number(stats["media_downloaded"]))
+col4.metric("Media Downloaded", f"{stats.get('outliers_with_media', 0)}/{stats['outlier_posts']}")
 
 # Tabs
 tab_accounts, tab_library, tab_top, tab_analysis = st.tabs([

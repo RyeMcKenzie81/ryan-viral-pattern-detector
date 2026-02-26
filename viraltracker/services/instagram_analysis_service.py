@@ -500,6 +500,10 @@ class InstagramAnalysisService:
 
             post_id = media["post_id"]
 
+            # Resolve real org_id for superuser "all" mode
+            if organization_id == "all":
+                organization_id = self._resolve_org_id_from_post(post_id) or organization_id
+
             # 2. Compute input hash
             input_hash = compute_input_hash(
                 storage_path,
@@ -696,6 +700,10 @@ class InstagramAnalysisService:
                 return None
 
             post_id = media["post_id"]
+
+            # Resolve real org_id for superuser "all" mode
+            if organization_id == "all":
+                organization_id = self._resolve_org_id_from_post(post_id) or organization_id
 
             # 2. Compute input hash
             input_hash = compute_input_hash(
@@ -1184,6 +1192,26 @@ class InstagramAnalysisService:
             return None
         except Exception as e:
             logger.warning(f"Could not resolve brand_id for post {post_id}: {e}")
+            return None
+
+    def _resolve_org_id_from_post(self, post_id: str) -> Optional[str]:
+        """Resolve the real organization_id for a post via watched accounts."""
+        try:
+            brand_id = self._get_brand_id_for_post(post_id, "all")
+            if not brand_id:
+                return None
+            brand = (
+                self.supabase.table("brands")
+                .select("organization_id")
+                .eq("id", brand_id)
+                .limit(1)
+                .execute()
+            )
+            if brand.data:
+                return brand.data[0]["organization_id"]
+            return None
+        except Exception as e:
+            logger.warning(f"Could not resolve org_id for post {post_id}: {e}")
             return None
 
     def _download_from_storage(self, storage_path: str) -> Optional[bytes]:

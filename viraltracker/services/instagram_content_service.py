@@ -956,6 +956,7 @@ class InstagramContentService:
         # Count total posts
         total_posts = 0
         outlier_posts = 0
+        all_outlier_post_ids = []
         batch_size = 50
         for i in range(0, len(account_ids), batch_size):
             batch = account_ids[i : i + batch_size]
@@ -968,22 +969,33 @@ class InstagramContentService:
             )
             if result.data:
                 total_posts += len(result.data)
-                outlier_posts += sum(1 for p in result.data if p.get("is_outlier"))
+                for p in result.data:
+                    if p.get("is_outlier"):
+                        outlier_posts += 1
+                        all_outlier_post_ids.append(p["id"])
 
-        # Count downloaded media
-        media_result = (
-            self.supabase.table("instagram_media")
-            .select("id", count="exact")
-            .eq("download_status", "downloaded")
-            .execute()
-        )
-        media_downloaded = len(media_result.data) if media_result.data else 0
+        # Count outlier posts that have at least one downloaded media file
+        outlier_post_ids = all_outlier_post_ids
+        outliers_with_media = 0
+        if outlier_post_ids:
+            # Query in batches
+            for i in range(0, len(outlier_post_ids), batch_size):
+                batch = outlier_post_ids[i : i + batch_size]
+                media_result = (
+                    self.supabase.table("instagram_media")
+                    .select("post_id")
+                    .in_("post_id", batch)
+                    .eq("download_status", "downloaded")
+                    .execute()
+                )
+                if media_result.data:
+                    outliers_with_media += len({m["post_id"] for m in media_result.data})
 
         return {
             "watched_accounts": len(watched),
             "total_posts": total_posts,
             "outlier_posts": outlier_posts,
-            "media_downloaded": media_downloaded,
+            "outliers_with_media": outliers_with_media,
         }
 
     def get_post_media(self, post_id: str) -> List[Dict]:
