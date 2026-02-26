@@ -926,7 +926,7 @@ class InstagramContentService:
         self,
         brand_id: str,
         organization_id: str,
-        days: int = 30,
+        days: int = 120,
     ) -> Dict:
         """
         Get aggregate content statistics for a brand's watched accounts.
