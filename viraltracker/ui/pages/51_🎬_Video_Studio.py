@@ -463,7 +463,7 @@ with tab_recreation:
                 # Download link
                 final_path = candidate["final_video_path"]
                 try:
-                    from viraltracker.config import get_supabase_client
+                    from viraltracker.core.database import get_supabase_client
                     sb = get_supabase_client()
                     parts = final_path.split("/", 1)
                     signed = sb.storage.from_(parts[0]).create_signed_url(parts[1], 3600)
@@ -547,7 +547,7 @@ with tab_history:
                     if final_path:
                         st.markdown("**Final Video**: Available in storage")
                         try:
-                            from viraltracker.config import get_supabase_client
+                            from viraltracker.core.database import get_supabase_client
                             sb = get_supabase_client()
                             parts = final_path.split("/", 1)
                             signed = sb.storage.from_(parts[0]).create_signed_url(parts[1], 3600)
