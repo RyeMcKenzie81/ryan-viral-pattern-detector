@@ -681,8 +681,8 @@ class LandingPageAnalysisService:
             return {}
 
         # Map content_patterns.py types to tag names
+        # NOTE: feature_list is handled specially below (dominant vs secondary)
         TYPE_MAP = {
-            "feature_list": "listicle",
             "testimonial_list": "testimonial_grid",
             "faq_list": "faq",
             "stats_list": "stats_showcase",
@@ -704,9 +704,9 @@ class LandingPageAnalysisService:
 
             tag = TYPE_MAP.get(cp_type)
             if not tag:
-                # Feature list with few items is feature_showcase, not listicle
-                if cp_type == "feature_list" and isinstance(cp, dict):
-                    is_dominant = cp.get("is_dominant", item_count >= 3)
+                # Feature list: dominant (3+ items) = listicle, secondary = feature_showcase
+                if cp_type == "feature_list":
+                    is_dominant = cp.get("is_dominant", item_count >= 3) if isinstance(cp, dict) else False
                     tag = "listicle" if is_dominant else "feature_showcase"
                 else:
                     continue

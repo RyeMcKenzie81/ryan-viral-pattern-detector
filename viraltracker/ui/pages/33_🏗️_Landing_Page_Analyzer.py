@@ -1278,29 +1278,30 @@ def _render_qa_controls(record: dict, record_type: str, service, org_id: str):
 
     col1, col2, col3, col4 = st.columns(4)
     key_prefix = f"qa_{record_type}_{record_id}"
+    user_id = st.session_state.get("user_id")
 
     with col1:
         if st.button("✅ Approve", key=f"{key_prefix}_approve", disabled=(current_qa == "approved")):
-            service.update_qa_status(record_id, "approved")
+            service.update_qa_status(record_id, "approved", reviewed_by=user_id)
             st.rerun()
     with col2:
         if st.button("❌ Reject", key=f"{key_prefix}_reject", disabled=(current_qa == "rejected")):
-            service.update_qa_status(record_id, "rejected")
+            service.update_qa_status(record_id, "rejected", reviewed_by=user_id)
             st.rerun()
     with col3:
         if st.button("🔄 Needs Revision", key=f"{key_prefix}_revision", disabled=(current_qa == "needs_revision")):
-            service.update_qa_status(record_id, "needs_revision")
+            service.update_qa_status(record_id, "needs_revision", reviewed_by=user_id)
             st.rerun()
     with col4:
         if current_qa != "pending":
             if st.button("↩️ Reset", key=f"{key_prefix}_reset"):
-                service.update_qa_status(record_id, "pending")
+                service.update_qa_status(record_id, "pending", reviewed_by=user_id)
                 st.rerun()
 
     notes_input = st.text_input("QA Notes", value=qa_notes, key=f"{key_prefix}_notes")
     if notes_input != qa_notes:
         if st.button("Save Notes", key=f"{key_prefix}_save_notes"):
-            service.update_qa_status(record_id, current_qa, qa_notes=notes_input)
+            service.update_qa_status(record_id, current_qa, qa_notes=notes_input, reviewed_by=user_id)
             st.rerun()
 
 

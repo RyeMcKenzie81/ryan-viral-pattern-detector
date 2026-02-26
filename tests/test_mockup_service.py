@@ -3094,3 +3094,236 @@ class TestInferSlotType:
     def test_unknown_defaults_to_body(self, service):
         assert service._infer_slot_type("random-slot") == "body"
         assert service._infer_slot_type("unknown") == "body"
+
+
+# ---------------------------------------------------------------------------
+# Listicle Detection & Enforcement
+# ---------------------------------------------------------------------------
+
+
+class TestListicleDetection:
+    """Tests for _detect_listicle_structure and _enforce_listicle_numbering."""
+
+    @pytest.fixture
+    def service(self):
+        return MockupService()
+
+    def test_detect_numeric_dot_listicle(self, service):
+        """Detect a basic numeric-dot listicle (1. 2. 3.)."""
+        slot_contents = {
+            "headline": "7 Reasons Women Over 45 Are Finally Sleeping",
+            "heading-1": "1. It Naturally Calms Your Mind",
+            "heading-2": "2. It Lets You Have Boba for Breakfast",
+            "heading-3": "3. No More Night Sweats",
+            "heading-4": "4. Wake Up Refreshed",
+        }
+        slot_sections = {
+            "headline": {"slot_type": "headline"},
+            "heading-1": {"slot_type": "heading"},
+            "heading-2": {"slot_type": "heading"},
+            "heading-3": {"slot_type": "heading"},
+            "heading-4": {"slot_type": "heading"},
+        }
+        result = service._detect_listicle_structure(slot_contents, slot_sections)
+        assert result
+        assert result["prefix_style"] == "numeric_dot"
+        assert result["total_count"] == 7
+        prefixes = result["prefixes"]
+        assert len(prefixes) == 4
+        assert prefixes["heading-1"] == "1."
+        assert prefixes["heading-2"] == "2."
+        assert prefixes["heading-3"] == "3."
+        assert prefixes["heading-4"] == "4."
+
+    def test_detect_word_prefix_listicle(self, service):
+        """Detect word-prefix style (Reason 1:, Reason 2:)."""
+        slot_contents = {
+            "headline": "5 Tips for Better Sleep",
+            "heading-1": "Tip 1: Avoid Blue Light",
+            "heading-2": "Tip 2: Cool Your Room",
+            "heading-3": "Tip 3: Meditate Before Bed",
+        }
+        slot_sections = {
+            "headline": {"slot_type": "headline"},
+            "heading-1": {"slot_type": "heading"},
+            "heading-2": {"slot_type": "heading"},
+            "heading-3": {"slot_type": "heading"},
+        }
+        result = service._detect_listicle_structure(slot_contents, slot_sections)
+        assert result
+        assert result["prefix_style"] == "word_prefix"
+        assert result["prefixes"]["heading-1"] == "Tip 1:"
+        assert result["prefixes"]["heading-3"] == "Tip 3:"
+
+    def test_detect_hash_prefix(self, service):
+        """Detect hash-style (#1, #2, #3)."""
+        slot_contents = {
+            "heading-1": "#1 Best Feature",
+            "heading-2": "#2 Second Feature",
+            "heading-3": "#3 Third Feature",
+        }
+        slot_sections = {
+            "heading-1": {"slot_type": "heading"},
+            "heading-2": {"slot_type": "heading"},
+            "heading-3": {"slot_type": "heading"},
+        }
+        result = service._detect_listicle_structure(slot_contents, slot_sections)
+        assert result
+        assert result["prefix_style"] == "hash"
+        assert result["prefixes"]["heading-1"] == "#1"
+
+    def test_false_positive_percentage(self, service):
+        """Reject false positives like '100% Natural', '24/7 Support'."""
+        slot_contents = {
+            "heading-1": "100% Natural Ingredients",
+            "heading-2": "24/7 Customer Support",
+            "heading-3": "500mg Per Serving",
+        }
+        slot_sections = {
+            "heading-1": {"slot_type": "heading"},
+            "heading-2": {"slot_type": "heading"},
+            "heading-3": {"slot_type": "heading"},
+        }
+        result = service._detect_listicle_structure(slot_contents, slot_sections)
+        assert result == {}  # Not a listicle
+
+    def test_too_few_matches(self, service):
+        """Reject when fewer than minimum matches."""
+        slot_contents = {
+            "heading-1": "1. Only One Numbered",
+            "heading-2": "Not a numbered heading",
+            "heading-3": "Another plain heading",
+            "heading-4": "Yet another plain heading",
+        }
+        slot_sections = {
+            "heading-1": {"slot_type": "heading"},
+            "heading-2": {"slot_type": "heading"},
+            "heading-3": {"slot_type": "heading"},
+            "heading-4": {"slot_type": "heading"},
+        }
+        result = service._detect_listicle_structure(slot_contents, slot_sections)
+        assert result == {}
+
+    def test_reject_ordinal_over_20(self, service):
+        """Ordinals > 20 should be rejected."""
+        slot_contents = {
+            "heading-1": "21. This Is Not A Listicle Item",
+            "heading-2": "22. Neither Is This",
+            "heading-3": "23. Nor This",
+        }
+        slot_sections = {
+            "heading-1": {"slot_type": "heading"},
+            "heading-2": {"slot_type": "heading"},
+            "heading-3": {"slot_type": "heading"},
+        }
+        result = service._detect_listicle_structure(slot_contents, slot_sections)
+        assert result == {}
+
+    def test_non_heading_slots_ignored(self, service):
+        """Body and CTA slots should not be checked for listicle prefixes."""
+        slot_contents = {
+            "body-1": "1. First body paragraph",
+            "body-2": "2. Second body paragraph",
+            "body-3": "3. Third body paragraph",
+            "cta-1": "4. Buy Now",
+        }
+        slot_sections = {
+            "body-1": {"slot_type": "body"},
+            "body-2": {"slot_type": "body"},
+            "body-3": {"slot_type": "body"},
+            "cta-1": {"slot_type": "cta"},
+        }
+        result = service._detect_listicle_structure(slot_contents, slot_sections)
+        assert result == {}
+
+    def test_empty_input(self, service):
+        """Empty slot_contents returns empty dict."""
+        result = service._detect_listicle_structure({}, {})
+        assert result == {}
+
+    def test_sequential_renumbering(self, service):
+        """Out-of-order ordinals should be renumbered sequentially."""
+        slot_contents = {
+            "heading-1": "2. Second Benefit Listed First",
+            "heading-2": "5. Fifth Benefit Listed Second",
+            "heading-3": "3. Third Benefit Listed Third",
+        }
+        slot_sections = {
+            "heading-1": {"slot_type": "heading"},
+            "heading-2": {"slot_type": "heading"},
+            "heading-3": {"slot_type": "heading"},
+        }
+        result = service._detect_listicle_structure(slot_contents, slot_sections)
+        assert result
+        # Should be renumbered 1, 2, 3 based on sorted ordinals (2, 3, 5)
+        prefixes = result["prefixes"]
+        assert len(prefixes) == 3
+
+
+class TestListicleEnforcement:
+    """Tests for _enforce_listicle_numbering."""
+
+    @pytest.fixture
+    def service(self):
+        return MockupService()
+
+    def test_enforce_correct_prefix(self, service):
+        """Already-correct prefix should not be modified."""
+        all_rewrites = {
+            "heading-1": "1. Great Benefit Here",
+            "heading-2": "2. Another Amazing Benefit",
+        }
+        listicle_data = {
+            "prefixes": {"heading-1": "1.", "heading-2": "2."},
+            "prefix_style": "numeric_dot",
+        }
+        result = service._enforce_listicle_numbering(all_rewrites, listicle_data)
+        assert result["heading-1"] == "1. Great Benefit Here"
+        assert result["heading-2"] == "2. Another Amazing Benefit"
+
+    def test_enforce_wrong_number(self, service):
+        """Wrong ordinal should be corrected."""
+        import html as html_mod
+        all_rewrites = {
+            "heading-1": html_mod.escape("2. Wrong Number Benefit"),
+        }
+        listicle_data = {
+            "prefixes": {"heading-1": "1."},
+            "prefix_style": "numeric_dot",
+        }
+        result = service._enforce_listicle_numbering(all_rewrites, listicle_data)
+        assert result["heading-1"].startswith("1. ")
+        assert "Wrong Number Benefit" in result["heading-1"]
+
+    def test_enforce_missing_prefix(self, service):
+        """Missing prefix should be prepended."""
+        import html as html_mod
+        all_rewrites = {
+            "heading-1": html_mod.escape("Benefit Without Any Number"),
+        }
+        listicle_data = {
+            "prefixes": {"heading-1": "3."},
+            "prefix_style": "numeric_dot",
+        }
+        result = service._enforce_listicle_numbering(all_rewrites, listicle_data)
+        assert result["heading-1"].startswith("3. ")
+        assert "Benefit Without Any Number" in result["heading-1"]
+
+    def test_enforce_empty_prefixes(self, service):
+        """Empty prefixes dict should be a no-op."""
+        all_rewrites = {"heading-1": "Some text"}
+        result = service._enforce_listicle_numbering(all_rewrites, {})
+        assert result == all_rewrites
+
+    def test_enforce_double_prefix_guard(self, service):
+        """Should not produce '1. 1. Item' double prefix."""
+        import html as html_mod
+        all_rewrites = {
+            "heading-1": html_mod.escape("1. Already Has Prefix"),
+        }
+        listicle_data = {
+            "prefixes": {"heading-1": "1."},
+            "prefix_style": "numeric_dot",
+        }
+        result = service._enforce_listicle_numbering(all_rewrites, listicle_data)
+        assert not result["heading-1"].startswith("1. 1.")
