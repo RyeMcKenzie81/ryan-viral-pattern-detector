@@ -194,16 +194,16 @@ class InstagramScraper:
 
         actor_input = {
             "directUrls": direct_urls,
-            "resultsType": "details",  # Get profile details with metadata and latestPosts
+            "resultsType": "posts",
             "resultsLimit": 200,
             "onlyPostsNewerThan": f"{days_back} days",
-            "addParentData": False,
+            "addParentData": True,
             "maxRequestRetries": 3,
             "enhanceUserSearchWithFacebookPage": False
         }
 
-        # Note: NOT using isUserReelFeedURL because it prevents profile metadata from being returned
-        # With resultsType: "details", we get profile objects with latestPosts arrays
+        # resultsType: "posts" returns individual post items (respects resultsLimit).
+        # addParentData: True embeds profile metadata on each post item.
 
         logger.info(f"Starting Apify run for {len(usernames)} usernames ({days_back} days back, {post_type})")
 
@@ -277,33 +277,26 @@ class InstagramScraper:
         items = response.json()
         logger.info(f"Fetched {len(items)} items from dataset")
 
-        # Debug: Log first item structure
         if items and len(items) > 0:
             first_item = items[0]
-            logger.info(f"DEBUG - First item keys: {list(first_item.keys())[:15]}")
-            logger.info(f"DEBUG - Has 'username': {'username' in first_item}")
-            logger.info(f"DEBUG - Has 'latestPosts': {'latestPosts' in first_item}")
-            logger.info(f"DEBUG - Has 'ownerUsername': {'ownerUsername' in first_item}")
-            if 'latestPosts' in first_item:
-                logger.info(f"DEBUG - latestPosts count: {len(first_item.get('latestPosts', []))}")
+            has_latest = "latestPosts" in first_item
+            logger.info(
+                f"Dataset format: {'details (profile)' if has_latest else 'posts (individual)'}, "
+                f"{len(items)} items, first keys: {list(first_item.keys())[:10]}"
+            )
 
         return items
 
     def _normalize_items(self, items: List[Dict]) -> Tuple[pd.DataFrame, Dict[str, Dict]]:
         """
-        Normalize Apify items to standard DataFrame format and extract account metadata
+        Normalize Apify items to standard DataFrame format and extract account metadata.
 
-        Apify returns profile-level data:
-        {
-          "username": "...",
-          "fullName": "...",
-          "biography": "...",
-          "followersCount": 123,
-          "latestPosts": [...]
-        }
+        Handles two Apify response formats:
+        - "details" mode: each item is a profile with a latestPosts array
+        - "posts" mode: each item is an individual post (with optional parent data)
 
         Args:
-            items: Raw Apify profile data (each item is a profile with posts)
+            items: Raw Apify data (profiles or individual posts)
 
         Returns:
             Tuple of (posts_df, account_metadata_dict)
@@ -311,70 +304,19 @@ class InstagramScraper:
         normalized_data = []
         account_metadata = {}
 
-        for profile in items:
-            try:
-                # Extract account metadata from profile level
-                username = profile.get("username", "unknown")
+        # Detect format: if first item has latestPosts, it's "details" mode
+        is_details_mode = items and "latestPosts" in items[0]
 
-                if username and username not in account_metadata:
-                    # Map Apify profile fields to our schema
-                    account_metadata[username] = {
-                        "follower_count": profile.get("followersCount"),
-                        "following_count": profile.get("followsCount"),
-                        "bio": profile.get("biography"),
-                        "display_name": profile.get("fullName"),
-                        "profile_pic_url": profile.get("profilePicUrlHD") or profile.get("profilePicUrl"),
-                        "is_verified": profile.get("verified", False),
-                        "account_type": "business" if profile.get("isBusinessAccount") else "personal",
-                        "external_url": profile.get("externalUrl"),
-                    }
+        if is_details_mode:
+            posts_list = self._extract_posts_from_details(items, account_metadata)
+        else:
+            posts_list = self._extract_posts_from_posts_mode(items, account_metadata)
 
-                # Extract posts from latestPosts array
-                latest_posts = profile.get("latestPosts", [])
-
-                for post in latest_posts:
-                    post_data = {
-                        "account": username,
-                        "post_url": f"https://www.instagram.com/p/{post.get('shortCode')}/" if post.get('shortCode') else "",
-                        "post_id": post.get("shortCode", ""),
-                        "posted_at": post.get("timestamp"),
-                        "likes": post.get("likesCount", 0),
-                        "comments": post.get("commentsCount", 0),
-                        "caption": post.get("caption", "")[:2200] if post.get("caption") else "",
-                        "length_sec": post.get("videoDuration")
-                    }
-
-                    # Handle views (priority: videoViewCount > likesCount)
-                    views = post.get("videoViewCount") or post.get("likesCount", 0)
-                    post_data["views"] = max(0, int(views)) if views is not None else 0
-
-                    # Validate and convert data types
-                    post_data["likes"] = max(0, int(post_data["likes"]) if post_data["likes"] else 0)
-                    post_data["comments"] = max(0, int(post_data["comments"]) if post_data["comments"] else 0)
-
-                    if post_data["length_sec"]:
-                        try:
-                            post_data["length_sec"] = max(1, min(3600, int(float(post_data["length_sec"]))))
-                        except:
-                            post_data["length_sec"] = None
-
-                    # Parse timestamp
-                    if post_data["posted_at"]:
-                        try:
-                            post_data["posted_at"] = pd.to_datetime(post_data["posted_at"]).isoformat()
-                        except:
-                            post_data["posted_at"] = None
-
-                    # Skip if essential fields are missing
-                    if not post_data["post_url"] or not post_data["account"]:
-                        logger.warning(f"Skipping post with missing essential fields")
-                        continue
-
-                    normalized_data.append(post_data)
-
-            except Exception as e:
-                logger.warning(f"Error normalizing profile: {e}")
-                continue
+        for post_tuple in posts_list:
+            username, post = post_tuple
+            post_data = self._normalize_single_post(username, post)
+            if post_data:
+                normalized_data.append(post_data)
 
         df = pd.DataFrame(normalized_data)
         if len(df) > 0:
@@ -390,6 +332,105 @@ class InstagramScraper:
             logger.warning("No posts were successfully normalized")
 
         return df, account_metadata
+
+    def _extract_posts_from_details(
+        self,
+        items: List[Dict],
+        account_metadata: Dict[str, Dict],
+    ) -> List[Tuple[str, Dict]]:
+        """Extract (username, post) tuples from 'details' mode profile items."""
+        results = []
+        for profile in items:
+            try:
+                username = profile.get("username", "unknown")
+                if username and username not in account_metadata:
+                    account_metadata[username] = self._extract_profile_metadata(profile)
+                for post in profile.get("latestPosts", []):
+                    results.append((username, post))
+            except Exception as e:
+                logger.warning(f"Error processing profile: {e}")
+        return results
+
+    def _extract_posts_from_posts_mode(
+        self,
+        items: List[Dict],
+        account_metadata: Dict[str, Dict],
+    ) -> List[Tuple[str, Dict]]:
+        """Extract (username, post) tuples from 'posts' mode individual post items."""
+        results = []
+        for post in items:
+            try:
+                username = post.get("ownerUsername") or post.get("username", "unknown")
+                # Extract profile metadata from addParentData if present
+                if username and username not in account_metadata:
+                    parent = post.get("profileData") or post.get("userData") or {}
+                    if not parent:
+                        # Some Apify versions nest parent data at the top level
+                        # when addParentData is True — check for profile-level keys
+                        if post.get("followersCount") is not None:
+                            parent = post
+                    if parent and parent.get("followersCount") is not None:
+                        account_metadata[username] = self._extract_profile_metadata(parent)
+                results.append((username, post))
+            except Exception as e:
+                logger.warning(f"Error processing post item: {e}")
+        return results
+
+    def _extract_profile_metadata(self, profile: Dict) -> Dict:
+        """Extract standardised profile metadata from an Apify profile dict."""
+        return {
+            "follower_count": profile.get("followersCount"),
+            "following_count": profile.get("followsCount"),
+            "bio": profile.get("biography"),
+            "display_name": profile.get("fullName"),
+            "profile_pic_url": profile.get("profilePicUrlHD") or profile.get("profilePicUrl"),
+            "is_verified": profile.get("verified", False),
+            "account_type": "business" if profile.get("isBusinessAccount") else "personal",
+            "external_url": profile.get("externalUrl"),
+        }
+
+    def _normalize_single_post(self, username: str, post: Dict) -> Optional[Dict]:
+        """Normalize a single Apify post dict to our standard schema."""
+        try:
+            post_data = {
+                "account": username,
+                "post_url": f"https://www.instagram.com/p/{post.get('shortCode')}/" if post.get('shortCode') else "",
+                "post_id": post.get("shortCode", ""),
+                "posted_at": post.get("timestamp"),
+                "likes": post.get("likesCount", 0),
+                "comments": post.get("commentsCount", 0),
+                "caption": post.get("caption", "")[:2200] if post.get("caption") else "",
+                "length_sec": post.get("videoDuration"),
+            }
+
+            # Handle views (priority: videoViewCount > videoPlayCount > likesCount)
+            views = post.get("videoViewCount") or post.get("videoPlayCount") or post.get("likesCount", 0)
+            post_data["views"] = max(0, int(views)) if views is not None else 0
+
+            post_data["likes"] = max(0, int(post_data["likes"]) if post_data["likes"] else 0)
+            post_data["comments"] = max(0, int(post_data["comments"]) if post_data["comments"] else 0)
+
+            if post_data["length_sec"]:
+                try:
+                    post_data["length_sec"] = max(1, min(3600, int(float(post_data["length_sec"]))))
+                except Exception:
+                    post_data["length_sec"] = None
+
+            if post_data["posted_at"]:
+                try:
+                    post_data["posted_at"] = pd.to_datetime(post_data["posted_at"]).isoformat()
+                except Exception:
+                    post_data["posted_at"] = None
+
+            if not post_data["post_url"] or not post_data["account"]:
+                logger.warning("Skipping post with missing essential fields")
+                return None
+
+            return post_data
+
+        except Exception as e:
+            logger.warning(f"Error normalizing post: {e}")
+            return None
 
     def _upsert_accounts(
         self,
