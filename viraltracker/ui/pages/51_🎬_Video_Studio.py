@@ -460,6 +460,17 @@ with tab_recreation:
             elif has_final:
                 st.caption(f"Duration: {candidate.get('final_video_duration_sec', '?')}s")
                 st.caption(f"Cost: {format_cost(candidate.get('total_generation_cost_usd'))}")
+                # Download link
+                final_path = candidate["final_video_path"]
+                try:
+                    from viraltracker.config import get_supabase_client
+                    sb = get_supabase_client()
+                    parts = final_path.split("/", 1)
+                    signed = sb.storage.from_(parts[0]).create_signed_url(parts[1], 3600)
+                    if signed and signed.get("signedURL"):
+                        st.markdown(f"[Download Final Video]({signed['signedURL']})")
+                except Exception:
+                    st.caption(f"Path: `{final_path}`")
 
         # ---- Text Overlay Instructions ----
         overlays = candidate.get("text_overlay_instructions")
