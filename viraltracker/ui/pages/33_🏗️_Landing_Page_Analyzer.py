@@ -1236,7 +1236,10 @@ def _render_analysis_row(analysis: dict, service, org_id: str):
     pattern = analysis.get("primary_content_pattern", "")
     pattern_badge = f" [{pattern}]" if pattern else ""
 
-    header = f"{status_icon} **{url[:70]}** — {_awareness_badge(awareness)} — Grade: **{grade}**{qa_icon}{pattern_badge} — {created_str}"
+    # Share link badge
+    share_badge = " 🔗" if analysis.get("public_share_enabled") else ""
+
+    header = f"{status_icon} **{url[:70]}** — {_awareness_badge(awareness)} — Grade: **{grade}**{qa_icon}{pattern_badge}{share_badge} — {created_str}"
 
     with st.expander(header, expanded=False):
         # Load full analysis on expand
@@ -1328,6 +1331,39 @@ def _render_share_controls(blueprint: dict, bp_service, blueprint_id: str):
         if st.button("Generate Share Link", key=f"share_gen_{blueprint_id}"):
             token = bp_service.generate_share_link(blueprint_id)
             share_url = f"{app_base_url}/api/public/blueprint/{token}"
+            st.code(share_url, language=None)
+            st.success("Share link generated! Copy the URL above.")
+
+
+def _render_analysis_share_controls(analysis: dict, analysis_svc, analysis_id: str):
+    """Render public share link controls for an analysis with mockup HTML.
+
+    Share link points to the public Streamlit page (67_Public_Analysis)
+    using the same pattern as the Public Gallery.
+    """
+    import os
+    app_base_url = os.environ.get("APP_BASE_URL", "").rstrip("/")
+    if not app_base_url:
+        return  # No base URL configured, skip share controls
+
+    base_url = app_base_url
+
+    st.divider()
+    st.markdown("**Public Share Link (Analysis Template)**")
+
+    share_enabled = analysis.get("public_share_enabled", False)
+    share_token = analysis.get("public_share_token", "")
+
+    if share_enabled and share_token:
+        share_url = f"{base_url}/Public_Analysis?token={share_token}"
+        st.code(share_url, language=None)
+        if st.button("Disable Sharing", key=f"analysis_share_disable_{analysis_id}"):
+            analysis_svc.disable_share_link(analysis_id)
+            st.rerun()
+    else:
+        if st.button("Generate Share Link", key=f"analysis_share_gen_{analysis_id}"):
+            token = analysis_svc.generate_share_link(analysis_id)
+            share_url = f"{base_url}/Public_Analysis?token={token}"
             st.code(share_url, language=None)
             st.success("Share link generated! Copy the URL above.")
 
@@ -1527,6 +1563,10 @@ def _render_analysis_mockup_section(analysis: dict, analysis_id: str, org_id: st
 
     if cached:
         _render_mockup_preview(cached, f"analysis_{analysis_id}")
+        # Share controls (only when mockup HTML exists)
+        if analysis.get("analysis_mockup_html"):
+            analysis_svc = get_analysis_service()
+            _render_analysis_share_controls(analysis, analysis_svc, analysis_id)
         # Phase snapshot downloads (multipass debugging)
         snapshots = st.session_state.get(f"phase_snapshots_{analysis_id}", {})
         if snapshots:

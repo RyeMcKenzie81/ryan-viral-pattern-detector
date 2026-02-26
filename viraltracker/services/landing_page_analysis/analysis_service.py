@@ -749,6 +749,81 @@ class LandingPageAnalysisService:
     # Query methods
     # ------------------------------------------------------------------
 
+    # ------------------------------------------------------------------
+    # Public share link methods
+    # ------------------------------------------------------------------
+
+    def generate_share_link(self, analysis_id: str) -> str:
+        """Generate or return existing share token for an analysis.
+
+        Uses 128-bit tokens (token_urlsafe(16)) for security.
+        Re-enables sharing if token exists but was previously disabled.
+
+        Returns:
+            The share token string.
+        """
+        import secrets
+
+        existing = (
+            self.supabase.table("landing_page_analyses")
+            .select("public_share_token, public_share_enabled")
+            .eq("id", analysis_id)
+            .single()
+            .execute()
+        )
+        if existing.data and existing.data.get("public_share_token"):
+            # Re-enable if disabled
+            if not existing.data.get("public_share_enabled"):
+                self.supabase.table("landing_page_analyses").update(
+                    {"public_share_enabled": True}
+                ).eq("id", analysis_id).execute()
+            return existing.data["public_share_token"]
+
+        # Generate new 128-bit token (~22 chars URL-safe)
+        token = secrets.token_urlsafe(16)
+        from datetime import datetime, timezone
+        self.supabase.table("landing_page_analyses").update({
+            "public_share_token": token,
+            "public_share_enabled": True,
+            "public_share_created_at": datetime.now(timezone.utc).isoformat(),
+        }).eq("id", analysis_id).execute()
+
+        logger.info(f"Generated share token for analysis {analysis_id}")
+        return token
+
+    def disable_share_link(self, analysis_id: str) -> None:
+        """Disable sharing (keeps token for re-enabling)."""
+        self.supabase.table("landing_page_analyses").update(
+            {"public_share_enabled": False}
+        ).eq("id", analysis_id).execute()
+        logger.info(f"Disabled share link for analysis {analysis_id}")
+
+    def get_analysis_by_share_token(self, token: str) -> Optional[Dict]:
+        """Fetch analysis by share token. Returns None if not found or disabled.
+
+        Uses the service-role Supabase client (self.supabase) which bypasses RLS,
+        since this is called from the unauthenticated public share endpoint.
+        """
+        result = (
+            self.supabase.table("landing_page_analyses")
+            .select("id, analysis_mockup_html, url")
+            .eq("public_share_token", token)
+            .eq("public_share_enabled", True)
+            .limit(1)
+            .execute()
+        )
+        if not result.data:
+            return None
+        row = result.data[0]
+        html = row.get("analysis_mockup_html")
+        if not html:
+            return None
+        return {
+            "id": row["id"],
+            "html": html,
+            "source_url": row.get("url", ""),
+        }
+
     def save_analysis_mockup_html(self, analysis_id: str, html: str) -> None:
         """Persist analysis mockup HTML to the database record."""
         self.supabase.table("landing_page_analyses").update(
@@ -781,7 +856,7 @@ class LandingPageAnalysisService:
                 "id, url, source_type, awareness_level, architecture_type, "
                 "element_count, completeness_score, overall_score, overall_grade, "
                 "status, processing_time_ms, created_at, "
-                "qa_status, primary_content_pattern"
+                "qa_status, primary_content_pattern, public_share_enabled"
             )
         )
         if org_id and org_id != "all":
