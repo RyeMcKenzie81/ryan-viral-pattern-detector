@@ -16,9 +16,11 @@
 | Phase 2D | Persona selector for blueprint generation | Done | `CHECKPOINT_PERSONA_SELECTOR.md` |
 | Surgery CSS Phase 1 | Fetch all external CSS (not just first-party) | Done | `CHECKPOINT_PHASE1_CSS_FETCH.md` |
 | Surgery CSS Phase 2 | Standalone HTML output (no CSS scoping) | Done | `CHECKPOINT_STANDALONE_HTML_PROPOSAL.md` |
-| Surgery CSS Phase 2 Integration | mockup_service, api/app.py, docstring fixes | Done | — |
-| Surgery Scroll Fix | Strip scroll-blocking classes + CSS override | Done | — |
-| **Manual QA** | **Test surgery pipeline E2E on multiple pages** | **Next** | — |
+| Surgery CSS Phase 2 Integration | mockup_service, api/app.py, docstring fixes | Done | `CHECKPOINT_SURGERY_CSS_COMPLETE.md` |
+| Surgery Scroll Fix | Strip scroll-blocking classes + CSS override | Done | `CHECKPOINT_SURGERY_CSS_COMPLETE.md` |
+| **Multi-page QA** | **Test surgery pipeline on other page types** | **Next** | — |
+| **PatchApplier** | **Support complex CSS selectors in S4** | Backlog | — |
+| **MockupService E2E** | **Verify surgery→blueprint→brand preview flow** | Backlog | — |
 
 ## Surgery Pipeline CSS Fix — Summary
 
