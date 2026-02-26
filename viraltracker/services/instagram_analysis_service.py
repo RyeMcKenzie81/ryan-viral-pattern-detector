@@ -1112,8 +1112,11 @@ class InstagramAnalysisService:
             self.supabase.table("ad_video_analysis")
             .select("*, posts:source_post_id(id, post_url, caption, views, likes, comments, media_type, accounts(platform_username))")
             .eq("source_type", "instagram_scrape")
-            .eq("organization_id", organization_id)
         )
+
+        # Multi-tenant filter (unless superuser "all" mode)
+        if organization_id != "all":
+            query = query.eq("organization_id", organization_id)
 
         # Brand filter via the post's account chain isn't direct,
         # so we filter by brand_id on the analysis itself
@@ -1163,11 +1166,15 @@ class InstagramAnalysisService:
             if not post or not post.get("account_id"):
                 return None
 
-            watched = (
+            watched_query = (
                 self.supabase.table("instagram_watched_accounts")
                 .select("brand_id")
                 .eq("account_id", post["account_id"])
-                .eq("organization_id", organization_id)
+            )
+            if organization_id != "all":
+                watched_query = watched_query.eq("organization_id", organization_id)
+            watched = (
+                watched_query
                 .eq("is_active", True)
                 .limit(1)
                 .execute()
