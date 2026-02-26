@@ -666,6 +666,10 @@ class MockupService:
         self.is_surgery_mode = 'data-pipeline="surgery"' in analysis_mockup_html
         page_body, page_css = self._extract_page_css_and_strip(analysis_mockup_html)
 
+        # Strip Shopify theme chrome (header, footer, nav, mega menu, overlay)
+        # that survives surgery pipeline but renders as unstyled junk
+        page_body = self._strip_shopify_chrome(page_body)
+
         rewritten_body = page_body
         if brand_profile and page_body.strip():
             try:
@@ -2855,6 +2859,120 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
         body = self._strip_mockup_wrapper(wrapped_html)
 
         return body, page_css
+
+    # Regex matching Shopify chrome section IDs (header, footer, mega menu)
+    _SHOPIFY_CHROME_ID_RE = re.compile(
+        r'(header|footer|mega[_-]?menu)', re.IGNORECASE
+    )
+
+    # Anti-scraping overlay: position:absolute with huge z-index and transparent text
+    _ANTI_SCRAPE_OVERLAY_RE = re.compile(
+        r'z-index:\s*\d{8,}.*?color:\s*transparent', re.IGNORECASE
+    )
+
+    def _strip_shopify_chrome(self, html: str) -> str:
+        """Remove Shopify theme chrome (header, footer, nav, mega menu) from surgery HTML.
+
+        Surgery pipeline captures the full Shopify page DOM including theme sections
+        that are normally hidden by JS or positioned off-screen. These become visible
+        junk when rendered without the Shopify theme JS.
+
+        Also strips anti-scraping overlay divs (position:absolute, huge z-index, transparent).
+
+        Only meaningful in surgery mode. Returns html unchanged for non-surgery output.
+        """
+        if not self.is_surgery_mode:
+            return html
+
+        class _ChromeStripper(HTMLParser):
+            def __init__(self):
+                super().__init__(convert_charrefs=False)
+                self.parts: list = []
+                self._skip_depth: int = 0
+                self._skip_tag: str = ""
+                self._chrome_id_re = MockupService._SHOPIFY_CHROME_ID_RE
+                self._anti_scrape_re = MockupService._ANTI_SCRAPE_OVERLAY_RE
+                self._stripped_count: int = 0
+
+            def _should_strip(self, tag: str, attrs: list) -> bool:
+                """Check if this element is Shopify chrome or an anti-scraping overlay."""
+                attr_dict = dict(attrs)
+
+                # Shopify section chrome: id contains header/footer/mega_menu
+                elem_id = attr_dict.get("id", "")
+                if elem_id.startswith("shopify-section") and self._chrome_id_re.search(elem_id):
+                    return True
+
+                # Anti-scraping overlay: huge z-index + transparent text
+                style = attr_dict.get("style", "")
+                if style and self._anti_scrape_re.search(style):
+                    return True
+
+                return False
+
+            def handle_starttag(self, tag, attrs):
+                if self._skip_depth > 0:
+                    if tag == self._skip_tag:
+                        self._skip_depth += 1
+                    return
+
+                if self._should_strip(tag, attrs):
+                    self._skip_depth = 1
+                    self._skip_tag = tag
+                    self._stripped_count += 1
+                    return
+
+                attr_str = ""
+                for name, value in attrs:
+                    if value is None:
+                        attr_str += f" {name}"
+                    else:
+                        attr_str += f' {name}="{_html_module.escape(value, quote=True)}"'
+                self.parts.append(f"<{tag}{attr_str}>")
+
+            def handle_endtag(self, tag):
+                if self._skip_depth > 0:
+                    if tag == self._skip_tag:
+                        self._skip_depth -= 1
+                    return
+                self.parts.append(f"</{tag}>")
+
+            def handle_data(self, data):
+                if self._skip_depth == 0:
+                    self.parts.append(data)
+
+            def handle_entityref(self, name):
+                if self._skip_depth == 0:
+                    self.parts.append(f"&{name};")
+
+            def handle_charref(self, name):
+                if self._skip_depth == 0:
+                    self.parts.append(f"&#{name};")
+
+            def handle_comment(self, data):
+                if self._skip_depth == 0:
+                    self.parts.append(f"<!--{data}-->")
+
+            def handle_decl(self, decl):
+                if self._skip_depth == 0:
+                    self.parts.append(f"<!{decl}>")
+
+            def get_result(self) -> str:
+                return "".join(self.parts)
+
+        stripper = _ChromeStripper()
+        try:
+            stripper.feed(html)
+            result = stripper.get_result()
+            if stripper._stripped_count > 0:
+                logger.info(
+                    f"Stripped {stripper._stripped_count} Shopify chrome elements "
+                    f"(header/footer/nav/overlay)"
+                )
+            return result
+        except Exception as e:
+            logger.warning(f"Shopify chrome stripping failed: {e}, returning as-is")
+            return html
 
     # ------------------------------------------------------------------
     # Image URL Extraction & Validation
