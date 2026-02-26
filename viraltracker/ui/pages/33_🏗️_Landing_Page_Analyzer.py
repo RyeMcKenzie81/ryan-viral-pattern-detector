@@ -1183,8 +1183,19 @@ def render_results_tab(org_id: str):
     """Render past analysis results."""
     st.subheader("Analysis History")
 
+    # QA status filter
+    qa_filter_options = ["All", "Pending Review", "Approved", "Rejected", "Needs Revision"]
+    qa_filter_map = {
+        "All": None, "Pending Review": "pending",
+        "Approved": "approved", "Rejected": "rejected", "Needs Revision": "needs_revision",
+    }
+    qa_filter = st.selectbox(
+        "Filter by QA status", qa_filter_options,
+        key="analysis_qa_filter", index=0
+    )
+
     service = get_analysis_service()
-    analyses = service.list_analyses(org_id)
+    analyses = service.list_analyses(org_id, qa_status_filter=qa_filter_map[qa_filter])
 
     if not analyses:
         st.info("No analyses yet. Use the Analyze tab to get started.")
@@ -1217,7 +1228,15 @@ def _render_analysis_row(analysis: dict, service, org_id: str):
     # Status badge
     status_icon = {"completed": "✅", "partial": "⚠️", "failed": "❌", "processing": "⏳"}.get(status, "❓")
 
-    header = f"{status_icon} **{url[:70]}** — {_awareness_badge(awareness)} — Grade: **{grade}** — {created_str}"
+    # QA badge
+    qa_status = analysis.get("qa_status", "pending")
+    qa_icon = {"pending": "", "approved": " QA:✅", "rejected": " QA:❌", "needs_revision": " QA:🔄"}.get(qa_status, "")
+
+    # Content pattern badge
+    pattern = analysis.get("primary_content_pattern", "")
+    pattern_badge = f" [{pattern}]" if pattern else ""
+
+    header = f"{status_icon} **{url[:70]}** — {_awareness_badge(awareness)} — Grade: **{grade}**{qa_icon}{pattern_badge} — {created_str}"
 
     with st.expander(header, expanded=False):
         # Load full analysis on expand
@@ -1228,10 +1247,88 @@ def _render_analysis_row(analysis: dict, service, org_id: str):
 
         _render_analysis_detail(full)
 
+        # --- QA Approval Controls ---
+        if full.get("status") in ("completed", "partial"):
+            _render_qa_controls(full, "analysis", service, org_id)
+
         # --- Mockup Generation ---
         analysis_id = full.get("id", "")
         if analysis_id:
             _render_analysis_mockup_section(full, analysis_id, org_id)
+
+
+def _render_qa_controls(record: dict, record_type: str, service, org_id: str):
+    """Render QA approval controls for an analysis or blueprint.
+
+    Args:
+        record: The full analysis or blueprint dict.
+        record_type: "analysis" or "blueprint".
+        service: The analysis or blueprint service instance.
+    """
+    record_id = record.get("id", "")
+    current_qa = record.get("qa_status", "pending")
+    qa_notes = record.get("qa_notes", "") or ""
+    qa_icons = {"pending": "⏳", "approved": "✅", "rejected": "❌", "needs_revision": "🔄"}
+
+    st.markdown(f"**QA Status:** {qa_icons.get(current_qa, '❓')} {current_qa}")
+    if qa_notes:
+        st.caption(f"Notes: {qa_notes}")
+    if record.get("qa_reviewed_at"):
+        st.caption(f"Reviewed: {record['qa_reviewed_at'][:19]}")
+
+    col1, col2, col3, col4 = st.columns(4)
+    key_prefix = f"qa_{record_type}_{record_id}"
+
+    with col1:
+        if st.button("✅ Approve", key=f"{key_prefix}_approve", disabled=(current_qa == "approved")):
+            service.update_qa_status(record_id, "approved")
+            st.rerun()
+    with col2:
+        if st.button("❌ Reject", key=f"{key_prefix}_reject", disabled=(current_qa == "rejected")):
+            service.update_qa_status(record_id, "rejected")
+            st.rerun()
+    with col3:
+        if st.button("🔄 Needs Revision", key=f"{key_prefix}_revision", disabled=(current_qa == "needs_revision")):
+            service.update_qa_status(record_id, "needs_revision")
+            st.rerun()
+    with col4:
+        if current_qa != "pending":
+            if st.button("↩️ Reset", key=f"{key_prefix}_reset"):
+                service.update_qa_status(record_id, "pending")
+                st.rerun()
+
+    notes_input = st.text_input("QA Notes", value=qa_notes, key=f"{key_prefix}_notes")
+    if notes_input != qa_notes:
+        if st.button("Save Notes", key=f"{key_prefix}_save_notes"):
+            service.update_qa_status(record_id, current_qa, qa_notes=notes_input)
+            st.rerun()
+
+
+def _render_share_controls(blueprint: dict, bp_service, blueprint_id: str):
+    """Render public share link controls for a completed blueprint."""
+    import os
+    app_base_url = os.environ.get("APP_BASE_URL", "").rstrip("/")
+    if not app_base_url:
+        return  # No base URL configured, skip share controls
+
+    st.divider()
+    st.markdown("**Public Share Link**")
+
+    share_enabled = blueprint.get("public_share_enabled", False)
+    share_token = blueprint.get("public_share_token", "")
+
+    if share_enabled and share_token:
+        share_url = f"{app_base_url}/api/public/blueprint/{share_token}"
+        st.code(share_url, language=None)
+        if st.button("Disable Sharing", key=f"share_disable_{blueprint_id}"):
+            bp_service.disable_share_link(blueprint_id)
+            st.rerun()
+    else:
+        if st.button("Generate Share Link", key=f"share_gen_{blueprint_id}"):
+            token = bp_service.generate_share_link(blueprint_id)
+            share_url = f"{app_base_url}/api/public/blueprint/{token}"
+            st.code(share_url, language=None)
+            st.success("Share link generated! Copy the URL above.")
 
 
 def _render_analysis_detail(analysis: dict):
@@ -2612,9 +2709,18 @@ def _render_blueprint_history(org_id: str, brand_id: str):
             created_str = ""
 
         status_icon = {"completed": "✅", "partial": "⚠️", "failed": "❌", "processing": "⏳"}.get(status, "❓")
+
+        # QA badge for blueprint
+        bp_qa = bp.get("qa_status", "pending")
+        bp_qa_icon = {"pending": "", "approved": " QA:✅", "rejected": " QA:❌", "needs_revision": " QA:🔄"}.get(bp_qa, "")
+
+        # Share badge
+        share_badge = " 🔗" if bp.get("public_share_enabled") else ""
+
         header = (
             f"{status_icon} **{url}** — "
-            f"{sections} sections, {mapped} mapped, {needed} need content — "
+            f"{sections} sections, {mapped} mapped, {needed} need content"
+            f"{bp_qa_icon}{share_badge} — "
             f"{created_str}"
         )
 
@@ -2642,6 +2748,16 @@ def _render_blueprint_history(org_id: str, brand_id: str):
                 offer_variant_id=full.get("offer_variant_id"),
                 org_id=full.get("organization_id"),
             )
+
+            # QA controls for blueprint
+            if full.get("status") in ("completed", "partial"):
+                _render_qa_controls(full, "blueprint", bp_service, org_id)
+
+            # Share link controls for completed blueprints with HTML
+            if full.get("status") == "completed" and (
+                full.get("blueprint_mockup_html_with_images") or full.get("blueprint_mockup_html")
+            ):
+                _render_share_controls(full, bp_service, bp["id"])
 
 
 # ---------------------------------------------------------------------------

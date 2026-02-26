@@ -659,7 +659,91 @@ class LandingPageAnalysisService:
             update["overall_score"] = cs.get("overall_score", 0)
             update["overall_grade"] = cs.get("overall_grade", "")
 
+        # Denormalize content patterns (deterministic detection from elements)
+        if elements:
+            content_patterns_data = self._extract_content_patterns(elements)
+            if content_patterns_data:
+                update["content_patterns"] = json.dumps(content_patterns_data)
+                update["primary_content_pattern"] = content_patterns_data.get("primary_pattern")
+
         self.supabase.table("landing_page_analyses").update(update).eq("id", analysis_id).execute()
+
+    @staticmethod
+    def _extract_content_patterns(elements: Dict) -> Dict:
+        """Extract content pattern tags from element detection results.
+
+        Maps detected content_patterns (feature_list, testimonial_list, etc.)
+        to human-readable tags (listicle, faq, testimonial_grid, etc.).
+        """
+        ed = elements.get("element_detection", elements)
+        detected_patterns_raw = ed.get("content_patterns", [])
+        if not detected_patterns_raw:
+            return {}
+
+        # Map content_patterns.py types to tag names
+        TYPE_MAP = {
+            "feature_list": "listicle",
+            "testimonial_list": "testimonial_grid",
+            "faq_list": "faq",
+            "stats_list": "stats_showcase",
+        }
+
+        detected = []
+        pattern_tags = []
+        for cp in detected_patterns_raw:
+            if isinstance(cp, dict):
+                cp_type = cp.get("type", cp.get("pattern_type", ""))
+                item_count = cp.get("item_count", len(cp.get("items", [])))
+                confidence = cp.get("confidence", 0.8)
+            elif isinstance(cp, str):
+                cp_type = cp
+                item_count = 0
+                confidence = 0.5
+            else:
+                continue
+
+            tag = TYPE_MAP.get(cp_type)
+            if not tag:
+                # Feature list with few items is feature_showcase, not listicle
+                if cp_type == "feature_list" and isinstance(cp, dict):
+                    is_dominant = cp.get("is_dominant", item_count >= 3)
+                    tag = "listicle" if is_dominant else "feature_showcase"
+                else:
+                    continue
+
+            if tag not in pattern_tags:
+                pattern_tags.append(tag)
+            entry = {"type": tag, "confidence": confidence}
+            if item_count:
+                entry["item_count"] = item_count
+            detected.append(entry)
+
+        if not pattern_tags:
+            return {}
+
+        # Determine primary pattern (first detected, highest confidence)
+        if len(pattern_tags) == 1:
+            primary = pattern_tags[0]
+        else:
+            primary = "mixed"
+            # Pick highest-confidence single pattern if one dominates
+            if detected:
+                best = max(detected, key=lambda d: d.get("confidence", 0))
+                if best.get("confidence", 0) >= 0.8:
+                    primary = best["type"]
+
+        result = {
+            "patterns": pattern_tags,
+            "primary_pattern": primary,
+            "detected_patterns": detected,
+        }
+        # Add listicle item count if present
+        for d in detected:
+            if d["type"] == "listicle" and d.get("item_count"):
+                result["listicle_item_count"] = d["item_count"]
+                break
+
+        return result
 
     # ------------------------------------------------------------------
     # Query methods
@@ -688,6 +772,7 @@ class LandingPageAnalysisService:
         org_id: str,
         brand_id: Optional[str] = None,
         limit: int = 50,
+        qa_status_filter: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """List analyses for an organization, most recent first."""
         query = (
@@ -695,14 +780,54 @@ class LandingPageAnalysisService:
             .select(
                 "id, url, source_type, awareness_level, architecture_type, "
                 "element_count, completeness_score, overall_score, overall_grade, "
-                "status, processing_time_ms, created_at"
+                "status, processing_time_ms, created_at, "
+                "qa_status, primary_content_pattern"
             )
         )
         if org_id and org_id != "all":
             query = query.eq("organization_id", org_id)
+        if qa_status_filter:
+            query = query.eq("qa_status", qa_status_filter)
 
         result = query.order("created_at", desc=True).limit(limit).execute()
         return result.data or []
+
+    def update_qa_status(
+        self,
+        analysis_id: str,
+        qa_status: str,
+        qa_notes: Optional[str] = None,
+        reviewed_by: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Update QA approval status on an analysis.
+
+        Args:
+            analysis_id: The analysis UUID.
+            qa_status: One of 'pending', 'approved', 'rejected', 'needs_revision'.
+            qa_notes: Optional reviewer notes.
+            reviewed_by: UUID of the reviewer (user).
+        """
+        valid_statuses = ("pending", "approved", "rejected", "needs_revision")
+        if qa_status not in valid_statuses:
+            raise ValueError(f"qa_status must be one of {valid_statuses}, got '{qa_status}'")
+
+        update = {"qa_status": qa_status}
+        if qa_notes is not None:
+            update["qa_notes"] = qa_notes
+        if reviewed_by:
+            update["qa_reviewed_by"] = reviewed_by
+        if qa_status != "pending":
+            from datetime import datetime, timezone
+            update["qa_reviewed_at"] = datetime.now(timezone.utc).isoformat()
+
+        result = (
+            self.supabase.table("landing_page_analyses")
+            .update(update)
+            .eq("id", analysis_id)
+            .execute()
+        )
+        logger.info(f"Updated QA status for analysis {analysis_id}: {qa_status}")
+        return result.data[0] if result.data else {}
 
     def get_competitor_lps(self, brand_id: str) -> List[Dict[str, Any]]:
         """Get competitor landing pages for dropdown selection."""

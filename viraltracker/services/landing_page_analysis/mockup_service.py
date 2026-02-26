@@ -462,6 +462,7 @@ class _SlotRewriteConfig:
     brand_data: Dict                       # name, voice_tone, benefits, etc.
     slot_specs_lookup: Dict[str, Dict]     # slot_name -> {max_words, type, ...}
     slot_contents: Dict[str, str] = field(default_factory=dict)  # for fallback fills
+    listicle_data: Dict = field(default_factory=dict)  # listicle detection: {slot_name: prefix, ...}
 
 
 class MockupService:
@@ -1896,6 +1897,12 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
         "- testimonial: use real customer quotes from brand data when available\n"
         "- feature: specific benefit or ingredient highlight, concise\n"
         "- badge/price/guarantee: concise, factual, trust-building\n\n"
+        "## Numbered Prefix Preservation (Listicle Pages)\n"
+        "When a slot includes a `prefix` field:\n"
+        "- Start your rewrite with EXACTLY the value of `prefix`, followed by a space, then your new copy.\n"
+        "- Do NOT alter the prefix format. If prefix is \"3.\" your output starts with \"3. \".\n"
+        "- Do NOT renumber. The prefix is assigned upstream and reflects the item's position in the full page.\n"
+        "- The word count constraint applies to the ENTIRE output including the prefix.\n\n"
     )
 
     _SLOT_REWRITE_ADDENDUM_RUNTIME = (
@@ -1939,6 +1946,7 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
         "- max_words is a HARD ceiling. Aim for 90-100% of it.\n"
         "- HEADLINES must be complete thoughts. Never produce a headline that ends mid-sentence.\n"
         "- CTA slots must start with an action verb.\n"
+        "- If a slot has a `prefix` field, your rewrite MUST start with that exact prefix followed by a space.\n"
     )
 
     _REGEN_PROMPT_BLUEPRINT = (
@@ -1955,6 +1963,7 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
         "- NEVER use em dashes or en dashes. Use commas, periods, colons, or semicolons.\n"
         "- HEADLINES must be complete thoughts. Never produce a headline that ends mid-sentence.\n"
         "- CTA slots must start with an action verb.\n"
+        "- If a slot has a `prefix` field, your rewrite MUST start with that exact prefix followed by a space.\n"
     )
 
     _MAX_SLOTS_PER_BATCH = 80
@@ -2075,16 +2084,28 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
 
         ordered_sections = [section_groups[k] for k in sorted(section_groups.keys())]
 
+        # Detect listicle structure and inject prefix into slot payloads
+        listicle_data = self._detect_listicle_structure(slot_contents, slot_sections)
+        listicle_prefixes = listicle_data.get("prefixes", {})
+        if listicle_prefixes:
+            for g in ordered_sections:
+                for s in g["slots"]:
+                    if s["name"] in listicle_prefixes:
+                        s["prefix"] = listicle_prefixes[s["name"]]
+
         # Build slot_specs_lookup for regen/truncation enforcement
         slot_specs_lookup: Dict[str, Dict] = {}
         for g in ordered_sections:
             for s in g["slots"]:
-                slot_specs_lookup[s["name"]] = {
+                spec = {
                     "max_words": s["max_words"],
                     "type": s["type"],
                     "original_words": s.get("original_words", 0),
                     "length_note": s.get("length_note", ""),
                 }
+                if s["name"] in listicle_prefixes:
+                    spec["prefix"] = listicle_prefixes[s["name"]]
+                slot_specs_lookup[s["name"]] = spec
 
         return _SlotRewriteConfig(
             strategy="slot_constrained",
@@ -2095,6 +2116,7 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
             brand_data=brand_data,
             slot_specs_lookup=slot_specs_lookup,
             slot_contents=slot_contents,
+            listicle_data=listicle_data,
         )
 
     def _build_blueprint_rewrite_config(
@@ -2163,6 +2185,15 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
             if sec_name in space_budgets:
                 group["space_budget"] = space_budgets[sec_name]
 
+        # Detect listicle structure and inject prefix into slot payloads
+        listicle_data = self._detect_listicle_structure(slot_contents, slot_sections)
+        listicle_prefixes = listicle_data.get("prefixes", {})
+        if listicle_prefixes:
+            for g in ordered_sections:
+                for s in g["slots"]:
+                    if s["name"] in listicle_prefixes:
+                        s["prefix"] = listicle_prefixes[s["name"]]
+
         # Build slot_specs_lookup for internal regen/truncation (uses max_words)
         slot_specs_lookup: Dict[str, Dict] = {}
         for g in ordered_sections:
@@ -2178,7 +2209,7 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
                 else:
                     length_spec = self._compute_slot_length_spec(slot_type, 0, 0)
                 ctx = slot_sections.get(slot_name, {})
-                slot_specs_lookup[slot_name] = {
+                spec = {
                     "max_words": length_spec["max_words"],
                     "type": slot_type,
                     "original_words": length_spec.get("original_words", 0),
@@ -2186,6 +2217,9 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
                     "copy_direction": ctx.get("copy_direction", ""),
                     "section_name": ctx.get("section_name", "global"),
                 }
+                if slot_name in listicle_prefixes:
+                    spec["prefix"] = listicle_prefixes[slot_name]
+                slot_specs_lookup[slot_name] = spec
 
         return _SlotRewriteConfig(
             strategy="section_guided",
@@ -2196,7 +2230,202 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
             brand_data=brand_data,
             slot_specs_lookup=slot_specs_lookup,
             slot_contents=slot_contents,
+            listicle_data=listicle_data,
         )
+
+    # ------------------------------------------------------------------
+    # Listicle Detection & Numbering Enforcement
+    # ------------------------------------------------------------------
+
+    # Matches ordinal prefixes like "3.", "3)", "3:", "#3", "Reason 3:", "Step 3."
+    _LISTICLE_PREFIX_RE = re.compile(
+        r'^(\d{1,2}[\.\)\:]\s'
+        r'|#\d{1,2}\s'
+        r'|(?:Reason|Step|Tip|Way|Thing|Secret|Benefit|Fact|Sign|Mistake)\s+\d{1,2}[\.\)\:]\s)',
+        re.IGNORECASE,
+    )
+
+    # False positives: "100% Natural", "24/7 Support", "500mg", "3x Faster"
+    _LISTICLE_FALSE_POSITIVE_RE = re.compile(
+        r'^\d{1,3}\s*(%|mg|ml|g|oz|lb|x\b|k\b|,\d|/\d|hour|day|week|minute)',
+        re.IGNORECASE,
+    )
+
+    # Extracts the leading ordinal number from a prefix match
+    _LISTICLE_ORDINAL_RE = re.compile(r'(\d{1,2})')
+
+    # Strips any leading ordinal pattern from AI output for re-prefixing
+    _LEADING_ORDINAL_RE = re.compile(
+        r'^(?:\d{1,2}[\.\)\:]\s*'
+        r'|#\d{1,2}\s*'
+        r'|(?:Reason|Step|Tip|Way|Thing|Secret|Benefit|Fact|Sign|Mistake)\s+\d{1,2}[\.\)\:]\s*)',
+        re.IGNORECASE,
+    )
+
+    # Extracts total count from headline text: "7 Reasons...", "Top 10 Tips..."
+    _LISTICLE_COUNT_RE = re.compile(
+        r'(?:^|\s)(\d{1,2})\s+(?:Reason|Step|Tip|Way|Thing|Secret|Benefit|Fact|Sign|Mistake)s?\b',
+        re.IGNORECASE,
+    )
+
+    def _detect_listicle_structure(
+        self,
+        slot_contents: Dict[str, str],
+        slot_sections: Dict[str, Dict],
+    ) -> Dict:
+        """Detect if page has listicle structure and extract prefix mapping.
+
+        Returns dict with:
+            prefixes: {slot_name: "3." } mapping for heading slots
+            total_count: int or None (extracted from headline)
+            prefix_style: str ("numeric_dot", "numeric_paren", "hash", "word_prefix")
+        Returns empty dict if not a listicle.
+        """
+        heading_types = {"heading", "subheadline"}
+        heading_slots = []
+
+        for slot_name, content in slot_contents.items():
+            ctx = slot_sections.get(slot_name, {})
+            slot_type = ctx.get("slot_type", self._infer_slot_type(slot_name))
+            if slot_type in heading_types:
+                heading_slots.append((slot_name, content, slot_type))
+
+        if len(heading_slots) < 2:
+            return {}
+
+        # Check each heading against listicle pattern
+        matches = []
+        for slot_name, content, slot_type in heading_slots:
+            text = content.strip()
+            # Skip false positives
+            if self._LISTICLE_FALSE_POSITIVE_RE.match(text):
+                continue
+            m = self._LISTICLE_PREFIX_RE.match(text)
+            if m:
+                prefix_str = m.group(0).rstrip()
+                ordinal_m = self._LISTICLE_ORDINAL_RE.search(prefix_str)
+                if ordinal_m:
+                    ordinal = int(ordinal_m.group(1))
+                    # Reject ordinals > 20 (likely not a listicle item)
+                    if ordinal <= 20:
+                        matches.append({
+                            "slot_name": slot_name,
+                            "prefix": prefix_str,
+                            "ordinal": ordinal,
+                            "content": text,
+                        })
+
+        # Need 3+ heading matches to be a listicle (or 2 if total headings <= 3)
+        min_matches = 2 if len(heading_slots) <= 3 else 3
+        if len(matches) < min_matches:
+            return {}
+
+        # Sort by ordinal to assign sequential numbers
+        matches.sort(key=lambda x: x["ordinal"])
+
+        # Detect prefix style from the first match
+        first_prefix = matches[0]["prefix"]
+        if first_prefix.startswith("#"):
+            prefix_style = "hash"
+        elif re.match(r'(?:Reason|Step|Tip|Way|Thing|Secret|Benefit|Fact|Sign|Mistake)',
+                       first_prefix, re.IGNORECASE):
+            prefix_style = "word_prefix"
+        elif ")" in first_prefix:
+            prefix_style = "numeric_paren"
+        elif ":" in first_prefix:
+            prefix_style = "numeric_colon"
+        else:
+            prefix_style = "numeric_dot"
+
+        # Build prefix mapping with corrected sequential numbering
+        prefixes = {}
+        for idx, match in enumerate(matches, start=1):
+            # Reconstruct prefix with correct ordinal
+            old_prefix = match["prefix"]
+            correct_ordinal = str(idx)
+            if prefix_style == "hash":
+                prefixes[match["slot_name"]] = f"#{correct_ordinal}"
+            elif prefix_style == "word_prefix":
+                # Extract the word part (e.g., "Reason")
+                word_m = re.match(r'([A-Za-z]+)', old_prefix)
+                word = word_m.group(1) if word_m else "Reason"
+                # Preserve the separator (. or : or ))
+                sep_m = re.search(r'[\.\)\:]', old_prefix)
+                sep = sep_m.group(0) if sep_m else "."
+                prefixes[match["slot_name"]] = f"{word} {correct_ordinal}{sep}"
+            elif prefix_style == "numeric_paren":
+                prefixes[match["slot_name"]] = f"{correct_ordinal})"
+            elif prefix_style == "numeric_colon":
+                prefixes[match["slot_name"]] = f"{correct_ordinal}:"
+            else:
+                prefixes[match["slot_name"]] = f"{correct_ordinal}."
+
+        # Try to extract total count from headline/subheadline
+        total_count = None
+        for slot_name, content in slot_contents.items():
+            ctx = slot_sections.get(slot_name, {})
+            slot_type = ctx.get("slot_type", self._infer_slot_type(slot_name))
+            if slot_type in ("headline", "subheadline"):
+                count_m = self._LISTICLE_COUNT_RE.search(content)
+                if count_m:
+                    total_count = int(count_m.group(1))
+                    break
+
+        logger.info(
+            f"Listicle detected: {len(prefixes)} items, "
+            f"style={prefix_style}, total_count={total_count}"
+        )
+        return {
+            "prefixes": prefixes,
+            "total_count": total_count,
+            "prefix_style": prefix_style,
+        }
+
+    def _enforce_listicle_numbering(
+        self,
+        all_rewrites: Dict[str, str],
+        listicle_data: Dict,
+    ) -> Dict[str, str]:
+        """Post-processing: enforce correct listicle numbering on heading slots.
+
+        Strips any leading ordinal from AI output and prepends the correct prefix.
+        This is a deterministic safety net for when the AI ignores prefix instructions.
+        """
+        prefixes = listicle_data.get("prefixes", {})
+        if not prefixes:
+            return all_rewrites
+
+        corrections = 0
+        for slot_name, correct_prefix in prefixes.items():
+            if slot_name not in all_rewrites:
+                continue
+            text = all_rewrites[slot_name]
+            # Unescape for processing (will re-escape after)
+            text_raw = _html_module.unescape(text)
+
+            # Check if already correctly prefixed
+            if text_raw.startswith(correct_prefix + " ") or text_raw.startswith(correct_prefix + "&"):
+                continue
+
+            # Strip any existing leading ordinal pattern
+            stripped = self._LEADING_ORDINAL_RE.sub("", text_raw).lstrip()
+            if not stripped:
+                stripped = text_raw  # Don't lose content if regex ate everything
+
+            # Prepend the correct prefix
+            new_text = f"{correct_prefix} {stripped}"
+            new_text_escaped = _html_module.escape(new_text)
+
+            if new_text_escaped != text:
+                logger.info(
+                    f"Listicle fix '{slot_name}': '{text[:40]}...' -> '{new_text_escaped[:40]}...'"
+                )
+                all_rewrites[slot_name] = new_text_escaped
+                corrections += 1
+
+        if corrections:
+            logger.info(f"Listicle numbering: {corrections} corrections applied")
+        return all_rewrites
 
     # Common nav link words (nouns that appear in navigation menus)
     _NAV_LINK_WORDS = frozenset({
@@ -2387,6 +2616,20 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
                             )
                     validated[name] = clean
 
+                # Inline listicle prefix enforcement per batch
+                listicle_prefixes = config.listicle_data.get("prefixes", {})
+                if listicle_prefixes:
+                    for name, clean in validated.items():
+                        prefix = config.slot_specs_lookup.get(name, {}).get("prefix")
+                        if not prefix:
+                            continue
+                        clean_raw = _html_module.unescape(clean)
+                        if not clean_raw.startswith(prefix + " "):
+                            stripped = self._LEADING_ORDINAL_RE.sub("", clean_raw).lstrip()
+                            if stripped:
+                                fixed = _html_module.escape(f"{prefix} {stripped}")
+                                validated[name] = fixed
+
                 # Fill missing slots with original text
                 missing = batch_slot_names - set(validated.keys())
                 if missing:
@@ -2403,11 +2646,20 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
                 # Build tone summary for subsequent batches
                 if batch_idx == 0 and len(batches) > 1:
                     headline_val = validated.get("headline", "")
+                    listicle_ctx = ""
+                    if config.listicle_data:
+                        total = config.listicle_data.get("total_count") or len(listicle_prefixes)
+                        prior = [p for sn, p in listicle_prefixes.items() if sn in validated]
+                        listicle_ctx = (
+                            f" Page is a {total}-item listicle."
+                            f" Items written so far: {', '.join(prior)}."
+                        )
                     tone_summary = (
                         f"Brand: {config.brand_data['name']}. "
                         f"Voice: {config.brand_data['voice_tone']}. "
                         f"Headline written: {headline_val[:100]}. "
                         f"Primary angle: {config.page_strategy.get('primary_angle', '')}."
+                        f"{listicle_ctx}"
                     )
 
             except Exception as e:
@@ -2482,42 +2734,49 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
                 )
 
                 # Build regen payload — blueprint mode includes copy_direction/section_name
+                listicle_prefixes = config.listicle_data.get("prefixes", {})
                 if strategy == "section_guided":
+                    regen_slots = []
+                    for name, v in batch_violations.items():
+                        slot_entry = {
+                            "name": name,
+                            "current_text": v["current_text"],
+                            "current_words": v["current_words"],
+                            "target_words": v["max_words"],
+                            "type": v["type"],
+                            "reason": v["reason"],
+                            "copy_direction": config.slot_specs_lookup.get(name, {}).get(
+                                "copy_direction", ""
+                            ),
+                            "section_name": config.slot_specs_lookup.get(name, {}).get(
+                                "section_name", ""
+                            ),
+                        }
+                        if name in listicle_prefixes:
+                            slot_entry["prefix"] = listicle_prefixes[name]
+                        regen_slots.append(slot_entry)
                     regen_payload = {
                         "task": "Rewrite these slots to fit within target_words while maintaining persuasive power.",
-                        "slots": [
-                            {
-                                "name": name,
-                                "current_text": v["current_text"],
-                                "current_words": v["current_words"],
-                                "target_words": v["max_words"],
-                                "type": v["type"],
-                                "reason": v["reason"],
-                                "copy_direction": config.slot_specs_lookup.get(name, {}).get(
-                                    "copy_direction", ""
-                                ),
-                                "section_name": config.slot_specs_lookup.get(name, {}).get(
-                                    "section_name", ""
-                                ),
-                            }
-                            for name, v in batch_violations.items()
-                        ],
+                        "slots": regen_slots,
                     }
                 else:
+                    regen_slots = []
+                    for name, v in batch_violations.items():
+                        slot_entry = {
+                            "name": name,
+                            "current_text": v["current_text"],
+                            "current_words": v["current_words"],
+                            "max_words": v["max_words"],
+                            "type": v["type"],
+                            "reason": v["reason"],
+                            "length_note": v["length_note"],
+                        }
+                        if name in listicle_prefixes:
+                            slot_entry["prefix"] = listicle_prefixes[name]
+                        regen_slots.append(slot_entry)
                     regen_payload = {
                         "task": "Rewrite these slots to fit within max_words while maintaining persuasive power.",
-                        "slots": [
-                            {
-                                "name": name,
-                                "current_text": v["current_text"],
-                                "current_words": v["current_words"],
-                                "max_words": v["max_words"],
-                                "type": v["type"],
-                                "reason": v["reason"],
-                                "length_note": v["length_note"],
-                            }
-                            for name, v in batch_violations.items()
-                        ],
+                        "slots": regen_slots,
                     }
 
                 try:
@@ -2571,6 +2830,10 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
                     f"Regen round {regen_round + 1} produced no improvements, stopping"
                 )
                 break
+
+        # ── Listicle numbering enforcement (deterministic safety net) ──
+        if config.listicle_data:
+            all_rewrites = self._enforce_listicle_numbering(all_rewrites, config.listicle_data)
 
         # ── Original text fallback (NO truncation) ────────────────
         # Any remaining over-length slots get their original text preserved
