@@ -401,6 +401,8 @@ class InstagramScraper:
                 "comments": post.get("commentsCount", 0),
                 "caption": post.get("caption", "")[:2200] if post.get("caption") else "",
                 "length_sec": post.get("videoDuration"),
+                "cdn_video_url": post.get("videoUrl"),
+                "cdn_image_url": post.get("displayUrl"),
             }
 
             # Handle views (priority: videoViewCount > videoPlayCount > likesCount)
@@ -517,7 +519,8 @@ class InstagramScraper:
         # Prepare data for upsert
         posts_data = df[[
             'account_id', 'platform_id', 'post_url', 'post_id', 'posted_at',
-            'views', 'likes', 'comments', 'caption', 'length_sec'
+            'views', 'likes', 'comments', 'caption', 'length_sec',
+            'cdn_video_url', 'cdn_image_url'
         ]].replace({pd.NA: None, float('nan'): None}).to_dict('records')
 
         # Add import_source to all posts

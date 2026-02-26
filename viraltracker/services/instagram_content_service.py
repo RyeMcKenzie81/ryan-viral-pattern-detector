@@ -612,22 +612,14 @@ class InstagramContentService:
 
         account_ids = [w["account_id"] for w in watched]
 
-        # Build account_id -> username map for media downloads
-        account_username_map = {}
-        for w in watched:
-            acct = w.get("accounts") or {}
-            if acct.get("platform_username"):
-                account_username_map[w["account_id"]] = acct["platform_username"]
-
         # Find outlier posts without downloaded media
-        # We check: is_outlier=true AND no instagram_media with status='downloaded'
         outlier_posts = []
         batch_size = 50
         for i in range(0, len(account_ids), batch_size):
             batch = account_ids[i : i + batch_size]
             result = (
                 self.supabase.table("posts")
-                .select("id, post_url, post_id, media_type, video_type, account_id")
+                .select("id, post_url, post_id, media_type, video_type, account_id, cdn_video_url, cdn_image_url")
                 .in_("account_id", batch)
                 .eq("is_outlier", True)
                 .order("outlier_score", desc=True)
@@ -635,8 +627,6 @@ class InstagramContentService:
                 .execute()
             )
             if result.data:
-                for p in result.data:
-                    p["_username"] = account_username_map.get(p.get("account_id"), "")
                 outlier_posts.extend(result.data)
 
         if not outlier_posts:
@@ -680,29 +670,26 @@ class InstagramContentService:
 
     def _download_post_media(self, post: Dict, brand_id: str) -> bool:
         """
-        Download media for a single post.
-
-        Fetches the post's media URLs from the Apify data structure,
-        downloads them, and uploads to Supabase storage.
+        Download media for a single post using stored CDN URLs.
 
         Args:
-            post: Post record dict
+            post: Post record dict (must include cdn_video_url / cdn_image_url)
             brand_id: Brand UUID for storage path
 
         Returns:
             True if at least one media file was downloaded
         """
         post_id = post["id"]
-        post_url = post.get("post_url", "")
-        shortcode = post.get("post_id", "")
-        username = post.get("_username", "")
 
-        # We need to get media URLs. Instagram CDN URLs expire, so we
-        # try to re-scrape just this post to get fresh URLs
-        media_urls = self._get_media_urls_for_post(shortcode, username=username)
+        # Build media list from stored CDN URLs (captured during scrape)
+        media_urls = []
+        if post.get("cdn_video_url"):
+            media_urls.append({"url": post["cdn_video_url"], "type": "video"})
+        if post.get("cdn_image_url"):
+            media_urls.append({"url": post["cdn_image_url"], "type": "image"})
 
         if not media_urls:
-            logger.warning(f"No media URLs found for post {post_id}")
+            logger.warning(f"No stored CDN URLs for post {post_id}")
             return False
 
         any_downloaded = False

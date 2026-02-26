@@ -484,12 +484,16 @@ class VideoRecreationService:
             List of scored candidate dicts.
         """
         # Get analyzed posts for this brand (Instagram scrape source)
-        analyses = (
+        query = (
             self.supabase.table("ad_video_analysis")
             .select("*, posts:source_post_id(id, outlier_score, is_outlier, media_type, views, likes, comments)")
             .eq("source_type", "instagram_scrape")
-            .eq("organization_id", organization_id)
             .eq("brand_id", brand_id)
+        )
+        if organization_id != "all":
+            query = query.eq("organization_id", organization_id)
+        analyses = (
+            query
             .eq("status", "ok")
             .order("analyzed_at", desc=True)
             .limit(limit)
@@ -666,8 +670,9 @@ class VideoRecreationService:
             self.supabase.table("video_recreation_candidates")
             .select("*, posts:post_id(id, post_url, caption, views, likes, comments, media_type, outlier_score, accounts(platform_username))")
             .eq("brand_id", brand_id)
-            .eq("organization_id", organization_id)
         )
+        if organization_id != "all":
+            query = query.eq("organization_id", organization_id)
 
         if status:
             query = query.eq("status", status)
