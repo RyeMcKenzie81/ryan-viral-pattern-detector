@@ -96,6 +96,19 @@ class InstagramContentService:
         if not username:
             raise ValueError("Username cannot be empty")
 
+        # Resolve real org_id for superuser "all" mode (inserts need a real UUID)
+        if organization_id == "all":
+            brand_row = (
+                self.supabase.table("brands")
+                .select("organization_id")
+                .eq("id", brand_id)
+                .single()
+                .execute()
+            )
+            if not brand_row.data:
+                raise ValueError(f"Brand {brand_id} not found")
+            organization_id = brand_row.data["organization_id"]
+
         # Get Instagram platform ID
         platform_result = (
             self.supabase.table("platforms")
