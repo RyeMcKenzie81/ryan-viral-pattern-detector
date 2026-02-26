@@ -1911,41 +1911,50 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
     _SLOT_REWRITE_ADDENDUM_BLUEPRINT = (
         "## LENGTH AND SPACE (CREATIVE CONSTRAINT)\n"
         "Each section includes a `space_budget` describing the visual space available.\n"
-        "Compose each slot to use 85-100% of its target range.\n"
+        "Compose each slot to use 90-100% of its target range.\n"
+        "- PLAN FIRST: count how many sentences you need, then write to that count.\n"
         "- The space is fixed like a print layout: your words must earn their place.\n"
         "- When the budget is tight (e.g., 6-10 word headline), every word must carry weight.\n"
         "- When the budget is generous (e.g., 55-70 word body), develop the argument fully.\n"
         "- Undershooting by 30%+ wastes valuable layout space.\n"
-        "- Overshooting by a few words is a minor issue; it can be trimmed.\n"
+        "- Overshooting the target range is NOT acceptable. Plan your sentence count to land within range.\n"
         "- Your copy should surprise and persuade, not merely inform.\n"
+        "- HEADLINES must be complete thoughts. Never end a headline mid-sentence.\n"
     )
 
     # Backward-compatible computed prompt (runtime mode)
     _SLOT_REWRITE_SYSTEM_PROMPT = _SLOT_REWRITE_PROMPT_BASE + _SLOT_REWRITE_ADDENDUM_RUNTIME
 
     _REGEN_PROMPT_RUNTIME = (
-        "You are a concise copywriter. You receive slots whose text exceeds "
-        "the layout's word limit. Condense each slot to fit within max_words "
-        "while preserving the core message and brand voice.\n\n"
+        "You are an expert direct-response copywriter editing for length.\n"
+        "You receive slots whose text exceeds the layout's word limit.\n"
+        "Rewrite each one to fit within max_words. You are NOT condensing; "
+        "you are writing a tighter version that preserves persuasive power.\n\n"
         "## Rules\n"
-        "- Return ONLY a JSON dict mapping slot_name -> condensed plain text.\n"
+        "- Return ONLY a JSON dict mapping slot_name -> rewritten plain text.\n"
         "- EVERY input slot name MUST appear in your output.\n"
         "- Values MUST be plain text only. NO HTML tags. NO markdown.\n"
         "- NEVER use em dashes or en dashes. Use commas, periods, colons, or semicolons.\n"
-        "- Cut adjectives and filler first. Keep key benefits and action verbs.\n"
-        "- max_words is a HARD ceiling. Do not exceed it.\n"
+        "- Cut setup language and filler qualifiers first. Keep key benefits and action verbs.\n"
+        "- max_words is a HARD ceiling. Aim for 90-100% of it.\n"
+        "- HEADLINES must be complete thoughts. Never produce a headline that ends mid-sentence.\n"
+        "- CTA slots must start with an action verb.\n"
     )
 
     _REGEN_PROMPT_BLUEPRINT = (
         "You are an expert direct-response copywriter editing for length.\n"
         "You receive slots that ran over their target word count.\n"
-        "Rewrite each one to fit the target. You are NOT condensing; you are writing a tighter version.\n\n"
+        "Rewrite each one to fit the target. You are NOT condensing; you are writing a tighter version "
+        "that maintains persuasive power and brand voice.\n\n"
         "## Rules\n"
         "- Return ONLY a JSON dict mapping slot_name -> rewritten plain text.\n"
+        "- EVERY input slot name MUST appear in your output.\n"
         "- Keep the core persuasive argument. Cut setup language and filler qualifiers.\n"
         "- If copy_direction is provided, ensure the rewrite still fulfills it.\n"
         "- target_words is the ceiling. Aim for 90-100% of it.\n"
         "- NEVER use em dashes or en dashes. Use commas, periods, colons, or semicolons.\n"
+        "- HEADLINES must be complete thoughts. Never produce a headline that ends mid-sentence.\n"
+        "- CTA slots must start with an action verb.\n"
     )
 
     _MAX_SLOTS_PER_BATCH = 80
@@ -2189,8 +2198,65 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
             slot_contents=slot_contents,
         )
 
+    # Common nav link words (nouns that appear in navigation menus)
+    _NAV_LINK_WORDS = frozenset({
+        'shop', 'store', 'cart', 'login', 'logout', 'signin', 'signup',
+        'account', 'menu', 'home', 'about', 'contact', 'blog', 'faq',
+        'help', 'search', 'podcast', 'story', 'our', 'my', 'your',
+        'wishlist', 'checkout', 'orders', 'returns', 'shipping',
+        'collections', 'products', 'catalog', 'newsletter', 'subscribe',
+        'privacy', 'policy', 'terms', 'sitemap', 'reviews',
+    })
+
+    @staticmethod
+    def _detect_nav_junk(text: str) -> bool:
+        """Detect if text looks like navigation junk (e.g. 'Shop Our Story Podcast Login Cart').
+
+        Heuristic: text is a sequence of navigation-style words with no sentence structure.
+        Must match 50%+ nav link words and have no punctuation or articles/prepositions
+        that would indicate real copy.
+        """
+        words = text.strip().split()
+        if len(words) < 4:
+            return False
+        # Real sentences have punctuation
+        has_punct = any(c in text for c in '.!?,;:')
+        if has_punct:
+            return False
+        # Count how many words match nav link vocabulary
+        nav_hits = sum(
+            1 for w in words if w.lower().strip("'\"") in MockupService._NAV_LINK_WORDS
+        )
+        # Nav junk: 50%+ of words are nav links and at least 3 nav words
+        if nav_hits >= 3 and nav_hits / len(words) >= 0.5:
+            return True
+        return False
+
+    @staticmethod
+    def _detect_incomplete_sentence(text: str, slot_type: str) -> bool:
+        """Detect if a headline/subheadline/heading ends mid-sentence.
+
+        Only checks headline-family slot types where incomplete thoughts are unacceptable.
+        """
+        if slot_type not in ("headline", "subheadline", "heading"):
+            return False
+        text = text.strip()
+        if not text:
+            return False
+        # Ends with a preposition, article, conjunction, or "are/is/was/were" — mid-sentence
+        last_word = text.split()[-1].lower().rstrip('.')
+        mid_sentence_endings = {
+            'the', 'a', 'an', 'and', 'or', 'but', 'for', 'to', 'in', 'on',
+            'at', 'by', 'with', 'from', 'of', 'is', 'are', 'was', 'were',
+            'finally', 'actually', 'really', 'their', 'your',
+            'our', 'its', 'who', 'which', 'when', 'where', 'how', 'why',
+        }
+        if last_word in mid_sentence_endings:
+            return True
+        return False
+
     def _execute_slot_rewrite_pipeline(self, config: "_SlotRewriteConfig") -> Dict[str, str]:
-        """Shared rewrite pipeline: batching, AI calls, validation, regen, truncation.
+        """Shared rewrite pipeline: batching, AI calls, validation, regen, original fallback.
 
         Args:
             config: Strategy-specific configuration from _build_*_rewrite_config().
@@ -2231,6 +2297,7 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
         all_rewrites: Dict[str, str] = {}
         tone_summary = ""
         first_pass_over_length = 0
+        quality_gate_failures = 0
 
         for batch_idx, batch_sections in enumerate(batches):
             payload = {
@@ -2292,8 +2359,24 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
                     clean = re.sub(r'<[^>]+>', '', str(value))
                     clean = _sanitize_dashes(clean)
                     clean = _html_module.escape(clean)
-                    # Log over-length slots (enforcement in regen loop)
                     spec = config.slot_specs_lookup.get(name)
+                    slot_type = spec["type"] if spec else "body"
+                    # Quality gate: nav junk detection
+                    if self._detect_nav_junk(clean):
+                        logger.warning(
+                            f"Quality gate: slot '{name}' looks like nav junk: "
+                            f"'{clean[:60]}...' — falling back to original"
+                        )
+                        clean = _html_module.escape(config.slot_contents.get(name, ""))
+                        quality_gate_failures += 1
+                    # Quality gate: incomplete headline detection
+                    elif self._detect_incomplete_sentence(clean, slot_type):
+                        logger.warning(
+                            f"Quality gate: slot '{name}' ({slot_type}) ends mid-sentence: "
+                            f"'{clean[:60]}...' — marking for regen"
+                        )
+                        first_pass_over_length += 1  # will be picked up by regen
+                    # Log over-length slots (enforcement in regen loop)
                     if spec:
                         word_count = len(clean.split())
                         if word_count > spec["max_words"]:
@@ -2339,137 +2422,184 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
             logger.error("All slot rewrite batches failed - falling back to _build_slot_map")
             return self._build_slot_map({})
 
-        # ── Re-generation loop for over-length slots ──────────────
-        MAX_REGEN_ROUNDS = 2
+        # ── Re-generation loop for over-length slots (batched) ────
+        MAX_REGEN_ROUNDS = 3
+        MAX_REGEN_BATCH_SIZE = 12
         regen_count = 0
 
         for regen_round in range(MAX_REGEN_ROUNDS):
+            # Collect violations: over-length OR incomplete headlines
             violations: Dict[str, Dict] = {}
             for name, text in all_rewrites.items():
                 spec = config.slot_specs_lookup.get(name)
                 if not spec:
                     continue
                 word_count = len(text.split())
-                if word_count > spec["max_words"]:
+                slot_type = spec["type"]
+                is_over_length = word_count > spec["max_words"]
+                is_incomplete = self._detect_incomplete_sentence(text, slot_type)
+                if is_over_length or is_incomplete:
                     violations[name] = {
                         "current_text": text,
                         "current_words": word_count,
                         "max_words": spec["max_words"],
-                        "type": spec["type"],
-                        "length_note": spec["length_note"],
+                        "type": slot_type,
+                        "length_note": spec.get("length_note", ""),
+                        "reason": "over_length" if is_over_length else "incomplete_sentence",
                     }
 
             if not violations:
                 logger.info(
-                    f"All slots within length spec after round {regen_round} "
+                    f"All slots within spec after round {regen_round} "
                     f"(strategy={strategy})"
                 )
                 break
 
             logger.info(
                 f"Regen round {regen_round + 1}/{MAX_REGEN_ROUNDS} "
-                f"(strategy={strategy}): {len(violations)} over-length slots"
+                f"(strategy={strategy}): {len(violations)} slots need regen "
+                f"({sum(1 for v in violations.values() if v['reason'] == 'over_length')} over-length, "
+                f"{sum(1 for v in violations.values() if v['reason'] == 'incomplete_sentence')} incomplete)"
             )
 
-            # Build regen payload — blueprint mode includes copy_direction/section_name
-            if strategy == "section_guided":
-                regen_payload = {
-                    "task": "Rewrite these over-length slots to fit within target_words.",
-                    "slots": [
-                        {
-                            "name": name,
-                            "current_text": v["current_text"],
-                            "current_words": v["current_words"],
-                            "target_words": v["max_words"],
-                            "type": v["type"],
-                            "copy_direction": config.slot_specs_lookup.get(name, {}).get(
-                                "copy_direction", ""
-                            ),
-                            "section_name": config.slot_specs_lookup.get(name, {}).get(
-                                "section_name", ""
-                            ),
-                        }
-                        for name, v in violations.items()
-                    ],
-                }
-            else:
-                regen_payload = {
-                    "task": "Condense these over-length slots to fit within max_words.",
-                    "slots": [
-                        {
-                            "name": name,
-                            "current_text": v["current_text"],
-                            "current_words": v["current_words"],
-                            "max_words": v["max_words"],
-                            "type": v["type"],
-                            "length_note": v["length_note"],
-                        }
-                        for name, v in violations.items()
-                    ],
-                }
+            # Batch violations into groups of MAX_REGEN_BATCH_SIZE with section affinity
+            violation_items = list(violations.items())
+            # Sort by section for affinity (same-section slots stay together)
+            violation_items.sort(
+                key=lambda x: config.slot_specs_lookup.get(x[0], {}).get("section_name", "")
+            )
+            regen_batches = [
+                violation_items[i:i + MAX_REGEN_BATCH_SIZE]
+                for i in range(0, len(violation_items), MAX_REGEN_BATCH_SIZE)
+            ]
 
-            try:
-                regen_agent = Agent(
-                    model=Config.get_model("creative"),
-                    output_type=SlotRewriteResult,
-                    system_prompt=config.regen_prompt,
-                    retries=1,
-                    output_retries=2,
+            round_success = 0
+            for rb_idx, regen_batch in enumerate(regen_batches):
+                batch_violations = dict(regen_batch)
+                logger.info(
+                    f"Regen batch {rb_idx + 1}/{len(regen_batches)} "
+                    f"(round {regen_round + 1}, {len(batch_violations)} slots)"
                 )
-                regen_result = run_agent_sync_with_tracking(
-                    regen_agent, json.dumps(regen_payload, ensure_ascii=False),
-                    tracker=self._usage_tracker,
-                    user_id=self._user_id,
-                    organization_id=self._organization_id,
-                    tool_name="mockup_service",
-                    operation=f"slot_regen_{strategy}",
-                    model_settings=ModelSettings(max_tokens=4096),
-                )
-                if regen_result and regen_result.output and regen_result.output.rewrites:
-                    for name, value in regen_result.output.rewrites.items():
-                        if name not in violations:
-                            continue
-                        clean = re.sub(r'<[^>]+>', '', str(value))
-                        clean = _sanitize_dashes(clean)
-                        clean = _html_module.escape(clean)
-                        all_rewrites[name] = clean
-                        regen_count += 1
-                        new_wc = len(clean.split())
-                        logger.info(
-                            f"Regen slot '{name}' (strategy={strategy}): "
-                            f"{violations[name]['current_words']} -> {new_wc} words "
-                            f"(max {violations[name]['max_words']})"
-                        )
-            except Exception as e:
+
+                # Build regen payload — blueprint mode includes copy_direction/section_name
+                if strategy == "section_guided":
+                    regen_payload = {
+                        "task": "Rewrite these slots to fit within target_words while maintaining persuasive power.",
+                        "slots": [
+                            {
+                                "name": name,
+                                "current_text": v["current_text"],
+                                "current_words": v["current_words"],
+                                "target_words": v["max_words"],
+                                "type": v["type"],
+                                "reason": v["reason"],
+                                "copy_direction": config.slot_specs_lookup.get(name, {}).get(
+                                    "copy_direction", ""
+                                ),
+                                "section_name": config.slot_specs_lookup.get(name, {}).get(
+                                    "section_name", ""
+                                ),
+                            }
+                            for name, v in batch_violations.items()
+                        ],
+                    }
+                else:
+                    regen_payload = {
+                        "task": "Rewrite these slots to fit within max_words while maintaining persuasive power.",
+                        "slots": [
+                            {
+                                "name": name,
+                                "current_text": v["current_text"],
+                                "current_words": v["current_words"],
+                                "max_words": v["max_words"],
+                                "type": v["type"],
+                                "reason": v["reason"],
+                                "length_note": v["length_note"],
+                            }
+                            for name, v in batch_violations.items()
+                        ],
+                    }
+
+                try:
+                    regen_agent = Agent(
+                        model=Config.get_model("creative"),
+                        output_type=SlotRewriteResult,
+                        system_prompt=config.regen_prompt,
+                        retries=1,
+                        output_retries=2,
+                    )
+                    regen_result = run_agent_sync_with_tracking(
+                        regen_agent, json.dumps(regen_payload, ensure_ascii=False),
+                        tracker=self._usage_tracker,
+                        user_id=self._user_id,
+                        organization_id=self._organization_id,
+                        tool_name="mockup_service",
+                        operation=f"slot_regen_{strategy}_b{rb_idx}",
+                        model_settings=ModelSettings(max_tokens=4096),
+                    )
+                    if regen_result and regen_result.output and regen_result.output.rewrites:
+                        for name, value in regen_result.output.rewrites.items():
+                            if name not in batch_violations:
+                                continue
+                            clean = re.sub(r'<[^>]+>', '', str(value))
+                            clean = _sanitize_dashes(clean)
+                            clean = _html_module.escape(clean)
+                            # Quality gate on regen output too
+                            slot_type = batch_violations[name]["type"]
+                            if self._detect_nav_junk(clean):
+                                logger.warning(
+                                    f"Regen quality gate: '{name}' still nav junk, keeping original"
+                                )
+                                continue
+                            all_rewrites[name] = clean
+                            regen_count += 1
+                            round_success += 1
+                            new_wc = len(clean.split())
+                            logger.info(
+                                f"Regen slot '{name}' (strategy={strategy}): "
+                                f"{batch_violations[name]['current_words']} -> {new_wc} words "
+                                f"(max {batch_violations[name]['max_words']})"
+                            )
+                except Exception as e:
+                    logger.warning(
+                        f"Regen batch {rb_idx + 1} round {regen_round + 1} failed "
+                        f"(strategy={strategy}): {e}"
+                    )
+
+            if round_success == 0:
                 logger.warning(
-                    f"Regen round {regen_round + 1} failed (strategy={strategy}): {e}"
+                    f"Regen round {regen_round + 1} produced no improvements, stopping"
                 )
                 break
 
-        # ── Final truncation fallback ─────────────────────────────
-        truncation_count = 0
+        # ── Original text fallback (NO truncation) ────────────────
+        # Any remaining over-length slots get their original text preserved
+        # rather than being truncated (which destroys meaning).
+        kept_original_count = 0
         for name, text in list(all_rewrites.items()):
             spec = config.slot_specs_lookup.get(name)
             if not spec:
                 continue
-            words = text.split()
-            if len(words) <= spec["max_words"]:
-                continue
-            max_w = spec["max_words"]
-            truncated = words[:max_w]
-            candidate = " ".join(truncated)
-            best_cut = candidate
-            for ending in (".", ";", ",", ":"):
-                idx = candidate.rfind(ending)
-                if idx > len(candidate) // 2:
-                    best_cut = candidate[: idx + 1]
-                    break
-            logger.info(
-                f"Truncation fallback for '{name}' (strategy={strategy}): "
-                f"{len(words)} -> {len(best_cut.split())} words (max {max_w})"
-            )
-            all_rewrites[name] = best_cut
-            truncation_count += 1
+            word_count = len(text.split())
+            slot_type = spec["type"]
+            is_over_length = word_count > spec["max_words"]
+            is_incomplete = self._detect_incomplete_sentence(text, slot_type)
+            is_nav_junk = self._detect_nav_junk(text)
+            if is_nav_junk or is_incomplete:
+                original = _html_module.escape(config.slot_contents.get(name, ""))
+                if original.strip():
+                    logger.info(
+                        f"Falling back to original for '{name}' "
+                        f"(strategy={strategy}, reason={'nav_junk' if is_nav_junk else 'incomplete'}): "
+                        f"'{text[:50]}...' -> original"
+                    )
+                    all_rewrites[name] = original
+                    kept_original_count += 1
+            elif is_over_length:
+                logger.info(
+                    f"Keeping over-length rewrite for '{name}' (strategy={strategy}): "
+                    f"{word_count} words (max {spec['max_words']}), regen exhausted"
+                )
 
         # ── Compliance stats ──────────────────────────────────────
         total_slots = len(all_rewrites)
@@ -2477,7 +2607,8 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
         logger.info(
             f"Slot rewrite complete (strategy={strategy}): "
             f"{first_pass_ok}/{total_slots} within spec first-pass, "
-            f"{regen_count} regen'd, {truncation_count} truncated"
+            f"{regen_count} regen'd, {kept_original_count} kept original, "
+            f"{quality_gate_failures} quality gate failures"
         )
 
         return all_rewrites
