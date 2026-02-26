@@ -16,6 +16,7 @@ import html as _html_module
 import logging
 import os
 import re
+from dataclasses import dataclass, field
 from datetime import datetime
 from html.parser import HTMLParser
 from typing import Any, Dict, List, Optional, Tuple
@@ -450,6 +451,19 @@ def _sanitize_dashes(text: str) -> str:
     return text
 
 
+@dataclass
+class _SlotRewriteConfig:
+    """Configuration for a slot rewrite pipeline run."""
+    strategy: str                          # "slot_constrained" or "section_guided"
+    system_prompt: str                     # composed base + addendum
+    regen_prompt: str                      # strategy-specific regen prompt
+    sections: List[Dict]                   # ordered section groups with slots
+    page_strategy: Dict                    # awareness_adaptation, tone_direction, primary_angle
+    brand_data: Dict                       # name, voice_tone, benefits, etc.
+    slot_specs_lookup: Dict[str, Dict]     # slot_name -> {max_words, type, ...}
+    slot_contents: Dict[str, str] = field(default_factory=dict)  # for fallback fills
+
+
 class MockupService:
     """Generates standalone HTML/CSS mockup files from analysis and blueprint data."""
 
@@ -623,6 +637,7 @@ class MockupService:
         classification: Optional[Dict[str, Any]] = None,
         brand_profile: Optional[Dict[str, Any]] = None,
         source_url: Optional[str] = None,
+        rewrite_strategy: str = "slot_constrained",
     ) -> Optional[str]:
         """Generate blueprint mockup by rewriting analysis HTML with brand copy.
 
@@ -636,6 +651,8 @@ class MockupService:
             classification: Page classification data.
             brand_profile: Full brand profile from BrandProfileService.
             source_url: URL of the competitor page (for competitor name extraction).
+            rewrite_strategy: "slot_constrained" (default, runtime length enforcement)
+                or "section_guided" (blueprint-level space budget).
 
         Returns None if no analysis HTML is available.
         """
@@ -662,6 +679,12 @@ class MockupService:
                 slot_contents = self._extract_slots_with_content(page_body)
                 logger.info(f"Extracted {len(slot_contents)} slots with content")
 
+                # 1b. Compute length metadata from extracted text
+                slot_metadata = {
+                    k: {"word_count": len(v.split()) if v else 0, "char_count": len(v)}
+                    for k, v in slot_contents.items()
+                }
+
                 # 2. Strip competitor brand name from template (BEFORE slot injection)
                 competitor_name = self._extract_competitor_name(
                     blueprint, source_url=source_url, html=analysis_mockup_html
@@ -680,7 +703,9 @@ class MockupService:
 
                     # 4. AI rewrite: JSON in, JSON out (no HTML sent to AI)
                     rewritten_map = self._rewrite_slots_for_brand(
-                        slot_contents, slot_sections, blueprint, brand_profile
+                        slot_contents, slot_sections, blueprint, brand_profile,
+                        slot_metadata=slot_metadata,
+                        rewrite_strategy=rewrite_strategy,
                     )
 
                     # 5. Programmatic slot injection (deterministic, no AI risk)
@@ -1845,7 +1870,7 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
     # Slot-Based AI Rewrite (Blueprint Copywriting v2)
     # ------------------------------------------------------------------
 
-    _SLOT_REWRITE_SYSTEM_PROMPT = (
+    _SLOT_REWRITE_PROMPT_BASE = (
         "You are an expert direct-response copywriter. You receive a structured JSON "
         "payload describing a landing page's text slots grouped by section, along with "
         "brand data and strategic directions.\n\n"
@@ -1856,16 +1881,67 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
         "- Values MUST be plain text only. NO HTML tags. NO markdown formatting.\n"
         "- NEVER use em dashes (\u2014) or en dashes (\u2013). Use commas, periods, colons, or semicolons.\n"
         "- Match the brand's voice and tone throughout.\n"
-        "- Maintain congruence: every slot supports one cohesive argument across all sections.\n\n"
-        "## Slot Type Constraints\n"
-        "- headline: 5-15 words, punchy and benefit-driven\n"
-        "- subheadline: 10-25 words, expands on headline promise\n"
-        "- heading: 5-15 words, section-specific benefit or transition\n"
-        "- body: paragraph-length, persuasive copy matching section direction\n"
-        "- cta: 2-5 words, action verb first (e.g., 'Get Your Free Sample')\n"
+        "- Maintain congruence: every slot supports one cohesive argument across all sections.\n"
+        "- Never repeat a benefit, statistic, or emotional hook across sections.\n\n"
+        "## Slot Type Guidelines\n"
+        "- headline: punchy and benefit-driven\n"
+        "- subheadline: expands on headline promise\n"
+        "- heading: section-specific benefit or transition\n"
+        "- body: persuasive copy matching section direction\n"
+        "- cta: action verb first (e.g., 'Get Your Free Sample')\n"
         "- testimonial: use real customer quotes from brand data when available\n"
         "- feature: specific benefit or ingredient highlight, concise\n"
-        "- badge/price/guarantee: concise, factual, trust-building\n"
+        "- badge/price/guarantee: concise, factual, trust-building\n\n"
+    )
+
+    _SLOT_REWRITE_ADDENDUM_RUNTIME = (
+        "## LENGTH MATCHING (CRITICAL)\n"
+        "Each slot includes `max_words` - the hard upper limit reflecting the visual space "
+        "in the page layout. Your rewrite MUST NOT exceed this word count.\n"
+        "- `original_words` / `original_chars` show the source text dimensions.\n"
+        "- `length_note` explains the specific constraint.\n"
+        "- Aim to match the original length closely. Shorter is better than longer.\n"
+        "- If you cannot fit the message, cut adjectives and filler first.\n"
+    )
+
+    _SLOT_REWRITE_ADDENDUM_BLUEPRINT = (
+        "## LENGTH AND SPACE (CREATIVE CONSTRAINT)\n"
+        "Each section includes a `space_budget` describing the visual space available.\n"
+        "Compose each slot to use 85-100% of its target range.\n"
+        "- The space is fixed like a print layout: your words must earn their place.\n"
+        "- When the budget is tight (e.g., 6-10 word headline), every word must carry weight.\n"
+        "- When the budget is generous (e.g., 55-70 word body), develop the argument fully.\n"
+        "- Undershooting by 30%+ wastes valuable layout space.\n"
+        "- Overshooting by a few words is a minor issue; it can be trimmed.\n"
+        "- Your copy should surprise and persuade, not merely inform.\n"
+    )
+
+    # Backward-compatible computed prompt (runtime mode)
+    _SLOT_REWRITE_SYSTEM_PROMPT = _SLOT_REWRITE_PROMPT_BASE + _SLOT_REWRITE_ADDENDUM_RUNTIME
+
+    _REGEN_PROMPT_RUNTIME = (
+        "You are a concise copywriter. You receive slots whose text exceeds "
+        "the layout's word limit. Condense each slot to fit within max_words "
+        "while preserving the core message and brand voice.\n\n"
+        "## Rules\n"
+        "- Return ONLY a JSON dict mapping slot_name -> condensed plain text.\n"
+        "- EVERY input slot name MUST appear in your output.\n"
+        "- Values MUST be plain text only. NO HTML tags. NO markdown.\n"
+        "- NEVER use em dashes or en dashes. Use commas, periods, colons, or semicolons.\n"
+        "- Cut adjectives and filler first. Keep key benefits and action verbs.\n"
+        "- max_words is a HARD ceiling. Do not exceed it.\n"
+    )
+
+    _REGEN_PROMPT_BLUEPRINT = (
+        "You are an expert direct-response copywriter editing for length.\n"
+        "You receive slots that ran over their target word count.\n"
+        "Rewrite each one to fit the target. You are NOT condensing; you are writing a tighter version.\n\n"
+        "## Rules\n"
+        "- Return ONLY a JSON dict mapping slot_name -> rewritten plain text.\n"
+        "- Keep the core persuasive argument. Cut setup language and filler qualifiers.\n"
+        "- If copy_direction is provided, ensure the rewrite still fulfills it.\n"
+        "- target_words is the ceiling. Aim for 90-100% of it.\n"
+        "- NEVER use em dashes or en dashes. Use commas, periods, colons, or semicolons.\n"
     )
 
     _MAX_SLOTS_PER_BATCH = 80
@@ -1876,26 +1952,44 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
         slot_sections: Dict[str, Dict],
         blueprint: Dict,
         brand_profile: Dict,
+        slot_metadata: Optional[Dict[str, Dict]] = None,
+        rewrite_strategy: str = "slot_constrained",
     ) -> Dict[str, str]:
         """AI rewrites slot text via structured JSON. Returns {slot_name: new_text}.
 
+        Delegates to strategy-specific config builder, then runs the shared pipeline.
+
+        Args:
+            slot_contents: {slot_name: text} from _extract_slots_with_content.
+            slot_sections: {slot_name: context} from _map_slots_to_sections.
+            blueprint: Reconstruction blueprint.
+            brand_profile: Full brand profile.
+            slot_metadata: Optional {slot_name: {word_count, char_count}}.
+            rewrite_strategy: "slot_constrained" (runtime) or "section_guided" (blueprint).
+
         All returned values are plain text, HTML-escaped, and dash-sanitized.
         """
-        import json
-        from pydantic import BaseModel, Field
-        from pydantic_ai import Agent
-        from pydantic_ai.settings import ModelSettings
-        from viraltracker.core.config import Config
-        from viraltracker.services.agent_tracking import run_agent_sync_with_tracking
+        assert rewrite_strategy in ("slot_constrained", "section_guided"), (
+            f"Invalid rewrite_strategy: {rewrite_strategy}"
+        )
 
-        class SlotRewriteResult(BaseModel):
-            rewrites: Dict[str, str] = Field(
-                description="Map of slot_name to rewritten plain text content. "
-                "Keys MUST exactly match the input slot names. "
-                "Values MUST be plain text only - no HTML tags, no markdown."
+        if rewrite_strategy == "section_guided":
+            config = self._build_blueprint_rewrite_config(
+                slot_contents, slot_sections, blueprint, brand_profile, slot_metadata
             )
+        else:
+            config = self._build_runtime_rewrite_config(
+                slot_contents, slot_sections, blueprint, brand_profile, slot_metadata
+            )
+        return self._execute_slot_rewrite_pipeline(config)
 
-        # Build brand context
+    def _build_shared_brand_context(
+        self, blueprint: Dict, brand_profile: Dict
+    ) -> Tuple[Dict, Dict]:
+        """Extract brand_data and page_strategy from profile and blueprint.
+
+        Returns (brand_data, page_strategy) tuple.
+        """
         bb = brand_profile.get("brand_basics") or {}
         brand_data = {
             "name": bb.get("name", ""),
@@ -1909,7 +2003,6 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
             "offer": bb.get("offer", ""),
         }
 
-        # Build page strategy from blueprint
         rb = blueprint
         if "reconstruction_blueprint" in rb:
             rb = rb["reconstruction_blueprint"]
@@ -1919,9 +2012,24 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
             "tone_direction": strategy.get("tone_direction", strategy.get("brand_voice_recommendation", "")),
             "primary_angle": strategy.get("primary_angle", strategy.get("core_argument", "")),
         }
+        return brand_data, page_strategy
 
-        # Group slots by section (preserving order)
-        section_groups: Dict[str, list] = {}
+    def _build_runtime_rewrite_config(
+        self,
+        slot_contents: Dict[str, str],
+        slot_sections: Dict[str, Dict],
+        blueprint: Dict,
+        brand_profile: Dict,
+        slot_metadata: Optional[Dict[str, Dict]] = None,
+    ) -> "_SlotRewriteConfig":
+        """Build config for runtime (slot_constrained) rewrite strategy.
+
+        Computes adaptive max_words per slot via _compute_slot_length_spec.
+        Slot objects include max_words, original_words, original_chars, length_note.
+        """
+        brand_data, page_strategy = self._build_shared_brand_context(blueprint, brand_profile)
+
+        section_groups: Dict[str, dict] = {}
         for slot_name, content in slot_contents.items():
             ctx = slot_sections.get(slot_name, {})
             sec_key = ctx.get("section_name", "global")
@@ -1935,25 +2043,177 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
                     "slots": [],
                 }
             slot_type = ctx.get("slot_type", self._infer_slot_type(slot_name))
-            # Word limit heuristic per type
-            max_words = {"headline": 15, "subheadline": 25, "heading": 15,
-                         "cta": 5, "badge": 8, "price": 8, "guarantee": 15,
-                         }.get(slot_type, 80)
+            meta = (slot_metadata or {}).get(slot_name)
+            if meta and meta.get("word_count", 0) > 0:
+                length_spec = self._compute_slot_length_spec(
+                    slot_type, meta["word_count"], meta["char_count"]
+                )
+            else:
+                length_spec = self._compute_slot_length_spec(slot_type, 0, 0)
             section_groups[group_key]["slots"].append({
                 "name": slot_name,
                 "type": slot_type,
                 "current": content,
-                "max_words": max_words,
+                "max_words": length_spec["max_words"],
+                "original_words": length_spec["original_words"],
+                "original_chars": length_spec["original_chars"],
+                "length_note": length_spec["length_note"],
             })
 
-        # Sort section groups by key (flow order)
-        ordered_groups = [section_groups[k] for k in sorted(section_groups.keys())]
+        ordered_sections = [section_groups[k] for k in sorted(section_groups.keys())]
+
+        # Build slot_specs_lookup for regen/truncation enforcement
+        slot_specs_lookup: Dict[str, Dict] = {}
+        for g in ordered_sections:
+            for s in g["slots"]:
+                slot_specs_lookup[s["name"]] = {
+                    "max_words": s["max_words"],
+                    "type": s["type"],
+                    "original_words": s.get("original_words", 0),
+                    "length_note": s.get("length_note", ""),
+                }
+
+        return _SlotRewriteConfig(
+            strategy="slot_constrained",
+            system_prompt=self._SLOT_REWRITE_SYSTEM_PROMPT,
+            regen_prompt=self._REGEN_PROMPT_RUNTIME,
+            sections=ordered_sections,
+            page_strategy=page_strategy,
+            brand_data=brand_data,
+            slot_specs_lookup=slot_specs_lookup,
+            slot_contents=slot_contents,
+        )
+
+    def _build_blueprint_rewrite_config(
+        self,
+        slot_contents: Dict[str, str],
+        slot_sections: Dict[str, Dict],
+        blueprint: Dict,
+        brand_profile: Dict,
+        slot_metadata: Optional[Dict[str, Dict]] = None,
+    ) -> "_SlotRewriteConfig":
+        """Build config for blueprint (section_guided) rewrite strategy.
+
+        Computes section-level space_budget and injects it into section groups.
+        Slot objects include target_range instead of max_words (AI-facing).
+        slot_specs_lookup still has numeric max_words for internal regen/truncation.
+        """
+        brand_data, page_strategy = self._build_shared_brand_context(blueprint, brand_profile)
+
+        # Compute section metrics and space budgets
+        section_metrics = self._aggregate_section_metrics(slot_contents, slot_sections)
+        space_budgets = self._format_section_space_budget(
+            section_metrics, slot_contents, slot_sections
+        )
+
+        # Build section groups (same flow-ordering as runtime)
+        section_groups: Dict[str, dict] = {}
+        for slot_name, content in slot_contents.items():
+            ctx = slot_sections.get(slot_name, {})
+            sec_key = ctx.get("section_name", "global")
+            flow = ctx.get("flow_order", 999)
+            group_key = f"{flow:04d}_{sec_key}"
+            if group_key not in section_groups:
+                section_groups[group_key] = {
+                    "section_name": sec_key,
+                    "copy_direction": ctx.get("copy_direction", ""),
+                    "brand_data": ctx.get("brand_mapping", {}),
+                    "slots": [],
+                }
+            slot_type = ctx.get("slot_type", self._infer_slot_type(slot_name))
+            meta = (slot_metadata or {}).get(slot_name)
+            word_count = meta["word_count"] if meta and meta.get("word_count", 0) > 0 else 0
+            char_count = meta["char_count"] if meta and meta.get("char_count", 0) > 0 else 0
+
+            # Compute target_range for AI-facing slot object
+            if word_count > 0:
+                min_words = max(1, round(word_count * 0.85))
+                max_words = max(min_words + 1, round(word_count * 1.10))
+            else:
+                default = self._SLOT_TYPE_DEFAULT_MAX_WORDS.get(slot_type, 80)
+                min_words = max(1, round(default * 0.7))
+                max_words = default
+
+            # Blueprint slots: target_range instead of max_words
+            section_groups[group_key]["slots"].append({
+                "name": slot_name,
+                "type": slot_type,
+                "current": content,
+                "target_range": [min_words, max_words],
+            })
+
+        ordered_sections = [section_groups[k] for k in sorted(section_groups.keys())]
+
+        # Inject space_budget into section groups (not mutating originals)
+        for group in ordered_sections:
+            sec_name = group["section_name"]
+            if sec_name in space_budgets:
+                group["space_budget"] = space_budgets[sec_name]
+
+        # Build slot_specs_lookup for internal regen/truncation (uses max_words)
+        slot_specs_lookup: Dict[str, Dict] = {}
+        for g in ordered_sections:
+            for s in g["slots"]:
+                slot_type = s["type"]
+                slot_name = s["name"]
+                # Use _compute_slot_length_spec for internal enforcement
+                meta = (slot_metadata or {}).get(slot_name)
+                if meta and meta.get("word_count", 0) > 0:
+                    length_spec = self._compute_slot_length_spec(
+                        slot_type, meta["word_count"], meta["char_count"]
+                    )
+                else:
+                    length_spec = self._compute_slot_length_spec(slot_type, 0, 0)
+                ctx = slot_sections.get(slot_name, {})
+                slot_specs_lookup[slot_name] = {
+                    "max_words": length_spec["max_words"],
+                    "type": slot_type,
+                    "original_words": length_spec.get("original_words", 0),
+                    "length_note": length_spec.get("length_note", ""),
+                    "copy_direction": ctx.get("copy_direction", ""),
+                    "section_name": ctx.get("section_name", "global"),
+                }
+
+        return _SlotRewriteConfig(
+            strategy="section_guided",
+            system_prompt=self._SLOT_REWRITE_PROMPT_BASE + self._SLOT_REWRITE_ADDENDUM_BLUEPRINT,
+            regen_prompt=self._REGEN_PROMPT_BLUEPRINT,
+            sections=ordered_sections,
+            page_strategy=page_strategy,
+            brand_data=brand_data,
+            slot_specs_lookup=slot_specs_lookup,
+            slot_contents=slot_contents,
+        )
+
+    def _execute_slot_rewrite_pipeline(self, config: "_SlotRewriteConfig") -> Dict[str, str]:
+        """Shared rewrite pipeline: batching, AI calls, validation, regen, truncation.
+
+        Args:
+            config: Strategy-specific configuration from _build_*_rewrite_config().
+
+        Returns {slot_name: rewritten_text} (plain text, HTML-escaped, dash-sanitized).
+        """
+        import json
+        from pydantic import BaseModel, Field
+        from pydantic_ai import Agent
+        from pydantic_ai.settings import ModelSettings
+        from viraltracker.core.config import Config
+        from viraltracker.services.agent_tracking import run_agent_sync_with_tracking
+
+        strategy = config.strategy
+
+        class SlotRewriteResult(BaseModel):
+            rewrites: Dict[str, str] = Field(
+                description="Map of slot_name to rewritten plain text content. "
+                "Keys MUST exactly match the input slot names. "
+                "Values MUST be plain text only - no HTML tags, no markdown."
+            )
 
         # Batch by slot count
         batches: list = []
         current_batch: list = []
         current_count = 0
-        for group in ordered_groups:
+        for group in config.sections:
             group_size = len(group["slots"])
             if current_count + group_size > self._MAX_SLOTS_PER_BATCH and current_batch:
                 batches.append(current_batch)
@@ -1966,18 +2226,25 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
 
         all_rewrites: Dict[str, str] = {}
         tone_summary = ""
+        first_pass_over_length = 0
 
         for batch_idx, batch_sections in enumerate(batches):
             payload = {
-                "page_strategy": page_strategy,
-                "brand": brand_data,
-                "sections": [{
+                "page_strategy": config.page_strategy,
+                "brand": config.brand_data,
+                "sections": [],
+            }
+            for g in batch_sections:
+                section_payload = {
                     "section_name": g["section_name"],
                     "copy_direction": g["copy_direction"],
                     "brand_data": g["brand_data"],
                     "slots": g["slots"],
-                } for g in batch_sections],
-            }
+                }
+                if "space_budget" in g:
+                    section_payload["space_budget"] = g["space_budget"]
+                payload["sections"].append(section_payload)
+
             if batch_idx > 0 and tone_summary:
                 payload["prior_batch_tone"] = tone_summary
 
@@ -1989,7 +2256,7 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
             agent = Agent(
                 model=Config.get_model("creative"),
                 output_type=SlotRewriteResult,
-                system_prompt=self._SLOT_REWRITE_SYSTEM_PROMPT,
+                system_prompt=config.system_prompt,
                 retries=2,
                 output_retries=3,
             )
@@ -2001,7 +2268,7 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
                     user_id=self._user_id,
                     organization_id=self._organization_id,
                     tool_name="mockup_service",
-                    operation="slot_rewrite_batch",
+                    operation=f"slot_rewrite_batch_{strategy}",
                     model_settings=ModelSettings(max_tokens=16384),
                 )
 
@@ -2016,61 +2283,198 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
                 validated: Dict[str, str] = {}
                 for name, value in batch_rewrites.items():
                     if name not in batch_slot_names:
-                        logger.warning(f"AI hallucinated slot '{name}' — stripping")
+                        logger.warning(f"AI hallucinated slot '{name}' - stripping")
                         continue
-                    # Strip HTML tags
                     clean = re.sub(r'<[^>]+>', '', str(value))
-                    # Sanitize dashes
                     clean = _sanitize_dashes(clean)
-                    # HTML-escape for safe injection
                     clean = _html_module.escape(clean)
-                    # CTA length check
-                    if name.startswith("cta") and len(clean) > 40:
-                        words = clean.split()
-                        truncated = []
-                        length = 0
-                        for w in words:
-                            if length + len(w) + 1 > 40:
-                                break
-                            truncated.append(w)
-                            length += len(w) + 1
-                        clean = " ".join(truncated) if truncated else words[0]
+                    # Log over-length slots (enforcement in regen loop)
+                    spec = config.slot_specs_lookup.get(name)
+                    if spec:
+                        word_count = len(clean.split())
+                        if word_count > spec["max_words"]:
+                            first_pass_over_length += 1
+                            logger.info(
+                                f"Slot '{name}' over-length (strategy={strategy}): "
+                                f"{word_count} words (max {spec['max_words']}, type={spec['type']})"
+                            )
                     validated[name] = clean
 
                 # Fill missing slots with original text
                 missing = batch_slot_names - set(validated.keys())
                 if missing:
                     logger.warning(
-                        f"AI missed {len(missing)} slots in batch {batch_idx}: "
+                        f"AI missed {len(missing)} slots in batch {batch_idx} "
+                        f"(strategy={strategy}): "
                         f"{sorted(missing)[:10]}{'...' if len(missing) > 10 else ''}"
                     )
                     for name in missing:
-                        validated[name] = _html_module.escape(slot_contents.get(name, ""))
+                        validated[name] = _html_module.escape(config.slot_contents.get(name, ""))
 
                 all_rewrites.update(validated)
 
                 # Build tone summary for subsequent batches
-                if batch_idx == 0 and batches.__len__() > 1:
+                if batch_idx == 0 and len(batches) > 1:
                     headline_val = validated.get("headline", "")
                     tone_summary = (
-                        f"Brand: {brand_data['name']}. "
-                        f"Voice: {brand_data['voice_tone']}. "
+                        f"Brand: {config.brand_data['name']}. "
+                        f"Voice: {config.brand_data['voice_tone']}. "
                         f"Headline written: {headline_val[:100]}. "
-                        f"Primary angle: {page_strategy.get('primary_angle', '')}."
+                        f"Primary angle: {config.page_strategy.get('primary_angle', '')}."
                     )
 
             except Exception as e:
-                logger.error(f"Slot rewrite batch {batch_idx} failed: {e}")
-                # Fill all batch slots with original text (escaped)
+                logger.error(f"Slot rewrite batch {batch_idx} failed (strategy={strategy}): {e}")
                 for name in batch_slot_names:
                     if name not in all_rewrites:
                         all_rewrites[name] = _html_module.escape(
-                            slot_contents.get(name, "")
+                            config.slot_contents.get(name, "")
                         )
 
         if not all_rewrites:
-            logger.error("All slot rewrite batches failed — falling back to _build_slot_map")
-            return self._build_slot_map(blueprint)
+            logger.error("All slot rewrite batches failed - falling back to _build_slot_map")
+            return self._build_slot_map({})
+
+        # ── Re-generation loop for over-length slots ──────────────
+        MAX_REGEN_ROUNDS = 2
+        regen_count = 0
+
+        for regen_round in range(MAX_REGEN_ROUNDS):
+            violations: Dict[str, Dict] = {}
+            for name, text in all_rewrites.items():
+                spec = config.slot_specs_lookup.get(name)
+                if not spec:
+                    continue
+                word_count = len(text.split())
+                if word_count > spec["max_words"]:
+                    violations[name] = {
+                        "current_text": text,
+                        "current_words": word_count,
+                        "max_words": spec["max_words"],
+                        "type": spec["type"],
+                        "length_note": spec["length_note"],
+                    }
+
+            if not violations:
+                logger.info(
+                    f"All slots within length spec after round {regen_round} "
+                    f"(strategy={strategy})"
+                )
+                break
+
+            logger.info(
+                f"Regen round {regen_round + 1}/{MAX_REGEN_ROUNDS} "
+                f"(strategy={strategy}): {len(violations)} over-length slots"
+            )
+
+            # Build regen payload — blueprint mode includes copy_direction/section_name
+            if strategy == "section_guided":
+                regen_payload = {
+                    "task": "Rewrite these over-length slots to fit within target_words.",
+                    "slots": [
+                        {
+                            "name": name,
+                            "current_text": v["current_text"],
+                            "current_words": v["current_words"],
+                            "target_words": v["max_words"],
+                            "type": v["type"],
+                            "copy_direction": config.slot_specs_lookup.get(name, {}).get(
+                                "copy_direction", ""
+                            ),
+                            "section_name": config.slot_specs_lookup.get(name, {}).get(
+                                "section_name", ""
+                            ),
+                        }
+                        for name, v in violations.items()
+                    ],
+                }
+            else:
+                regen_payload = {
+                    "task": "Condense these over-length slots to fit within max_words.",
+                    "slots": [
+                        {
+                            "name": name,
+                            "current_text": v["current_text"],
+                            "current_words": v["current_words"],
+                            "max_words": v["max_words"],
+                            "type": v["type"],
+                            "length_note": v["length_note"],
+                        }
+                        for name, v in violations.items()
+                    ],
+                }
+
+            try:
+                regen_agent = Agent(
+                    model=Config.get_model("creative"),
+                    output_type=SlotRewriteResult,
+                    system_prompt=config.regen_prompt,
+                    retries=1,
+                    output_retries=2,
+                )
+                regen_result = run_agent_sync_with_tracking(
+                    regen_agent, json.dumps(regen_payload, ensure_ascii=False),
+                    tracker=self._usage_tracker,
+                    user_id=self._user_id,
+                    organization_id=self._organization_id,
+                    tool_name="mockup_service",
+                    operation=f"slot_regen_{strategy}",
+                    model_settings=ModelSettings(max_tokens=4096),
+                )
+                if regen_result and regen_result.output and regen_result.output.rewrites:
+                    for name, value in regen_result.output.rewrites.items():
+                        if name not in violations:
+                            continue
+                        clean = re.sub(r'<[^>]+>', '', str(value))
+                        clean = _sanitize_dashes(clean)
+                        clean = _html_module.escape(clean)
+                        all_rewrites[name] = clean
+                        regen_count += 1
+                        new_wc = len(clean.split())
+                        logger.info(
+                            f"Regen slot '{name}' (strategy={strategy}): "
+                            f"{violations[name]['current_words']} -> {new_wc} words "
+                            f"(max {violations[name]['max_words']})"
+                        )
+            except Exception as e:
+                logger.warning(
+                    f"Regen round {regen_round + 1} failed (strategy={strategy}): {e}"
+                )
+                break
+
+        # ── Final truncation fallback ─────────────────────────────
+        truncation_count = 0
+        for name, text in list(all_rewrites.items()):
+            spec = config.slot_specs_lookup.get(name)
+            if not spec:
+                continue
+            words = text.split()
+            if len(words) <= spec["max_words"]:
+                continue
+            max_w = spec["max_words"]
+            truncated = words[:max_w]
+            candidate = " ".join(truncated)
+            best_cut = candidate
+            for ending in (".", ";", ",", ":"):
+                idx = candidate.rfind(ending)
+                if idx > len(candidate) // 2:
+                    best_cut = candidate[: idx + 1]
+                    break
+            logger.info(
+                f"Truncation fallback for '{name}' (strategy={strategy}): "
+                f"{len(words)} -> {len(best_cut.split())} words (max {max_w})"
+            )
+            all_rewrites[name] = best_cut
+            truncation_count += 1
+
+        # ── Compliance stats ──────────────────────────────────────
+        total_slots = len(all_rewrites)
+        first_pass_ok = total_slots - first_pass_over_length
+        logger.info(
+            f"Slot rewrite complete (strategy={strategy}): "
+            f"{first_pass_ok}/{total_slots} within spec first-pass, "
+            f"{regen_count} regen'd, {truncation_count} truncated"
+        )
 
         return all_rewrites
 
@@ -2736,6 +3140,178 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
         if name.startswith("badge"):
             return "badge"
         return "body"  # safe default
+
+    # Hardcoded fallback limits (used when original word count is unknown)
+    _SLOT_TYPE_DEFAULT_MAX_WORDS = {
+        "headline": 15, "subheadline": 25, "heading": 15,
+        "cta": 5, "badge": 8, "price": 8, "guarantee": 15,
+        "feature": 20, "testimonial": 60, "body": 80,
+    }
+
+    def _compute_slot_length_spec(
+        self,
+        slot_type: str,
+        original_words: int,
+        original_chars: int,
+    ) -> Dict[str, Any]:
+        """Compute adaptive max_words based on original text length and slot type.
+
+        Returns dict with max_words, original_words, original_chars, length_note.
+        When original_words is 0 (unknown), falls back to hardcoded defaults.
+        """
+        if original_words <= 0:
+            default = self._SLOT_TYPE_DEFAULT_MAX_WORDS.get(slot_type, 80)
+            return {
+                "max_words": default,
+                "original_words": 0,
+                "original_chars": 0,
+                "length_note": f"No original text; using default {default}-word limit for {slot_type}.",
+            }
+
+        # Type-dependent tolerance bands
+        # (tolerance_pct, min_extra_words, cap_extra_words or None)
+        tolerance_config = {
+            "cta":         (0.40, 1, 2),
+            "headline":    (0.20, 1, 3),
+            "subheadline": (0.25, 2, None),
+            "heading":     (0.20, 1, None),
+            "badge":       (0.20, 1, None),
+            "price":       (0.20, 1, None),
+            "guarantee":   (0.20, 1, None),
+            "feature":     (0.25, 2, None),
+        }
+        # Default for body, testimonial, and anything else
+        pct, min_extra, cap_extra = tolerance_config.get(slot_type, (0.30, 3, None))
+
+        extra = max(min_extra, round(original_words * pct))
+        if cap_extra is not None:
+            extra = min(extra, cap_extra)
+        max_words = original_words + extra
+
+        note = (
+            f"Original is {original_words} words / {original_chars} chars. "
+            f"Max {max_words} words ({slot_type}, +{extra} tolerance)."
+        )
+        return {
+            "max_words": max_words,
+            "original_words": original_words,
+            "original_chars": original_chars,
+            "length_note": note,
+        }
+
+    def _aggregate_section_metrics(
+        self,
+        slot_contents: Dict[str, str],
+        slot_sections: Dict[str, Dict],
+    ) -> Dict[str, Dict]:
+        """Aggregate word counts and slot-type breakdowns per section.
+
+        Iterates slot_contents.keys() (not slot_sections.keys()) because
+        void-element slots exist in slot_sections but have no text content.
+
+        Args:
+            slot_contents: {slot_name: text} from _extract_slots_with_content.
+            slot_sections: {slot_name: {section_name, slot_type, ...}} from _map_slots_to_sections.
+
+        Returns:
+            {section_name: {total_words, slot_count, breakdown: {type: {count, total_words}}}}
+        """
+        metrics: Dict[str, Dict] = {}
+
+        for slot_name in slot_contents:
+            ctx = slot_sections.get(slot_name, {})
+            section_name = ctx.get("section_name", "global")
+            slot_type = ctx.get("slot_type", self._infer_slot_type(slot_name))
+            word_count = len(slot_contents[slot_name].split()) if slot_contents[slot_name] else 0
+
+            if section_name not in metrics:
+                metrics[section_name] = {
+                    "total_words": 0,
+                    "slot_count": 0,
+                    "breakdown": {},
+                }
+
+            sec = metrics[section_name]
+            sec["total_words"] += word_count
+            sec["slot_count"] += 1
+
+            if slot_type not in sec["breakdown"]:
+                sec["breakdown"][slot_type] = {"count": 0, "total_words": 0}
+            sec["breakdown"][slot_type]["count"] += 1
+            sec["breakdown"][slot_type]["total_words"] += word_count
+
+        return metrics
+
+    def _format_section_space_budget(
+        self,
+        section_metrics: Dict[str, Dict],
+        slot_contents: Dict[str, str],
+        slot_sections: Dict[str, Dict],
+    ) -> Dict[str, Dict]:
+        """Convert section metrics into structured space_budget dicts.
+
+        Guards:
+        - Skip sections named "global" (orphan slots — meaningless aggregate)
+        - Skip sections with only 1 slot (per-slot constraint is sufficient)
+        - For sections with >15 slots: emit simplified budget
+        - Exclude slot types with ≤3 words from the breakdown
+
+        Args:
+            section_metrics: Output from _aggregate_section_metrics.
+            slot_contents: {slot_name: text} for word count lookups.
+            slot_sections: {slot_name: {section_name, slot_type, ...}} for slot context.
+
+        Returns:
+            {section_name: {total_words, breakdown: [...], note: str}}
+        """
+        budgets: Dict[str, Dict] = {}
+
+        for section_name, metrics in section_metrics.items():
+            # Skip orphan sections
+            if section_name == "global":
+                continue
+            # Skip single-slot sections (per-slot constraint suffices)
+            if metrics["slot_count"] <= 1:
+                continue
+
+            # Large sections get simplified budget
+            if metrics["slot_count"] > 15:
+                budgets[section_name] = {
+                    "total_words": metrics["total_words"],
+                    "breakdown": [],
+                    "note": "Large section; follow individual slot targets.",
+                }
+                continue
+
+            # Build breakdown entries with word ranges
+            breakdown = []
+            for slot_name in slot_contents:
+                ctx = slot_sections.get(slot_name, {})
+                if ctx.get("section_name") != section_name:
+                    continue
+                slot_type = ctx.get("slot_type", self._infer_slot_type(slot_name))
+                word_count = len(slot_contents[slot_name].split()) if slot_contents[slot_name] else 0
+
+                # Exclude tiny slots (nav items, prices, badges ≤3 words)
+                if word_count <= 3:
+                    continue
+
+                # Compute word range: ~85-110% of original
+                min_words = max(1, round(word_count * 0.85))
+                max_words = max(min_words + 1, round(word_count * 1.10))
+                breakdown.append({
+                    "role": slot_type,
+                    "target_range": [min_words, max_words],
+                    "slots": [slot_name],
+                })
+
+            budgets[section_name] = {
+                "total_words": metrics["total_words"],
+                "breakdown": breakdown,
+                "note": "Use 85-100% of each target range. Underusing space wastes layout real estate.",
+            }
+
+        return budgets
 
     def _map_slots_to_sections(self, html: str, blueprint: Dict) -> Dict[str, Dict]:
         """Map slot_name -> {section_name, copy_direction, brand_mapping, flow_order, slot_type}.
