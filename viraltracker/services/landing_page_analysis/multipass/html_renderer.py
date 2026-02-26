@@ -84,3 +84,20 @@ def render_html_to_png(
                 Path(temp_path).unlink(missing_ok=True)
             except Exception:
                 pass
+
+
+async def render_html_to_png_async(
+    html: str,
+    viewport_width: int = RENDER_VIEWPORT_WIDTH,
+    viewport_height: int = RENDER_VIEWPORT_HEIGHT,
+) -> Optional[bytes]:
+    """Async wrapper — runs sync Playwright in a thread pool.
+
+    Use this from async contexts (e.g. SurgeryPipeline.generate) to avoid
+    the "Playwright Sync API inside asyncio loop" error.
+    """
+    import asyncio
+
+    return await asyncio.to_thread(
+        render_html_to_png, html, viewport_width, viewport_height
+    )

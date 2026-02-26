@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 # Gemini model for surgery vision calls (S2 classification, S4 QA)
 SURGERY_VISION_MODEL = os.environ.get(
-    "SURGERY_VISION_MODEL", "models/gemini-2.5-pro-preview-06-05"
+    "SURGERY_VISION_MODEL", "gemini-2.5-pro"
 )
 
 # SSIM threshold below which S4 QA patches are applied
@@ -168,7 +168,9 @@ class SurgeryPipeline:
         external_css = ""
         try:
             from ..html_extractor import CSSExtractor
-            responsive_css = CSSExtractor.extract(page_html, page_url)
+            responsive_css = CSSExtractor.extract(
+                page_html, page_url, external_only=True
+            )
             external_css = responsive_css.to_css_block()
         except Exception as e:
             logger.warning(f"S3: External CSS extraction failed: {e}")
@@ -191,13 +193,13 @@ class SurgeryPipeline:
         s4_applied = False
 
         try:
-            from ..html_renderer import render_html_to_png
+            from ..html_renderer import render_html_to_png_async
             from ..eval_harness import score_visual_fidelity
             import base64
 
             self._report_progress(4, "Visual QA check...")
 
-            s3_png = render_html_to_png(scoped_html)
+            s3_png = await render_html_to_png_async(scoped_html)
             if s3_png and screenshot_b64:
                 original_png = base64.b64decode(screenshot_b64)
                 ssim_score = score_visual_fidelity(original_png, s3_png)
@@ -208,7 +210,7 @@ class SurgeryPipeline:
                     # Apply QA patches via LLM
                     from .prompts import build_surgery_patch_prompt
                     from ..patch_applier import PatchApplier
-                    from ..invariants import check_global_invariants
+                    from ..invariants import _extract_slots
 
                     prompt = build_surgery_patch_prompt(ssim_score)
 
@@ -224,15 +226,24 @@ class SurgeryPipeline:
                         api_calls += 1
 
                         patches_text = response.text if hasattr(response, 'text') else str(response)
-                        applier = PatchApplier()
-                        patched, patch_count = applier.apply(
-                            scoped_html, patches_text
-                        )
+
+                        if "NO_PATCHES_NEEDED" in patches_text:
+                            logger.info("S4 QA: LLM says no patches needed")
+                            patch_count = 0
+                            patched = scoped_html
+                        else:
+                            patches = _parse_patch_text(patches_text)
+                            applier = PatchApplier()
+                            patched = applier.apply_patches(
+                                scoped_html, patches
+                            )
+                            patch_count = len(patches)
 
                         if patch_count > 0:
-                            # Validate patched output
-                            invariant_result = check_global_invariants(patched)
-                            if invariant_result.passed:
+                            # Validate: patches must not lose slots
+                            pre_slots = _extract_slots(scoped_html)
+                            post_slots = _extract_slots(patched)
+                            if len(post_slots) >= len(pre_slots):
                                 final_html = patched
                                 s4_applied = True
                                 logger.info(
@@ -240,7 +251,8 @@ class SurgeryPipeline:
                                 )
                             else:
                                 logger.warning(
-                                    f"S4 QA: Patches failed invariants, reverting"
+                                    f"S4 QA: Patches lost slots "
+                                    f"({len(pre_slots)} → {len(post_slots)}), reverting"
                                 )
                     except Exception as e:
                         logger.warning(f"S4 QA: LLM patch failed: {e}")
@@ -297,6 +309,46 @@ class SurgeryPipeline:
                     html = html[:match.start()] + replacement + html[match.end():]
                     return html
         return html
+
+
+def _parse_patch_text(text: str) -> List[Dict]:
+    """Parse LLM patch response into PatchApplier-compatible dicts.
+
+    Expected format from prompt:
+        PATCH 1:
+        selector: .lp-mockup .hero-section
+        css: display: flex; flex-direction: column;
+
+    Returns list of dicts with keys: type, selector, value.
+    """
+    import re
+
+    patches = []
+    # Split on PATCH N: headers
+    blocks = re.split(r'PATCH\s+\d+\s*:', text, flags=re.IGNORECASE)
+
+    for block in blocks:
+        block = block.strip()
+        if not block:
+            continue
+
+        selector_match = re.search(r'selector:\s*(.+)', block, re.IGNORECASE)
+        css_match = re.search(r'css:\s*(.+)', block, re.IGNORECASE | re.DOTALL)
+
+        if selector_match and css_match:
+            selector = selector_match.group(1).strip()
+            css_value = css_match.group(1).strip()
+            # Stop css_value at the next "selector:" or end
+            css_value = re.split(r'\n\s*selector:', css_value)[0].strip()
+
+            if selector and css_value:
+                patches.append({
+                    "type": "css_fix",
+                    "selector": selector,
+                    "value": css_value,
+                })
+
+    return patches
 
 
 def _wrap_json(data: Any) -> str:

@@ -1219,6 +1219,93 @@ Generate the article now:"""
 
         raise last_error or Exception("Unknown error during async text analysis")
 
+    async def generate_content_async(
+        self,
+        contents: list,
+        model: Optional[str] = None,
+        max_retries: int = 3,
+    ):
+        """Low-level async generate_content for multimodal calls (surgery pipeline).
+
+        Accepts raw google-genai contents list (dicts with mime_type/data, strings, etc.)
+        and returns the raw response object.
+
+        Args:
+            contents: List of content parts (image dicts, text strings, etc.)
+            model: Model to use (defaults to self.model_name)
+            max_retries: Maximum retries on transient errors
+
+        Returns:
+            Raw Gemini response object (has .text attribute)
+        """
+        self._check_usage_limit()
+        await self._rate_limit()
+
+        use_model = model or self.model_name
+        retry_count = 0
+        last_error = None
+
+        # Convert image dicts to Part objects
+        from google.genai import types as genai_types
+
+        processed = []
+        for item in contents:
+            if isinstance(item, dict) and "mime_type" in item and "data" in item:
+                import base64 as b64mod
+                raw = item["data"]
+                if isinstance(raw, str):
+                    raw = b64mod.b64decode(raw)
+                processed.append(
+                    genai_types.Part.from_bytes(data=raw, mime_type=item["mime_type"])
+                )
+            else:
+                processed.append(item)
+
+        while retry_count <= max_retries:
+            try:
+                response = await self.client.aio.models.generate_content(
+                    model=use_model,
+                    contents=processed,
+                )
+
+                if not response.candidates:
+                    block_reason = getattr(response.prompt_feedback, 'block_reason', 'UNKNOWN')
+                    raise Exception(f"Gemini response blocked: {block_reason}")
+
+                candidate = response.candidates[0]
+                if hasattr(candidate, 'finish_reason') and candidate.finish_reason not in (
+                    None, types.FinishReason.STOP, types.FinishReason.MAX_TOKENS
+                ):
+                    raise Exception(f"Gemini response blocked: finish_reason={candidate.finish_reason}")
+
+                self._track_usage(
+                    operation="generate_content_async",
+                    model=use_model,
+                    response=response,
+                )
+
+                return response
+
+            except Exception as e:
+                last_error = e
+
+                if self._is_retryable_error(e):
+                    retry_count += 1
+                    if retry_count <= max_retries:
+                        retry_delay = 15 * (2 ** (retry_count - 1))
+                        logger.warning(
+                            f"Retryable error ({type(e).__name__}). "
+                            f"Retry {retry_count}/{max_retries} after {retry_delay}s: {e}"
+                        )
+                        await asyncio.sleep(retry_delay)
+                        continue
+                    else:
+                        raise Exception(f"Max retries exceeded ({max_retries}): {e}")
+                else:
+                    raise
+
+        raise last_error or Exception("Unknown error during async content generation")
+
     @staticmethod
     def _is_rate_limit_error(error: Exception) -> bool:
         """Check if an error is specifically a rate limit (429) error."""
