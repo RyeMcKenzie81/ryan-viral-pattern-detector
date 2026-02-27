@@ -419,6 +419,162 @@ def render_avatar_card(avatar, brand_id: str):
                         except Exception as e:
                             st.error(f"Element creation failed: {e}")
 
+        # ---- Video Avatar Section ----
+        render_video_avatar_section(avatar, brand_id)
+
+
+def render_video_avatar_section(avatar, brand_id: str):
+    """Render Video Avatar (with Voice) section inside an avatar card.
+
+    Provides three options:
+    1. Extract voice from uploaded video sample
+    2. Generate video avatar from reference images (calibration video)
+    3. Upload video for both visual + voice
+    """
+    has_frontal = avatar.reference_image_1 is not None
+    if not has_frontal:
+        return
+
+    st.divider()
+    st.markdown("**Video Avatar (with Voice)**")
+    st.caption(
+        "Create a video-based Kling element with voice binding for consistent "
+        "voice across multi-scene videos. This replaces the image-based element."
+    )
+
+    # Status display
+    col_status1, col_status2 = st.columns(2)
+    with col_status1:
+        mode_label = "Video Element" if avatar.avatar_setup_mode == "video_element" else "Image Element"
+        st.markdown(f"**Current mode:** {mode_label}")
+    with col_status2:
+        voice_label = f"`{avatar.kling_voice_id}`" if avatar.kling_voice_id else "Not set"
+        st.markdown(f"**Voice ID:** {voice_label}")
+
+    if avatar.avatar_setup_mode == "video_element" and avatar.kling_element_id:
+        st.success(
+            f"Video element active: `{avatar.kling_element_id}` "
+            f"(voice: {avatar.kling_voice_id or 'auto-generated'})"
+        )
+
+    # ---- Step 1: Voice Source (Optional) ----
+    st.markdown("---")
+    st.markdown("**Step 1 (Optional): Upload Voice Sample**")
+    st.caption(
+        "Upload a 3-8 second video of the person speaking to extract their voice. "
+        "If skipped, voice will be auto-generated from the calibration video."
+    )
+
+    voice_file = st.file_uploader(
+        "Voice sample video (.mp4/.mov, 3-8s with speech)",
+        type=["mp4", "mov"],
+        key=f"voice_upload_{avatar.id}",
+    )
+
+    if voice_file and st.button("Extract Voice", key=f"extract_voice_{avatar.id}"):
+        from viraltracker.ui.utils import get_current_organization_id
+        org_id = get_current_organization_id()
+
+        with st.spinner("Extracting voice from video (~5 min)..."):
+            try:
+                async def extract():
+                    service = get_avatar_service()
+                    return await service.extract_voice_from_video(
+                        avatar_id=avatar.id,
+                        organization_id=org_id,
+                        brand_id=brand_id,
+                        video_bytes=voice_file.read(),
+                    )
+                voice_id = run_async(extract())
+                st.success(f"Voice extracted! Voice ID: `{voice_id}`")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Voice extraction failed: {e}")
+
+    # ---- Step 2: Create Video Avatar ----
+    st.markdown("---")
+    st.markdown("**Step 2: Create Video Avatar**")
+
+    st.caption(
+        "Generates an 8-second calibration video from the frontal image, then "
+        "creates a video element with voice binding. Cost: ~$1.57"
+    )
+
+    if st.button(
+        "Generate Video Avatar",
+        key=f"gen_video_avatar_{avatar.id}",
+        type="primary",
+        use_container_width=True,
+    ):
+        from viraltracker.ui.utils import get_current_organization_id
+        org_id = get_current_organization_id()
+
+        with st.spinner("Generating calibration video + creating video element (~10-15 min)..."):
+            try:
+                async def create_video_el():
+                    service = get_avatar_service()
+                    return await service.create_kling_video_element(
+                        avatar_id=avatar.id,
+                        organization_id=org_id,
+                        brand_id=brand_id,
+                        video_bytes=None,  # Generate from reference images
+                    )
+                result = run_async(create_video_el())
+                st.success(
+                    f"Video element created!\n"
+                    f"- Element ID: `{result['element_id']}`\n"
+                    f"- Voice ID: `{result.get('voice_id', 'none')}`"
+                )
+                st.rerun()
+            except Exception as e:
+                st.error(f"Video avatar creation failed: {e}")
+
+    # ---- Alternative: Upload Video for Both ----
+    st.markdown("---")
+    st.markdown("**Alternative: Upload Video (Visual + Voice)**")
+    st.caption(
+        "Upload a 3-8 second video of the person speaking. Both appearance "
+        "and voice will come from this video."
+    )
+
+    upload_video = st.file_uploader(
+        "Video file (.mp4/.mov, 3-8s, 1080p, 16:9 or 9:16)",
+        type=["mp4", "mov"],
+        key=f"video_upload_{avatar.id}",
+    )
+
+    if upload_video and st.button(
+        "Create Video Element from Upload",
+        key=f"upload_video_el_{avatar.id}",
+    ):
+        from viraltracker.ui.utils import get_current_organization_id
+        org_id = get_current_organization_id()
+
+        with st.spinner("Creating video element from upload (~5 min)..."):
+            try:
+                async def create_from_upload():
+                    service = get_avatar_service()
+                    return await service.create_kling_video_element(
+                        avatar_id=avatar.id,
+                        organization_id=org_id,
+                        brand_id=brand_id,
+                        video_bytes=upload_video.read(),
+                    )
+                result = run_async(create_from_upload())
+                st.success(
+                    f"Video element created from upload!\n"
+                    f"- Element ID: `{result['element_id']}`\n"
+                    f"- Voice ID: `{result.get('voice_id', 'none')}`"
+                )
+                st.rerun()
+            except Exception as e:
+                st.error(f"Video element creation failed: {e}")
+
+    if avatar.avatar_setup_mode == "video_element":
+        st.warning(
+            "This avatar uses a video element. Creating a new one will replace the current element."
+        )
+
 
 # ============================================================================
 # Video Generation Section (unchanged)
