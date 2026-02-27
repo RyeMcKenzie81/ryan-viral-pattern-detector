@@ -81,7 +81,7 @@ class AvatarService:
 
         Args:
             data: Avatar creation data
-            reference_images: Optional list of reference image bytes (up to 3)
+            reference_images: Optional list of reference image bytes (up to 4)
 
         Returns:
             Created BrandAvatar
@@ -306,7 +306,7 @@ class AvatarService:
         Args:
             avatar_id: Avatar UUID
             image_bytes: Image data
-            slot: Image slot (1, 2, or 3)
+            slot: Image slot (1, 2, 3, or 4)
 
         Returns:
             Storage path of uploaded image, or None if avatar not found
@@ -350,7 +350,7 @@ class AvatarService:
 
         Args:
             avatar_id: Avatar UUID
-            slot: Image slot (1, 2, or 3)
+            slot: Image slot (1, 2, 3, or 4)
 
         Returns:
             True if removed
@@ -406,7 +406,7 @@ class AvatarService:
 
         Args:
             avatar_id: Avatar UUID
-            slot: Image slot (1, 2, or 3)
+            slot: Image slot (1, 2, 3, or 4)
 
         Returns:
             Image bytes or None
@@ -731,7 +731,7 @@ Requirements:
 
         Args:
             avatar_id: Avatar UUID
-            slot: Image slot (1, 2, or 3)
+            slot: Image slot (1, 2, 3, or 4)
             expires_in: URL expiry in seconds
 
         Returns:

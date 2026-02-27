@@ -11,9 +11,7 @@ This page allows users to:
 
 import streamlit as st
 import asyncio
-from datetime import datetime
 from uuid import UUID
-import base64
 
 # Page config (must be first Streamlit call)
 st.set_page_config(
