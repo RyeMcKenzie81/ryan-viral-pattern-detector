@@ -82,7 +82,7 @@ logger = logging.getLogger(__name__)
 
 # Models (from Config constants)
 _VISION_MODEL = Config.GEMINI_IMAGE_MODEL
-_TEXT_MODEL = Config.GEMINI_TEXT_MODEL
+_TEXT_MODEL = getattr(Config, "GEMINI_TEXT_MODEL", Config.GEMINI_IMAGE_MODEL)
 
 PHASE_MODELS = {
     0: _VISION_MODEL,
