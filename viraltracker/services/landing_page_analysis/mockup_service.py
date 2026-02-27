@@ -96,12 +96,16 @@ def _sanitize_css_block(raw_css: str, is_surgery_mode: bool = False) -> str:
         return ""
 
     # REJECT if contains <! (HTML comments/CDATA) or <tag...> patterns
-    if _HTML_COMMENT_RE.search(raw_css):
-        logger.warning("CSS block rejected: contains <! HTML pattern")
-        return ""
-    if _HTML_TAG_RE.search(raw_css):
-        logger.warning("CSS block rejected: contains HTML tag pattern")
-        return ""
+    # Skip for surgery mode: real-world CSS can legitimately contain tag-like
+    # patterns (e.g. `content: "<br>"`, SVG data URIs). The surgery pipeline's
+    # S3 already sanitizes CSS; these checks guard against AI-generated CSS.
+    if not is_surgery_mode:
+        if _HTML_COMMENT_RE.search(raw_css):
+            logger.warning("CSS block rejected: contains <! HTML pattern")
+            return ""
+        if _HTML_TAG_RE.search(raw_css):
+            logger.warning("CSS block rejected: contains HTML tag pattern")
+            return ""
 
     # STRIP dangerous at-rules
     css = _CSS_IMPORT_RE.sub('', raw_css)
