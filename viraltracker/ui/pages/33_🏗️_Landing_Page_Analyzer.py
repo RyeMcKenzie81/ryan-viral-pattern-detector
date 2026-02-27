@@ -1561,6 +1561,11 @@ def _render_analysis_mockup_section(analysis: dict, analysis_id: str, org_id: st
 
     cached = _get_cached_mockup("analysis", analysis_id)
 
+    # Hydrate from DB if session cache is empty (e.g., after redeploy)
+    if not cached and analysis.get("analysis_mockup_html"):
+        cached = analysis["analysis_mockup_html"]
+        _cache_mockup("analysis", analysis_id, cached)
+
     if cached:
         _render_mockup_preview(cached, f"analysis_{analysis_id}")
         # Share controls (only when mockup HTML exists)
