@@ -2104,6 +2104,11 @@ def _render_blueprint_mockup_section(
                 pass
             st.rerun()
 
+        # Share link controls
+        if bp_record_for_images:
+            bp_svc_share = get_blueprint_service()
+            _render_share_controls(bp_record_for_images, bp_svc_share, blueprint_id)
+
         # Image generation section
         _render_generate_images_section(
             blueprint_id=blueprint_id,
@@ -2799,8 +2804,8 @@ def _render_blueprint_history(org_id: str, brand_id: str):
             if full.get("status") in ("completed", "partial"):
                 _render_qa_controls(full, "blueprint", bp_service, org_id)
 
-            # Share link controls for completed blueprints with HTML
-            if full.get("status") == "completed" and (
+            # Share link controls for blueprints with HTML
+            if (
                 full.get("blueprint_mockup_html_with_images") or full.get("blueprint_mockup_html")
             ):
                 _render_share_controls(full, bp_service, bp["id"])
