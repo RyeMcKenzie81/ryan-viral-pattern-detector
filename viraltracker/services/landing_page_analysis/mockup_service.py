@@ -588,6 +588,7 @@ class MockupService:
                     "Multipass produced unusable artifact (severity=%s, complete=%s), "
                     "falling back to single-pass", severity, is_complete
                 )
+                self.is_surgery_mode = False  # Reset: AI vision fallback is not surgery
                 raw_html = self._generate_via_ai_vision(
                     screenshot_b64,
                     page_markdown=page_markdown,
