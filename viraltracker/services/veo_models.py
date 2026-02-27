@@ -126,6 +126,9 @@ class BrandAvatar(BaseModel):
 
     # Kling element ID for character consistency in video generation
     kling_element_id: Optional[str] = Field(None, description="Kling AI element ID for this avatar")
+    kling_voice_id: Optional[str] = Field(None, description="Kling AI voice ID from element_voice_info")
+    calibration_video_path: Optional[str] = Field(None, description="Storage path for calibration video")
+    avatar_setup_mode: str = Field(default="multi_image", description="Element mode: multi_image or video_element")
 
     # Generation prompt used to create the avatar
     generation_prompt: Optional[str] = Field(

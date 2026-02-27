@@ -732,6 +732,432 @@ Requirements:
             await kling.close()
 
     # =========================================================================
+    # Video Avatar Methods (Video Element + Voice)
+    # =========================================================================
+
+    async def _upload_video(
+        self, brand_id: str, avatar_id: str, video_bytes: bytes, filename: str = "calibration_video.mp4"
+    ) -> str:
+        """Upload video to Supabase storage.
+
+        Args:
+            brand_id: Brand UUID string.
+            avatar_id: Avatar UUID string.
+            video_bytes: Video file bytes.
+            filename: Target filename.
+
+        Returns:
+            Full storage path (bucket/path).
+        """
+        path = f"{brand_id}/{avatar_id}/{filename}"
+        await asyncio.to_thread(
+            lambda: self.supabase.storage.from_(self.STORAGE_BUCKET).upload(
+                path, video_bytes, {"content-type": "video/mp4", "upsert": "true"}
+            )
+        )
+        return f"{self.STORAGE_BUCKET}/{path}"
+
+    async def _get_video_signed_url(self, storage_path: str, expires_in: int = 3600) -> str:
+        """Get a signed URL for a video in storage.
+
+        Args:
+            storage_path: Full storage path (bucket/path).
+            expires_in: URL expiry in seconds.
+
+        Returns:
+            Signed URL string.
+        """
+        parts = storage_path.split("/", 1)
+        bucket = parts[0]
+        file_path = parts[1] if len(parts) > 1 else storage_path
+
+        result = await asyncio.to_thread(
+            lambda: self.supabase.storage.from_(bucket).create_signed_url(
+                file_path, expires_in
+            )
+        )
+        return result.get("signedURL", "")
+
+    async def generate_calibration_video(
+        self, avatar_id: UUID, organization_id: str, brand_id: str
+    ) -> dict:
+        """Generate an 8-second calibration video from the avatar's frontal image.
+
+        Uses Kling Omni-Video to create a comprehensive all-angle showcase
+        with natural speech, suitable for creating a video element with voice.
+
+        Args:
+            avatar_id: Avatar UUID.
+            organization_id: Organization UUID.
+            brand_id: Brand UUID.
+
+        Returns:
+            Dict with calibration_video_path and signed_url.
+
+        Raises:
+            ValueError: If avatar has no frontal image.
+        """
+        avatar = await self.get_avatar(avatar_id)
+        if not avatar:
+            raise ValueError(f"Avatar {avatar_id} not found")
+        if not avatar.reference_image_1:
+            raise ValueError(f"Avatar {avatar_id} has no frontal image (slot 1)")
+
+        # Resolve org_id for superuser mode
+        if organization_id == "all":
+            try:
+                brand_row = await asyncio.to_thread(
+                    lambda: self.supabase.table("brands")
+                        .select("organization_id")
+                        .eq("id", brand_id)
+                        .single()
+                        .execute()
+                )
+                organization_id = brand_row.data["organization_id"]
+            except Exception as e:
+                raise ValueError(f"Failed to resolve org_id from brand {brand_id}: {e}")
+
+        # Get signed URL for frontal image
+        frontal_url = await self.get_reference_image_url(avatar_id, 1)
+        if not frontal_url:
+            raise ValueError(f"Failed to get frontal image URL for avatar {avatar_id}")
+
+        calibration_prompt = (
+            "Close-up of the person's face, looking directly at camera, speaking naturally. "
+            "They slowly turn their head to the left, then to the right, then back to center. "
+            "Camera smoothly pulls back to reveal their full body from head to toe. "
+            "They slowly turn around 360 degrees to show all angles, then face the camera again. "
+            "Neutral background, steady camera, warm professional lighting throughout."
+        )
+
+        from .kling_video_service import KlingVideoService
+        from .kling_models import KlingEndpoint
+
+        kling = KlingVideoService()
+        try:
+            gen_result = await kling.generate_omni_video(
+                organization_id=organization_id,
+                brand_id=brand_id,
+                prompt=calibration_prompt,
+                duration="8",
+                mode="pro",
+                sound="on",
+                image_list=[{"image_url": frontal_url, "type": "first_frame"}],
+                aspect_ratio="9:16",
+            )
+
+            task_id = gen_result.get("kling_task_id")
+            generation_id = gen_result.get("generation_id")
+            if not task_id:
+                raise ValueError("No task_id returned for calibration video generation")
+
+            # Poll to completion (up to 15 min)
+            completion = await kling.poll_and_complete(
+                generation_id=generation_id,
+                kling_task_id=task_id,
+                endpoint_type=KlingEndpoint.OMNI_VIDEO,
+                timeout_seconds=900,
+            )
+
+            if completion.get("status") != "succeed":
+                error_msg = completion.get("error_message", "Unknown error")
+                raise ValueError(f"Calibration video generation failed: {error_msg}")
+
+            video_storage_path = completion.get("video_storage_path")
+            if not video_storage_path:
+                raise ValueError("Calibration video completed but no storage path returned")
+
+            # Update avatar with calibration video path
+            await asyncio.to_thread(
+                lambda: self.supabase.table("brand_avatars")
+                    .update({"calibration_video_path": video_storage_path})
+                    .eq("id", str(avatar_id))
+                    .execute()
+            )
+
+            signed_url = await self._get_video_signed_url(video_storage_path)
+
+            logger.info(f"Generated calibration video for avatar {avatar_id}: {video_storage_path}")
+            return {
+                "calibration_video_path": video_storage_path,
+                "signed_url": signed_url,
+            }
+
+        finally:
+            await kling.close()
+
+    async def extract_voice_from_video(
+        self, avatar_id: UUID, organization_id: str, brand_id: str, video_bytes: bytes
+    ) -> str:
+        """Upload a voice sample video and extract voice_id from it.
+
+        Creates a temporary video element to extract voice_id, then deletes
+        the temporary element. Only the voice_id is stored on the avatar.
+
+        Args:
+            avatar_id: Avatar UUID.
+            organization_id: Organization UUID.
+            brand_id: Brand UUID.
+            video_bytes: Voice sample video bytes (.mp4/.mov, 3-8s with speech).
+
+        Returns:
+            Extracted voice_id string.
+
+        Raises:
+            ValueError: If no voice detected or avatar not found.
+        """
+        avatar = await self.get_avatar(avatar_id)
+        if not avatar:
+            raise ValueError(f"Avatar {avatar_id} not found")
+
+        # Resolve org_id for superuser mode
+        if organization_id == "all":
+            try:
+                brand_row = await asyncio.to_thread(
+                    lambda: self.supabase.table("brands")
+                        .select("organization_id")
+                        .eq("id", brand_id)
+                        .single()
+                        .execute()
+                )
+                organization_id = brand_row.data["organization_id"]
+            except Exception as e:
+                raise ValueError(f"Failed to resolve org_id from brand {brand_id}: {e}")
+
+        # Upload voice video to storage
+        voice_path = await self._upload_video(
+            str(avatar.brand_id), str(avatar_id), video_bytes, "voice_sample.mp4"
+        )
+        voice_url = await self._get_video_signed_url(voice_path)
+
+        from .kling_video_service import KlingVideoService
+        from .kling_models import KlingEndpoint
+
+        kling = KlingVideoService()
+        temp_element_id = None
+        try:
+            # Create temporary video element
+            gen_result = await kling.create_video_element(
+                organization_id=organization_id,
+                brand_id=brand_id,
+                element_name=f"{avatar.name[:14]}_voice",
+                element_description=f"Voice extraction for {avatar.name}"[:100],
+                video_url=voice_url,
+            )
+
+            task_id = gen_result.get("kling_task_id")
+            if not task_id:
+                raise ValueError("No task_id returned for voice extraction element")
+
+            # Poll for completion
+            poll_result = await kling.poll_task(
+                task_id=task_id,
+                endpoint_type=KlingEndpoint.ADVANCED_CUSTOM_ELEMENTS,
+                timeout_seconds=600,
+            )
+
+            task_data = poll_result.get("data", {})
+            task_status = task_data.get("task_status", "")
+
+            if task_status != "succeed":
+                error_msg = task_data.get("task_status_msg", "Unknown error")
+                raise ValueError(f"Voice extraction element creation failed: {error_msg}")
+
+            # Query the element to get voice info
+            query_result = await kling.query_element(task_id)
+            query_data = query_result.get("data", {})
+            task_result = query_data.get("task_result", {})
+            elements = task_result.get("elements", [])
+
+            if not elements:
+                raise ValueError("Element created but no elements in response")
+
+            element = elements[0]
+            temp_element_id = str(element.get("element_id", ""))
+
+            voice_info = element.get("element_voice_info", {})
+            voice_id = voice_info.get("voice_id") if voice_info else None
+
+            if not voice_id:
+                raise ValueError(
+                    "No voice detected in the uploaded video. "
+                    "Please upload a video with clear speech."
+                )
+
+            voice_id = str(voice_id)
+
+            # Store voice_id on avatar (don't change element_id or setup_mode)
+            await asyncio.to_thread(
+                lambda: self.supabase.table("brand_avatars")
+                    .update({"kling_voice_id": voice_id})
+                    .eq("id", str(avatar_id))
+                    .execute()
+            )
+
+            logger.info(f"Extracted voice_id {voice_id} for avatar {avatar_id}")
+            return voice_id
+
+        finally:
+            # Clean up temporary element
+            if temp_element_id:
+                try:
+                    await kling.delete_element(temp_element_id)
+                    logger.info(f"Deleted temporary voice element {temp_element_id}")
+                except Exception as e:
+                    logger.warning(f"Failed to delete temporary element {temp_element_id}: {e}")
+            await kling.close()
+
+    async def create_kling_video_element(
+        self,
+        avatar_id: UUID,
+        organization_id: str,
+        brand_id: str,
+        video_bytes: Optional[bytes] = None,
+    ) -> dict:
+        """Create a video-based Kling element with voice binding.
+
+        Two modes:
+        - video_bytes=None: Generate calibration video from frontal image, then create element.
+        - video_bytes provided: Use the uploaded video directly for both visual + voice.
+
+        If the avatar already has a kling_voice_id (from extract_voice_from_video),
+        it is passed as element_voice_id to preserve the same voice.
+
+        Args:
+            avatar_id: Avatar UUID.
+            organization_id: Organization UUID.
+            brand_id: Brand UUID.
+            video_bytes: Optional video file bytes. If None, generates calibration video.
+
+        Returns:
+            Dict with element_id, voice_id, calibration_video_path.
+
+        Raises:
+            ValueError: If avatar not found or missing frontal image.
+        """
+        avatar = await self.get_avatar(avatar_id)
+        if not avatar:
+            raise ValueError(f"Avatar {avatar_id} not found")
+
+        # Resolve org_id for superuser mode
+        if organization_id == "all":
+            try:
+                brand_row = await asyncio.to_thread(
+                    lambda: self.supabase.table("brands")
+                        .select("organization_id")
+                        .eq("id", brand_id)
+                        .single()
+                        .execute()
+                )
+                organization_id = brand_row.data["organization_id"]
+            except Exception as e:
+                raise ValueError(f"Failed to resolve org_id from brand {brand_id}: {e}")
+
+        if video_bytes:
+            # Mode: Upload video directly (visual + voice from upload)
+            video_path = await self._upload_video(
+                str(avatar.brand_id), str(avatar_id), video_bytes, "video_element_source.mp4"
+            )
+            video_url = await self._get_video_signed_url(video_path)
+            calibration_path = video_path
+        else:
+            # Mode: Generate calibration video from frontal image
+            if not avatar.reference_image_1:
+                raise ValueError(f"Avatar {avatar_id} has no frontal image (slot 1) for calibration video")
+
+            # Check if calibration video already exists
+            if avatar.calibration_video_path:
+                calibration_path = avatar.calibration_video_path
+                video_url = await self._get_video_signed_url(calibration_path)
+                logger.info(f"Reusing existing calibration video: {calibration_path}")
+            else:
+                cal_result = await self.generate_calibration_video(
+                    avatar_id, organization_id, brand_id
+                )
+                calibration_path = cal_result["calibration_video_path"]
+                video_url = cal_result["signed_url"]
+
+        # Look up existing voice_id to bind
+        existing_voice_id = avatar.kling_voice_id
+
+        from .kling_video_service import KlingVideoService
+        from .kling_models import KlingEndpoint
+
+        kling = KlingVideoService()
+        try:
+            gen_result = await kling.create_video_element(
+                organization_id=organization_id,
+                brand_id=brand_id,
+                element_name=avatar.name[:20],
+                element_description=f"Video avatar: {avatar.name}"[:100],
+                video_url=video_url,
+                element_voice_id=existing_voice_id,
+            )
+
+            task_id = gen_result.get("kling_task_id")
+            if not task_id:
+                raise ValueError("No task_id returned for video element creation")
+
+            # Poll for completion
+            poll_result = await kling.poll_task(
+                task_id=task_id,
+                endpoint_type=KlingEndpoint.ADVANCED_CUSTOM_ELEMENTS,
+                timeout_seconds=600,
+            )
+
+            task_data = poll_result.get("data", {})
+            task_status = task_data.get("task_status", "")
+
+            if task_status != "succeed":
+                error_msg = task_data.get("task_status_msg", "Unknown error")
+                raise ValueError(f"Video element creation failed: {error_msg}")
+
+            # Query element to get element_id and voice info
+            query_result = await kling.query_element(task_id)
+            query_data = query_result.get("data", {})
+            task_result = query_data.get("task_result", {})
+            elements = task_result.get("elements", [])
+
+            if not elements:
+                raise ValueError("Video element created but no elements in response")
+
+            element = elements[0]
+            element_id = str(element.get("element_id", ""))
+
+            voice_info = element.get("element_voice_info", {})
+            voice_id = str(voice_info.get("voice_id", "")) if voice_info else ""
+
+            # Update avatar with new element info
+            updates = {
+                "kling_element_id": element_id,
+                "calibration_video_path": calibration_path,
+                "avatar_setup_mode": "video_element",
+            }
+            if voice_id:
+                updates["kling_voice_id"] = voice_id
+
+            await asyncio.to_thread(
+                lambda: self.supabase.table("brand_avatars")
+                    .update(updates)
+                    .eq("id", str(avatar_id))
+                    .execute()
+            )
+
+            logger.info(
+                f"Created video element {element_id} for avatar {avatar_id} "
+                f"(voice_id: {voice_id or 'none'})"
+            )
+
+            return {
+                "element_id": element_id,
+                "voice_id": voice_id or None,
+                "calibration_video_path": calibration_path,
+            }
+
+        finally:
+            await kling.close()
+
+    # =========================================================================
     # Image URL Operations
     # =========================================================================
 
@@ -808,6 +1234,9 @@ Requirements:
             reference_image_3=row.get("reference_image_3"),
             reference_image_4=row.get("reference_image_4"),
             kling_element_id=row.get("kling_element_id"),
+            kling_voice_id=row.get("kling_voice_id"),
+            calibration_video_path=row.get("calibration_video_path"),
+            avatar_setup_mode=row.get("avatar_setup_mode", "multi_image"),
             generation_prompt=row.get("generation_prompt"),
             default_negative_prompt=row.get(
                 "default_negative_prompt",

@@ -50,13 +50,17 @@ ViralTracker is a **multi-tenant**, multi-platform viral content analysis system
 
 ### Layer 2: Service Layer (Core Business Logic)
 - **TwitterService**: Database operations for Twitter data
-- **GeminiService**: AI-powered analysis
+- **GeminiService**: AI-powered analysis (image generation, content analysis)
 - **StatsService**: Statistical calculations
 - **ScrapingService**: External API integration (Apify, Clockworks)
 - **OrganizationService**: Org CRUD, membership, roles (owner/admin/member/viewer)
 - **FeatureService**: Per-org feature flags (two-tier: sections opt-out, pages opt-in)
 - **UsageTracker**: AI/API usage tracking with cost calculation
 - **UsageLimitService**: Per-org rate limits with fail-open enforcement
+- **KlingVideoService**: Kling AI video generation (Omni Video, avatar, lip-sync, elements)
+- **AvatarService**: Brand avatar management (4-angle images, video elements with voice)
+- **VeoService**: Google Veo 3.1 video generation
+- **VideoRecreationService**: Video recreation orchestration
 
 **Key Pattern**: Reusable services shared across all interfaces
 

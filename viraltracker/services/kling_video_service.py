@@ -1323,6 +1323,151 @@ class KlingVideoService:
             })
             raise
 
+    async def create_video_element(
+        self,
+        organization_id: str,
+        brand_id: str,
+        element_name: str,
+        element_description: str,
+        video_url: str,
+        element_voice_id: Optional[str] = None,
+        callback_url: Optional[str] = None,
+        external_task_id: Optional[str] = None,
+    ) -> dict:
+        """Create a video-based custom element for character + voice consistency.
+
+        Uses reference_type: "video_refer" with a video file instead of images.
+        If the video contains speech, Kling auto-extracts voice and binds it
+        to the element. An existing voice_id can be bound via element_voice_id.
+
+        Endpoint: POST /v1/general/advanced-custom-elements
+
+        Args:
+            organization_id: Organization UUID.
+            brand_id: Brand UUID.
+            element_name: Element name (max 20 chars).
+            element_description: Element description (max 100 chars).
+            video_url: URL of reference video (.mp4/.mov, 1080p, 3-8s, max 200MB).
+            element_voice_id: Optional existing voice_id to bind to the element.
+            callback_url: Callback URL.
+            external_task_id: Custom task ID.
+
+        Returns:
+            Dict with generation_id, kling_task_id, status.
+        """
+        self._enforce_limit()
+
+        if not video_url:
+            raise ValueError("video_url is required for video element creation")
+
+        generation_id = str(uuid.uuid4())
+        ext_task_id = external_task_id or generation_id
+
+        await self._create_db_record({
+            "id": generation_id,
+            "organization_id": organization_id,
+            "brand_id": brand_id,
+            "generation_type": KlingGenerationType.ADVANCED_CUSTOM_ELEMENTS.value,
+            "status": KlingTaskStatus.PENDING.value,
+            "kling_external_task_id": ext_task_id,
+        })
+
+        payload: Dict[str, Any] = {
+            "element_name": element_name[:20],
+            "element_description": element_description[:100],
+            "reference_type": "video_refer",
+            "element_video_list": {
+                "refer_videos": [{"video_url": video_url}]
+            },
+            "tag_list": [{"tag_id": "o_102"}],
+            "external_task_id": ext_task_id,
+        }
+        if element_voice_id:
+            payload["element_voice_id"] = element_voice_id
+        if callback_url:
+            payload["callback_url"] = callback_url
+
+        try:
+            async with self._generation_semaphore:
+                response = await self._post(KlingEndpoint.ADVANCED_CUSTOM_ELEMENTS, payload)
+
+            data = response.get("data", {})
+            kling_task_id = data.get("task_id")
+            request_id = response.get("request_id", "")
+
+            await self._update_db_record(generation_id, {
+                "kling_task_id": kling_task_id,
+                "kling_request_id": request_id,
+                "status": data.get("task_status", KlingTaskStatus.SUBMITTED.value),
+            })
+
+            self._track_usage(
+                operation="create_video_element",
+                unit_type="kling_multi_shot",
+                units=1,
+                cost_usd=Config.get_unit_cost("kling_multi_shot"),
+                metadata={"generation_id": generation_id},
+            )
+
+            return {
+                "generation_id": generation_id,
+                "kling_task_id": kling_task_id,
+                "status": data.get("task_status", "submitted"),
+                "request_id": request_id,
+            }
+
+        except Exception as e:
+            error_code = getattr(e, "code", None)
+            await self._update_db_record(generation_id, {
+                "status": KlingTaskStatus.FAILED.value,
+                "error_message": str(e),
+                "error_code": error_code,
+            })
+            raise
+
+    async def query_element(self, task_id: str) -> dict:
+        """Query element creation status and extract element_voice_info.
+
+        Endpoint: GET /v1/general/advanced-custom-elements/{task_id}
+
+        After element creation succeeds, use this to extract:
+        - element_id
+        - element_voice_info.voice_id
+        - element_voice_info.voice_name
+        - element_voice_info.trial_url
+
+        Args:
+            task_id: Kling task_id from create response.
+
+        Returns:
+            Full element query response data.
+        """
+        url = f"{self.BASE_URL}{self.ENDPOINTS[KlingEndpoint.ADVANCED_CUSTOM_ELEMENTS]}/{task_id}"
+        return await self._get(url)
+
+    async def delete_element(self, element_id: str) -> dict:
+        """Delete a custom element.
+
+        Endpoint: POST /v1/general/delete-elements
+
+        Used to clean up temporary elements created solely for voice extraction.
+
+        Args:
+            element_id: Element ID to delete.
+
+        Returns:
+            API response dict.
+        """
+        url = f"{self.BASE_URL}/v1/general/delete-elements"
+        client = await self._get_client()
+        response = await client.post(
+            url,
+            json={"element_id": element_id},
+            headers=self._headers(),
+        )
+        response.raise_for_status()
+        return response.json()
+
     async def generate_omni_video(
         self,
         organization_id: str,

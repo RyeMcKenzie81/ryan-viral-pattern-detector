@@ -929,11 +929,17 @@ viraltracker/
 │   ├── tiktok.py                 # TikTokService
 │   ├── youtube.py                # YouTubeService
 │   ├── facebook.py               # FacebookService
-│   ├── gemini.py                 # GeminiService (AI)
+│   ├── gemini.py                 # GeminiService (AI image/text generation)
 │   ├── organization_service.py   # Org CRUD, membership, roles
 │   ├── feature_service.py        # Feature flags per org
 │   ├── usage_tracker.py          # AI/API usage tracking
 │   ├── usage_limit_service.py    # Per-org rate limits
+│   ├── kling_video_service.py    # Kling AI video generation (Omni, avatar, elements)
+│   ├── kling_models.py           # Kling enums, request/response models
+│   ├── avatar_service.py         # Brand avatar management (images, video elements, voice)
+│   ├── veo_service.py            # Google Veo 3.1 video generation
+│   ├── veo_models.py             # BrandAvatar, VeoConfig, generation models
+│   ├── video_recreation_service.py # Video recreation orchestration
 │   └── models.py                 # Pydantic result models
 │
 └── cli/
