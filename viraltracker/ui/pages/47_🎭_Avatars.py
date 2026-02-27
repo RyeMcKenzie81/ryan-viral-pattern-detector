@@ -109,7 +109,11 @@ def get_products_for_brand(brand_id: str):
 
 def run_async(coro):
     """Run async coroutine in Streamlit."""
-    return asyncio.get_event_loop().run_until_complete(coro)
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
 
 def download_image_from_storage(storage_path: str) -> bytes:
     """Download image from Supabase storage."""
