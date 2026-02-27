@@ -31,7 +31,8 @@ class KlingEndpoint(str, Enum):
     LIP_SYNC = "lip_sync"
     VIDEO_EXTEND = "video_extend"
     MULTI_SHOT = "multi_shot"
-    OMNI_VIDEO = "omni_video"  # deferred to V2
+    OMNI_VIDEO = "omni_video"
+    ADVANCED_CUSTOM_ELEMENTS = "advanced_custom_elements"
 
 
 class KlingTaskStatus(str, Enum):
@@ -57,6 +58,8 @@ class KlingGenerationType(str, Enum):
     LIP_SYNC = "lip_sync"
     VIDEO_EXTEND = "video_extend"
     MULTI_SHOT = "multi_shot"
+    OMNI_VIDEO = "omni_video"
+    ADVANCED_CUSTOM_ELEMENTS = "advanced_custom_elements"
 
 
 class KlingAspectRatio(str, Enum):
@@ -323,6 +326,122 @@ class MultiShotRequest(BaseModel):
         description="URL or Base64 frontal image of the element"
     )
     callback_url: Optional[str] = Field(None, description="Callback URL (deferred to V2)")
+    external_task_id: Optional[str] = Field(None, description="Custom task ID for tracking")
+
+
+class OmniVideoImageRef(BaseModel):
+    """Image reference for Omni Video keyframes.
+
+    Used in the image_list parameter of OmniVideoRequest.
+    """
+    image_url: str = Field(
+        ...,
+        description="URL or Base64 image (jpg/jpeg/png, <=10MB, >=300px, aspect 1:2.5~2.5:1)"
+    )
+    type: Literal["first_frame", "end_frame"] = Field(
+        ...,
+        description="Keyframe type: first_frame or end_frame. First frame required before end frame."
+    )
+
+
+class OmniVideoRequest(BaseModel):
+    """Request for Omni Video generation (Kling 3.0).
+
+    Endpoint: POST /v1/videos/omni-video
+
+    Supports first/last frame keyframes for scene transitions,
+    element references for character consistency, and native audio.
+
+    Constraints:
+    - First frame required before end frame
+    - End frame NOT supported when >2 images in image_list
+    - Total images + elements must be <=7 (no video ref) or <=4 (with video ref)
+    - Prompt uses <<<element_1>>>, <<<image_1>>> syntax (triple angle brackets)
+    """
+    model_name: str = Field(
+        default="kling-v3-omni",
+        description="Model name: kling-v3-omni or kling-video-o1"
+    )
+    prompt: str = Field(
+        ...,
+        max_length=2500,
+        description="Video prompt (max 2500 chars). Use <<<element_1>>> for element refs, <<<image_1>>> for image refs."
+    )
+    multi_shot: bool = Field(
+        default=False,
+        description="Enable multi-shot mode (up to 6 shots, 15s total)"
+    )
+    image_list: Optional[List[OmniVideoImageRef]] = Field(
+        None,
+        description="Keyframe images: first_frame and/or end_frame"
+    )
+    element_list: Optional[List[Dict[str, str]]] = Field(
+        None,
+        description="Pre-created element IDs for character consistency. Each: {element_id: str}"
+    )
+    video_list: Optional[List[Dict[str, str]]] = Field(
+        None,
+        description="Reference video IDs"
+    )
+    sound: Literal["on", "off"] = Field(
+        default="on",
+        description="Native audio generation: on/off"
+    )
+    mode: Literal["std", "pro"] = Field(
+        default="pro",
+        description="Quality mode: std (720p) or pro (1080p)"
+    )
+    aspect_ratio: Optional[str] = Field(
+        None,
+        description="Aspect ratio: 16:9, 9:16, 1:1. Required when no first-frame image."
+    )
+    duration: str = Field(
+        default="5",
+        description="Duration in seconds as string: '3' through '15'"
+    )
+    callback_url: Optional[str] = Field(None, description="Callback URL")
+    external_task_id: Optional[str] = Field(None, description="Custom task ID for tracking")
+
+    @field_validator('duration')
+    @classmethod
+    def validate_duration(cls, v):
+        """Validate duration is a string between '3' and '15'."""
+        try:
+            d = int(v)
+        except (ValueError, TypeError):
+            raise ValueError(f"Duration must be a numeric string, got '{v}'")
+        if d < 3 or d > 15:
+            raise ValueError(f"Duration must be between 3 and 15, got {d}")
+        return str(d)
+
+
+class CreateElementRequest(BaseModel):
+    """Request for creating a custom element for character consistency.
+
+    Endpoint: POST /v1/general/advanced-custom-elements
+
+    Elements are created once per character/avatar and reused across all
+    video generations via element_list in OmniVideoRequest.
+    """
+    element_name: str = Field(
+        ...,
+        max_length=20,
+        description="Element name (max 20 chars)"
+    )
+    element_description: str = Field(
+        ...,
+        max_length=100,
+        description="Element description (max 100 chars)"
+    )
+    reference_type: Literal["image_refer", "video_refer"] = Field(
+        default="image_refer",
+        description="Reference type: image_refer or video_refer"
+    )
+    element_image_list: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Image references: {frontal_image: str, refer_images: [{image_url: str}]}"
+    )
+    callback_url: Optional[str] = Field(None, description="Callback URL")
     external_task_id: Optional[str] = Field(None, description="Custom task ID for tracking")
 
 

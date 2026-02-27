@@ -20,6 +20,9 @@ from viraltracker.services.kling_models import (
     LipSyncRequest,
     VideoExtendRequest,
     MultiShotRequest,
+    OmniVideoRequest,
+    OmniVideoImageRef,
+    CreateElementRequest,
     KlingCreateResponse,
     KlingQueryResponse,
     KlingIdentifyFaceResponse,
@@ -45,8 +48,11 @@ class TestKlingEndpoint:
         assert KlingEndpoint.MULTI_SHOT == "multi_shot"
         assert KlingEndpoint.OMNI_VIDEO == "omni_video"
 
+    def test_advanced_custom_elements_value(self):
+        assert KlingEndpoint.ADVANCED_CUSTOM_ELEMENTS == "advanced_custom_elements"
+
     def test_endpoint_count(self):
-        assert len(KlingEndpoint) == 8
+        assert len(KlingEndpoint) == 9
 
 
 class TestKlingTaskStatus:
@@ -73,8 +79,14 @@ class TestKlingGenerationType:
         assert KlingGenerationType.VIDEO_EXTEND == "video_extend"
         assert KlingGenerationType.MULTI_SHOT == "multi_shot"
 
+    def test_omni_video_value(self):
+        assert KlingGenerationType.OMNI_VIDEO == "omni_video"
+
+    def test_advanced_custom_elements_value(self):
+        assert KlingGenerationType.ADVANCED_CUSTOM_ELEMENTS == "advanced_custom_elements"
+
     def test_type_count(self):
-        assert len(KlingGenerationType) == 7
+        assert len(KlingGenerationType) == 9
 
 
 class TestKlingMode:
@@ -260,6 +272,145 @@ class TestVideoExtendRequest:
     def test_cfg_scale_default(self):
         req = VideoExtendRequest(video_id="v")
         assert req.cfg_scale == 0.5
+
+
+class TestOmniVideoImageRef:
+    def test_first_frame(self):
+        ref = OmniVideoImageRef(image_url="http://example.com/img.png", type="first_frame")
+        assert ref.type == "first_frame"
+
+    def test_end_frame(self):
+        ref = OmniVideoImageRef(image_url="base64data", type="end_frame")
+        assert ref.type == "end_frame"
+
+    def test_invalid_type_rejected(self):
+        with pytest.raises(ValidationError):
+            OmniVideoImageRef(image_url="img", type="middle_frame")
+
+    def test_image_url_required(self):
+        with pytest.raises(ValidationError):
+            OmniVideoImageRef(type="first_frame")
+
+
+class TestOmniVideoRequest:
+    def test_minimal_valid(self):
+        req = OmniVideoRequest(prompt="A sunset over the ocean")
+        assert req.model_name == "kling-v3-omni"
+        assert req.sound == "on"
+        assert req.mode == "pro"
+        assert req.duration == "5"
+        assert req.multi_shot is False
+
+    def test_prompt_required(self):
+        with pytest.raises(ValidationError):
+            OmniVideoRequest()
+
+    def test_prompt_max_length(self):
+        req = OmniVideoRequest(prompt="a" * 2500)
+        assert len(req.prompt) == 2500
+
+        with pytest.raises(ValidationError):
+            OmniVideoRequest(prompt="a" * 2501)
+
+    def test_duration_validation_range(self):
+        req = OmniVideoRequest(prompt="test", duration="3")
+        assert req.duration == "3"
+
+        req = OmniVideoRequest(prompt="test", duration="15")
+        assert req.duration == "15"
+
+        with pytest.raises(ValidationError):
+            OmniVideoRequest(prompt="test", duration="2")
+
+        with pytest.raises(ValidationError):
+            OmniVideoRequest(prompt="test", duration="16")
+
+    def test_duration_accepts_string_integers(self):
+        for d in range(3, 16):
+            req = OmniVideoRequest(prompt="test", duration=str(d))
+            assert req.duration == str(d)
+
+    def test_sound_literal(self):
+        req = OmniVideoRequest(prompt="test", sound="off")
+        assert req.sound == "off"
+
+        with pytest.raises(ValidationError):
+            OmniVideoRequest(prompt="test", sound="yes")
+
+    def test_mode_literal(self):
+        req = OmniVideoRequest(prompt="test", mode="std")
+        assert req.mode == "std"
+
+        with pytest.raises(ValidationError):
+            OmniVideoRequest(prompt="test", mode="ultra")
+
+    def test_with_image_list(self):
+        req = OmniVideoRequest(
+            prompt="test",
+            image_list=[
+                {"image_url": "http://img1.jpg", "type": "first_frame"},
+                {"image_url": "http://img2.jpg", "type": "end_frame"},
+            ],
+        )
+        assert len(req.image_list) == 2
+
+    def test_with_element_list(self):
+        req = OmniVideoRequest(
+            prompt="<<<element_1>>> walks forward",
+            element_list=[{"element_id": "elem-123"}],
+        )
+        assert len(req.element_list) == 1
+
+
+class TestCreateElementRequest:
+    def test_minimal_valid(self):
+        req = CreateElementRequest(
+            element_name="Avatar",
+            element_description="Brand spokesperson",
+        )
+        assert req.element_name == "Avatar"
+        assert req.reference_type == "image_refer"
+
+    def test_name_max_length(self):
+        req = CreateElementRequest(
+            element_name="a" * 20,
+            element_description="test",
+        )
+        assert len(req.element_name) == 20
+
+        with pytest.raises(ValidationError):
+            CreateElementRequest(
+                element_name="a" * 21,
+                element_description="test",
+            )
+
+    def test_description_max_length(self):
+        req = CreateElementRequest(
+            element_name="test",
+            element_description="a" * 100,
+        )
+        assert len(req.element_description) == 100
+
+        with pytest.raises(ValidationError):
+            CreateElementRequest(
+                element_name="test",
+                element_description="a" * 101,
+            )
+
+    def test_with_image_list(self):
+        req = CreateElementRequest(
+            element_name="Avatar",
+            element_description="test",
+            element_image_list={
+                "frontal_image": "http://front.jpg",
+                "refer_images": [{"image_url": "http://side.jpg"}],
+            },
+        )
+        assert req.element_image_list["frontal_image"] == "http://front.jpg"
+
+    def test_required_fields(self):
+        with pytest.raises(ValidationError):
+            CreateElementRequest()
 
 
 # ---------------------------------------------------------------------------

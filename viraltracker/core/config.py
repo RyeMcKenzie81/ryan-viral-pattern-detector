@@ -29,7 +29,6 @@ class Config:
     GEMINI_API_KEY: str = os.getenv('GEMINI_API_KEY', '')
     GEMINI_VIDEO_MODEL: str = 'models/gemini-2.5-pro'  # Gemini 2.5 Pro for video analysis
     GEMINI_IMAGE_MODEL: str = 'models/gemini-3-pro-image-preview'  # Updated to Gemini 3 Pro
-    GEMINI_TEXT_MODEL: str = 'models/gemini-2.5-flash'  # Text-only model for cheaper calls
 
     # OpenAI / Sora
     OPENAI_API_KEY: str = os.getenv('OPENAI_API_KEY', '')
@@ -96,9 +95,7 @@ class Config:
         # Anthropic
         "claude-opus-4-5-20251101": (15.00, 75.00),
         "claude-opus-4-5": (15.00, 75.00),  # Alias
-        "claude-opus-4-6": (15.00, 75.00),
         "claude-sonnet-4-5-20250929": (3.00, 15.00),
-        "claude-sonnet-4-6": (3.00, 15.00),
         "claude-sonnet-4-20250514": (3.00, 15.00),
         "claude-sonnet-4": (3.00, 15.00),  # Alias
         # OpenAI
@@ -134,6 +131,11 @@ class Config:
         "kling_video_pro_5s": 0.33,            # per 5s clip
         "kling_lip_sync": 0.10,               # per task (estimate)
         "kling_multi_shot": 0.05,             # per task (estimate)
+        # Kling Omni Video (3.0) — per second, official pricing
+        "kling_omni_std_seconds": 0.084,        # 720p, no audio
+        "kling_omni_std_audio_seconds": 0.112,  # 720p, with audio
+        "kling_omni_pro_seconds": 0.112,        # 1080p, no audio
+        "kling_omni_pro_audio_seconds": 0.14,   # 1080p, with audio
     }
 
     @classmethod

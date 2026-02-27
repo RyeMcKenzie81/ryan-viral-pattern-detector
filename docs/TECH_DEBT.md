@@ -692,179 +692,28 @@ Implemented in commit `7d744cd` — 6-phase plan covering Brand Research "Create
 - `viraltracker/ui/pages/06_🚀_Client_Onboarding.py` — onboarding dimension collection (~line 1880)
 - `viraltracker/services/client_onboarding_service.py` — import logic (~line 1093)
 
-### 28. Ad Scheduler "Run Now" Shows Wrong Next Run Time
-
-**Priority**: Low
-**Complexity**: Low
-**Added**: 2026-02-13
-
-**Context**: When using "Run Now" in the Ad Scheduler, the job is created and the worker picks it up correctly, but the Scheduled Tasks list shows a next-day timestamp (e.g., "Next: Feb 14, 05:38 AM") instead of the imminent run time. Likely a timezone mismatch between the `next_run_at` value set by the UI (PST) and how it's displayed on the Scheduled Tasks page.
-
-**Related files**:
-- `viraltracker/ui/pages/24_📅_Ad_Scheduler.py` — `_build_ad_creation_job_data()` sets `next_run_at`
-- `viraltracker/ui/pages/61_📅_Scheduled_Tasks.py` — displays `next_run_at`
-
-### 29. Scheduled Tasks — Show Completion Time and Duration
-
-**Priority**: Low
-**Complexity**: Low
-**Added**: 2026-02-13
-
-**Context**: The Scheduled Tasks page shows when a job last ran but not when it completed or how long it took. Adding completion timestamp and duration (e.g., "Completed in 2m 34s") would help with monitoring and debugging slow jobs.
-
-**What's needed**: The `scheduled_job_runs` table likely already has `started_at` and `completed_at` (or similar) — surface these in the UI. Calculate and display duration.
-
-**Related files**:
-- `viraltracker/ui/pages/61_📅_Scheduled_Tasks.py` — job list and detail views
-- `viraltracker/worker/scheduler_worker.py` — sets run timestamps
-
-### 30. Add Logfire Instrumentation to Cron/Worker Server
-
-**Priority**: Medium
-**Complexity**: Low-Medium
-**Added**: 2026-02-13
-
-**Context**: The Streamlit app is instrumented with Logfire for observability, but the Railway cron/worker process (`scheduler_worker.py`) is not. Adding Logfire to the worker would give visibility into job execution times, error rates, Meta API call latency, and ad creation pipeline performance — all currently only visible via Railway logs.
-
-**What's needed**: Initialize Logfire in the worker entrypoint, add span instrumentation around key operations (job execution, Meta API calls, ad generation). Consider using the existing `LOGFIRE_TOKEN` env var or a separate worker-specific token.
-
-**Related files**:
-- `viraltracker/worker/scheduler_worker.py` — worker entrypoint and job execution
-- `viraltracker/worker/` — any other worker modules
-
-### 31. Scheduled Tasks — Show "Running" Indicator in Job List
-
-**Priority**: Low
-**Complexity**: Low
-**Added**: 2026-02-13
-
-**Context**: When a scheduled job is actively running, the job list shows no visual indicator — it still displays the green active dot and "Runs: 0/1". You have to click "View" to see the run status. A spinning indicator or "🔄 Running" badge in the list view would make it immediately obvious which jobs are in progress.
-
-**What's needed**: Check `scheduled_job_runs` for an active run (status = `running` or `in_progress`) when rendering the job list, and show a visual indicator (e.g., spinner emoji, "Running..." text, or a pulsing badge) next to the job name or in the "Last" column.
-
-**Related files**:
-- `viraltracker/ui/pages/61_📅_Scheduled_Tasks.py` — job list rendering
-
-### ~~32. Template Scoring Service — Database Client Import~~ (RESOLVED)
-
-**Priority**: Low
-**Complexity**: Low
-**Added**: 2026-02-13
-**Resolved**: 2026-02-13
-
-**Context**: Fixed — now imports from `viraltracker.core.database` instead of `viraltracker.ui.auth`.
-
-### 33. V2 UI Page — Async Event Loop for Scoring Preview
-
-**Priority**: Low
-**Complexity**: Low
-**Added**: 2026-02-13
-
-**Context**: `_run_template_preview()` in the V2 UI page creates a new `asyncio.new_event_loop()` to run async scoring functions. This works but isn't ideal in Streamlit's event loop. Consider using `asyncio.run()` or Streamlit's native async support when available.
-
-**Related files**:
-- `viraltracker/ui/pages/21b_🎨_Ad_Creator_V2.py` — `_run_template_preview()`
-
-### 34. Landing Page Multipass — Per-Section Text Fidelity
+### 29. Kling Multi-Shot Mode — Batch Scene Generation
 
 **Priority**: Medium
 **Complexity**: Medium
-**Added**: 2026-02-23
+**Added**: 2026-02-26
 
-**Context**: `text_fidelity_vs_source` in the phase diagnostics tool uses bag-of-words Jaccard similarity. If section 2's text lands in section 5's slot, similarity is still high — content shuffling goes undetected. Per-section comparison would catch this but requires mapping source markdown sections to output HTML sections.
+**Context**: Kling's Omni Video API supports a native multi-shot mode (`multi_shot: true`, `shot_type: "customize"`, `multi_prompt: [...]`) that can generate up to 6 shots (15s total) in a single API call. This handles inter-scene transitions natively and could replace our current per-scene generation approach.
 
-**What's needed**:
-1. Map source markdown sections (from segmenter) to output `data-section` divs
-2. Compute per-section text fidelity (not just page-level)
-3. Flag sections where content appears to have been shuffled between slots
+**Benefits**:
+- Better inter-scene transitions (Kling handles them natively instead of keyframe chaining)
+- Fewer API calls (1 call per 6 scenes instead of 1 per scene)
+- Potentially lower cost (fewer API overhead calls)
 
-**Related files**:
-- `viraltracker/services/landing_page_analysis/multipass/phase_diagnostics.py`
-- `viraltracker/services/landing_page_analysis/multipass/invariants.py`
+**Constraints**:
+- Max 15s total duration across all shots
+- Max 6 shots per call
+- Best suited for short-form videos (TikTok/Reels)
 
----
-
-### 35. Landing Page Multipass — Visual SSIM Per Phase
-
-**Priority**: Low
-**Complexity**: High
-**Added**: 2026-02-23
-
-**Context**: The gold standard for measuring "did this phase improve visual quality?" is rendering each phase snapshot in a headless browser and computing SSIM (Structural Similarity Index) against the original screenshot. Currently we only have text-based metrics. Visual comparison would catch CSS regressions, layout breaks, and color drift that text metrics miss.
-
-**What's needed**:
-1. Headless browser rendering infrastructure (Playwright or Puppeteer)
-2. Render each phase snapshot HTML to PNG at consistent viewport
-3. Compute SSIM against original page screenshot
-4. Add per-phase visual score to diagnostic report
-
----
-
-### 36. Landing Page Multipass — Inline Style Tracking
-
-**Priority**: Low
-**Complexity**: Low-Medium
-**Added**: 2026-02-23
-
-**Context**: Phase diagnostics `css_chars` only measures `<style>` blocks. Phase 4 (patch pass) primarily modifies `style="..."` attributes on elements. If Phase 4 strips inline styles, the diagnostic tool won't detect it — pages silently lose styling.
-
-**What's needed**:
-1. Add `inline_style_chars` metric that sums characters inside all `style="..."` attributes
-2. Track delta between phases to detect Phase 4 stripping inline styles
-3. Add to diagnostic report as informational metric
+**What's needed**: Restructure `generate_video_clips()` to batch consecutive scenes into multi-shot calls when total duration ≤15s and scene count ≤6. Fall back to individual calls for longer videos or when scenes exceed limits.
 
 **Related files**:
-- `viraltracker/services/landing_page_analysis/multipass/phase_diagnostics.py`
-
----
-
-### 37. Landing Page Multipass — Per-Phase Timing
-
-**Priority**: Medium
-**Complexity**: Low
-**Added**: 2026-02-23
-
-**Context**: The pipeline has a token budget system that can short-circuit later phases. When Phase 3 or 4 is skipped due to budget exhaustion, it's invisible in the current diagnostic metrics. Per-phase timing would immediately show which phase consumed the budget and whether short-circuits occurred.
-
-**What's needed**:
-1. Record `time.monotonic()` before/after each phase in `pipeline.py`
-2. Store elapsed time in phase snapshots dict (e.g., `phase_1_elapsed_ms`)
-3. Add timing to diagnostic report output
-4. Flag phases that were skipped due to budget exhaustion
-
-**Related files**:
-- `viraltracker/services/landing_page_analysis/multipass/pipeline.py`
-- `viraltracker/services/landing_page_analysis/multipass/phase_diagnostics.py`
-
----
-
-### 38. Landing Page Multipass — Cross-Section Style Consistency
-
-**Priority**: Low
-**Complexity**: Medium
-**Added**: 2026-02-23
-
-**Context**: Phase 3 processes sections independently, potentially producing inconsistent fonts, colors, or spacing across sections. Two sections side-by-side could have different heading sizes or color schemes. Currently no metric detects this — only visual inspection catches it.
-
-**What's needed**:
-1. Parse CSS properties from each section's inline styles and `<style>` blocks
-2. Compare font-family, font-size, color, and spacing across sections
-3. Flag significant inconsistencies (e.g., section 1 uses 16px body text, section 3 uses 14px)
-4. Add consistency score to diagnostic report
-
-**Related files**:
-- `viraltracker/services/landing_page_analysis/multipass/phase_diagnostics.py`
-
----
-
-### 39. V1/V2 Comparison Script — Live Testing Needed
-
-**Priority**: Medium
-**Complexity**: Medium
-**Added**: 2026-02-13
-
-**Context**: The `scripts/v1_v2_comparison.py` script has `--dry-run` and `--live` modes. The dry-run mode verifies compile/import/structure checks. The live mode (which actually runs both pipelines) requires a deployed environment with LLM API access. Should be run as part of Phase 1 validation before merging.
-
-**Related files**:
-- `scripts/v1_v2_comparison.py`
+- `viraltracker/services/video_recreation_service.py` — `generate_video_clips()` loop
+- `viraltracker/services/kling_video_service.py` — `generate_omni_video()` would need multi_shot params
+- `viraltracker/services/kling_models.py` — `OmniVideoRequest` already has `multi_shot` field
 

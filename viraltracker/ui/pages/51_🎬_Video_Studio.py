@@ -369,8 +369,30 @@ with tab_recreation:
 
         step1, step2, step3, step4 = st.columns(4)
 
+        has_adapted = bool(candidate.get("adapted_storyboard"))
+        scene_keyframes = candidate.get("scene_keyframes") or []
+        has_keyframes = bool(scene_keyframes) and any(
+            kf.get("status") == "completed" for kf in scene_keyframes
+        )
+        has_clips = bool(candidate.get("generated_clips"))
+        successful_clips = [
+            c for c in (candidate.get("generated_clips") or [])
+            if c.get("status") == "succeed"
+        ]
+        has_final = bool(candidate.get("final_video_path"))
+
+        # Load avatars for keyframe/clip steps (shared across step2 and step3)
+        avatar_list = []
+        if has_adapted:
+            from viraltracker.core.database import get_supabase_client
+            sb = get_supabase_client()
+            avatars = sb.table("brand_avatars").select(
+                "id, name, kling_element_id"
+            ).eq("brand_id", brand_id).execute()
+            avatar_list = avatars.data or []
+
+        # ---- Step 1: Adapt Storyboard ----
         with step1:
-            has_adapted = bool(candidate.get("adapted_storyboard"))
             st.markdown(f"**1. Adapt** {'✅' if has_adapted else '⬜'}")
             if not has_adapted:
                 brand_name = st.text_input("Brand name", key="vs_brand_name")
@@ -388,52 +410,156 @@ with tab_recreation:
                         else:
                             st.error("Adaptation failed")
 
+        # ---- Step 2: Keyframes (NEW — for Kling Omni) ----
         with step2:
-            has_audio = bool(candidate.get("audio_segments"))
-            st.markdown(f"**2. Audio** {'✅' if has_audio else '⬜'}")
-            if has_adapted and not has_audio:
-                voice_id = st.text_input("ElevenLabs Voice ID", key="vs_voice_id")
-                if voice_id and st.button("Generate Audio"):
-                    with st.spinner("Generating audio segments..."):
-                        result = _run_async(svc.generate_audio_segments(
-                            selected_id, voice_id=voice_id
-                        ))
-                        if result:
-                            st.success("Audio generated!")
-                            st.rerun()
-                        else:
-                            st.error("Audio generation failed")
-            elif has_audio:
-                segments = candidate.get("audio_segments") or []
-                audio_count = sum(1 for s in segments if s.get("has_audio"))
-                total_dur = candidate.get("total_audio_duration_sec", 0)
-                st.caption(f"{audio_count} audio segments, {total_dur:.1f}s total")
+            st.markdown(f"**2. Keyframes** {'✅' if has_keyframes else '⬜'}")
+            if has_adapted:
+                if not avatar_list:
+                    st.caption("No avatars found for this brand.")
+                else:
+                    avatar_options = {a["name"]: a["id"] for a in avatar_list}
+                    selected_avatar_name = st.selectbox(
+                        "Avatar",
+                        list(avatar_options.keys()),
+                        key="vs_avatar_select",
+                    )
+                    selected_avatar_id = avatar_options.get(selected_avatar_name)
+                    selected_avatar = next(
+                        (a for a in avatar_list if a["id"] == selected_avatar_id), {}
+                    )
 
+                    # Element status
+                    if selected_avatar.get("kling_element_id"):
+                        st.caption("Element ready")
+                    else:
+                        if st.button("Create Element", key="vs_create_element"):
+                            with st.spinner("Creating Kling element (this may take a minute)..."):
+                                try:
+                                    from viraltracker.services.kling_video_service import KlingVideoService
+                                    from viraltracker.services.kling_models import KlingEndpoint
+                                    kling_svc = KlingVideoService()
+
+                                    # Get avatar frontal image
+                                    avatar_full = sb.table("brand_avatars").select(
+                                        "reference_image_1"
+                                    ).eq("id", selected_avatar_id).single().execute()
+                                    ref_path = avatar_full.data.get("reference_image_1", "")
+                                    parts = ref_path.split("/", 1)
+                                    bucket = parts[0]
+                                    path = parts[1] if len(parts) > 1 else ref_path
+                                    signed = sb.storage.from_(bucket).create_signed_url(path, 3600)
+                                    frontal_url = signed.get("signedURL", "")
+
+                                    gen_result = _run_async(kling_svc.create_element(
+                                        organization_id=org_id,
+                                        brand_id=brand_id,
+                                        element_name=selected_avatar_name[:20],
+                                        element_description=f"Brand avatar: {selected_avatar_name}"[:100],
+                                        frontal_image=frontal_url,
+                                    ))
+
+                                    # Poll for completion using poll_task (not poll_and_complete,
+                                    # since elements return element_id not videos)
+                                    task_id = gen_result.get("kling_task_id")
+                                    gen_id = gen_result.get("generation_id")
+                                    if task_id:
+                                        poll_result = _run_async(kling_svc.poll_task(
+                                            task_id=task_id,
+                                            endpoint_type=KlingEndpoint.ADVANCED_CUSTOM_ELEMENTS,
+                                        ))
+                                        task_data = poll_result.get("data", {})
+                                        task_status = task_data.get("task_status", "")
+                                        task_result = task_data.get("task_result", {})
+
+                                        if task_status == "succeed":
+                                            elements = task_result.get("elements", [])
+                                            element_id = elements[0].get("element_id") if elements else None
+                                            if element_id:
+                                                sb.table("brand_avatars").update({
+                                                    "kling_element_id": element_id
+                                                }).eq("id", selected_avatar_id).execute()
+                                                st.success(f"Element created: {element_id[:12]}...")
+                                            else:
+                                                st.warning("Element created but ID not extracted. Check Kling dashboard.")
+                                        else:
+                                            st.error(f"Element creation failed: {task_data.get('task_status_msg', 'Unknown error')}")
+
+                                    _run_async(kling_svc.close())
+                                except Exception as e:
+                                    st.error(f"Element creation failed: {e}")
+                            st.rerun()
+
+                    # Generate keyframes button
+                    if not has_keyframes and selected_avatar_id:
+                        keyframe_generating = any(
+                            kf.get("status") == "generating" for kf in scene_keyframes
+                        )
+                        if st.button(
+                            "Generate Keyframes",
+                            key="vs_gen_keyframes",
+                            disabled=keyframe_generating,
+                        ):
+                            with st.spinner("Generating keyframe images..."):
+                                result = _run_async(svc.generate_scene_keyframes(
+                                    selected_id,
+                                    avatar_id=selected_avatar_id,
+                                ))
+                                if result:
+                                    st.success("Keyframes generated!")
+                                    st.rerun()
+                                else:
+                                    st.error("Keyframe generation failed")
+                    elif has_keyframes:
+                        completed_kf = sum(1 for kf in scene_keyframes if kf.get("status") == "completed")
+                        total_kf = len(scene_keyframes)
+                        st.caption(f"{completed_kf}/{total_kf} scenes have keyframes")
+
+        # ---- Step 3: Generate Clips ----
         with step3:
-            has_clips = bool(candidate.get("generated_clips"))
-            successful_clips = [
-                c for c in (candidate.get("generated_clips") or [])
-                if c.get("status") == "succeed"
-            ]
             st.markdown(f"**3. Clips** {'✅' if successful_clips else '⬜'}")
             if has_adapted and not has_clips:
                 mode = st.selectbox("Quality", ["std", "pro"], key="vs_kling_mode")
+                engine_choices = [
+                    "Kling Omni (recommended)" if has_keyframes else "Auto (recommended)",
+                    "Auto",
+                    "VEO only",
+                    "Kling only",
+                ]
+                if has_keyframes and "Auto (recommended)" in engine_choices:
+                    engine_choices.remove("Auto (recommended)")
                 engine_choice = st.selectbox(
                     "Engine",
-                    ["Auto (recommended)", "VEO only", "Kling only"],
+                    engine_choices,
                     key="vs_engine_choice",
-                    help="Auto routes talking-head → Kling, B-roll → VEO. Use 'VEO only' if Kling keys are not configured.",
+                    help=(
+                        "Kling Omni uses keyframes + element refs for character consistency. "
+                        "Auto routes talking-head to Kling Avatar, B-roll to VEO."
+                    ),
                 )
                 engine_override = None
                 if engine_choice == "VEO only":
                     engine_override = "veo"
                 elif engine_choice == "Kling only":
                     engine_override = "kling"
+                elif engine_choice.startswith("Kling Omni"):
+                    engine_override = "kling_omni"
+
+                # Get avatar_id for clip generation
+                clip_avatar_id = None
+                if "vs_avatar_select" in st.session_state:
+                    avatar_name = st.session_state.vs_avatar_select
+                    if avatar_list:
+                        clip_avatar_id = next(
+                            (a["id"] for a in avatar_list if a["name"] == avatar_name), None
+                        )
 
                 if st.button("Generate Video Clips"):
                     with st.spinner("Generating clips (this may take several minutes)..."):
                         result = _run_async(svc.generate_video_clips(
-                            selected_id, mode=mode, engine_override=engine_override
+                            selected_id,
+                            avatar_id=clip_avatar_id,
+                            mode=mode,
+                            engine_override=engine_override,
                         ))
                         if result:
                             st.success("Clips generated!")
@@ -445,10 +571,16 @@ with tab_recreation:
                 ok = sum(1 for c in clips if c.get("status") == "succeed")
                 st.caption(f"{ok}/{len(clips)} clips succeeded")
 
+        # ---- Step 4: Assemble Final Video ----
         with step4:
-            has_final = bool(candidate.get("final_video_path"))
             st.markdown(f"**4. Final** {'✅' if has_final else '⬜'}")
             if successful_clips and not has_final:
+                replace_voice = st.checkbox(
+                    "Replace voice with ElevenLabs",
+                    value=False,
+                    key="vs_replace_voice",
+                    help="Replace Kling native audio with ElevenLabs voice. Only needed if brand requires a specific voice.",
+                )
                 if st.button("Assemble Final Video"):
                     with st.spinner("Concatenating clips..."):
                         result = _run_async(svc.concatenate_clips(selected_id))
@@ -460,17 +592,6 @@ with tab_recreation:
             elif has_final:
                 st.caption(f"Duration: {candidate.get('final_video_duration_sec', '?')}s")
                 st.caption(f"Cost: {format_cost(candidate.get('total_generation_cost_usd'))}")
-                # Download link
-                final_path = candidate["final_video_path"]
-                try:
-                    from viraltracker.core.database import get_supabase_client
-                    sb = get_supabase_client()
-                    parts = final_path.split("/", 1)
-                    signed = sb.storage.from_(parts[0]).create_signed_url(parts[1], 3600)
-                    if signed and signed.get("signedURL"):
-                        st.markdown(f"[Download Final Video]({signed['signedURL']})")
-                except Exception:
-                    st.caption(f"Path: `{final_path}`")
 
         # ---- Text Overlay Instructions ----
         overlays = candidate.get("text_overlay_instructions")
@@ -546,15 +667,7 @@ with tab_history:
 
                     if final_path:
                         st.markdown("**Final Video**: Available in storage")
-                        try:
-                            from viraltracker.core.database import get_supabase_client
-                            sb = get_supabase_client()
-                            parts = final_path.split("/", 1)
-                            signed = sb.storage.from_(parts[0]).create_signed_url(parts[1], 3600)
-                            if signed and signed.get("signedURL"):
-                                st.markdown(f"[Download Final Video]({signed['signedURL']})")
-                        except Exception:
-                            st.code(final_path, language=None)
+                        st.code(final_path, language=None)
 
                     overlays = cand.get("text_overlay_instructions")
                     if overlays:

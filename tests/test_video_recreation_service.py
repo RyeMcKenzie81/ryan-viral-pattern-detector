@@ -22,12 +22,14 @@ from viraltracker.services.video_recreation_service import (
     route_scene_to_engine,
     compute_nearest_veo_duration,
     compute_nearest_kling_duration,
+    compute_nearest_omni_duration,
     split_scene_if_needed,
     estimate_generation_cost,
     # Constants
     SCENE_TALKING_HEAD,
     SCENE_BROLL,
     ENGINE_KLING,
+    ENGINE_KLING_OMNI,
     ENGINE_VEO,
     SCORING_WEIGHTS,
     SCORING_VERSION,
@@ -351,6 +353,15 @@ class TestRouteSceneToEngine:
     def test_unknown_type_routes_to_veo(self):
         assert route_scene_to_engine("unknown", 5) == ENGINE_VEO
 
+    def test_has_keyframes_routes_to_kling_omni(self):
+        assert route_scene_to_engine(SCENE_TALKING_HEAD, 10, has_keyframes=True) == ENGINE_KLING_OMNI
+
+    def test_has_keyframes_overrides_broll(self):
+        assert route_scene_to_engine(SCENE_BROLL, 5, has_keyframes=True) == ENGINE_KLING_OMNI
+
+    def test_no_keyframes_default_behavior(self):
+        assert route_scene_to_engine(SCENE_BROLL, 5, has_keyframes=False) == ENGINE_VEO
+
 
 # ---------------------------------------------------------------------------
 # Duration Computation
@@ -385,6 +396,24 @@ class TestDurationComputation:
 
     def test_kling_very_long(self):
         assert compute_nearest_kling_duration(12.0) == "10"
+
+    def test_omni_short_clamped(self):
+        assert compute_nearest_omni_duration(1.0) == "3"
+
+    def test_omni_exact(self):
+        assert compute_nearest_omni_duration(7.0) == "7"
+
+    def test_omni_long_clamped(self):
+        assert compute_nearest_omni_duration(20.0) == "15"
+
+    def test_omni_rounds(self):
+        assert compute_nearest_omni_duration(5.6) == "6"
+
+    def test_omni_boundary_3(self):
+        assert compute_nearest_omni_duration(3.0) == "3"
+
+    def test_omni_boundary_15(self):
+        assert compute_nearest_omni_duration(15.0) == "15"
 
 
 # ---------------------------------------------------------------------------
@@ -492,6 +521,38 @@ class TestEstimateGenerationCost:
         assert "veo_cost" in result
         assert "elevenlabs_cost" in result
         assert "total_estimated" in result
+
+    def test_omni_cost_with_use_omni(self):
+        scenes = [
+            {"scene_type": SCENE_TALKING_HEAD, "duration_sec": 5},
+            {"scene_type": SCENE_BROLL, "duration_sec": 5},
+        ]
+        result = estimate_generation_cost(scenes, use_omni=True)
+        assert result["kling_omni_cost"] > 0
+        assert result["veo_cost"] == 0.0
+        assert result["elevenlabs_cost"] == 0.0
+        assert result["gemini_keyframe_cost"] > 0
+
+    def test_omni_cost_keys_present(self):
+        scenes = [{"scene_type": SCENE_BROLL, "duration_sec": 5}]
+        result = estimate_generation_cost(scenes, use_omni=True)
+        assert "kling_omni_cost" in result
+        assert "kling_avatar_cost" in result
+        assert "gemini_keyframe_cost" in result
+        assert "total_estimated" in result
+
+    def test_omni_std_mode(self):
+        scenes = [{"scene_type": SCENE_BROLL, "duration_sec": 5}]
+        result_pro = estimate_generation_cost(scenes, use_omni=True, omni_mode="pro")
+        result_std = estimate_generation_cost(scenes, use_omni=True, omni_mode="std")
+        # Pro should cost more than std
+        assert result_pro["kling_omni_cost"] >= result_std["kling_omni_cost"]
+
+    def test_omni_no_elevenlabs(self):
+        """Omni uses native audio, so no ElevenLabs cost."""
+        scenes = [{"scene_type": SCENE_TALKING_HEAD, "duration_sec": 10}]
+        result = estimate_generation_cost(scenes, use_omni=True)
+        assert result["elevenlabs_cost"] == 0.0
 
 
 # ---------------------------------------------------------------------------
