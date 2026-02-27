@@ -139,6 +139,16 @@ if not brand_id:
 
 org_id = get_org_id()
 
+# Superusers have org_id="all" — resolve to the brand's actual org for DB queries
+if org_id == "all":
+    try:
+        from viraltracker.core.database import get_supabase_client as _get_sb
+        _brand_row = _get_sb().table("brands").select("organization_id").eq("id", brand_id).single().execute()
+        org_id = _brand_row.data["organization_id"]
+    except Exception:
+        st.warning("Could not determine organization for this brand.")
+        st.stop()
+
 
 # ============================================================================
 # Tabs
