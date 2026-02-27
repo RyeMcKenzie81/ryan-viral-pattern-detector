@@ -965,6 +965,7 @@ Requirements:
 
             # Query the element to get voice info
             query_result = await kling.query_element(task_id)
+            logger.info(f"query_element raw response (voice extraction): {query_result}")
             query_data = query_result.get("data", {})
             task_result = query_data.get("task_result", {})
             elements = task_result.get("elements", [])
@@ -1105,6 +1106,7 @@ Requirements:
                 timeout_seconds=600,
             )
 
+            logger.info(f"poll_task result for video element: {poll_result}")
             task_data = poll_result.get("data", {})
             task_status = task_data.get("task_status", "")
 
@@ -1114,6 +1116,7 @@ Requirements:
 
             # Query element to get element_id and voice info
             query_result = await kling.query_element(task_id)
+            logger.info(f"query_element raw response: {query_result}")
             query_data = query_result.get("data", {})
             task_result = query_data.get("task_result", {})
             elements = task_result.get("elements", [])
