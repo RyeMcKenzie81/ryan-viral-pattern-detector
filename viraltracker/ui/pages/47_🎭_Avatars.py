@@ -1,23 +1,22 @@
 """
-Veo Avatars - AI Video Generation with Brand Avatars.
+Avatars - Brand Avatar Management with Kling Element Creation.
 
 This page allows users to:
-- Create and manage brand avatars with reference images
-- Generate avatar images using Gemini (Nano Banana pattern)
+- Create and manage brand avatars with 4-angle reference images
+- Generate angle-specific images using Gemini (frontal, 3/4, side, full body)
+- Create Kling elements for character consistency in video generation
 - Generate videos using Google Veo 3.1 with character consistency
 - View and manage generated videos
 """
 
 import streamlit as st
 import asyncio
-from datetime import datetime
 from uuid import UUID
-import base64
 
 # Page config (must be first Streamlit call)
 st.set_page_config(
-    page_title="Veo Avatars",
-    page_icon="🎬",
+    page_title="Avatars",
+    page_icon="🎭",
     layout="wide"
 )
 
@@ -34,6 +33,12 @@ if 'generating_video' not in st.session_state:
     st.session_state.generating_video = False
 if 'generation_result' not in st.session_state:
     st.session_state.generation_result = None
+if 'angle_gen_progress' not in st.session_state:
+    st.session_state.angle_gen_progress = None
+
+# Angle labels for display
+ANGLE_LABELS = {1: "Frontal", 2: "3/4 View", 3: "Side Profile", 4: "Full Body"}
+
 
 # ============================================================================
 # Helper Functions
@@ -130,13 +135,18 @@ def get_signed_url(storage_path: str, expires_in: int = 3600) -> str:
     except Exception:
         return ""
 
+
 # ============================================================================
-# Avatar Management Section
+# Avatar Management Section (Rewritten for 4-angle workflow)
 # ============================================================================
 
 def render_avatar_management(brand_id: str):
-    """Render avatar management section."""
-    st.subheader("🎭 Brand Avatars")
+    """Render avatar management section with 4-angle generation workflow."""
+    st.subheader("Brand Avatars")
+    st.caption(
+        "Create avatars with 4 reference angles for Kling element creation: "
+        "Frontal, 3/4 View, Side Profile, and Full Body."
+    )
 
     # Fetch avatars
     async def fetch_avatars():
@@ -146,7 +156,7 @@ def render_avatar_management(brand_id: str):
     avatars = run_async(fetch_avatars())
 
     # Create new avatar form
-    with st.expander("➕ Create New Avatar", expanded=not avatars):
+    with st.expander("Create New Avatar", expanded=not avatars):
         with st.form("create_avatar_form"):
             name = st.text_input("Avatar Name", placeholder="e.g., Sarah - Brand Ambassador")
             description = st.text_area(
@@ -156,9 +166,9 @@ def render_avatar_management(brand_id: str):
             )
             generation_prompt = st.text_area(
                 "Generation Prompt (for AI image creation)",
-                placeholder="Professional woman, 30s, friendly smile, business casual...",
+                placeholder="Professional woman, 30s, friendly smile, business casual, brown hair...",
                 height=100,
-                help="This prompt will be used to generate avatar images via Gemini"
+                help="Describe the character's appearance. This will be combined with angle-specific prompts."
             )
 
             col1, col2 = st.columns(2)
@@ -175,15 +185,6 @@ def render_avatar_management(brand_id: str):
                     index=1
                 )
 
-            # Reference images upload
-            st.markdown("**Reference Images (up to 3)**")
-            uploaded_files = st.file_uploader(
-                "Upload reference images",
-                type=["png", "jpg", "jpeg", "webp"],
-                accept_multiple_files=True,
-                help="Upload 1-3 reference images for character consistency"
-            )
-
             submitted = st.form_submit_button("Create Avatar")
 
             if submitted and name:
@@ -191,8 +192,6 @@ def render_avatar_management(brand_id: str):
                     from viraltracker.services.veo_models import BrandAvatarCreate, AspectRatio, Resolution
 
                     service = get_avatar_service()
-                    ref_images = [f.read() for f in uploaded_files[:3]] if uploaded_files else None
-
                     data = BrandAvatarCreate(
                         brand_id=UUID(brand_id),
                         name=name,
@@ -201,7 +200,7 @@ def render_avatar_management(brand_id: str):
                         default_aspect_ratio=AspectRatio(aspect_ratio),
                         default_resolution=Resolution(resolution)
                     )
-                    return await service.create_avatar(data, reference_images=ref_images)
+                    return await service.create_avatar(data)
 
                 with st.spinner("Creating avatar..."):
                     avatar = run_async(create_avatar())
@@ -210,87 +209,37 @@ def render_avatar_management(brand_id: str):
 
     # Display existing avatars
     if avatars:
-        st.markdown("**Existing Avatars:**")
         for avatar in avatars:
             render_avatar_card(avatar, brand_id)
     else:
         st.info("No avatars created yet. Create one above!")
 
+
 def render_avatar_card(avatar, brand_id: str):
-    """Render a single avatar card."""
-    with st.expander(f"🎭 {avatar.name}", expanded=st.session_state.selected_avatar_id == str(avatar.id)):
-        col1, col2 = st.columns([1, 2])
+    """Render a single avatar card with 4-angle grid."""
+    # Build header with status indicators
+    ref_count = avatar.reference_image_count
+    element_status = "Element Ready" if avatar.kling_element_id else ""
+    header = f"{avatar.name} ({ref_count}/4 angles"
+    if element_status:
+        header += f", {element_status}"
+    header += ")"
 
-        with col1:
-            # Display reference images
-            ref_images = avatar.reference_images
-            if ref_images:
-                st.markdown("**Reference Images:**")
-                for i, path in enumerate(ref_images, 1):
-                    url = get_signed_url(path)
-                    if url:
-                        st.image(url, caption=f"Ref {i}", width=150)
-            else:
-                st.info("No reference images")
-
-            # Upload new reference image
-            new_ref = st.file_uploader(
-                "Add reference image",
-                type=["png", "jpg", "jpeg"],
-                key=f"upload_{avatar.id}"
-            )
-            if new_ref:
-                slot = len(ref_images) + 1
-                if slot <= 3:
-                    async def add_ref():
-                        service = get_avatar_service()
-                        return await service.add_reference_image(
-                            avatar.id, new_ref.read(), slot
-                        )
-                    with st.spinner("Uploading..."):
-                        run_async(add_ref())
-                        st.success("Reference image added!")
-                        st.rerun()
-                else:
-                    st.warning("Maximum 3 reference images")
-
-        with col2:
+    with st.expander(header, expanded=st.session_state.selected_avatar_id == str(avatar.id)):
+        # Avatar info row
+        col_info, col_actions = st.columns([3, 1])
+        with col_info:
             st.markdown(f"**Description:** {avatar.description or 'No description'}")
-            st.markdown(f"**Generation Prompt:** {avatar.generation_prompt or 'Not set'}")
+            if avatar.generation_prompt:
+                st.markdown(f"**Generation Prompt:** {avatar.generation_prompt[:200]}{'...' if len(avatar.generation_prompt or '') > 200 else ''}")
             st.markdown(f"**Default Settings:** {avatar.default_aspect_ratio.value} / {avatar.default_resolution.value} / {avatar.default_duration_seconds}s")
 
-            # Generate new reference image button
-            if avatar.generation_prompt:
-                if st.button("🎨 Generate New Reference Image", key=f"gen_ref_{avatar.id}"):
-                    async def gen_image():
-                        service = get_avatar_service()
-                        slot = len(avatar.reference_images) + 1
-                        if slot > 3:
-                            slot = 3  # Replace last image
-                        return await service.generate_and_save_avatar_image(
-                            avatar.id,
-                            avatar.generation_prompt,
-                            slot=slot
-                        )
-
-                    with st.spinner("Generating image with Gemini..."):
-                        try:
-                            path = run_async(gen_image())
-                            if path:
-                                st.success("Generated new reference image!")
-                                st.rerun()
-                            else:
-                                st.error("Failed to generate image")
-                        except Exception as e:
-                            st.error(f"Error: {e}")
-
-            # Select avatar for video generation
-            if st.button("✅ Select for Video", key=f"select_{avatar.id}"):
+        with col_actions:
+            if st.button("Select for Video", key=f"select_{avatar.id}"):
                 st.session_state.selected_avatar_id = str(avatar.id)
                 st.rerun()
 
-            # Delete avatar
-            if st.button("🗑️ Delete Avatar", key=f"delete_{avatar.id}", type="secondary"):
+            if st.button("Delete Avatar", key=f"delete_{avatar.id}", type="secondary"):
                 async def delete():
                     service = get_avatar_service()
                     return await service.delete_avatar(avatar.id)
@@ -299,8 +248,176 @@ def render_avatar_card(avatar, brand_id: str):
                     st.success("Avatar deleted")
                     st.rerun()
 
+        st.divider()
+
+        # ---- 4-Angle Reference Image Grid ----
+        st.markdown("**Reference Angles**")
+
+        cols = st.columns(4)
+        for slot in range(1, 5):
+            label = ANGLE_LABELS[slot]
+            ref_path = getattr(avatar, f"reference_image_{slot}")
+
+            with cols[slot - 1]:
+                st.markdown(f"**{label}**")
+
+                if ref_path:
+                    url = get_signed_url(ref_path)
+                    if url:
+                        st.image(url, use_container_width=True)
+
+                    # Remove button
+                    if st.button("Remove", key=f"remove_{avatar.id}_{slot}"):
+                        async def remove_ref(s=slot):
+                            service = get_avatar_service()
+                            return await service.remove_reference_image(avatar.id, s)
+                        run_async(remove_ref())
+                        st.rerun()
+                else:
+                    st.markdown("*No image*")
+
+                # Upload button (always available)
+                uploaded = st.file_uploader(
+                    f"Upload {label}",
+                    type=["png", "jpg", "jpeg", "webp"],
+                    key=f"upload_{avatar.id}_{slot}",
+                    label_visibility="collapsed",
+                )
+                if uploaded:
+                    async def upload_ref(s=slot, f=uploaded):
+                        service = get_avatar_service()
+                        return await service.add_reference_image(avatar.id, f.read(), s)
+                    with st.spinner("Uploading..."):
+                        run_async(upload_ref())
+                        st.rerun()
+
+                # Generate button (disabled if prior slot empty for sequential consistency)
+                if avatar.generation_prompt:
+                    # For slot 1: always available. For slots 2-4: need slot 1 at minimum.
+                    can_generate = (slot == 1) or (avatar.reference_image_1 is not None)
+                    if st.button(
+                        f"Generate",
+                        key=f"gen_{avatar.id}_{slot}",
+                        disabled=not can_generate,
+                        use_container_width=True,
+                    ):
+                        async def gen_angle(s=slot):
+                            service = get_avatar_service()
+                            return await service.generate_angle_image(avatar.id, s)
+
+                        with st.spinner(f"Generating {label}..."):
+                            try:
+                                path = run_async(gen_angle())
+                                if path:
+                                    st.success(f"Generated {label}!")
+                                    st.rerun()
+                                else:
+                                    st.warning(f"Generation skipped (safety filter). Try adjusting the prompt.")
+                            except Exception as e:
+                                st.error(f"Error: {e}")
+
+        # ---- Generate All Missing Angles Button ----
+        if avatar.generation_prompt:
+            missing_slots = [
+                s for s in range(1, 5)
+                if getattr(avatar, f"reference_image_{s}") is None
+            ]
+
+            if missing_slots:
+                st.divider()
+                if st.button(
+                    f"Generate All Missing Angles ({len(missing_slots)} remaining)",
+                    key=f"gen_all_{avatar.id}",
+                    type="primary",
+                    use_container_width=True,
+                ):
+                    progress_text = st.empty()
+                    progress_bar = st.progress(0)
+                    generated = 0
+                    skipped = 0
+
+                    for i, slot in enumerate(missing_slots):
+                        label = ANGLE_LABELS[slot]
+                        progress_text.markdown(f"Generating **{label}** ({i+1}/{len(missing_slots)})...")
+                        progress_bar.progress((i) / len(missing_slots))
+
+                        async def gen_one(s=slot):
+                            service = get_avatar_service()
+                            return await service.generate_angle_image(avatar.id, s)
+
+                        try:
+                            path = run_async(gen_one())
+                            if path:
+                                generated += 1
+                            else:
+                                skipped += 1
+                                st.warning(f"Skipped {label} (safety filter)")
+                        except Exception as e:
+                            skipped += 1
+                            st.warning(f"Failed {label}: {e}")
+
+                    progress_bar.progress(1.0)
+                    progress_text.markdown(f"Done! Generated {generated}, skipped {skipped}.")
+                    st.rerun()
+
+        # ---- Visual Verification Strip ----
+        all_filled = all(
+            getattr(avatar, f"reference_image_{s}") is not None
+            for s in range(1, 5)
+        )
+        if all_filled:
+            st.divider()
+            st.markdown("**Visual Verification** — Review consistency before creating element:")
+            verify_cols = st.columns(4)
+            for slot in range(1, 5):
+                ref_path = getattr(avatar, f"reference_image_{slot}")
+                with verify_cols[slot - 1]:
+                    url = get_signed_url(ref_path)
+                    if url:
+                        st.image(url, use_container_width=True)
+                    st.caption(ANGLE_LABELS[slot])
+
+        # ---- Kling Element Section ----
+        st.divider()
+        st.markdown("**Kling Element**")
+
+        if avatar.kling_element_id:
+            st.success(f"Element ID: `{avatar.kling_element_id}`")
+        else:
+            has_frontal = avatar.reference_image_1 is not None
+            if not has_frontal:
+                st.info("Upload or generate a frontal image (slot 1) to enable element creation.")
+            else:
+                if ref_count < 4:
+                    st.warning(f"Only {ref_count}/4 angles filled. Recommend all 4 for best results.")
+                st.caption("Review the images above for consistency before creating the element.")
+
+                if st.button("Create Kling Element", key=f"create_element_{avatar.id}", type="primary"):
+                    from viraltracker.ui.utils import get_current_organization_id
+                    org_id = get_current_organization_id()
+
+                    with st.spinner("Creating Kling element (may take 1-2 minutes)..."):
+                        try:
+                            async def create_el():
+                                service = get_avatar_service()
+                                return await service.create_kling_element(
+                                    avatar_id=avatar.id,
+                                    organization_id=org_id,
+                                    brand_id=brand_id,
+                                )
+
+                            element_id = run_async(create_el())
+                            if element_id:
+                                st.success(f"Element created: `{element_id}`")
+                                st.rerun()
+                            else:
+                                st.error("Element creation failed. Check logs for details.")
+                        except Exception as e:
+                            st.error(f"Element creation failed: {e}")
+
+
 # ============================================================================
-# Video Generation Section
+# Video Generation Section (unchanged)
 # ============================================================================
 
 def get_offer_variants(product_id: str):
@@ -321,7 +438,6 @@ def get_offer_variant_images(offer_variant_id: str):
         result = db.table("offer_variant_images").select(
             "*, product_images(*)"
         ).eq("offer_variant_id", offer_variant_id).order("display_order").execute()
-        # Extract product_images from junction records
         images = []
         for record in result.data or []:
             if record.get("product_images"):
@@ -332,7 +448,7 @@ def get_offer_variant_images(offer_variant_id: str):
 
 def render_video_generation(brand_id: str):
     """Render video generation section."""
-    st.subheader("🎬 Generate Video with Veo 3.1")
+    st.subheader("Generate Video with Veo 3.1")
 
     # Get selected avatar
     selected_avatar = None
@@ -345,7 +461,7 @@ def render_video_generation(brand_id: str):
     if selected_avatar:
         st.success(f"**Selected Avatar:** {selected_avatar.name}")
     else:
-        st.warning("Select an avatar above, or generate a video without avatar reference")
+        st.warning("Select an avatar from the Avatar Manager tab, or generate a video without avatar reference")
 
     # =========================================================================
     # Product & Image Selection (OUTSIDE form for dynamic updates)
@@ -385,7 +501,6 @@ def render_video_generation(brand_id: str):
     # Show images for selected product (filtered by variant if selected)
     selected_image_path = None
     if selected_product_id:
-        # Get images - either from variant or all product images
         if selected_variant_id:
             product_images = get_offer_variant_images(selected_variant_id)
         else:
@@ -394,25 +509,21 @@ def render_video_generation(brand_id: str):
         if product_images:
             st.markdown(f"**Select an image to use as reference:** ({len(product_images)} images)")
 
-            # Display images in a scrollable grid (4 columns, paginate if many)
             cols = st.columns(4)
-            for i, img in enumerate(product_images):  # No limit
+            for i, img in enumerate(product_images):
                 storage_path = img.get('storage_path', '')
                 is_main = img.get('is_main', False)
                 notes = img.get('notes', '')
 
                 with cols[i % 4]:
-                    # Get signed URL for display
                     url = get_signed_url(storage_path)
                     if url:
                         st.image(url, width=150)
 
-                        # Label
-                        label = "⭐ Main" if is_main else f"Image {i+1}"
+                        label = "Main" if is_main else f"Image {i+1}"
                         if notes:
                             label += f" ({notes[:20]}...)" if len(notes) > 20 else f" ({notes})"
 
-                        # Radio-style selection using button
                         if st.button(
                             f"Select: {label}",
                             key=f"select_img_{img['id']}",
@@ -421,12 +532,11 @@ def render_video_generation(brand_id: str):
                             st.session_state.selected_product_image_path = storage_path
                             st.rerun()
 
-            # Show currently selected
             if st.session_state.get('selected_product_image_path'):
-                st.info(f"✅ Selected: {st.session_state.selected_product_image_path.split('/')[-1]}")
+                st.info(f"Selected: {st.session_state.selected_product_image_path.split('/')[-1]}")
                 selected_image_path = st.session_state.selected_product_image_path
 
-                if st.button("❌ Clear Selection"):
+                if st.button("Clear Selection"):
                     st.session_state.selected_product_image_path = None
                     st.rerun()
         else:
@@ -468,7 +578,6 @@ def render_video_generation(brand_id: str):
             help="What should the subject say? Veo 3.1 generates synchronized audio"
         )
 
-        # Product-specific settings
         st.markdown("### Product Settings")
         col1, col2 = st.columns(2)
         with col1:
@@ -483,21 +592,6 @@ def render_video_generation(brand_id: str):
                 value=True,
                 help="Adds extra prompts to preserve product packaging, text, and labels"
             )
-
-        with st.expander("💡 Tips for better product videos"):
-            st.markdown("""
-            **For best results:**
-            - Use **multiple reference images** (front, side, close-up of label)
-            - Include **product dimensions** to prevent size changes
-            - Keep product **stationary or minimal movement** to preserve text
-            - Use **"standard" model** for higher quality text rendering
-            - Add specific instructions like "product remains on table" or "steady grip on bottle"
-
-            **What to avoid:**
-            - Complex movements (picking up, rotating) - causes morphing
-            - Fast actions - text becomes blurry
-            - Multiple products - harder to maintain consistency
-            """)
 
         st.markdown("### Video Settings")
         col1, col2, col3 = st.columns(3)
@@ -532,19 +626,17 @@ def render_video_generation(brand_id: str):
                 help="Standard: $0.40/sec (higher quality), Fast: $0.15/sec"
             )
         with col2:
-            # Calculate estimated cost
             rate = 0.40 if model_variant == "standard" else 0.15
             estimated_cost = duration * rate
             st.metric("Estimated Cost", f"${estimated_cost:.2f}")
 
-        # Note: Negative prompts may not be supported on all Veo API accounts
         negative_prompt = st.text_input(
             "Negative Prompt (optional)",
             value="",
             help="Content to avoid in generation. Leave empty if not supported by your API."
         )
 
-        submitted = st.form_submit_button("🚀 Generate Video", type="primary")
+        submitted = st.form_submit_button("Generate Video", type="primary")
 
         if submitted and prompt:
             st.session_state.generating_video = True
@@ -556,33 +648,26 @@ def render_video_generation(brand_id: str):
 
                 service = get_veo_service()
 
-                # Collect reference images
                 ref_images = []
 
-                # Add avatar reference images
                 if selected_avatar:
                     avatar_service = get_avatar_service()
                     avatar_refs = await avatar_service.get_all_reference_images(selected_avatar.id)
                     ref_images.extend(avatar_refs)
 
-                # Add selected product image
                 if selected_image_path:
                     img_bytes = download_image_from_storage(selected_image_path)
                     if img_bytes and len(ref_images) < 3:
                         ref_images.append(img_bytes)
 
-                # Build enhanced prompt with product settings
                 enhanced_prompt = prompt
 
-                # Add product dimensions if provided
                 if product_dimensions:
                     enhanced_prompt += f" The product is {product_dimensions}."
 
-                # Add strict product mode instructions
                 if strict_product_mode and selected_image_path:
                     enhanced_prompt += " IMPORTANT: Maintain exact product appearance as shown in reference image. Do not alter, modify, or regenerate any text, labels, or logos on the product packaging. Keep product proportions and colors exactly as shown."
 
-                # Build request
                 request = VeoGenerationRequest(
                     brand_id=UUID(brand_id),
                     avatar_id=selected_avatar.id if selected_avatar else None,
@@ -605,7 +690,7 @@ def render_video_generation(brand_id: str):
                     reference_image_bytes=ref_images if ref_images else None
                 )
 
-            with st.spinner("🎬 Generating video with Veo 3.1... This may take 1-6 minutes."):
+            with st.spinner("Generating video with Veo 3.1... This may take 1-6 minutes."):
                 try:
                     result = run_async(generate())
                     st.session_state.generation_result = result
@@ -626,7 +711,7 @@ def render_video_generation(brand_id: str):
     if st.session_state.generation_result:
         result = st.session_state.generation_result
         st.markdown("---")
-        st.subheader("📹 Generated Video")
+        st.subheader("Generated Video")
 
         if result.is_success and result.video_storage_path:
             video_url = get_signed_url(result.video_storage_path)
@@ -641,8 +726,7 @@ def render_video_generation(brand_id: str):
             with col3:
                 st.metric("Status", result.status.value)
 
-            # Download button
-            if st.button("📥 Download Video"):
+            if st.button("Download Video"):
                 video_bytes = download_image_from_storage(result.video_storage_path)
                 if video_bytes:
                     st.download_button(
@@ -654,17 +738,17 @@ def render_video_generation(brand_id: str):
         else:
             st.error(f"Generation failed: {result.error_message}")
 
-        if st.button("🗑️ Clear Result"):
+        if st.button("Clear Result"):
             st.session_state.generation_result = None
             st.rerun()
 
 # ============================================================================
-# Video History Section
+# Video History Section (unchanged)
 # ============================================================================
 
 def render_video_history(brand_id: str):
     """Render video generation history."""
-    st.subheader("📜 Generation History")
+    st.subheader("Generation History")
 
     async def fetch_history():
         service = get_veo_service()
@@ -677,7 +761,7 @@ def render_video_history(brand_id: str):
         return
 
     for gen in generations:
-        status_emoji = "✅" if gen.status.value == "completed" else "❌" if gen.status.value == "failed" else "⏳"
+        status_emoji = "+" if gen.status.value == "completed" else "x" if gen.status.value == "failed" else "..."
 
         with st.expander(f"{status_emoji} {gen.created_at.strftime('%Y-%m-%d %H:%M')} - {gen.prompt[:50]}..."):
             col1, col2 = st.columns([2, 1])
@@ -694,8 +778,7 @@ def render_video_history(brand_id: str):
                 if gen.estimated_cost_usd:
                     st.markdown(f"**Cost:** ${gen.estimated_cost_usd:.2f}")
 
-                # Delete button
-                if st.button("🗑️ Delete", key=f"del_gen_{gen.id}"):
+                if st.button("Delete", key=f"del_gen_{gen.id}"):
                     async def delete():
                         service = get_veo_service()
                         return await service.delete_generation(gen.id)
@@ -708,12 +791,13 @@ def render_video_history(brand_id: str):
 # Main Page
 # ============================================================================
 
-st.title("🎬 Veo Avatars")
+st.title("Avatars")
 st.markdown("""
-Generate AI videos with consistent brand avatars using Google Veo 3.1.
-- Create avatars with reference images for character consistency
-- Generate avatar images using Gemini (Nano Banana)
-- Produce professional videos with synchronized dialogue
+Manage brand avatars with guided 4-angle reference images for consistent character generation.
+- **Frontal** — Primary identity anchor for Kling elements
+- **3/4 View** — Bridges frontal and side angles
+- **Side Profile** — Jawline, ear, and hair details
+- **Full Body** — Complete outfit and proportions
 """)
 
 # Brand selector
@@ -723,7 +807,7 @@ if not brand_id:
     st.stop()
 
 # Tabs for different sections
-tab1, tab2, tab3 = st.tabs(["🎭 Avatars", "🎬 Generate Video", "📜 History"])
+tab1, tab2, tab3 = st.tabs(["Avatar Manager", "Veo Video", "History"])
 
 with tab1:
     render_avatar_management(brand_id)

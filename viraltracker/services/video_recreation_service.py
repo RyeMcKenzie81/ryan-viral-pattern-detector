@@ -869,7 +869,7 @@ class VideoRecreationService:
         # Load avatar reference images
         avatar = (
             self.supabase.table("brand_avatars")
-            .select("name, reference_image_1, reference_image_2, reference_image_3")
+            .select("name, reference_image_1, reference_image_2, reference_image_3, reference_image_4")
             .eq("id", avatar_id)
             .single()
             .execute()
@@ -880,7 +880,7 @@ class VideoRecreationService:
 
         avatar_data = avatar.data
         avatar_ref_images = []
-        for ref_col in ["reference_image_1", "reference_image_2", "reference_image_3"]:
+        for ref_col in ["reference_image_1", "reference_image_2", "reference_image_3", "reference_image_4"]:
             ref_path = avatar_data.get(ref_col)
             if ref_path:
                 try:

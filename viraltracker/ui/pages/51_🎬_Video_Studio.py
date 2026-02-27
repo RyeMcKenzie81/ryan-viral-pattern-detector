@@ -435,56 +435,18 @@ with tab_recreation:
                         if st.button("Create Element", key="vs_create_element"):
                             with st.spinner("Creating Kling element (this may take a minute)..."):
                                 try:
-                                    from viraltracker.services.kling_video_service import KlingVideoService
-                                    from viraltracker.services.kling_models import KlingEndpoint
-                                    kling_svc = KlingVideoService()
-
-                                    # Get avatar frontal image
-                                    avatar_full = sb.table("brand_avatars").select(
-                                        "reference_image_1"
-                                    ).eq("id", selected_avatar_id).single().execute()
-                                    ref_path = avatar_full.data.get("reference_image_1", "")
-                                    parts = ref_path.split("/", 1)
-                                    bucket = parts[0]
-                                    path = parts[1] if len(parts) > 1 else ref_path
-                                    signed = sb.storage.from_(bucket).create_signed_url(path, 3600)
-                                    frontal_url = signed.get("signedURL", "")
-
-                                    gen_result = _run_async(kling_svc.create_element(
+                                    from viraltracker.services.avatar_service import AvatarService
+                                    from uuid import UUID
+                                    avatar_svc = AvatarService()
+                                    element_id = _run_async(avatar_svc.create_kling_element(
+                                        avatar_id=UUID(selected_avatar_id),
                                         organization_id=org_id,
                                         brand_id=brand_id,
-                                        element_name=selected_avatar_name[:20],
-                                        element_description=f"Brand avatar: {selected_avatar_name}"[:100],
-                                        frontal_image=frontal_url,
                                     ))
-
-                                    # Poll for completion using poll_task (not poll_and_complete,
-                                    # since elements return element_id not videos)
-                                    task_id = gen_result.get("kling_task_id")
-                                    gen_id = gen_result.get("generation_id")
-                                    if task_id:
-                                        poll_result = _run_async(kling_svc.poll_task(
-                                            task_id=task_id,
-                                            endpoint_type=KlingEndpoint.ADVANCED_CUSTOM_ELEMENTS,
-                                        ))
-                                        task_data = poll_result.get("data", {})
-                                        task_status = task_data.get("task_status", "")
-                                        task_result = task_data.get("task_result", {})
-
-                                        if task_status == "succeed":
-                                            elements = task_result.get("elements", [])
-                                            element_id = elements[0].get("element_id") if elements else None
-                                            if element_id:
-                                                sb.table("brand_avatars").update({
-                                                    "kling_element_id": element_id
-                                                }).eq("id", selected_avatar_id).execute()
-                                                st.success(f"Element created: {element_id[:12]}...")
-                                            else:
-                                                st.warning("Element created but ID not extracted. Check Kling dashboard.")
-                                        else:
-                                            st.error(f"Element creation failed: {task_data.get('task_status_msg', 'Unknown error')}")
-
-                                    _run_async(kling_svc.close())
+                                    if element_id:
+                                        st.success(f"Element created: {element_id[:12]}...")
+                                    else:
+                                        st.error("Element creation failed. Check logs for details.")
                                 except Exception as e:
                                     st.error(f"Element creation failed: {e}")
                             st.rerun()

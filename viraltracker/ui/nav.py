@@ -325,7 +325,7 @@ def build_navigation_pages() -> Dict[str, List[st.Page]]:
     if visible(SK_CONTENT, "knowledge_base"):
         content.append(st.Page("pages/46_📚_Knowledge_Base.py", title="Knowledge Base", icon="📚"))
     if visible(SK_CONTENT, "veo_avatars"):
-        content.append(st.Page("pages/47_🎬_Veo_Avatars.py", title="Veo Avatars", icon="🎬"))
+        content.append(st.Page("pages/47_🎭_Avatars.py", title="Avatars", icon="🎭"))
     if visible(SK_CONTENT, "sora_mvp"):
         content.append(st.Page("pages/99_🎥_Sora_MVP.py", title="Sora MVP", icon="🎥"))
     if content:
