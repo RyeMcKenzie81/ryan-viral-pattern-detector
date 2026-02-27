@@ -886,6 +886,68 @@ Requirements:
         finally:
             await kling.close()
 
+    async def _poll_for_voice_info(
+        self, kling, task_id: str, max_attempts: int = 8, interval_seconds: int = 15
+    ) -> tuple[str, str]:
+        """Poll element query endpoint until element_voice_info appears.
+
+        Voice extraction is async — the element creation task succeeds for the
+        visual, but voice processing continues in the background. This method
+        re-queries the element until element_voice_info is populated.
+
+        Args:
+            kling: KlingVideoService instance.
+            task_id: Kling task_id from element creation.
+            max_attempts: Max number of query attempts (default 8 = ~2 minutes).
+            interval_seconds: Seconds between attempts (default 15).
+
+        Returns:
+            Tuple of (element_id, voice_id). voice_id may be empty string if
+            voice extraction times out.
+        """
+        element_id = ""
+        voice_id = ""
+
+        for attempt in range(1, max_attempts + 1):
+            query_result = await kling.query_element(task_id)
+            query_data = query_result.get("data", {})
+            task_result = query_data.get("task_result", {})
+            elements = task_result.get("elements", [])
+
+            if not elements:
+                if attempt == 1:
+                    raise ValueError("Video element created but no elements in response")
+                await asyncio.sleep(interval_seconds)
+                continue
+
+            element = elements[0]
+            element_id = str(element.get("element_id", ""))
+
+            voice_info = element.get("element_voice_info") or {}
+            voice_id = str(voice_info.get("voice_id", "")) if voice_info else ""
+
+            if voice_id:
+                logger.info(
+                    f"Voice info found on attempt {attempt}/{max_attempts}: "
+                    f"voice_id={voice_id}"
+                )
+                return element_id, voice_id
+
+            if attempt < max_attempts:
+                logger.info(
+                    f"Voice info not yet available (attempt {attempt}/{max_attempts}), "
+                    f"waiting {interval_seconds}s..."
+                )
+                await asyncio.sleep(interval_seconds)
+            else:
+                logger.warning(
+                    f"Voice info not available after {max_attempts} attempts "
+                    f"(~{max_attempts * interval_seconds}s). Element {element_id} "
+                    f"created but voice_id is empty."
+                )
+
+        return element_id, voice_id
+
     async def extract_voice_from_video(
         self, avatar_id: UUID, organization_id: str, brand_id: str, video_bytes: bytes
     ) -> str:
@@ -963,25 +1025,14 @@ Requirements:
                 error_msg = task_data.get("task_status_msg", "Unknown error")
                 raise ValueError(f"Voice extraction element creation failed: {error_msg}")
 
-            # Query the element to get voice info
-            query_result = await kling.query_element(task_id)
-            logger.info(f"query_element raw response (voice extraction): {query_result}")
-            query_data = query_result.get("data", {})
-            task_result = query_data.get("task_result", {})
-            elements = task_result.get("elements", [])
-
-            if not elements:
-                raise ValueError("Element created but no elements in response")
-
-            element = elements[0]
-            temp_element_id = str(element.get("element_id", ""))
-
-            voice_info = element.get("element_voice_info", {})
-            voice_id = voice_info.get("voice_id") if voice_info else None
+            # Poll element until voice_info is available (async voice extraction)
+            temp_element_id, voice_id = await self._poll_for_voice_info(
+                kling, task_id, max_attempts=8, interval_seconds=15
+            )
 
             if not voice_id:
                 raise ValueError(
-                    "No voice detected in the uploaded video. "
+                    "No voice detected in the uploaded video after waiting ~2 minutes. "
                     "Please upload a video with clear speech."
                 )
 
@@ -1106,7 +1157,6 @@ Requirements:
                 timeout_seconds=600,
             )
 
-            logger.info(f"poll_task result for video element: {poll_result}")
             task_data = poll_result.get("data", {})
             task_status = task_data.get("task_status", "")
 
@@ -1114,23 +1164,10 @@ Requirements:
                 error_msg = task_data.get("task_status_msg", "Unknown error")
                 raise ValueError(f"Video element creation failed: {error_msg}")
 
-            # Query element to get element_id and voice info
-            query_result = await kling.query_element(task_id)
-            query_data = query_result.get("data", {})
-            task_result = query_data.get("task_result", {})
-            elements = task_result.get("elements", [])
-            logger.info(f"query_element elements keys: {[list(e.keys()) for e in elements]}")
-            logger.info(f"query_element first element: {elements[0] if elements else 'EMPTY'}")
-
-            if not elements:
-                raise ValueError("Video element created but no elements in response")
-
-            element = elements[0]
-            element_id = str(element.get("element_id", ""))
-
-            voice_info = element.get("element_voice_info", {})
-            logger.info(f"voice_info field: {voice_info}")
-            voice_id = str(voice_info.get("voice_id", "")) if voice_info else ""
+            # Poll element until voice_info is available (async voice extraction)
+            element_id, voice_id = await self._poll_for_voice_info(
+                kling, task_id, max_attempts=8, interval_seconds=15
+            )
 
             # Update avatar with new element info
             updates = {
