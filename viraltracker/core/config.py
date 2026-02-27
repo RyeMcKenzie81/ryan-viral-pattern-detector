@@ -131,6 +131,11 @@ class Config:
         "kling_video_pro_5s": 0.33,            # per 5s clip
         "kling_lip_sync": 0.10,               # per task (estimate)
         "kling_multi_shot": 0.05,             # per task (estimate)
+        # Kling Omni Video (3.0) — per second, official pricing
+        "kling_omni_std_seconds": 0.084,        # 720p, no audio
+        "kling_omni_std_audio_seconds": 0.112,  # 720p, with audio
+        "kling_omni_pro_seconds": 0.112,        # 1080p, no audio
+        "kling_omni_pro_audio_seconds": 0.14,   # 1080p, with audio
     }
 
     @classmethod

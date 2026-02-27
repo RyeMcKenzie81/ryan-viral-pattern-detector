@@ -692,3 +692,28 @@ Implemented in commit `7d744cd` — 6-phase plan covering Brand Research "Create
 - `viraltracker/ui/pages/06_🚀_Client_Onboarding.py` — onboarding dimension collection (~line 1880)
 - `viraltracker/services/client_onboarding_service.py` — import logic (~line 1093)
 
+### 29. Kling Multi-Shot Mode — Batch Scene Generation
+
+**Priority**: Medium
+**Complexity**: Medium
+**Added**: 2026-02-26
+
+**Context**: Kling's Omni Video API supports a native multi-shot mode (`multi_shot: true`, `shot_type: "customize"`, `multi_prompt: [...]`) that can generate up to 6 shots (15s total) in a single API call. This handles inter-scene transitions natively and could replace our current per-scene generation approach.
+
+**Benefits**:
+- Better inter-scene transitions (Kling handles them natively instead of keyframe chaining)
+- Fewer API calls (1 call per 6 scenes instead of 1 per scene)
+- Potentially lower cost (fewer API overhead calls)
+
+**Constraints**:
+- Max 15s total duration across all shots
+- Max 6 shots per call
+- Best suited for short-form videos (TikTok/Reels)
+
+**What's needed**: Restructure `generate_video_clips()` to batch consecutive scenes into multi-shot calls when total duration ≤15s and scene count ≤6. Fall back to individual calls for longer videos or when scenes exceed limits.
+
+**Related files**:
+- `viraltracker/services/video_recreation_service.py` — `generate_video_clips()` loop
+- `viraltracker/services/kling_video_service.py` — `generate_omni_video()` would need multi_shot params
+- `viraltracker/services/kling_models.py` — `OmniVideoRequest` already has `multi_shot` field
+

@@ -82,6 +82,7 @@ class KlingVideoService:
         KlingEndpoint.VIDEO_EXTEND: "/v1/videos/video-extend",
         KlingEndpoint.MULTI_SHOT: "/v1/general/ai-multi-shot",
         KlingEndpoint.OMNI_VIDEO: "/v1/videos/omni-video",
+        KlingEndpoint.ADVANCED_CUSTOM_ELEMENTS: "/v1/general/advanced-custom-elements",
     }
 
     # API task statuses
@@ -1208,6 +1209,275 @@ class KlingVideoService:
                 "generation_id": generation_id,
                 "kling_task_id": kling_task_id,
                 "status": data.get("task_status", "submitted"),
+                "request_id": request_id,
+            }
+
+        except Exception as e:
+            error_code = getattr(e, "code", None)
+            await self._update_db_record(generation_id, {
+                "status": KlingTaskStatus.FAILED.value,
+                "error_message": str(e),
+                "error_code": error_code,
+            })
+            raise
+
+    async def create_element(
+        self,
+        organization_id: str,
+        brand_id: str,
+        element_name: str,
+        element_description: str,
+        frontal_image: str,
+        refer_images: Optional[List[str]] = None,
+        callback_url: Optional[str] = None,
+        external_task_id: Optional[str] = None,
+    ) -> dict:
+        """Create a custom element for character consistency across videos.
+
+        Endpoint: POST /v1/general/advanced-custom-elements
+
+        Elements are created once per avatar and reused indefinitely across all
+        video generations via element_list in Omni Video requests.
+
+        Args:
+            organization_id: Organization UUID.
+            brand_id: Brand UUID.
+            element_name: Element name (max 20 chars).
+            element_description: Element description (max 100 chars).
+            frontal_image: URL or Base64 front-facing reference image (required).
+            refer_images: Optional list of 1-3 additional angle reference image URLs/Base64.
+            callback_url: Callback URL.
+            external_task_id: Custom task ID.
+
+        Returns:
+            Dict with generation_id, kling_task_id, status.
+        """
+        self._enforce_limit()
+        frontal_image = self._validate_image(frontal_image)
+
+        generation_id = str(uuid.uuid4())
+        ext_task_id = external_task_id or generation_id
+
+        await self._create_db_record({
+            "id": generation_id,
+            "organization_id": organization_id,
+            "brand_id": brand_id,
+            "generation_type": KlingGenerationType.ADVANCED_CUSTOM_ELEMENTS.value,
+            "input_image_url": frontal_image[:200] if not frontal_image.startswith("http") else frontal_image,
+            "status": KlingTaskStatus.PENDING.value,
+            "kling_external_task_id": ext_task_id,
+        })
+
+        element_image_list = {"frontal_image": frontal_image}
+        if refer_images:
+            element_image_list["refer_images"] = [
+                {"image_url": self._strip_base64_prefix(img) if not img.startswith("http") else img}
+                for img in refer_images[:3]
+            ]
+
+        payload: Dict[str, Any] = {
+            "element_name": element_name[:20],
+            "element_description": element_description[:100],
+            "reference_type": "image_refer",
+            "element_image_list": element_image_list,
+        }
+        if callback_url:
+            payload["callback_url"] = callback_url
+        payload["external_task_id"] = ext_task_id
+
+        try:
+            async with self._generation_semaphore:
+                response = await self._post(KlingEndpoint.ADVANCED_CUSTOM_ELEMENTS, payload)
+
+            data = response.get("data", {})
+            kling_task_id = data.get("task_id")
+            request_id = response.get("request_id", "")
+
+            await self._update_db_record(generation_id, {
+                "kling_task_id": kling_task_id,
+                "kling_request_id": request_id,
+                "status": data.get("task_status", KlingTaskStatus.SUBMITTED.value),
+            })
+
+            self._track_usage(
+                operation="create_element",
+                unit_type="kling_multi_shot",
+                units=1,
+                cost_usd=Config.get_unit_cost("kling_multi_shot"),
+                metadata={"generation_id": generation_id},
+            )
+
+            return {
+                "generation_id": generation_id,
+                "kling_task_id": kling_task_id,
+                "status": data.get("task_status", "submitted"),
+                "request_id": request_id,
+            }
+
+        except Exception as e:
+            error_code = getattr(e, "code", None)
+            await self._update_db_record(generation_id, {
+                "status": KlingTaskStatus.FAILED.value,
+                "error_message": str(e),
+                "error_code": error_code,
+            })
+            raise
+
+    async def generate_omni_video(
+        self,
+        organization_id: str,
+        brand_id: str,
+        prompt: str,
+        duration: str = "5",
+        mode: str = "pro",
+        sound: str = "on",
+        image_list: Optional[List[Dict[str, str]]] = None,
+        element_list: Optional[List[Dict[str, str]]] = None,
+        aspect_ratio: Optional[str] = None,
+        candidate_id: Optional[str] = None,
+        callback_url: Optional[str] = None,
+        external_task_id: Optional[str] = None,
+    ) -> dict:
+        """Generate video using Kling Omni Video (3.0).
+
+        Endpoint: POST /v1/videos/omni-video
+
+        Supports first/last frame keyframes for scene transitions,
+        element references for character consistency, and native audio.
+
+        Args:
+            organization_id: Organization UUID.
+            brand_id: Brand UUID.
+            prompt: Video prompt (max 2500 chars). Use <<<element_1>>> for element refs.
+            duration: Duration as string '3'-'15'.
+            mode: 'std' (720p) or 'pro' (1080p).
+            sound: 'on' or 'off' for native audio.
+            image_list: Keyframe images. Each: {image_url: str, type: 'first_frame'|'end_frame'}.
+            element_list: Pre-created element IDs. Each: {element_id: str}.
+            aspect_ratio: '16:9', '9:16', '1:1'. Required when no first-frame image.
+            candidate_id: Optional recreation candidate reference.
+            callback_url: Callback URL.
+            external_task_id: Custom task ID.
+
+        Returns:
+            Dict with generation_id, kling_task_id, status, estimated_cost_usd.
+
+        Raises:
+            ValueError: If validation fails.
+        """
+        self._enforce_limit()
+
+        # Validate duration
+        try:
+            dur_int = int(duration)
+        except (ValueError, TypeError):
+            raise ValueError(f"Duration must be a numeric string, got '{duration}'")
+        if dur_int < 3 or dur_int > 15:
+            raise ValueError(f"Duration must be between 3 and 15, got {dur_int}")
+
+        # Validate prompt length
+        if len(prompt) > 2500:
+            raise ValueError(f"Prompt exceeds 2500 chars ({len(prompt)})")
+
+        # Validate image+element count constraints
+        num_images = len(image_list) if image_list else 0
+        num_elements = len(element_list) if element_list else 0
+        has_video_ref = bool(self)  # placeholder — video_list not used yet
+        has_video_ref = False  # no video refs in this implementation
+        max_refs = 4 if has_video_ref else 7
+        if num_images + num_elements > max_refs:
+            raise ValueError(
+                f"Total images ({num_images}) + elements ({num_elements}) "
+                f"exceeds max {max_refs}"
+            )
+
+        # Validate keyframe ordering: first_frame required before end_frame
+        if image_list:
+            types = [img.get("type") for img in image_list]
+            if "end_frame" in types and "first_frame" not in types:
+                raise ValueError("first_frame required before end_frame")
+            if types.count("end_frame") > 0 and num_images > 2:
+                raise ValueError("end_frame not supported with >2 images in image_list")
+
+        # Require aspect_ratio when no first-frame image
+        has_first_frame = image_list and any(
+            img.get("type") == "first_frame" for img in image_list
+        )
+        if not has_first_frame and not aspect_ratio:
+            aspect_ratio = "16:9"
+
+        # Cost estimation (verified from official pricing)
+        has_audio = sound == "on"
+        if mode == "pro":
+            cost_key = "kling_omni_pro_audio_seconds" if has_audio else "kling_omni_pro_seconds"
+        else:
+            cost_key = "kling_omni_std_audio_seconds" if has_audio else "kling_omni_std_seconds"
+        estimated_cost = dur_int * Config.get_unit_cost(cost_key)
+
+        generation_id = str(uuid.uuid4())
+        ext_task_id = external_task_id or generation_id
+
+        await self._create_db_record({
+            "id": generation_id,
+            "organization_id": organization_id,
+            "brand_id": brand_id,
+            "candidate_id": candidate_id,
+            "generation_type": KlingGenerationType.OMNI_VIDEO.value,
+            "model_name": "kling-v3-omni",
+            "mode": mode,
+            "prompt": prompt[:2500],
+            "duration": str(dur_int),
+            "aspect_ratio": aspect_ratio,
+            "sound": sound,
+            "status": KlingTaskStatus.PENDING.value,
+            "estimated_cost_usd": estimated_cost,
+            "kling_external_task_id": ext_task_id,
+        })
+
+        payload: Dict[str, Any] = {
+            "model_name": "kling-v3-omni",
+            "prompt": prompt[:2500],
+            "duration": str(dur_int),
+            "mode": mode,
+            "sound": sound,
+            "external_task_id": ext_task_id,
+        }
+        if image_list:
+            payload["image_list"] = image_list
+        if element_list:
+            payload["element_list"] = element_list
+        if aspect_ratio:
+            payload["aspect_ratio"] = aspect_ratio
+        if callback_url:
+            payload["callback_url"] = callback_url
+
+        try:
+            async with self._generation_semaphore:
+                response = await self._post(KlingEndpoint.OMNI_VIDEO, payload)
+
+            data = response.get("data", {})
+            kling_task_id = data.get("task_id")
+            request_id = response.get("request_id", "")
+
+            await self._update_db_record(generation_id, {
+                "kling_task_id": kling_task_id,
+                "kling_request_id": request_id,
+                "status": data.get("task_status", KlingTaskStatus.SUBMITTED.value),
+            })
+
+            self._track_usage(
+                operation="generate_omni_video",
+                unit_type=cost_key,
+                units=dur_int,
+                cost_usd=estimated_cost,
+                metadata={"generation_id": generation_id, "model_name": "kling-v3-omni"},
+            )
+
+            return {
+                "generation_id": generation_id,
+                "kling_task_id": kling_task_id,
+                "status": data.get("task_status", "submitted"),
+                "estimated_cost_usd": estimated_cost,
                 "request_id": request_id,
             }
 

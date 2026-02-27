@@ -51,6 +51,7 @@ SCENE_ACTION = "action"
 
 # Engine routing
 ENGINE_KLING = "kling"
+ENGINE_KLING_OMNI = "kling_omni"
 ENGINE_VEO = "veo"
 ENGINE_MIXED = "mixed"
 
@@ -99,6 +100,10 @@ STORYBOARD_ADAPTATION_PROMPT = """You are a video production expert. Adapt the f
 4. Maintain scene timing and pacing from the original
 5. Classify each scene as "talking_head" (person speaking to camera) or "broll" (product shots, B-roll, action)
 6. For each scene, write a VEO/Kling-ready prompt (specific, continuous tense for actions)
+7. For each scene, write keyframe descriptions for the first and last frame:
+   - keyframe_first_description: Detailed visual description of what the very first frame of this scene should look like (character pose, expression, camera angle, background)
+   - keyframe_last_description: Detailed visual description of what the very last frame of this scene should look like
+   - CRITICAL: The keyframe_last_description of scene N MUST visually match the keyframe_first_description of scene N+1 for smooth transitions between scenes
 
 **Return JSON:**
 ```json
@@ -115,7 +120,9 @@ STORYBOARD_ADAPTATION_PROMPT = """You are a video production expert. Adapt the f
             "dialogue": "<spoken text for this scene, or null for B-roll>",
             "visual_prompt": "<detailed prompt for video generation>",
             "camera_shot": "<close_up|medium|wide>",
-            "transition": "<cut|dissolve|none>"
+            "transition": "<cut|dissolve|none>",
+            "keyframe_first_description": "<detailed visual description of the first frame>",
+            "keyframe_last_description": "<detailed visual description of the last frame>"
         }}
     ],
     "text_overlay_instructions": [
@@ -311,20 +318,24 @@ def classify_scenes(storyboard: List[Dict], has_talking_head: bool) -> List[str]
     return types
 
 
-def route_scene_to_engine(scene_type: str, duration_sec: float) -> str:
+def route_scene_to_engine(scene_type: str, duration_sec: float, has_keyframes: bool = False) -> str:
     """Route a scene to the best generation engine.
 
     Rules:
+    - has_keyframes → Kling Omni (uses first/last frame keyframes + element refs)
     - talking_head → Kling Avatar (handles long talking-head natively)
     - broll/action → VEO 3.1 (better quality for non-character scenes)
 
     Args:
         scene_type: "talking_head" or "broll".
         duration_sec: Scene duration in seconds.
+        has_keyframes: Whether this scene has generated keyframes.
 
     Returns:
-        "kling" or "veo".
+        "kling_omni", "kling", or "veo".
     """
+    if has_keyframes:
+        return ENGINE_KLING_OMNI
     if scene_type == SCENE_TALKING_HEAD:
         return ENGINE_KLING
     return ENGINE_VEO
@@ -354,6 +365,19 @@ def compute_nearest_kling_duration(target_sec: float) -> str:
     if target_sec <= 7.5:
         return "5"
     return "10"
+
+
+def compute_nearest_omni_duration(target_sec: float) -> str:
+    """Pick the nearest valid Omni Video duration ("3" through "15").
+
+    Args:
+        target_sec: Target duration in seconds.
+
+    Returns:
+        Nearest Omni duration as string (clamped to 3-15).
+    """
+    clamped = max(3, min(15, round(target_sec)))
+    return str(clamped)
 
 
 def split_scene_if_needed(
@@ -396,47 +420,68 @@ def split_scene_if_needed(
     return [scene_a, scene_b]
 
 
-def estimate_generation_cost(scenes: List[Dict]) -> Dict[str, float]:
+def estimate_generation_cost(
+    scenes: List[Dict],
+    use_omni: bool = False,
+    omni_mode: str = "pro",
+) -> Dict[str, float]:
     """Estimate generation cost for a set of scenes.
 
     Args:
         scenes: List of scene dicts with scene_type, duration_sec.
+        use_omni: If True, estimate with Kling Omni for all scenes.
+        omni_mode: Kling Omni quality mode ('std' or 'pro').
 
     Returns:
         Dict with per-engine and total estimated costs.
     """
-    kling_cost = 0.0
+    kling_avatar_cost = 0.0
+    kling_omni_cost = 0.0
     veo_cost = 0.0
 
     for scene in scenes:
-        engine = route_scene_to_engine(
-            scene.get("scene_type", SCENE_BROLL),
-            scene.get("duration_sec", 5),
-        )
         duration = scene.get("duration_sec", 5)
 
-        if engine == ENGINE_KLING:
-            # Kling avatar: per-second pricing (std mode default)
-            kling_cost += duration * Config.get_unit_cost("kling_avatar_std_seconds")
+        if use_omni:
+            # Omni Video: per-second pricing with native audio
+            cost_key = f"kling_omni_{omni_mode}_audio_seconds"
+            kling_omni_cost += duration * Config.get_unit_cost(cost_key)
         else:
-            # VEO: per-second pricing
-            veo_cost += duration * Config.get_unit_cost("google_veo_seconds")
+            engine = route_scene_to_engine(
+                scene.get("scene_type", SCENE_BROLL),
+                duration,
+            )
+            if engine == ENGINE_KLING:
+                kling_avatar_cost += duration * Config.get_unit_cost("kling_avatar_std_seconds")
+            else:
+                veo_cost += duration * Config.get_unit_cost("google_veo_seconds")
 
-    # Add ElevenLabs audio estimate (rough: ~100 chars per 5s of speech)
-    talking_head_duration = sum(
-        s.get("duration_sec", 0)
-        for s in scenes
-        if s.get("scene_type") == SCENE_TALKING_HEAD
-    )
-    # ~20 chars/sec average speaking rate
-    estimated_chars = int(talking_head_duration * 20)
-    elevenlabs_cost = estimated_chars * Config.get_unit_cost("elevenlabs_characters")
+    # ElevenLabs audio estimate (only for non-Omni, since Omni has native audio)
+    elevenlabs_cost = 0.0
+    if not use_omni:
+        talking_head_duration = sum(
+            s.get("duration_sec", 0)
+            for s in scenes
+            if s.get("scene_type") == SCENE_TALKING_HEAD
+        )
+        estimated_chars = int(talking_head_duration * 20)
+        elevenlabs_cost = estimated_chars * Config.get_unit_cost("elevenlabs_characters")
+
+    # Gemini keyframe cost (only for Omni: 2 keyframes per scene @ $0.02 each)
+    gemini_keyframe_cost = 0.0
+    if use_omni:
+        gemini_keyframe_cost = len(scenes) * 2 * Config.get_unit_cost("google_image_generation")
+
+    total = kling_avatar_cost + kling_omni_cost + veo_cost + elevenlabs_cost + gemini_keyframe_cost
 
     return {
-        "kling_cost": round(kling_cost, 2),
+        "kling_avatar_cost": round(kling_avatar_cost, 2),
+        "kling_omni_cost": round(kling_omni_cost, 2),
+        "kling_cost": round(kling_avatar_cost + kling_omni_cost, 2),
         "veo_cost": round(veo_cost, 2),
         "elevenlabs_cost": round(elevenlabs_cost, 2),
-        "total_estimated": round(kling_cost + veo_cost + elevenlabs_cost, 2),
+        "gemini_keyframe_cost": round(gemini_keyframe_cost, 2),
+        "total_estimated": round(total, 2),
     }
 
 
@@ -789,6 +834,180 @@ class VideoRecreationService:
         return result.data[0] if result.data else None
 
     # ========================================================================
+    # Keyframe Generation (for Kling Omni)
+    # ========================================================================
+
+    async def generate_scene_keyframes(
+        self,
+        candidate_id: str,
+        avatar_id: str,
+    ) -> Optional[Dict]:
+        """Generate per-scene keyframe images for Kling Omni Video.
+
+        Uses GeminiService (Nano Banana 3) with avatar reference images to generate
+        consistent first/last frame keyframes for each scene. Sequential chaining
+        ensures visual continuity: end frame of scene N becomes reference for scene N+1.
+
+        Args:
+            candidate_id: Candidate UUID.
+            avatar_id: Brand avatar UUID for character reference images.
+
+        Returns:
+            Updated candidate dict with scene_keyframes, or None on failure.
+        """
+        from .gemini_service import GeminiService
+
+        candidate = self.get_candidate(candidate_id)
+        if not candidate:
+            return None
+
+        adapted = candidate.get("adapted_storyboard")
+        if not adapted:
+            logger.error(f"Candidate {candidate_id} has no adapted storyboard")
+            return None
+
+        # Load avatar reference images
+        avatar = (
+            self.supabase.table("brand_avatars")
+            .select("name, reference_image_1, reference_image_2, reference_image_3, reference_image_4")
+            .eq("id", avatar_id)
+            .single()
+            .execute()
+        )
+        if not avatar.data:
+            logger.error(f"Avatar {avatar_id} not found")
+            return None
+
+        avatar_data = avatar.data
+        avatar_ref_images = []
+        for ref_col in ["reference_image_1", "reference_image_2", "reference_image_3", "reference_image_4"]:
+            ref_path = avatar_data.get(ref_col)
+            if ref_path:
+                try:
+                    parts = ref_path.split("/", 1)
+                    bucket = parts[0]
+                    path = parts[1] if len(parts) > 1 else ref_path
+                    file_bytes = self.supabase.storage.from_(bucket).download(path)
+                    if file_bytes:
+                        import base64
+                        avatar_ref_images.append(base64.b64encode(file_bytes).decode("utf-8"))
+                except Exception as e:
+                    logger.warning(f"Failed to load avatar ref {ref_col}: {e}")
+
+        if not avatar_ref_images:
+            logger.error(f"No avatar reference images found for avatar {avatar_id}")
+            return None
+
+        gemini = GeminiService()
+        org_id = candidate["organization_id"]
+
+        scene_keyframes = []
+        previous_last_frame = None  # For sequential chaining
+
+        for scene in adapted:
+            scene_idx = scene.get("scene_idx", len(scene_keyframes))
+            first_desc = scene.get("keyframe_first_description", "")
+            last_desc = scene.get("keyframe_last_description", "")
+
+            keyframe_entry = {
+                "scene_idx": scene_idx,
+                "first_frame_path": None,
+                "last_frame_path": None,
+                "first_frame_description": first_desc,
+                "last_frame_description": last_desc,
+                "status": "pending",
+            }
+
+            if not first_desc and not last_desc:
+                keyframe_entry["status"] = "skipped"
+                scene_keyframes.append(keyframe_entry)
+                continue
+
+            try:
+                # Build reference images for first frame
+                first_frame_refs = list(avatar_ref_images)
+                if previous_last_frame:
+                    first_frame_refs.append(previous_last_frame)
+
+                # Generate first frame
+                first_prompt = (
+                    f"Generate a photorealistic single frame image for a video scene. "
+                    f"The character should exactly match the reference images provided. "
+                    f"Scene description: {first_desc}"
+                )
+                first_frame_b64 = await gemini.generate_image(
+                    prompt=first_prompt,
+                    reference_images=first_frame_refs,
+                    temperature=0.3,
+                )
+
+                # Upload first frame
+                first_path = f"video-recreation/{candidate_id}/keyframes/scene_{scene_idx:03d}_first.png"
+                import base64 as b64_mod
+                first_bytes = b64_mod.b64decode(first_frame_b64)
+                self.supabase.storage.from_(STORAGE_BUCKET).upload(
+                    first_path, first_bytes,
+                    file_options={"content-type": "image/png", "upsert": "true"},
+                )
+                keyframe_entry["first_frame_path"] = f"{STORAGE_BUCKET}/{first_path}"
+
+                # Generate last frame using first frame as reference
+                last_frame_refs = list(avatar_ref_images)
+                last_frame_refs.append(first_frame_b64)
+
+                last_prompt = (
+                    f"Generate a photorealistic single frame image for the END of a video scene. "
+                    f"The character should exactly match the reference images provided. "
+                    f"This must visually follow from the first frame reference image. "
+                    f"Scene description: {last_desc}"
+                )
+                last_frame_b64 = await gemini.generate_image(
+                    prompt=last_prompt,
+                    reference_images=last_frame_refs,
+                    temperature=0.3,
+                )
+
+                # Upload last frame
+                last_path = f"video-recreation/{candidate_id}/keyframes/scene_{scene_idx:03d}_last.png"
+                last_bytes = b64_mod.b64decode(last_frame_b64)
+                self.supabase.storage.from_(STORAGE_BUCKET).upload(
+                    last_path, last_bytes,
+                    file_options={"content-type": "image/png", "upsert": "true"},
+                )
+                keyframe_entry["last_frame_path"] = f"{STORAGE_BUCKET}/{last_path}"
+
+                # Chain: this last frame becomes reference for next scene's first frame
+                previous_last_frame = last_frame_b64
+
+                keyframe_entry["status"] = "completed"
+                logger.info(f"Generated keyframes for scene {scene_idx}")
+
+            except Exception as e:
+                logger.error(f"Keyframe generation failed for scene {scene_idx}: {e}")
+                keyframe_entry["status"] = "failed"
+                keyframe_entry["error"] = str(e)[:500]
+
+            scene_keyframes.append(keyframe_entry)
+
+        # Update candidate with keyframes
+        result = (
+            self.supabase.table("video_recreation_candidates")
+            .update({
+                "scene_keyframes": scene_keyframes,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            })
+            .eq("id", candidate_id)
+            .execute()
+        )
+
+        completed = sum(1 for kf in scene_keyframes if kf["status"] == "completed")
+        logger.info(
+            f"Generated keyframes for {candidate_id}: "
+            f"{completed}/{len(scene_keyframes)} scenes"
+        )
+        return result.data[0] if result.data else None
+
+    # ========================================================================
     # Audio Generation
     # ========================================================================
 
@@ -921,18 +1140,24 @@ class VideoRecreationService:
         """Generate video clips for each scene (audio-first durations).
 
         Routes each scene to the appropriate engine:
+        - has_keyframes → Kling Omni (first/last frame keyframes + element refs)
         - talking_head → Kling Avatar (image + audio)
         - broll → VEO 3.1 or Kling text-to-video
+
+        Uses a shared KlingVideoService instance across all clips to avoid
+        duplicate semaphores, HTTP clients, and JWT caches.
 
         Args:
             candidate_id: Candidate UUID.
             avatar_id: Brand avatar UUID for talking-head scenes.
-            engine_override: Force engine ("veo" or "kling") for all scenes.
+            engine_override: Force engine ("veo", "kling", or "kling_omni") for all scenes.
             mode: Kling quality mode ("std" or "pro").
 
         Returns:
             Updated candidate with generated_clips, or None on failure.
         """
+        from .kling_video_service import KlingVideoService
+
         candidate = self.get_candidate(candidate_id)
         if not candidate:
             return None
@@ -953,106 +1178,152 @@ class VideoRecreationService:
         brand_id = candidate["brand_id"]
         target_aspect = candidate.get("target_aspect_ratio", "9:16")
 
-        # Get avatar image URL if needed
+        # Build keyframe lookup from scene_keyframes
+        scene_keyframes = candidate.get("scene_keyframes") or []
+        keyframe_lookup = {
+            kf["scene_idx"]: kf
+            for kf in scene_keyframes
+            if kf.get("status") == "completed"
+        }
+
+        # Get avatar data (image URL + element ID)
         avatar_image_url = None
+        kling_element_id = None
         if avatar_id:
             avatar = (
                 self.supabase.table("brand_avatars")
-                .select("reference_image_1")
+                .select("reference_image_1, kling_element_id")
                 .eq("id", avatar_id)
                 .single()
                 .execute()
             )
-            if avatar.data and avatar.data.get("reference_image_1"):
-                ref_path = avatar.data["reference_image_1"]
-                parts = ref_path.split("/", 1)
-                bucket = parts[0]
-                path = parts[1] if len(parts) > 1 else ref_path
-                signed = self.supabase.storage.from_(bucket).create_signed_url(path, 3600)
-                avatar_image_url = signed.get("signedURL")
+            if avatar.data:
+                kling_element_id = avatar.data.get("kling_element_id")
+                ref_path = avatar.data.get("reference_image_1")
+                if ref_path:
+                    parts = ref_path.split("/", 1)
+                    bucket = parts[0]
+                    path = parts[1] if len(parts) > 1 else ref_path
+                    signed = self.supabase.storage.from_(bucket).create_signed_url(path, 3600)
+                    avatar_image_url = signed.get("signedURL")
+
+        # Create shared KlingVideoService instance (P0 fix: single semaphore/client)
+        kling = KlingVideoService()
 
         generated_clips = []
         total_cost = 0.0
         engines_used = set()
 
-        for i, scene in enumerate(adapted):
-            scene_idx = scene.get("scene_idx", i)
-            scene_type = scene.get("scene_type", SCENE_BROLL)
+        try:
+            for i, scene in enumerate(adapted):
+                scene_idx = scene.get("scene_idx", i)
+                scene_type = scene.get("scene_type", SCENE_BROLL)
 
-            # Get audio duration (audio-first: audio determines video duration)
-            audio_seg = None
-            if audio_segments:
-                audio_seg = next(
-                    (s for s in audio_segments if s.get("scene_idx") == scene_idx),
-                    None,
+                # Get audio duration (audio-first: audio determines video duration)
+                audio_seg = None
+                if audio_segments:
+                    audio_seg = next(
+                        (s for s in audio_segments if s.get("scene_idx") == scene_idx),
+                        None,
+                    )
+
+                duration_sec = (
+                    audio_seg["duration_sec"] if audio_seg and audio_seg.get("has_audio")
+                    else scene.get("duration_sec", 5.0)
                 )
 
-            duration_sec = (
-                audio_seg["duration_sec"] if audio_seg and audio_seg.get("has_audio")
-                else scene.get("duration_sec", 5.0)
-            )
+                # Check if scene has keyframes
+                has_keyframes = scene_idx in keyframe_lookup
 
-            # Route to engine
-            engine = engine_override or route_scene_to_engine(scene_type, duration_sec)
-            engines_used.add(engine)
+                # Route to engine
+                if engine_override:
+                    engine = engine_override
+                else:
+                    engine = route_scene_to_engine(scene_type, duration_sec, has_keyframes)
 
-            prompt = scene.get("visual_prompt", scene.get("scene_description", ""))
+                engines_used.add(engine)
 
-            clip_result = {
-                "scene_idx": scene_idx,
-                "engine": engine,
-                "duration_sec": duration_sec,
-                "status": "pending",
-            }
+                prompt = scene.get("visual_prompt", scene.get("scene_description", ""))
 
-            try:
-                if engine == ENGINE_KLING:
-                    if scene_type == SCENE_TALKING_HEAD and avatar_image_url and audio_seg and audio_seg.get("has_audio"):
-                        # Kling Avatar: talking-head with audio
-                        gen_result = await self._generate_kling_avatar_clip(
+                clip_result = {
+                    "scene_idx": scene_idx,
+                    "engine": engine,
+                    "duration_sec": duration_sec,
+                    "status": "pending",
+                }
+
+                try:
+                    if engine == ENGINE_KLING_OMNI:
+                        # Kling Omni: keyframes + element refs + native audio
+                        keyframe_entry = keyframe_lookup.get(scene_idx, {})
+                        omni_duration = compute_nearest_omni_duration(duration_sec)
+                        gen_result = await self._generate_kling_omni_clip(
+                            kling=kling,
                             org_id=org_id,
                             brand_id=brand_id,
                             candidate_id=candidate_id,
-                            avatar_image_url=avatar_image_url,
-                            audio_storage_path=audio_seg["audio_storage_path"],
                             prompt=prompt,
+                            duration=omni_duration,
                             mode=mode,
-                            avatar_id=avatar_id,
-                        )
-                    else:
-                        # Kling text-to-video for B-roll
-                        kling_duration = compute_nearest_kling_duration(duration_sec)
-                        gen_result = await self._generate_kling_text_clip(
-                            org_id=org_id,
-                            brand_id=brand_id,
-                            candidate_id=candidate_id,
-                            prompt=prompt,
-                            duration=kling_duration,
+                            keyframe_entry=keyframe_entry,
+                            element_id=kling_element_id,
                             aspect_ratio=target_aspect,
-                            mode=mode,
                         )
+                        clip_result.update(gen_result)
 
-                    clip_result.update(gen_result)
+                    elif engine == ENGINE_KLING:
+                        if scene_type == SCENE_TALKING_HEAD and avatar_image_url and audio_seg and audio_seg.get("has_audio"):
+                            # Kling Avatar: talking-head with audio
+                            gen_result = await self._generate_kling_avatar_clip(
+                                kling=kling,
+                                org_id=org_id,
+                                brand_id=brand_id,
+                                candidate_id=candidate_id,
+                                avatar_image_url=avatar_image_url,
+                                audio_storage_path=audio_seg["audio_storage_path"],
+                                prompt=prompt,
+                                mode=mode,
+                                avatar_id=avatar_id,
+                            )
+                        else:
+                            # Kling text-to-video for B-roll
+                            kling_duration = compute_nearest_kling_duration(duration_sec)
+                            gen_result = await self._generate_kling_text_clip(
+                                kling=kling,
+                                org_id=org_id,
+                                brand_id=brand_id,
+                                candidate_id=candidate_id,
+                                prompt=prompt,
+                                duration=kling_duration,
+                                aspect_ratio=target_aspect,
+                                mode=mode,
+                            )
 
-                elif engine == ENGINE_VEO:
-                    veo_duration = compute_nearest_veo_duration(duration_sec)
-                    gen_result = await self._generate_veo_clip(
-                        brand_id=brand_id,
-                        prompt=prompt,
-                        duration_sec=veo_duration,
-                        aspect_ratio=target_aspect,
-                    )
-                    clip_result.update(gen_result)
+                        clip_result.update(gen_result)
 
-            except Exception as e:
-                logger.error(f"Clip generation failed for scene {scene_idx}: {e}")
-                clip_result["status"] = "failed"
-                clip_result["error"] = str(e)[:500]
+                    elif engine == ENGINE_VEO:
+                        veo_duration = compute_nearest_veo_duration(duration_sec)
+                        gen_result = await self._generate_veo_clip(
+                            brand_id=brand_id,
+                            prompt=prompt,
+                            duration_sec=veo_duration,
+                            aspect_ratio=target_aspect,
+                        )
+                        clip_result.update(gen_result)
 
-            if clip_result.get("estimated_cost_usd"):
-                total_cost += clip_result["estimated_cost_usd"]
+                except Exception as e:
+                    logger.error(f"Clip generation failed for scene {scene_idx}: {e}")
+                    clip_result["status"] = "failed"
+                    clip_result["error"] = str(e)[:500]
 
-            generated_clips.append(clip_result)
+                if clip_result.get("estimated_cost_usd"):
+                    total_cost += clip_result["estimated_cost_usd"]
+
+                generated_clips.append(clip_result)
+
+        finally:
+            # Always close shared Kling client
+            await kling.close()
 
         # Determine overall engine
         if len(engines_used) > 1:
@@ -1319,6 +1590,7 @@ class VideoRecreationService:
 
     async def _generate_kling_avatar_clip(
         self,
+        kling,
         org_id: str,
         brand_id: str,
         candidate_id: str,
@@ -1330,12 +1602,12 @@ class VideoRecreationService:
     ) -> Dict:
         """Generate a Kling avatar (talking-head) clip.
 
+        Args:
+            kling: Shared KlingVideoService instance.
+
         Returns dict with generation_id, status, storage_path, estimated_cost_usd.
         """
-        from .kling_video_service import KlingVideoService
         from .kling_models import KlingEndpoint
-
-        kling = KlingVideoService()
 
         # Get signed URL for audio
         parts = audio_storage_path.split("/", 1)
@@ -1365,7 +1637,6 @@ class VideoRecreationService:
                 kling_task_id=kling_task_id,
                 endpoint_type=KlingEndpoint.AVATAR,
             )
-            await kling.close()
             return {
                 "generation_id": generation_id,
                 "status": completed.get("status", "failed"),
@@ -1373,11 +1644,11 @@ class VideoRecreationService:
                 "estimated_cost_usd": gen_result.get("estimated_cost_usd", 0),
             }
 
-        await kling.close()
         return {"generation_id": generation_id, "status": "failed"}
 
     async def _generate_kling_text_clip(
         self,
+        kling,
         org_id: str,
         brand_id: str,
         candidate_id: str,
@@ -1388,12 +1659,12 @@ class VideoRecreationService:
     ) -> Dict:
         """Generate a Kling text-to-video clip.
 
+        Args:
+            kling: Shared KlingVideoService instance.
+
         Returns dict with generation_id, status, storage_path, estimated_cost_usd.
         """
-        from .kling_video_service import KlingVideoService
         from .kling_models import KlingEndpoint
-
-        kling = KlingVideoService()
 
         gen_result = await kling.generate_text_to_video(
             organization_id=org_id,
@@ -1414,7 +1685,6 @@ class VideoRecreationService:
                 kling_task_id=kling_task_id,
                 endpoint_type=KlingEndpoint.TEXT2VIDEO,
             )
-            await kling.close()
             return {
                 "generation_id": generation_id,
                 "status": completed.get("status", "failed"),
@@ -1422,7 +1692,6 @@ class VideoRecreationService:
                 "estimated_cost_usd": gen_result.get("estimated_cost_usd", 0),
             }
 
-        await kling.close()
         return {"generation_id": generation_id, "status": "failed"}
 
     async def _generate_veo_clip(
@@ -1470,6 +1739,101 @@ class VideoRecreationService:
             "estimated_cost_usd": result.estimated_cost_usd,
             "error": result.error_message,
         }
+
+    async def _generate_kling_omni_clip(
+        self,
+        kling,
+        org_id: str,
+        brand_id: str,
+        candidate_id: str,
+        prompt: str,
+        duration: str,
+        mode: str,
+        keyframe_entry: Dict,
+        element_id: Optional[str] = None,
+        aspect_ratio: str = "9:16",
+    ) -> Dict:
+        """Generate a Kling Omni Video clip with keyframes and element references.
+
+        Args:
+            kling: Shared KlingVideoService instance.
+            org_id: Organization UUID.
+            brand_id: Brand UUID.
+            candidate_id: Candidate UUID.
+            prompt: Visual prompt for the scene.
+            duration: Duration as string ('3'-'15').
+            mode: Quality mode ('std' or 'pro').
+            keyframe_entry: Dict with first_frame_path, last_frame_path.
+            element_id: Optional Kling element ID for character consistency.
+            aspect_ratio: Aspect ratio (default '9:16').
+
+        Returns:
+            Dict with generation_id, status, storage_path, estimated_cost_usd.
+        """
+        from .kling_models import KlingEndpoint
+
+        # Build image_list from keyframes
+        image_list = []
+
+        first_frame_path = keyframe_entry.get("first_frame_path")
+        last_frame_path = keyframe_entry.get("last_frame_path")
+
+        if first_frame_path:
+            parts = first_frame_path.split("/", 1)
+            bucket = parts[0]
+            path = parts[1] if len(parts) > 1 else first_frame_path
+            signed = self.supabase.storage.from_(bucket).create_signed_url(path, 3600)
+            first_url = signed.get("signedURL", "")
+            if first_url:
+                image_list.append({"image_url": first_url, "type": "first_frame"})
+
+        if last_frame_path:
+            parts = last_frame_path.split("/", 1)
+            bucket = parts[0]
+            path = parts[1] if len(parts) > 1 else last_frame_path
+            signed = self.supabase.storage.from_(bucket).create_signed_url(path, 3600)
+            last_url = signed.get("signedURL", "")
+            if last_url:
+                image_list.append({"image_url": last_url, "type": "end_frame"})
+
+        # Build element_list
+        element_list = None
+        if element_id:
+            element_list = [{"element_id": element_id}]
+            # Add element reference to prompt
+            if "<<<element_1>>>" not in prompt:
+                prompt = f"The <<<element_1>>> character: {prompt}"
+
+        gen_result = await kling.generate_omni_video(
+            organization_id=org_id,
+            brand_id=brand_id,
+            prompt=prompt,
+            duration=duration,
+            mode=mode,
+            sound="on",
+            image_list=image_list if image_list else None,
+            element_list=element_list,
+            aspect_ratio=aspect_ratio if not image_list else None,
+            candidate_id=candidate_id,
+        )
+
+        kling_task_id = gen_result.get("kling_task_id")
+        generation_id = gen_result.get("generation_id")
+
+        if kling_task_id:
+            completed = await kling.poll_and_complete(
+                generation_id=generation_id,
+                kling_task_id=kling_task_id,
+                endpoint_type=KlingEndpoint.OMNI_VIDEO,
+            )
+            return {
+                "generation_id": generation_id,
+                "status": completed.get("status", "failed"),
+                "storage_path": completed.get("video_storage_path"),
+                "estimated_cost_usd": gen_result.get("estimated_cost_usd", 0),
+            }
+
+        return {"generation_id": generation_id, "status": "failed"}
 
     # ========================================================================
     # Internal: FFmpeg Helpers

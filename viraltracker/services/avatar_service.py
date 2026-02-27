@@ -90,9 +90,9 @@ class AvatarService:
         now = datetime.utcnow()
 
         # Upload reference images if provided
-        ref_paths = [None, None, None]
+        ref_paths = [None, None, None, None]
         if reference_images:
-            for i, img_bytes in enumerate(reference_images[:3]):
+            for i, img_bytes in enumerate(reference_images[:4]):
                 path = f"{data.brand_id}/{avatar_id}/ref{i+1}.png"
                 await self._upload_image(path, img_bytes)
                 ref_paths[i] = f"{self.STORAGE_BUCKET}/{path}"
@@ -106,6 +106,7 @@ class AvatarService:
             "reference_image_1": ref_paths[0],
             "reference_image_2": ref_paths[1],
             "reference_image_3": ref_paths[2],
+            "reference_image_4": ref_paths[3],
             "generation_prompt": data.generation_prompt,
             "default_negative_prompt": data.default_negative_prompt,
             "default_aspect_ratio": data.default_aspect_ratio.value,
@@ -128,6 +129,7 @@ class AvatarService:
             reference_image_1=ref_paths[0],
             reference_image_2=ref_paths[1],
             reference_image_3=ref_paths[2],
+            reference_image_4=ref_paths[3],
             generation_prompt=data.generation_prompt,
             default_negative_prompt=data.default_negative_prompt,
             default_aspect_ratio=data.default_aspect_ratio,
@@ -309,8 +311,8 @@ class AvatarService:
         Returns:
             Storage path of uploaded image, or None if avatar not found
         """
-        if slot not in [1, 2, 3]:
-            raise ValueError("Slot must be 1, 2, or 3")
+        if slot not in [1, 2, 3, 4]:
+            raise ValueError("Slot must be 1, 2, 3, or 4")
 
         avatar = await self.get_avatar(avatar_id)
         if not avatar:
@@ -330,6 +332,15 @@ class AvatarService:
                 .execute()
         )
 
+        # Clear stale Kling element (references changed)
+        await asyncio.to_thread(
+            lambda: self.supabase.table("brand_avatars")
+                .update({"kling_element_id": None})
+                .eq("id", str(avatar_id))
+                .not_.is_("kling_element_id", "null")
+                .execute()
+        )
+
         logger.info(f"Added reference image {slot} for avatar: {avatar_id}")
         return full_path
 
@@ -344,8 +355,8 @@ class AvatarService:
         Returns:
             True if removed
         """
-        if slot not in [1, 2, 3]:
-            raise ValueError("Slot must be 1, 2, or 3")
+        if slot not in [1, 2, 3, 4]:
+            raise ValueError("Slot must be 1, 2, 3, or 4")
 
         avatar = await self.get_avatar(avatar_id)
         if not avatar:
@@ -370,6 +381,15 @@ class AvatarService:
             lambda: self.supabase.table("brand_avatars")
                 .update({column: None})
                 .eq("id", str(avatar_id))
+                .execute()
+        )
+
+        # Clear stale Kling element (references changed)
+        await asyncio.to_thread(
+            lambda: self.supabase.table("brand_avatars")
+                .update({"kling_element_id": None})
+                .eq("id", str(avatar_id))
+                .not_.is_("kling_element_id", "null")
                 .execute()
         )
 
@@ -497,7 +517,7 @@ Requirements:
         Args:
             avatar_id: Avatar UUID
             prompt: Generation prompt
-            slot: Slot to save to (1, 2, or 3)
+            slot: Slot to save to (1-4)
             use_existing_refs: Use existing reference images for consistency
 
         Returns:
@@ -520,6 +540,181 @@ Requirements:
 
         # Save to slot
         return await self.add_reference_image(avatar_id, image_bytes, slot)
+
+    # =========================================================================
+    # Angle-Based Generation (Kling Element Workflow)
+    # =========================================================================
+
+    ANGLE_PROMPTS = {
+        1: "Frontal passport-style portrait. Face directly facing camera, neutral expression, "
+           "clean solid-color background, even studio lighting, square composition.",
+        2: "3/4 view portrait of the SAME person. Face turned ~45 degrees to the right, "
+           "same outfit and hairstyle, clean background, same lighting. "
+           "Maintain exact facial features, skin tone, and hair.",
+        3: "Side profile portrait of the SAME person. Pure side view facing right, "
+           "showing jawline, ear, and hair. Same outfit, clean background, same lighting.",
+        4: "Full-body front-facing photo of the SAME person. Standing straight, facing camera, "
+           "full body visible head to feet, portrait orientation. Same outfit and hairstyle, "
+           "clean background, even studio lighting.",
+    }
+
+    ANGLE_LABELS = {1: "Frontal", 2: "3/4 View", 3: "Side Profile", 4: "Full Body"}
+
+    async def generate_angle_image(
+        self, avatar_id: UUID, slot: int, custom_prompt_suffix: Optional[str] = None
+    ) -> Optional[str]:
+        """Generate an angle-specific reference image and save it to a slot.
+
+        Uses angle-specific prompt templates with sequential reference chaining:
+        each subsequent angle uses all prior slot images as references for consistency.
+
+        Args:
+            avatar_id: Avatar UUID.
+            slot: Target slot (1-4).
+            custom_prompt_suffix: Optional extra prompt text to append.
+
+        Returns:
+            Storage path of generated image, or None on failure.
+        """
+        import base64
+
+        if slot not in self.ANGLE_PROMPTS:
+            raise ValueError(f"Slot must be 1-4, got {slot}")
+
+        avatar = await self.get_avatar(avatar_id)
+        if not avatar:
+            return None
+
+        # Build prompt: character description + angle instruction
+        char_desc = avatar.generation_prompt or "A person"
+        angle_prompt = self.ANGLE_PROMPTS[slot]
+        full_prompt = f"{char_desc}\n\n{angle_prompt}"
+        if custom_prompt_suffix:
+            full_prompt += f"\n\n{custom_prompt_suffix}"
+
+        # Collect prior slot images as references for consistency
+        reference_images = []
+        for prior_slot in range(1, slot):
+            ref_path = getattr(avatar, f"reference_image_{prior_slot}")
+            if ref_path:
+                try:
+                    img_bytes = await self._download_image(ref_path)
+                    reference_images.append(img_bytes)
+                except Exception as e:
+                    logger.warning(f"Failed to load ref slot {prior_slot}: {e}")
+
+        # Generate with low temperature for consistency
+        try:
+            image_bytes = await self.generate_avatar_image(
+                prompt=full_prompt,
+                reference_images=reference_images if reference_images else None,
+                temperature=0.3,
+            )
+        except Exception as e:
+            # Check for safety filter errors
+            error_str = str(e).lower()
+            if "safety" in error_str or "blocked" in error_str or "filter" in error_str:
+                logger.warning(f"Safety filter blocked generation for avatar {avatar_id} slot {slot}: {e}")
+                return None
+            raise
+
+        # Save to slot
+        return await self.add_reference_image(avatar_id, image_bytes, slot)
+
+    async def create_kling_element(
+        self, avatar_id: UUID, organization_id: str, brand_id: str
+    ) -> Optional[str]:
+        """Create a Kling element from the avatar's reference images.
+
+        Validates frontal image (slot 1) exists, gets signed URLs for all
+        reference images, and calls Kling's element creation API.
+
+        Args:
+            avatar_id: Avatar UUID.
+            organization_id: Organization UUID for billing.
+            brand_id: Brand UUID.
+
+        Returns:
+            Kling element_id string, or None on failure.
+        """
+        avatar = await self.get_avatar(avatar_id)
+        if not avatar:
+            logger.error(f"Avatar {avatar_id} not found")
+            return None
+
+        if not avatar.reference_image_1:
+            logger.error(f"Avatar {avatar_id} has no frontal image (slot 1)")
+            return None
+
+        # Get signed URL for frontal image
+        frontal_url = await self.get_reference_image_url(avatar_id, 1)
+        if not frontal_url:
+            logger.error(f"Failed to get frontal image URL for avatar {avatar_id}")
+            return None
+
+        # Get signed URLs for additional reference images (slots 2-4)
+        refer_images = []
+        for slot in [2, 3, 4]:
+            ref_path = getattr(avatar, f"reference_image_{slot}")
+            if ref_path:
+                url = await self.get_reference_image_url(avatar_id, slot)
+                if url:
+                    refer_images.append(url)
+
+        from .kling_video_service import KlingVideoService
+        from .kling_models import KlingEndpoint
+
+        kling = KlingVideoService()
+        try:
+            gen_result = await kling.create_element(
+                organization_id=organization_id,
+                brand_id=brand_id,
+                element_name=avatar.name[:20],
+                element_description=f"Brand avatar: {avatar.name}"[:100],
+                frontal_image=frontal_url,
+                refer_images=refer_images if refer_images else None,
+            )
+
+            task_id = gen_result.get("kling_task_id")
+            if not task_id:
+                logger.error(f"No task_id returned for avatar {avatar_id} element creation")
+                return None
+
+            poll_result = await kling.poll_task(
+                task_id=task_id,
+                endpoint_type=KlingEndpoint.ADVANCED_CUSTOM_ELEMENTS,
+                timeout_seconds=600,
+            )
+
+            task_data = poll_result.get("data", {})
+            task_status = task_data.get("task_status", "")
+            task_result = task_data.get("task_result", {})
+
+            if task_status == "succeed":
+                elements = task_result.get("elements", [])
+                element_id = elements[0].get("element_id") if elements else None
+                if element_id:
+                    await asyncio.to_thread(
+                        lambda: self.supabase.table("brand_avatars")
+                            .update({"kling_element_id": element_id})
+                            .eq("id", str(avatar_id))
+                            .execute()
+                    )
+                    logger.info(f"Created Kling element {element_id} for avatar {avatar_id}")
+                    return element_id
+                else:
+                    logger.warning(f"Element created but no element_id in response for avatar {avatar_id}")
+                    return None
+            else:
+                error_msg = task_data.get("task_status_msg", "Unknown error")
+                logger.error(f"Element creation failed for avatar {avatar_id}: {error_msg}")
+                return None
+
+        except Exception as e:
+            logger.error(f"Element creation failed for avatar {avatar_id}: {e}")
+            return None
+        finally:
+            await kling.close()
 
     # =========================================================================
     # Image URL Operations
@@ -596,6 +791,8 @@ Requirements:
             reference_image_1=row.get("reference_image_1"),
             reference_image_2=row.get("reference_image_2"),
             reference_image_3=row.get("reference_image_3"),
+            reference_image_4=row.get("reference_image_4"),
+            kling_element_id=row.get("kling_element_id"),
             generation_prompt=row.get("generation_prompt"),
             default_negative_prompt=row.get(
                 "default_negative_prompt",
