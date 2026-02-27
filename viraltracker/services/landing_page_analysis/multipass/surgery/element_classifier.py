@@ -9,6 +9,7 @@ Adds data-slot attributes to editable text/CTA elements.
 import json
 import logging
 import re
+from html.parser import HTMLParser
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -24,6 +25,36 @@ _CTA_TEXT_RE = re.compile(
 # Class-name heuristics for element roles
 _CLASS_HEADING_RE = re.compile(r'\b(heading|title|headline)\b', re.IGNORECASE)
 _CLASS_CTA_RE = re.compile(r'\b(btn|button|cta)\b', re.IGNORECASE)
+
+# Hidden-element detection
+_HIDDEN_STYLE_RE = re.compile(
+    r'(?:display\s*:\s*none|visibility\s*:\s*hidden)',
+    re.IGNORECASE,
+)
+
+
+def _is_visually_hidden(attrs_str: str) -> bool:
+    """Check if an element's attributes indicate it is visually hidden.
+
+    Detects ``display:none``, ``visibility:hidden`` (inline style),
+    ``aria-hidden="true"``, and the ``hidden`` boolean attribute.
+    """
+    if not attrs_str:
+        return False
+    # Check inline style for display:none / visibility:hidden
+    style_match = re.search(r'style\s*=\s*["\']([^"\']*)["\']', attrs_str, re.IGNORECASE)
+    if style_match and _HIDDEN_STYLE_RE.search(style_match.group(1)):
+        return True
+    # Check aria-hidden="true"
+    if re.search(r'aria-hidden\s*=\s*["\']true["\']', attrs_str, re.IGNORECASE):
+        return True
+    # Check hidden boolean attribute — strip quoted values first to avoid
+    # false positives on class="hidden" or data-state="hidden".
+    # Use (?<!-) to exclude data-hidden, x-hidden, etc.
+    stripped = re.sub(r'["\'][^"\']*["\']', '', attrs_str)
+    if re.search(r'(?<!-)\bhidden\b', stripped, re.IGNORECASE):
+        return True
+    return False
 
 
 class ElementClassifier:
@@ -105,6 +136,8 @@ class ElementClassifier:
 
             if 'data-slot=' in attrs:
                 return match.group(0)
+            if _is_visually_hidden(attrs):
+                return match.group(0)
 
             if tag == "h1" and not found_h1:
                 found_h1 = True
@@ -124,6 +157,8 @@ class ElementClassifier:
 
             if 'data-slot=' in attrs:
                 return match.group(0)
+            if _is_visually_hidden(attrs):
+                return match.group(0)
 
             body_counter += 1
             return f'<p{attrs} data-slot="body-{body_counter}"{close}'
@@ -138,6 +173,8 @@ class ElementClassifier:
             full_tag = match.group(0)
 
             if 'data-slot=' in attrs:
+                return full_tag
+            if _is_visually_hidden(attrs):
                 return full_tag
 
             # Check class for CTA patterns
@@ -188,6 +225,9 @@ class ElementClassifier:
         # Also check for class-name heuristic slots
         html = self._class_heuristic_slots(html)
 
+        # Strip cross-section slots (must run after all slot assignment)
+        html = self._strip_cross_section_slots(html)
+
         slot_count = len(re.findall(r'data-slot="[^"]*"', html))
 
         return html, {
@@ -198,19 +238,23 @@ class ElementClassifier:
 
     def _class_heuristic_slots(self, html: str) -> str:
         """Add slots based on class-name heuristics."""
-        # Elements with heading/title classes that weren't h1-h6
+        heading_class_counter = [0]  # mutable for closure access
+
         def _check_class_heading(match: re.Match) -> str:
             tag = match.group(1)
             attrs = match.group(2) or ""
 
             if 'data-slot=' in attrs:
                 return match.group(0)
+            if _is_visually_hidden(attrs):
+                return match.group(0)
 
             class_match = re.search(
                 r'class\s*=\s*["\']([^"\']*)["\']', attrs, re.IGNORECASE
             )
             if class_match and _CLASS_HEADING_RE.search(class_match.group(1)):
-                return f'<{tag}{attrs} data-slot="heading-class">'
+                heading_class_counter[0] += 1
+                return f'<{tag}{attrs} data-slot="heading-class-{heading_class_counter[0]}">'
 
             return match.group(0)
 
@@ -220,6 +264,73 @@ class ElementClassifier:
             html,
             flags=re.IGNORECASE,
         )
+
+        return html
+
+    def _strip_cross_section_slots(self, html: str) -> str:
+        """Remove data-slot attributes from elements whose subtree spans sections.
+
+        Uses a stack-based HTMLParser to detect data-slot elements that contain
+        data-section children or nested data-slot elements. Any violating slot
+        attributes are stripped via regex after detection.
+        """
+
+        class _CrossSectionDetector(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                # Stack: (tag, slot_name, depth)
+                self._slot_stack: list = []
+                self._depth = 0
+                self.violating_slots: set = set()
+
+            def handle_starttag(self, tag, attrs):
+                self._depth += 1
+                attr_dict = dict(attrs)
+                slot_name = attr_dict.get("data-slot")
+                has_section = "data-section" in attr_dict
+
+                # Inside a slot and hit a section → violation
+                if has_section and self._slot_stack:
+                    _, parent_slot, _ = self._slot_stack[-1]
+                    self.violating_slots.add(parent_slot)
+
+                # Nested slot → violation on parent
+                if slot_name and self._slot_stack:
+                    _, parent_slot, _ = self._slot_stack[-1]
+                    self.violating_slots.add(parent_slot)
+
+                if slot_name:
+                    self._slot_stack.append((tag, slot_name, self._depth))
+
+            def handle_endtag(self, tag):
+                if self._slot_stack:
+                    stack_tag, _, stack_depth = self._slot_stack[-1]
+                    if tag == stack_tag and self._depth == stack_depth:
+                        self._slot_stack.pop()
+                self._depth -= 1
+
+            def finalize(self):
+                # Unclosed slots are suspicious — treat as violations
+                for _, slot_name, _ in self._slot_stack:
+                    self.violating_slots.add(slot_name)
+                self._slot_stack.clear()
+
+        detector = _CrossSectionDetector()
+        try:
+            detector.feed(html)
+        except Exception:
+            pass
+        detector.finalize()
+
+        if not detector.violating_slots:
+            return html
+
+        logger.warning(
+            f"S2 cross-section slots detected: {detector.violating_slots}"
+        )
+        for slot_name in detector.violating_slots:
+            escaped = re.escape(slot_name)
+            html = re.sub(rf'\s*data-slot="{escaped}"', '', html)
 
         return html
 

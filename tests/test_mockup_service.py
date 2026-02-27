@@ -12,6 +12,7 @@ from viraltracker.services.landing_page_analysis.mockup_service import (
     SECTION_ACCENT_COLORS,
     MockupService,
     _DEFAULT_ACCENT,
+    _SURGERY_CRITICAL_CSS,
     _sanitize_css_block,
     _sanitize_dashes,
     _strip_url_from_inline_styles,
@@ -2580,11 +2581,11 @@ class TestExtractSlotsWithContent:
     def test_duplicate_slot_names_first_wins(self, service):
         """First occurrence of a duplicate slot name wins."""
         html = (
-            '<h2 data-slot="heading-class">First Heading</h2>'
-            '<h2 data-slot="heading-class">Second Heading</h2>'
+            '<h2 data-slot="heading-class-1">First Heading</h2>'
+            '<h2 data-slot="heading-class-1">Second Heading</h2>'
         )
         result = service._extract_slots_with_content(html)
-        assert result["heading-class"] == "First Heading"
+        assert result["heading-class-1"] == "First Heading"
         assert len(result) == 1
 
     def test_empty_slot_content(self, service):
@@ -3082,7 +3083,7 @@ class TestInferSlotType:
         assert service._infer_slot_type("headline") == "headline"
         assert service._infer_slot_type("subheadline") == "subheadline"
         assert service._infer_slot_type("heading-1") == "heading"
-        assert service._infer_slot_type("heading-class") == "heading"
+        assert service._infer_slot_type("heading-class-1") == "heading"
         assert service._infer_slot_type("body-1") == "body"
         assert service._infer_slot_type("cta-1") == "cta"
         assert service._infer_slot_type("testimonial-1") == "testimonial"
@@ -3327,3 +3328,38 @@ class TestListicleEnforcement:
         }
         result = service._enforce_listicle_numbering(all_rewrites, listicle_data)
         assert not result["heading-1"].startswith("1. 1.")
+
+
+# --------------------------------------------------------------------------
+# Surgery mode detection — _wrap_mockup marker & CSS safety net
+# --------------------------------------------------------------------------
+
+
+class TestSurgeryModeDetection:
+    """Tests that surgery mode marker survives through _wrap_mockup."""
+
+    @pytest.fixture
+    def service(self):
+        return MockupService()
+
+    def test_wrap_mockup_surgery_marker_present(self, service):
+        """_wrap_mockup with is_surgery=True emits data-pipeline='surgery' on body."""
+        result = service._wrap_mockup(
+            "<p>Hello</p>", classification=None, mode="analysis",
+            page_css="body { color: red; }", is_surgery=True,
+        )
+        assert 'data-pipeline="surgery"' in result
+
+    def test_wrap_mockup_no_marker_by_default(self, service):
+        """_wrap_mockup with is_surgery=False (default) does NOT emit marker."""
+        result = service._wrap_mockup(
+            "<p>Hello</p>", classification=None, mode="analysis",
+            page_css="body { color: red; }",
+        )
+        assert 'data-pipeline' not in result
+
+    def test_surgery_critical_css_has_overflow_rules(self):
+        """_SURGERY_CRITICAL_CSS contains overflow-x and max-width rules."""
+        assert "max-width: 100vw" in _SURGERY_CRITICAL_CSS
+        assert "overflow-x: hidden" in _SURGERY_CRITICAL_CSS
+        assert "max-width: 100%" in _SURGERY_CRITICAL_CSS

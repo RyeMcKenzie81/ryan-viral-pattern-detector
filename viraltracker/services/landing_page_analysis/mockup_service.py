@@ -35,6 +35,14 @@ logger = logging.getLogger(__name__)
 _CSS_MAX_SIZE = 100_000  # 100KB cap for CSS blocks (AI-generated)
 _CSS_MAX_SIZE_SURGERY = 2_500_000  # 2.5MB cap for surgery pipeline (preserves original page CSS)
 
+# Safety-net CSS appended in blueprint generation for surgery-pipeline pages.
+# Prevents catastrophic layout blow-up if CSS is partially truncated.
+_SURGERY_CRITICAL_CSS = """
+/* Surgery pipeline layout safety net */
+html, body { max-width: 100vw !important; overflow-x: hidden !important; }
+img, video, iframe { max-width: 100% !important; }
+"""
+
 # Patterns for dangerous CSS constructs
 _STYLE_BREAKOUT_RE = re.compile(r'<\s*/\s*style\b', re.IGNORECASE)
 _HTML_COMMENT_RE = re.compile(r'<!')
@@ -620,7 +628,8 @@ class MockupService:
             if page_markdown:
                 self._verify_content_fidelity(html, page_markdown)
 
-            return self._wrap_mockup(html, classification, mode="analysis", page_css=sanitized_css)
+            return self._wrap_mockup(html, classification, mode="analysis", page_css=sanitized_css,
+                                    is_surgery=self.is_surgery_mode)
         elif page_markdown:
             raw_html = self._markdown_to_html(page_markdown)
             html = self._sanitize_html(raw_html)
@@ -669,6 +678,10 @@ class MockupService:
 
         self.is_surgery_mode = 'data-pipeline="surgery"' in analysis_mockup_html
         page_body, page_css = self._extract_page_css_and_strip(analysis_mockup_html)
+
+        # Append safety-net overflow rules for surgery pages (defense-in-depth)
+        if self.is_surgery_mode and page_css:
+            page_css = page_css + "\n" + _SURGERY_CRITICAL_CSS
 
         # Strip Shopify theme chrome (header, footer, nav, mega menu, overlay)
         # that survives surgery pipeline but renders as unstyled junk
@@ -3978,9 +3991,23 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
                 self.parts: list = []
                 self._skip_depth: int = 0
                 self._skip_tag: str = ""
+                self._checkpoint_idx: int = -1
+                self._checkpoint_tag_text: str = ""
 
             def handle_starttag(self, tag, attrs):
                 if self._skip_depth > 0:
+                    # Guard: if skipped content contains a data-section,
+                    # abort the slot replacement and roll back
+                    attr_dict_skip = dict(attrs)
+                    if "data-section" in attr_dict_skip:
+                        # ABORT: slot spans sections — roll back replacement
+                        self.parts = self.parts[:self._checkpoint_idx]
+                        self.parts.append(self._checkpoint_tag_text)
+                        self._skip_depth = 0
+                        self._skip_tag = ""
+                        # Emit the current tag (the data-section one) normally
+                        self.parts.append(self.get_starttag_text() or "")
+                        return
                     if tag == self._skip_tag:
                         self._skip_depth += 1
                     return
@@ -3988,7 +4015,9 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
                 attr_dict = dict(attrs)
                 slot_name = attr_dict.get("data-slot")
                 if slot_name and slot_name in slot_content:
-                    self.parts.append(self.get_starttag_text() or "")
+                    self._checkpoint_idx = len(self.parts)
+                    self._checkpoint_tag_text = self.get_starttag_text() or ""
+                    self.parts.append(self._checkpoint_tag_text)
                     if tag.lower() not in void_elems:
                         self.parts.append(slot_content[slot_name])
                         self._skip_depth = 1
@@ -4072,6 +4101,7 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
         classification: Optional[Dict[str, Any]],
         mode: str,
         page_css: str = "",
+        is_surgery: bool = False,
     ) -> str:
         """Wrap AI-generated or markdown HTML in the mockup shell (metadata bar + footer).
 
@@ -4080,6 +4110,12 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
             classification: Optional page classification data.
             mode: "analysis" or "blueprint".
             page_css: Optional sanitized CSS from AI-generated <style> blocks.
+            is_surgery: When True, emit ``data-pipeline="surgery"`` on the
+                ``<body>`` tag so downstream consumers (e.g.
+                ``generate_blueprint_mockup``) can detect surgery-pipeline
+                output and use the higher CSS size limit.  This is distinct
+                from ``self.is_surgery_mode`` which controls CSS sanitization
+                limits during the current generation pass.
         """
         cls_data = classification or {}
         if "page_classifier" in cls_data:
@@ -4145,7 +4181,7 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
 </style>
 {page_css_block}
 </head>
-<body>
+<body{' data-pipeline="surgery"' if is_surgery else ''}>
 <div class="mockup-meta-bar">
   <span class="mockup-meta-badge {mode_class}">{mode_upper} MOCKUP</span>
   {awareness_html}
