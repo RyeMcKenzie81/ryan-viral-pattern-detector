@@ -1116,10 +1116,11 @@ Requirements:
 
             # Query element to get element_id and voice info
             query_result = await kling.query_element(task_id)
-            logger.info(f"query_element raw response: {query_result}")
             query_data = query_result.get("data", {})
             task_result = query_data.get("task_result", {})
             elements = task_result.get("elements", [])
+            logger.info(f"query_element elements keys: {[list(e.keys()) for e in elements]}")
+            logger.info(f"query_element first element: {elements[0] if elements else 'EMPTY'}")
 
             if not elements:
                 raise ValueError("Video element created but no elements in response")
@@ -1128,6 +1129,7 @@ Requirements:
             element_id = str(element.get("element_id", ""))
 
             voice_info = element.get("element_voice_info", {})
+            logger.info(f"voice_info field: {voice_info}")
             voice_id = str(voice_info.get("voice_id", "")) if voice_info else ""
 
             # Update avatar with new element info
