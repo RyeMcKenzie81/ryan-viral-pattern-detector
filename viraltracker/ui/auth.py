@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 # Pages that don't require authentication (add filenames here)
 # Example: ["Client_Gallery.py", "Public_Report.py"]
-PUBLIC_PAGES = ["66_🌐_Public_Gallery.py", "67_🔬_Public_Analysis.py"]
+PUBLIC_PAGES = ["66_🌐_Public_Gallery.py", "67_🔬_Public_Analysis.py", "68_🏗️_Public_Blueprint.py"]
 
 # Cookie settings
 COOKIE_NAME = "viraltracker_session"
