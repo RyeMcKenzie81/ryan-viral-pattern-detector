@@ -393,7 +393,13 @@ Return ONLY valid JSON (no explanation, no code fences) as a list of patches:
   }}
 ]
 
-## SELECTOR GRAMMAR (ONLY these patterns are supported)
+## SELECTOR GRAMMAR
+### For css_fix patches: Use any valid CSS selector
+- .hero h1, .grid > .item:first-child, etc. are all supported
+- Prefer specific selectors to minimize unintended matches
+- Do NOT use human-readable section names like 'hero' — use sec_N IDs
+
+### For add_element / remove_element: ONLY these patterns
 - [data-section='sec_N'] - match by section ID (e.g., sec_0, sec_1, sec_2)
 - [data-slot='name'] - match by slot name (e.g., headline, body-1, cta-1)
 - .classname - match by CSS class
@@ -401,8 +407,7 @@ Return ONLY valid JSON (no explanation, no code fences) as a list of patches:
 - tag - match by HTML tag
 - tag.classname - match by tag and class
 - tag[data-section='sec_N'] - match by tag and section ID
-Do NOT use complex CSS selectors, pseudo-classes, or combinators.
-Do NOT use human-readable section names like 'hero' or 'features' -- use sec_N IDs only.
+- Do NOT use descendant combinators or complex selectors for these types
 
 IMPORTANT: Do NOT use css_fix patches to override layout properties (padding, margin, display, grid-*, flex-*)
 on elements using mp-* CSS classes. These classes are layout-critical and interdependent.
@@ -736,21 +741,18 @@ Return ONLY valid JSON (no explanation, no code fences) as a list of CSS patches
   }}
 ]
 
-## SELECTOR GRAMMAR (ONLY these patterns are supported)
-- [data-section='sec_N'] - match by section ID
-- [data-slot='name'] - match by slot name
-- .classname - match by CSS class
-- tag - match by HTML tag
-- tag.classname - match by tag and class
-- tag[data-section='sec_N'] - match by tag and section ID
+## SELECTOR GRAMMAR
+Any valid CSS selector is supported:
+- [data-section='sec_N'], .classname, tag, tag.classname (simple)
+- .hero h1, .grid > .item, .sec_0 .btn (complex — also supported)
+- Prefer specific selectors to minimize unintended matches
+- Do NOT use human-readable section names — use sec_N IDs
 
 ## RULES
 - Do NOT return HTML. Return ONLY CSS patches.
 - Do NOT change any text content.
 - Do NOT remove or rename any data-slot or data-section attributes.
-- Use ONE simple selector per entry from the grammar above.
 - Do NOT combine selectors with commas.
-- Do NOT use descendant/child combinators (spaces or >).
 - Focus on: colors, spacing, sizing, backgrounds, borders, fonts.
 - Maximum 20 patches.
 - Return empty list [] if the HTML already looks good.
@@ -796,20 +798,17 @@ Return ONLY valid JSON (no explanation, no code fences) as a list of CSS patches
   }}
 ]
 
-## SELECTOR GRAMMAR (ONLY these patterns are supported)
-- [data-section='sec_N'] - match by section ID
-- [data-slot='name'] - match by slot name
-- .classname - match by CSS class
-- tag - match by HTML tag
-- tag.classname - match by tag and class
-- tag[data-section='sec_N'] - match by tag and section ID
+## SELECTOR GRAMMAR
+Any valid CSS selector is supported:
+- [data-section='sec_N'], .classname, tag, tag.classname (simple)
+- .hero h1, .grid > .item, .sec_0 .btn (complex — also supported)
+- Prefer specific selectors to minimize unintended matches
+- Do NOT use human-readable section names — use sec_N IDs
 
 ## RULES
 - Do NOT return HTML. Return ONLY CSS patches.
 - Do NOT change any text content.
-- Use ONE simple selector per entry from the grammar above.
 - Do NOT combine selectors with commas.
-- Do NOT use descendant/child combinators (spaces or >).
 - Focus on: colors, spacing, sizing, backgrounds, borders, fonts.
 - Maximum 5 patches per section.
 - Return empty list [] if this section already looks good.

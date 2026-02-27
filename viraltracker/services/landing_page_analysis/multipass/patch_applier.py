@@ -1,7 +1,14 @@
 """Deterministic HTML patch application with restricted selector grammar.
 
 Phase 4 outputs JSON patches that are applied here -- no LLM involvement.
-Only a tiny selector grammar is supported; anything else is rejected.
+
+For css_fix patches on full HTML documents (containing </head>), patches are
+injected as a <style> block before </head> with !important to override inline
+styles. This allows any valid CSS selector to work because the browser handles
+matching natively.
+
+For css_fix on HTML fragments (no </head>) and for add_element/remove_element,
+only a restricted selector grammar is supported; anything else is rejected.
 """
 
 import logging
@@ -37,6 +44,27 @@ _CONTAINS_MATCH_CAP = 5
 
 # Protected attributes that patches must never modify
 _PROTECTED_ATTRS = frozenset(['data-slot', 'data-section'])
+
+# Patterns that indicate CSS injection attempts
+_CSS_INJECTION_PATTERNS = ("</style", "javascript:", "expression(", "@import")
+
+
+def _css_contains_injection(value: str) -> bool:
+    """Check if a CSS value/selector could break out of a style block."""
+    lower = value.lower()
+    return any(x in lower for x in _CSS_INJECTION_PATTERNS)
+
+
+def _add_important(css_value: str) -> str:
+    """Add !important to each CSS property declaration."""
+    parts = [p.strip() for p in css_value.split(";") if p.strip()]
+    result = []
+    for part in parts:
+        if "!important" not in part:
+            result.append(f"{part} !important")
+        else:
+            result.append(part)
+    return "; ".join(result) + ";"
 
 
 @dataclass
@@ -199,11 +227,18 @@ class PatchApplier:
     def apply_patches(self, html: str, patches: List[Dict]) -> str:
         """Apply patches deterministically. Returns modified HTML.
 
+        For css_fix patches on full HTML documents (containing </head>),
+        patches are injected as a <style> block. This supports any valid
+        CSS selector. For fragments, falls back to inline style modification
+        with restricted selector grammar.
+
+        add_element/remove_element always use restricted grammar regardless.
+
         Args:
             html: Input HTML to patch.
             patches: List of patch dicts with keys:
                 - type: 'css_fix', 'add_element', or 'remove_element'
-                - selector: CSS selector string (restricted grammar)
+                - selector: CSS selector string
                 - value: For css_fix: CSS property string. For add_element: HTML to insert.
 
         Returns:
@@ -212,11 +247,28 @@ class PatchApplier:
         if not patches:
             return html
 
+        is_full_document = "</head>" in html.lower()
+
+        # Separate css_fix patches for full documents (style-block path)
+        css_fix_patches = []
+        other_patches = []
+        for patch in patches:
+            if patch.get("type") == "css_fix" and is_full_document:
+                css_fix_patches.append(patch)
+            else:
+                other_patches.append(patch)
+
         result = html
         applied = 0
         skipped = 0
 
-        for patch in patches:
+        # Apply css_fix patches as a single style block (full doc only)
+        if css_fix_patches:
+            result = self._apply_css_fix_via_style_block(result, css_fix_patches)
+            applied += len(css_fix_patches)
+
+        # Apply remaining patches via existing per-patch logic
+        for patch in other_patches:
             try:
                 patch_type = patch.get('type', '')
                 selector_str = patch.get('selector', '')
@@ -267,6 +319,36 @@ class PatchApplier:
 
         logger.info(f"PatchApplier: applied={applied}, skipped={skipped}")
         return result
+
+    def _apply_css_fix_via_style_block(self, html: str, patches: List[Dict]) -> str:
+        """Inject css_fix patches as a <style> block before </head>.
+
+        Adds !important to each property to override inline styles.
+        Sanitizes selectors/values to prevent injection.
+        """
+        rules = []
+        for patch in patches:
+            selector = patch.get("selector", "").strip()
+            css_value = patch.get("value", "").strip()
+            if not selector or not css_value:
+                continue
+            # Sanitize: reject anything that could break out of <style>
+            if _css_contains_injection(selector) or _css_contains_injection(css_value):
+                logger.warning("CSS injection attempt blocked in selector or value, skipping")
+                continue
+            # Add !important to each property
+            important_css = _add_important(css_value)
+            rules.append(f"  {selector} {{ {important_css} }}")
+
+        if not rules:
+            return html
+
+        style_block = "\n<style data-patch-applier>\n" + "\n".join(rules) + "\n</style>\n"
+        # Insert before </head> (case-insensitive find, preserve original case)
+        head_close_idx = html.lower().find("</head>")
+        if head_close_idx == -1:
+            return html
+        return html[:head_close_idx] + style_block + html[head_close_idx:]
 
     def _apply_css_fix(self, html: str, selector: ParsedSelector, css_value: str) -> str:
         """Apply CSS style fix to all matching elements."""

@@ -207,11 +207,18 @@ class SurgeryPipeline:
 
                 if ssim_score < S4_SSIM_THRESHOLD:
                     # Apply QA patches via LLM
-                    from .prompts import build_surgery_patch_prompt
+                    from .prompts import build_surgery_patch_prompt, _extract_selector_summary
                     from ..patch_applier import PatchApplier
                     from ..invariants import _extract_slots
 
-                    prompt = build_surgery_patch_prompt(ssim_score)
+                    # Give Gemini the actual HTML so it targets valid selectors
+                    html_preview = scoped_html[:20000]
+                    selector_summary = _extract_selector_summary(scoped_html)
+                    prompt = build_surgery_patch_prompt(
+                        ssim_score,
+                        html_preview=html_preview,
+                        selector_summary=selector_summary,
+                    )
 
                     try:
                         response = await self._gemini.generate_content_async(
@@ -239,20 +246,36 @@ class SurgeryPipeline:
                             patch_count = len(patches)
 
                         if patch_count > 0:
-                            # Validate: patches must not lose slots
-                            pre_slots = _extract_slots(scoped_html)
-                            post_slots = _extract_slots(patched)
-                            if len(post_slots) >= len(pre_slots):
-                                final_html = patched
-                                s4_applied = True
+                            # Validate 1: SSIM must not regress
+                            s4_png = await render_html_to_png_async(patched)
+                            if s4_png:
+                                s4_ssim = score_visual_fidelity(original_png, s4_png)
                                 logger.info(
-                                    f"S4 QA: Applied {patch_count} patches"
+                                    f"S4 QA: S4 SSIM = {s4_ssim:.3f} "
+                                    f"(S3 was {ssim_score:.3f}, delta {s4_ssim - ssim_score:+.4f})"
                                 )
-                            else:
-                                logger.warning(
-                                    f"S4 QA: Patches lost slots "
-                                    f"({len(pre_slots)} → {len(post_slots)}), reverting"
-                                )
+                                if s4_ssim < ssim_score:
+                                    logger.warning(
+                                        f"S4 QA: SSIM regressed "
+                                        f"({ssim_score:.3f} → {s4_ssim:.3f}), reverting"
+                                    )
+                                    patch_count = 0  # skip slot check below
+
+                            if patch_count > 0:
+                                # Validate 2: patches must not lose slots
+                                pre_slots = _extract_slots(scoped_html)
+                                post_slots = _extract_slots(patched)
+                                if len(post_slots) >= len(pre_slots):
+                                    final_html = patched
+                                    s4_applied = True
+                                    logger.info(
+                                        f"S4 QA: Applied {patch_count} patches"
+                                    )
+                                else:
+                                    logger.warning(
+                                        f"S4 QA: Patches lost slots "
+                                        f"({len(pre_slots)} → {len(post_slots)}), reverting"
+                                    )
                     except Exception as e:
                         logger.warning(f"S4 QA: LLM patch failed: {e}")
                 else:

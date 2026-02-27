@@ -197,6 +197,90 @@ class TestPatchApplierApplication:
         assert 'color: red' in result
 
 
+class TestPatchApplierStyleBlock:
+    """Test style-block injection for full-document css_fix patches."""
+
+    def test_css_fix_injects_style_block_in_full_doc(self):
+        from viraltracker.services.landing_page_analysis.multipass.patch_applier import (
+            PatchApplier,
+        )
+
+        html = '<html><head><style>.x{color:red}</style></head><body><div class="hero"><h1>Hi</h1></div></body></html>'
+        patches = [{"type": "css_fix", "selector": ".hero h1", "value": "color: blue;"}]
+        result = PatchApplier().apply_patches(html, patches)
+        assert '<style data-patch-applier>' in result
+        assert '.hero h1' in result
+        assert 'color: blue !important' in result
+
+    def test_css_fix_falls_back_to_inline_for_fragment(self):
+        from viraltracker.services.landing_page_analysis.multipass.patch_applier import (
+            PatchApplier,
+        )
+
+        html = '<div class="hero"><h1>Hi</h1></div>'
+        patches = [{"type": "css_fix", "selector": ".hero", "value": "color: red;"}]
+        result = PatchApplier().apply_patches(html, patches)
+        assert 'style="color: red' in result  # inline, not style block
+        assert '<style data-patch-applier>' not in result
+
+    def test_complex_selector_accepted_in_full_doc(self):
+        from viraltracker.services.landing_page_analysis.multipass.patch_applier import (
+            PatchApplier,
+        )
+
+        html = '<html><head></head><body><div class="hero"><h1>Title</h1></div></body></html>'
+        patches = [{"type": "css_fix", "selector": ".hero h1", "value": "font-size: 3rem;"}]
+        result = PatchApplier().apply_patches(html, patches)
+        assert '.hero h1 { font-size: 3rem !important; }' in result
+
+    def test_injection_blocked(self):
+        from viraltracker.services.landing_page_analysis.multipass.patch_applier import (
+            PatchApplier,
+        )
+
+        html = '<html><head></head><body><p>Hi</p></body></html>'
+        patches = [{"type": "css_fix", "selector": "p</style><script>alert(1)</script>", "value": "color:red;"}]
+        result = PatchApplier().apply_patches(html, patches)
+        assert '<script>' not in result
+
+    def test_add_element_still_uses_restricted_grammar(self):
+        from viraltracker.services.landing_page_analysis.multipass.patch_applier import (
+            PatchApplier,
+        )
+
+        html = '<html><head></head><body><section data-section="sec_0"><p>Hi</p></section></body></html>'
+        patches = [{"type": "add_element", "selector": ".hero h1", "value": "<div style='height:2px'></div>"}]
+        result = PatchApplier().apply_patches(html, patches)
+        # Complex selector for add_element should fail through parse_selector
+        assert result == html  # no change — selector rejected
+
+    def test_important_not_duplicated(self):
+        from viraltracker.services.landing_page_analysis.multipass.patch_applier import (
+            PatchApplier,
+        )
+
+        html = '<html><head></head><body><p>Hi</p></body></html>'
+        patches = [{"type": "css_fix", "selector": "p", "value": "color: red !important;"}]
+        result = PatchApplier().apply_patches(html, patches)
+        assert '!important !important' not in result
+
+    def test_multiple_css_fix_batched_into_one_block(self):
+        from viraltracker.services.landing_page_analysis.multipass.patch_applier import (
+            PatchApplier,
+        )
+
+        html = '<html><head></head><body><p>A</p><h1>B</h1></body></html>'
+        patches = [
+            {"type": "css_fix", "selector": "p", "value": "color: red;"},
+            {"type": "css_fix", "selector": "h1", "value": "font-size: 2rem;"},
+        ]
+        result = PatchApplier().apply_patches(html, patches)
+        # Should have exactly one style block with both rules
+        assert result.count('<style data-patch-applier>') == 1
+        assert 'color: red !important' in result
+        assert 'font-size: 2rem !important' in result
+
+
 # ---------------------------------------------------------------------------
 # Bounding box normalization tests
 # ---------------------------------------------------------------------------
