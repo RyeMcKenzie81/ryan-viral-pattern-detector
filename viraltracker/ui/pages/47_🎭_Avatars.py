@@ -471,7 +471,7 @@ def render_video_avatar_section(avatar, brand_id: str):
         from viraltracker.ui.utils import get_current_organization_id
         org_id = get_current_organization_id()
 
-        with st.spinner("Extracting voice from video (~5 min)..."):
+        with st.spinner("Extracting voice from video (~5-7 min, includes voice processing)..."):
             try:
                 async def extract():
                     service = get_avatar_service()
@@ -546,7 +546,7 @@ def render_video_avatar_section(avatar, brand_id: str):
         from viraltracker.ui.utils import get_current_organization_id
         org_id = get_current_organization_id()
 
-        with st.spinner("Creating video element from upload (~5 min)..."):
+        with st.spinner("Creating video element from upload (~5-7 min, includes voice processing)..."):
             try:
                 async def create_from_upload():
                     service = get_avatar_service()
