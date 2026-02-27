@@ -637,6 +637,21 @@ Requirements:
         Returns:
             Kling element_id string, or None on failure.
         """
+        # Resolve real org_id for superuser "all" mode
+        if organization_id == "all":
+            try:
+                brand_row = await asyncio.to_thread(
+                    lambda: self.supabase.table("brands")
+                        .select("organization_id")
+                        .eq("id", brand_id)
+                        .single()
+                        .execute()
+                )
+                organization_id = brand_row.data["organization_id"]
+            except Exception as e:
+                logger.error(f"Failed to resolve org_id from brand {brand_id}: {e}")
+                return None
+
         avatar = await self.get_avatar(avatar_id)
         if not avatar:
             logger.error(f"Avatar {avatar_id} not found")
