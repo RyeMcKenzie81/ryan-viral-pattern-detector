@@ -1322,7 +1322,7 @@ def _render_share_controls(blueprint: dict, bp_service, blueprint_id: str):
     share_token = blueprint.get("public_share_token", "")
 
     if share_enabled and share_token:
-        share_url = f"{app_base_url}/api/public/blueprint/{share_token}"
+        share_url = f"{app_base_url}/Public_Blueprint?token={share_token}"
         st.code(share_url, language=None)
         if st.button("Disable Sharing", key=f"share_disable_{blueprint_id}"):
             bp_service.disable_share_link(blueprint_id)
@@ -1330,7 +1330,7 @@ def _render_share_controls(blueprint: dict, bp_service, blueprint_id: str):
     else:
         if st.button("Generate Share Link", key=f"share_gen_{blueprint_id}"):
             token = bp_service.generate_share_link(blueprint_id)
-            share_url = f"{app_base_url}/api/public/blueprint/{token}"
+            share_url = f"{app_base_url}/Public_Blueprint?token={token}"
             st.code(share_url, language=None)
             st.success("Share link generated! Copy the URL above.")
 
@@ -2739,10 +2739,16 @@ def _render_blueprint_history(org_id: str, brand_id: str):
     if not blueprints:
         return
 
+    # Skip the actively-displayed blueprint to avoid duplicate Streamlit keys
+    active_bp = st.session_state.get("lpa_latest_blueprint") or {}
+    active_bp_id = active_bp.get("id") or active_bp.get("blueprint_id")
+
     st.divider()
     st.markdown("### Past Blueprints")
 
     for bp in blueprints:
+        if active_bp_id and bp["id"] == active_bp_id:
+            continue  # already rendered in the active section above
         url = bp.get("source_url", "Unknown")[:50]
         sections = bp.get("sections_count", 0)
         mapped = bp.get("elements_mapped", 0)
