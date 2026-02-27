@@ -711,17 +711,44 @@ class MockupService:
                     for k, v in slot_contents.items()
                 }
 
-                # 2. Strip competitor brand name from template (BEFORE slot injection)
-                competitor_name = self._extract_competitor_name(
-                    blueprint, source_url=source_url, html=analysis_mockup_html
+                # 2. Strip competitor brand name AND product name from template
+                competitor_name, competitor_product = self._extract_competitor_name(
+                    blueprint, source_url=source_url, html=analysis_mockup_html,
+                    classification=classification,
                 )
+
+                rewritten_body = page_body
                 if competitor_name and brand_name_str:
                     logger.info(f"Replacing competitor brand '{competitor_name}' with '{brand_name_str}'")
                     rewritten_body = self._replace_competitor_brand(
-                        page_body, competitor_name, brand_name_str
+                        rewritten_body, competitor_name, brand_name_str
                     )
-                else:
-                    rewritten_body = page_body
+
+                # 2b. Replace product name if different from brand name
+                if (competitor_product
+                        and competitor_product.lower() != (competitor_name or "").lower()
+                        and brand_name_str):
+                    brand_product = (brand_profile.get("brand_basics") or {}).get(
+                        "product_name", brand_name_str
+                    )
+                    logger.info(f"Replacing competitor product '{competitor_product}' with '{brand_product}'")
+                    rewritten_body = self._replace_competitor_brand(
+                        rewritten_body, competitor_product, brand_product
+                    )
+
+                # 2c. Scan for recurring abbreviations of the competitor name
+                if competitor_name or competitor_product:
+                    ref_name = competitor_product or competitor_name
+                    brand_initials = ''.join(w[0].upper() for w in ref_name.split() if w)
+                    if len(brand_initials) >= 2:
+                        visible_text = re.sub(r'<[^>]+>', ' ', rewritten_body)
+                        abbrev_count = len(re.findall(r'\b' + re.escape(brand_initials) + r'\b', visible_text))
+                        if abbrev_count >= 3:
+                            brand_abbrev = ''.join(w[0].upper() for w in brand_name_str.split() if w) or brand_name_str
+                            logger.info(f"Replacing abbreviation '{brand_initials}' ({abbrev_count}x) with '{brand_abbrev}'")
+                            rewritten_body = self._replace_competitor_brand(
+                                rewritten_body, brand_initials, brand_abbrev
+                            )
 
                 if slot_contents:
                     # 3. Map slots to blueprint sections
@@ -1528,13 +1555,27 @@ class MockupService:
     # ------------------------------------------------------------------
 
     def _extract_competitor_name(
-        self, blueprint: Dict, source_url: Optional[str] = None, html: str = ""
-    ) -> Optional[str]:
-        """Extract competitor brand name from available sources.
+        self, blueprint: Dict, source_url: Optional[str] = None, html: str = "",
+        classification: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[Optional[str], Optional[str]]:
+        """Extract competitor brand name AND product name from available sources.
 
         Priority: source_url domain (refined via HTML text) > blueprint metadata > <title> tag.
-        Returns None if no reliable name can be extracted.
+
+        Returns:
+            Tuple of (brand_name, product_name). product_name may differ from brand_name
+            (e.g., brand="Hike Footwear", product="HF Stride"). Either may be None.
         """
+        # Extract product name from classification (page classifier LLM output).
+        # Must be at top — this method has 5 early-return paths that need product_name defined.
+        product_name = None
+        if classification:
+            pc = classification.get("page_classifier") or classification
+            raw = (pc.get("product_name") or "").strip()
+            # Reject generic/short names that would mangle page content
+            if raw and (len(raw) >= 6 or (len(raw.split()) >= 2 and len(raw) >= 4)):
+                product_name = raw
+
         # 1. source_url parameter (most reliable — actual URL from analysis record)
         if source_url:
             domain_name = self._domain_to_brand_name(source_url)
@@ -1543,8 +1584,8 @@ class MockupService:
                 # e.g., domain "bobanutrition" → find "Boba Nutrition" in text
                 refined = self._refine_name_from_html(domain_name, html)
                 if refined:
-                    return refined
-                return domain_name
+                    return (refined, product_name)
+                return (domain_name, product_name)
 
         # 2. Blueprint metadata competitor_url (may be free-text, not always a URL)
         rb = blueprint
@@ -1555,7 +1596,7 @@ class MockupService:
         name = self._domain_to_brand_name(comp_url)
         if name:
             refined = self._refine_name_from_html(name, html)
-            return refined or name
+            return (refined or name, product_name)
 
         # 3. <title> tag in the HTML
         title_match = re.search(r'<title[^>]*>(.*?)</title>', html, re.IGNORECASE | re.DOTALL)
@@ -1571,9 +1612,9 @@ class MockupService:
             ]:
                 title_text = re.sub(suffix_pattern, '', title_text, flags=re.IGNORECASE).strip()
             if 3 <= len(title_text) <= 40:
-                return title_text
+                return (title_text, product_name)
 
-        return None
+        return (None, product_name)
 
     def _refine_name_from_html(self, domain_name: str, html: str) -> Optional[str]:
         """Search HTML text for a properly-formatted version of a domain-derived name.
@@ -1917,6 +1958,7 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
         "- cta: action verb first (e.g., 'Get Your Free Sample')\n"
         "- testimonial: use real customer quotes from brand data when available\n"
         "- feature: specific benefit or ingredient highlight, concise\n"
+        "- list: concise list item, one clear benefit or point per item, match the tone of surrounding content\n"
         "- badge/price/guarantee: concise, factual, trust-building\n\n"
         "## Numbered Prefix Preservation (Listicle Pages)\n"
         "When a slot includes a `prefix` field:\n"
@@ -3660,6 +3702,8 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
             return "heading"
         if name.startswith("body"):
             return "body"
+        if name.startswith("list"):
+            return "list"
         if name.startswith("cta"):
             return "cta"
         if name.startswith("testimonial"):
@@ -3678,7 +3722,7 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
     _SLOT_TYPE_DEFAULT_MAX_WORDS = {
         "headline": 15, "subheadline": 25, "heading": 15,
         "cta": 5, "badge": 8, "price": 8, "guarantee": 15,
-        "feature": 20, "testimonial": 60, "body": 80,
+        "feature": 20, "list": 25, "testimonial": 60, "body": 80,
     }
 
     def _compute_slot_length_spec(
@@ -3712,6 +3756,7 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
             "price":       (0.20, 1, None),
             "guarantee":   (0.20, 1, None),
             "feature":     (0.25, 2, None),
+            "list":        (0.25, 2, None),
         }
         # Default for body, testimonial, and anything else
         pct, min_extra, cap_extra = tolerance_config.get(slot_type, (0.30, 3, None))

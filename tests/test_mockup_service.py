@@ -2751,43 +2751,43 @@ class TestExtractCompetitorName:
     """Test _extract_competitor_name from various sources."""
 
     def test_from_source_url(self, service):
-        result = service._extract_competitor_name(
+        brand, product = service._extract_competitor_name(
             {"sections": []}, source_url="https://www.bobanutrition.com/shop"
         )
-        assert result is not None
-        assert "boba" in result.lower()
+        assert brand is not None
+        assert "boba" in brand.lower()
 
     def test_from_hyphenated_domain(self, service):
-        result = service._extract_competitor_name(
+        brand, product = service._extract_competitor_name(
             {"sections": []}, source_url="https://martin-clinic.com"
         )
-        assert result is not None
-        assert "martin" in result.lower()
-        assert "clinic" in result.lower()
+        assert brand is not None
+        assert "martin" in brand.lower()
+        assert "clinic" in brand.lower()
 
     def test_from_title_tag(self, service):
         html = '<html><head><title>Amazing Supplements | Official Site</title></head></html>'
-        result = service._extract_competitor_name({"sections": []}, html=html)
-        assert result is not None
-        assert "amazing" in result.lower()
+        brand, product = service._extract_competitor_name({"sections": []}, html=html)
+        assert brand is not None
+        assert "amazing" in brand.lower()
 
     def test_short_domain_returns_none(self, service):
-        result = service._extract_competitor_name(
+        brand, product = service._extract_competitor_name(
             {"sections": []}, source_url="https://ag.com"
         )
-        assert result is None
+        assert brand is None
 
     def test_no_sources_returns_none(self, service):
-        result = service._extract_competitor_name({"sections": []})
-        assert result is None
+        brand, product = service._extract_competitor_name({"sections": []})
+        assert brand is None
 
     def test_url_with_trailing_space(self, service):
         """URLs with trailing whitespace should still work."""
-        result = service._extract_competitor_name(
+        brand, product = service._extract_competitor_name(
             {"sections": []}, source_url="https://bobanutrition.co/pages/test "
         )
-        assert result is not None
-        assert "boba" in result.lower()
+        assert brand is not None
+        assert "boba" in brand.lower()
 
     def test_freetext_metadata_rejected(self, service):
         """Free-text competitor_url that isn't a URL should not produce garbage names."""
@@ -2799,19 +2799,86 @@ class TestExtractCompetitorName:
                 }
             }
         }
-        result = service._extract_competitor_name(blueprint)
+        brand, product = service._extract_competitor_name(blueprint)
         # Should be None (no valid URL, no source_url, no HTML)
-        assert result is None
+        assert brand is None
 
     def test_refines_name_from_html(self, service):
         """Domain-derived name refined to properly-spaced version from HTML text."""
         html = '<p>Welcome to Boba Nutrition, the best brand.</p>'
-        result = service._extract_competitor_name(
+        brand, product = service._extract_competitor_name(
             {"sections": []},
             source_url="https://bobanutrition.co",
             html=html,
         )
-        assert result == "Boba Nutrition"
+        assert brand == "Boba Nutrition"
+
+
+# ---------------------------------------------------------------------------
+# Competitor Product Replacement (Multi-Name)
+# ---------------------------------------------------------------------------
+
+
+class TestCompetitorProductReplacement:
+    """Test product_name extraction from classification and competitor replacement."""
+
+    def test_classification_with_product_name(self, service):
+        """Classification with product_name returns it as second tuple element."""
+        classification = {"page_classifier": {"product_name": "HF Stride"}}
+        brand, product = service._extract_competitor_name(
+            {"sections": []},
+            source_url="https://hikefootwear.com",
+            classification=classification,
+        )
+        assert brand is not None
+        assert "hike" in brand.lower()
+        assert product == "HF Stride"
+
+    def test_classification_without_product_name(self, service):
+        """Classification without product_name returns None as second element."""
+        classification = {"page_classifier": {"page_type": "landing"}}
+        brand, product = service._extract_competitor_name(
+            {"sections": []},
+            source_url="https://hikefootwear.com",
+            classification=classification,
+        )
+        assert brand is not None
+        assert product is None
+
+    def test_no_classification(self, service):
+        """No classification (None) still extracts brand from URL."""
+        brand, product = service._extract_competitor_name(
+            {"sections": []},
+            source_url="https://hikefootwear.com",
+            classification=None,
+        )
+        assert brand is not None
+        assert product is None
+
+    def test_empty_classification(self, service):
+        """Empty classification ({}) still extracts brand from URL."""
+        brand, product = service._extract_competitor_name(
+            {"sections": []},
+            source_url="https://hikefootwear.com",
+            classification={},
+        )
+        assert brand is not None
+        assert product is None
+
+    def test_generic_product_name_rejected(self, service):
+        """Generic short product name ('Serum') is rejected."""
+        classification = {"page_classifier": {"product_name": "Serum"}}
+        brand, product = service._extract_competitor_name(
+            {"sections": []},
+            source_url="https://example.com",
+            classification=classification,
+        )
+        assert product is None
+
+    def test_infer_slot_type_list(self, service):
+        """_infer_slot_type recognizes list-N slot names."""
+        assert service._infer_slot_type("list-1") == "list"
+        assert service._infer_slot_type("list-42") == "list"
 
 
 # ---------------------------------------------------------------------------
@@ -3085,6 +3152,7 @@ class TestInferSlotType:
         assert service._infer_slot_type("heading-1") == "heading"
         assert service._infer_slot_type("heading-class-1") == "heading"
         assert service._infer_slot_type("body-1") == "body"
+        assert service._infer_slot_type("list-1") == "list"
         assert service._infer_slot_type("cta-1") == "cta"
         assert service._infer_slot_type("testimonial-1") == "testimonial"
         assert service._infer_slot_type("feature-1") == "feature"

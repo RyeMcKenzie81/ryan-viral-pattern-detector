@@ -391,6 +391,189 @@ def check_global_invariants(
     )
 
 
+@dataclass
+class SlotNestingViolation:
+    """A single slot nesting violation."""
+    slot_name: str
+    tag: str
+    violation_type: str  # SLOT_SPANS_SECTIONS, NESTED_SLOTS, DUPLICATE_SLOT
+    severity: str        # ERROR or WARNING
+    detail: str
+
+
+@dataclass
+class SlotNestingReport:
+    """Result of slot nesting validation."""
+    passed: bool
+    violations: List[SlotNestingViolation] = field(default_factory=list)
+    slots_stripped: List[str] = field(default_factory=list)
+
+
+class _SlotNestingValidator(HTMLParser):
+    """Single-pass O(n) validator for slot nesting invariants.
+
+    Detects:
+    - SLOT_SPANS_SECTIONS: a data-slot element contains a data-section child
+    - NESTED_SLOTS: a data-slot element contains another data-slot element
+    - DUPLICATE_SLOT: the same slot name appears on multiple elements
+    """
+
+    def __init__(self):
+        super().__init__()
+        # Stack of (tag, slot_name, depth) for open data-slot elements
+        self._slot_stack: List[Tuple[str, str, int]] = []
+        self._depth = 0
+        self._seen_slots: Dict[str, int] = {}  # slot_name -> count
+        self.violations: List[SlotNestingViolation] = []
+
+    def handle_starttag(self, tag, attrs):
+        # Void elements have no closing tag — don't change depth
+        if tag in _VOID_ELEMENTS:
+            return
+        self._depth += 1
+        attr_dict = dict(attrs)
+        slot_name = attr_dict.get("data-slot")
+        has_section = "data-section" in attr_dict
+
+        # Check if we're inside a slot and hit a data-section
+        if has_section and self._slot_stack:
+            parent_tag, parent_slot, _ = self._slot_stack[-1]
+            self.violations.append(SlotNestingViolation(
+                slot_name=parent_slot,
+                tag=parent_tag,
+                violation_type="SLOT_SPANS_SECTIONS",
+                severity="ERROR",
+                detail=f"Slot '{parent_slot}' on <{parent_tag}> contains "
+                       f"<{tag} data-section=\"{attr_dict.get('data-section', '')}\">"
+            ))
+
+        # Check for nested slots
+        if slot_name and self._slot_stack:
+            parent_tag, parent_slot, _ = self._slot_stack[-1]
+            self.violations.append(SlotNestingViolation(
+                slot_name=parent_slot,
+                tag=parent_tag,
+                violation_type="NESTED_SLOTS",
+                severity="ERROR",
+                detail=f"Slot '{parent_slot}' on <{parent_tag}> contains "
+                       f"nested slot '{slot_name}' on <{tag}>"
+            ))
+
+        # Track slot entry
+        if slot_name:
+            self._slot_stack.append((tag, slot_name, self._depth))
+            count = self._seen_slots.get(slot_name, 0) + 1
+            self._seen_slots[slot_name] = count
+            if count == 2:
+                self.violations.append(SlotNestingViolation(
+                    slot_name=slot_name,
+                    tag=tag,
+                    violation_type="DUPLICATE_SLOT",
+                    severity="WARNING",
+                    detail=f"Slot name '{slot_name}' appears on multiple elements"
+                ))
+
+    def handle_endtag(self, tag):
+        if tag in _VOID_ELEMENTS:
+            return
+        # Pop slot stack if this closes the current slot element
+        if self._slot_stack:
+            stack_tag, _, stack_depth = self._slot_stack[-1]
+            if tag == stack_tag and self._depth == stack_depth:
+                self._slot_stack.pop()
+        self._depth -= 1
+
+    def handle_startendtag(self, tag, attrs):
+        # Self-closing tags with data-slot still count for duplicate tracking
+        attr_dict = dict(attrs)
+        slot_name = attr_dict.get("data-slot")
+        if slot_name:
+            count = self._seen_slots.get(slot_name, 0) + 1
+            self._seen_slots[slot_name] = count
+            if count == 2:
+                self.violations.append(SlotNestingViolation(
+                    slot_name=slot_name,
+                    tag=tag,
+                    violation_type="DUPLICATE_SLOT",
+                    severity="WARNING",
+                    detail=f"Slot name '{slot_name}' appears on multiple elements"
+                ))
+
+    def finalize(self):
+        """Handle unclosed tags remaining on the stack."""
+        for tag, slot_name, _ in self._slot_stack:
+            self.violations.append(SlotNestingViolation(
+                slot_name=slot_name,
+                tag=tag,
+                violation_type="SLOT_SPANS_SECTIONS",
+                severity="ERROR",
+                detail=f"Slot '{slot_name}' on <{tag}> was never closed "
+                       f"(likely wraps remaining page content)"
+            ))
+        self._slot_stack.clear()
+
+
+def validate_slot_nesting(html: str) -> SlotNestingReport:
+    """Validate that no data-slot element spans across data-section boundaries.
+
+    Single-pass O(n) check using HTMLParser. Detects:
+    - SLOT_SPANS_SECTIONS: slot wraps one or more sections (ERROR)
+    - NESTED_SLOTS: slot inside another slot (ERROR)
+    - DUPLICATE_SLOT: same slot name on multiple elements (WARNING)
+
+    Args:
+        html: HTML string with data-slot and data-section attributes.
+
+    Returns:
+        SlotNestingReport with pass/fail and violation details.
+    """
+    validator = _SlotNestingValidator()
+    try:
+        validator.feed(html)
+    except Exception:
+        pass
+    validator.finalize()
+
+    errors = [v for v in validator.violations if v.severity == "ERROR"]
+    return SlotNestingReport(
+        passed=len(errors) == 0,
+        violations=validator.violations,
+    )
+
+
+def strip_violating_slots(html: str, report: SlotNestingReport) -> str:
+    """Remove data-slot attributes from elements that have ERROR violations.
+
+    Args:
+        html: HTML string with data-slot attributes.
+        report: SlotNestingReport from validate_slot_nesting().
+
+    Returns:
+        Cleaned HTML with violating data-slot attributes removed.
+    """
+    slots_to_strip = set()
+    for v in report.violations:
+        if v.severity == "ERROR":
+            slots_to_strip.add(v.slot_name)
+
+    if not slots_to_strip:
+        return html
+
+    stripped = []
+    for slot_name in slots_to_strip:
+        escaped = re.escape(slot_name)
+        html = re.sub(
+            rf'\s*data-slot="{escaped}"',
+            '',
+            html,
+        )
+        stripped.append(slot_name)
+
+    logger.info(f"Stripped {len(stripped)} violating slot attrs: {stripped}")
+    report.slots_stripped = stripped
+    return html
+
+
 # Resolve public aliases
 tokenize_visible_text = _tokenize_visible_text
 text_similarity = _text_similarity

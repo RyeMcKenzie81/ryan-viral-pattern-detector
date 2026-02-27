@@ -124,9 +124,9 @@ def test_pipeline_steps(bp_record, analysis, blueprint, brand_profile):
     logger.info(f"Slot type distribution: {dict(type_counts)}")
 
     # Step 3: Extract competitor name
-    competitor_name = svc._extract_competitor_name(blueprint, source_url=source_url, html=analysis_html)
+    competitor_name, competitor_product = svc._extract_competitor_name(blueprint, source_url=source_url, html=analysis_html)
     brand_name = (brand_profile.get("brand_basics") or {}).get("name", "?")
-    logger.info(f"Competitor name: {competitor_name}")
+    logger.info(f"Competitor name: {competitor_name}, product: {competitor_product}")
     logger.info(f"Brand name: {brand_name}")
 
     # Step 4: Replace competitor brand (dry run — just check it works)

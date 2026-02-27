@@ -301,3 +301,120 @@ class TestVisibilityFiltering:
         """visibility:hidden in inline style should be detected."""
         assert _is_visually_hidden('style="visibility: hidden; color: red"')
         assert not _is_visually_hidden('style="color: red"')
+
+
+# --------------------------------------------------------------------------
+# New element slot assignment: <li> and <blockquote> (leaf-only)
+# --------------------------------------------------------------------------
+
+
+class TestNewElementSlots:
+    """Tests for <li> and <blockquote> slot assignment with nesting safety."""
+
+    def test_li_with_substantial_text_gets_slot(self):
+        """<li> with 5+ word text and no slotted children gets data-slot."""
+        classifier = ElementClassifier()
+        html = '<ul><li>This benefit makes your life much better every day</li></ul>'
+        result, stats = classifier._deterministic_classify(html)
+        assert 'data-slot="list-1"' in result
+
+    def test_li_short_text_no_slot(self):
+        """<li> with short text ('Home') gets no slot."""
+        classifier = ElementClassifier()
+        html = '<ul><li>Home</li><li>About</li></ul>'
+        result, stats = classifier._deterministic_classify(html)
+        assert 'data-slot="list-' not in result
+
+    def test_li_hidden_no_slot(self):
+        """Hidden <li> gets no slot."""
+        classifier = ElementClassifier()
+        html = '<ul><li style="display:none">Hidden item with enough words here</li></ul>'
+        result, stats = classifier._deterministic_classify(html)
+        assert 'data-slot="list-' not in result
+
+    def test_li_already_slotted_unchanged(self):
+        """<li> that already has a data-slot is not modified."""
+        classifier = ElementClassifier()
+        html = '<ul><li data-slot="existing-1">Already slotted item text here enough</li></ul>'
+        result, stats = classifier._deterministic_classify(html)
+        assert 'data-slot="existing-1"' in result
+        assert 'data-slot="list-' not in result
+
+    def test_li_containing_slotted_cta_no_slot(self):
+        """NESTING SAFETY: <li> containing <a data-slot> must NOT get a slot."""
+        classifier = ElementClassifier()
+        html = (
+            '<ul><li>Some benefit text here with enough words '
+            '<a data-slot="cta-1" href="/buy">Buy Now</a></li></ul>'
+        )
+        result, stats = classifier._deterministic_classify(html)
+        # li must NOT get a slot (would create nesting violation)
+        assert '<li' in result
+        assert 'data-slot="list-' not in result
+        # The inner cta slot must still exist
+        assert 'data-slot="cta-1"' in result
+
+    def test_li_containing_slotted_paragraph_no_slot(self):
+        """NESTING SAFETY: <li> containing <p data-slot> must NOT get a slot."""
+        classifier = ElementClassifier()
+        html = (
+            '<ul><li><p data-slot="body-1">Paragraph inside list item text</p></li></ul>'
+        )
+        result, stats = classifier._deterministic_classify(html)
+        assert 'data-slot="list-' not in result
+        assert 'data-slot="body-1"' in result
+
+    def test_blockquote_plain_text_gets_slot(self):
+        """<blockquote> with plain text and no slotted children gets testimonial slot."""
+        classifier = ElementClassifier()
+        html = '<blockquote>This product changed my life completely and I love it</blockquote>'
+        result, stats = classifier._deterministic_classify(html)
+        assert 'data-slot="testimonial-1"' in result
+
+    def test_blockquote_hidden_no_slot(self):
+        """Hidden <blockquote> gets no slot."""
+        classifier = ElementClassifier()
+        html = '<blockquote aria-hidden="true">Hidden quote with enough words here for test</blockquote>'
+        result, stats = classifier._deterministic_classify(html)
+        assert 'data-slot="testimonial-' not in result
+
+    def test_blockquote_containing_slotted_paragraph_no_slot(self):
+        """NESTING SAFETY: <blockquote> containing <p data-slot> must NOT get a slot."""
+        classifier = ElementClassifier()
+        html = (
+            '<blockquote>'
+            '<p data-slot="body-1">A customer testimonial quote with enough words</p>'
+            '</blockquote>'
+        )
+        result, stats = classifier._deterministic_classify(html)
+        assert 'data-slot="testimonial-' not in result
+        assert 'data-slot="body-1"' in result
+
+    def test_paragraph_with_br_gets_slot(self):
+        """<p> containing <br> void element must still get a slot (not stripped)."""
+        classifier = ElementClassifier()
+        html = '<p><br><strong><em>Important text with enough words here.</em></strong></p>'
+        result, stats = classifier._deterministic_classify(html)
+        assert 'data-slot="body-1"' in result
+
+    def test_paragraph_with_img_gets_slot(self):
+        """<p> containing <img> void element must still get a slot."""
+        classifier = ElementClassifier()
+        html = '<p><img src="icon.png">Description text with enough words here.</p>'
+        result, stats = classifier._deterministic_classify(html)
+        assert 'data-slot="body-1"' in result
+
+    def test_existing_hpba_slots_still_work(self):
+        """Regression: existing h/p/button/a slots still assigned correctly."""
+        classifier = ElementClassifier()
+        html = (
+            '<h1>Main Headline</h1>'
+            '<p>Body paragraph text</p>'
+            '<button>Buy Now</button>'
+            '<a class="btn" href="/shop">Shop Here</a>'
+        )
+        result, stats = classifier._deterministic_classify(html)
+        assert 'data-slot="headline"' in result
+        assert 'data-slot="body-1"' in result
+        assert 'data-slot="cta-1"' in result
+        assert 'data-slot="cta-2"' in result

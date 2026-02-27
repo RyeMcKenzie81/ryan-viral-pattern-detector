@@ -26,6 +26,10 @@ _CTA_TEXT_RE = re.compile(
 _CLASS_HEADING_RE = re.compile(r'\b(heading|title|headline)\b', re.IGNORECASE)
 _CLASS_CTA_RE = re.compile(r'\b(btn|button|cta)\b', re.IGNORECASE)
 
+# Minimum thresholds for <li> slot assignment
+_LI_MIN_TEXT_LEN = 15
+_LI_MIN_WORDS = 3
+
 # Hidden-element detection
 _HIDDEN_STYLE_RE = re.compile(
     r'(?:display\s*:\s*none|visibility\s*:\s*hidden)',
@@ -225,6 +229,11 @@ class ElementClassifier:
         # Also check for class-name heuristic slots
         html = self._class_heuristic_slots(html)
 
+        # Leaf-only slots for <blockquote> and <li> — run AFTER all h/p/button/a
+        # and class-heuristic slots so the inner data-slot check is reliable.
+        html = self._slot_blockquotes(html)
+        html = self._slot_list_items(html)
+
         # Strip cross-section slots (must run after all slot assignment)
         html = self._strip_cross_section_slots(html)
 
@@ -235,6 +244,62 @@ class ElementClassifier:
             "has_headline": has_headline,
             "has_cta": has_cta,
         }
+
+    def _slot_blockquotes(self, html: str) -> str:
+        """Add data-slot to <blockquote> elements with NO slotted children (leaf-only)."""
+        counter = 0
+        parts, last_end = [], 0
+
+        for m in re.finditer(r'<blockquote\b([^>]*)>', html, re.IGNORECASE):
+            attrs = m.group(1) or ""
+            if 'data-slot=' in attrs or _is_visually_hidden(attrs):
+                continue
+            close = re.search(r'</blockquote\s*>', html[m.end():], re.IGNORECASE)
+            if not close:
+                continue
+            inner = html[m.end():m.end() + close.start()]
+            # LEAF-ONLY: skip if inner content already has slotted children
+            if 'data-slot=' in inner:
+                continue
+            text = re.sub(r'<[^>]+>', '', inner).strip()
+            text = ' '.join(text.split())
+            if len(text) < 10 or len(text.split()) < 3:
+                continue
+            counter += 1
+            parts.append(html[last_end:m.start()])
+            parts.append(f'<blockquote{attrs} data-slot="testimonial-{counter}">')
+            last_end = m.end()
+
+        parts.append(html[last_end:])
+        return ''.join(parts)
+
+    def _slot_list_items(self, html: str) -> str:
+        """Add data-slot to <li> elements with substantial text and NO slotted children."""
+        counter = 0
+        parts, last_end = [], 0
+
+        for m in re.finditer(r'<li\b([^>]*)>', html, re.IGNORECASE):
+            attrs = m.group(1) or ""
+            if 'data-slot=' in attrs or _is_visually_hidden(attrs):
+                continue
+            close = re.search(r'</li\s*>', html[m.end():], re.IGNORECASE)
+            if not close:
+                continue
+            inner = html[m.end():m.end() + close.start()]
+            # LEAF-ONLY: skip if inner content already has slotted children
+            if 'data-slot=' in inner:
+                continue
+            text = re.sub(r'<[^>]+>', '', inner).strip()
+            text = ' '.join(text.split())
+            if len(text) < _LI_MIN_TEXT_LEN or len(text.split()) < _LI_MIN_WORDS:
+                continue
+            counter += 1
+            parts.append(html[last_end:m.start()])
+            parts.append(f'<li{attrs} data-slot="list-{counter}">')
+            last_end = m.end()
+
+        parts.append(html[last_end:])
+        return ''.join(parts)
 
     def _class_heuristic_slots(self, html: str) -> str:
         """Add slots based on class-name heuristics."""
@@ -275,6 +340,13 @@ class ElementClassifier:
         attributes are stripped via regex after detection.
         """
 
+        # Void elements that never have a closing tag — HTMLParser calls
+        # handle_starttag (not handle_startendtag) for bare <br>, <img>, etc.
+        _VOID_ELEMENTS = frozenset({
+            "area", "base", "br", "col", "embed", "hr", "img", "input",
+            "link", "meta", "param", "source", "track", "wbr",
+        })
+
         class _CrossSectionDetector(HTMLParser):
             def __init__(self):
                 super().__init__()
@@ -284,6 +356,9 @@ class ElementClassifier:
                 self.violating_slots: set = set()
 
             def handle_starttag(self, tag, attrs):
+                # Void elements have no closing tag — don't change depth
+                if tag in _VOID_ELEMENTS:
+                    return
                 self._depth += 1
                 attr_dict = dict(attrs)
                 slot_name = attr_dict.get("data-slot")
@@ -302,7 +377,13 @@ class ElementClassifier:
                 if slot_name:
                     self._slot_stack.append((tag, slot_name, self._depth))
 
+            def handle_startendtag(self, tag, attrs):
+                # Explicit self-closing syntax (<br/>) — no depth change
+                pass
+
             def handle_endtag(self, tag):
+                if tag in _VOID_ELEMENTS:
+                    return
                 if self._slot_stack:
                     stack_tag, _, stack_depth = self._slot_stack[-1]
                     if tag == stack_tag and self._depth == stack_depth:
