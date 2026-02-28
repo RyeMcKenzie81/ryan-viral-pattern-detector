@@ -2880,6 +2880,24 @@ class TestCompetitorProductReplacement:
         assert service._infer_slot_type("list-1") == "list"
         assert service._infer_slot_type("list-42") == "list"
 
+    def test_abbreviation_replacement(self, service):
+        """Recurring abbreviation of competitor product is replaced in HTML."""
+        import re
+        html = (
+            '<p>The HFS formula is proven.</p>'
+            '<p>Try HFS today for better results.</p>'
+            '<p>HFS users report 90% satisfaction.</p>'
+        )
+        # Simulate: competitor_product="HF Stride", brand="Martin Clinic"
+        # Abbreviation "HFS" appears 3x → should be replaced with "MC"
+        brand_initials = "HFS"
+        visible_text = re.sub(r'<[^>]+>', ' ', html)
+        abbrev_count = len(re.findall(r'\b' + re.escape(brand_initials) + r'\b', visible_text))
+        assert abbrev_count >= 3
+        result = service._replace_competitor_brand(html, "HFS", "MC")
+        assert "HFS" not in result
+        assert "MC" in result
+
 
 # ---------------------------------------------------------------------------
 # Template Swap Bug Fixes (Step 6)

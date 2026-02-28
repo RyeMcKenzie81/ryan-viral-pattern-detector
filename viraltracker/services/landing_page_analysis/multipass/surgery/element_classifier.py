@@ -30,6 +30,13 @@ _CLASS_CTA_RE = re.compile(r'\b(btn|button|cta)\b', re.IGNORECASE)
 _LI_MIN_TEXT_LEN = 15
 _LI_MIN_WORDS = 3
 
+# Void (self-closing) HTML elements — no closing tag, must not affect depth tracking.
+# Shared definition; invariants.py has its own identical copy for independent loading.
+_VOID_ELEMENTS = frozenset({
+    "area", "base", "br", "col", "embed", "hr", "img", "input",
+    "link", "meta", "param", "source", "track", "wbr",
+})
+
 # Hidden-element detection
 _HIDDEN_STYLE_RE = re.compile(
     r'(?:display\s*:\s*none|visibility\s*:\s*hidden)',
@@ -339,13 +346,6 @@ class ElementClassifier:
         data-section children or nested data-slot elements. Any violating slot
         attributes are stripped via regex after detection.
         """
-
-        # Void elements that never have a closing tag — HTMLParser calls
-        # handle_starttag (not handle_startendtag) for bare <br>, <img>, etc.
-        _VOID_ELEMENTS = frozenset({
-            "area", "base", "br", "col", "embed", "hr", "img", "input",
-            "link", "meta", "param", "source", "track", "wbr",
-        })
 
         class _CrossSectionDetector(HTMLParser):
             def __init__(self):
