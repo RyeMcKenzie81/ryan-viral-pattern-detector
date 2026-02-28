@@ -936,97 +936,140 @@ Requirements:
         except Exception as e:
             logger.warning(f"Video URL verification failed: {e}")
 
-    async def _poll_for_voice_info(
-        self, kling, task_id: str, max_attempts: int = 8, interval_seconds: int = 15
-    ) -> tuple[str, str]:
-        """Poll element query endpoint until element_voice_info appears.
+    async def _poll_for_voice_completion(
+        self, kling, task_id: str, max_attempts: int = 40, interval_seconds: int = 15
+    ) -> str:
+        """Poll custom voice creation task until it completes and returns voice_id.
 
-        Voice extraction is async — the element creation task succeeds for the
-        visual, but voice processing continues in the background. This method
-        re-queries the element until element_voice_info is populated.
+        Uses the dedicated custom-voices query endpoint (3-51) which returns
+        task_result.voices[0].voice_id on success.
+
+        Args:
+            kling: KlingVideoService instance.
+            task_id: Kling task_id from create_custom_voice response.
+            max_attempts: Max number of query attempts (default 40 = ~10 minutes).
+            interval_seconds: Seconds between attempts (default 15).
+
+        Returns:
+            voice_id string.
+
+        Raises:
+            ValueError: If voice creation fails or times out.
+        """
+        for attempt in range(1, max_attempts + 1):
+            query_result = await kling.query_custom_voice(task_id)
+            query_data = query_result.get("data", {})
+            task_status = query_data.get("task_status", "")
+
+            # Log periodically for debugging
+            if attempt == 1 or attempt % 5 == 0:
+                import json as _json
+                logger.info(
+                    f"Voice query (attempt {attempt}/{max_attempts}): "
+                    f"status={task_status}, "
+                    f"response={_json.dumps(query_result, indent=2, default=str)}"
+                )
+
+            if task_status == "failed":
+                error_msg = query_data.get("task_status_msg", "Unknown error")
+                raise ValueError(f"Custom voice creation failed: {error_msg}")
+
+            if task_status == "succeed":
+                task_result = query_data.get("task_result", {})
+                voices = task_result.get("voices", [])
+                if voices:
+                    voice_id = str(voices[0].get("voice_id", ""))
+                    voice_name = voices[0].get("voice_name", "")
+                    trial_url = voices[0].get("trial_url", "")
+                    logger.info(
+                        f"Custom voice created on attempt {attempt}: "
+                        f"voice_id={voice_id}, voice_name={voice_name}, "
+                        f"trial_url={trial_url}"
+                    )
+                    return voice_id
+                raise ValueError("Voice creation succeeded but no voices in response")
+
+            if attempt < max_attempts:
+                logger.info(
+                    f"Voice creation in progress (attempt {attempt}/{max_attempts}, "
+                    f"status={task_status}), waiting {interval_seconds}s..."
+                )
+                await asyncio.sleep(interval_seconds)
+
+        raise ValueError(
+            f"Voice creation timed out after {max_attempts} attempts "
+            f"(~{max_attempts * interval_seconds}s)"
+        )
+
+    async def _poll_for_element_id(
+        self, kling, task_id: str, max_attempts: int = 40, interval_seconds: int = 15
+    ) -> str:
+        """Poll element query endpoint until element completes and returns element_id.
 
         Args:
             kling: KlingVideoService instance.
             task_id: Kling task_id from element creation.
-            max_attempts: Max number of query attempts (default 60 = ~15 minutes).
-            interval_seconds: Seconds between attempts (default 15).
+            max_attempts: Max number of query attempts.
+            interval_seconds: Seconds between attempts.
 
         Returns:
-            Tuple of (element_id, voice_id). voice_id may be empty string if
-            voice extraction times out.
-        """
-        element_id = ""
-        voice_id = ""
+            element_id string.
 
+        Raises:
+            ValueError: If element creation fails or times out.
+        """
         for attempt in range(1, max_attempts + 1):
             query_result = await kling.query_element(task_id)
             query_data = query_result.get("data", {})
+            task_status = query_data.get("task_status", "")
             task_result = query_data.get("task_result", {})
             elements = task_result.get("elements", [])
 
-            if not elements:
-                if attempt == 1:
-                    raise ValueError("Video element created but no elements in response")
-                await asyncio.sleep(interval_seconds)
-                continue
-
-            element = elements[0]
-            element_id = str(element.get("element_id", ""))
-
-            # Log full element response on first attempt and every 10th for debugging
-            if attempt == 1 or attempt % 10 == 0:
+            if attempt == 1 or attempt % 5 == 0:
                 import json as _json
                 logger.info(
-                    f"Element query FULL response (attempt {attempt}): "
-                    f"{_json.dumps(query_result, indent=2, default=str)}"
+                    f"Element query (attempt {attempt}/{max_attempts}): "
+                    f"status={task_status}, "
+                    f"response={_json.dumps(query_result, indent=2, default=str)}"
                 )
 
-            voice_info = element.get("element_voice_info") or {}
-            voice_id = str(voice_info.get("voice_id", "")) if voice_info else ""
+            if task_status == "failed":
+                error_msg = query_data.get("task_status_msg", "Unknown error")
+                raise ValueError(f"Element creation failed: {error_msg}")
 
-            if voice_id:
-                logger.info(
-                    f"Voice info found on attempt {attempt}/{max_attempts}: "
-                    f"voice_id={voice_id}, "
-                    f"voice_name={voice_info.get('voice_name', '')}, "
-                    f"trial_url={voice_info.get('trial_url', '')}"
-                )
-                return element_id, voice_id
+            if task_status == "succeed" and elements:
+                element_id = str(elements[0].get("element_id", ""))
+                logger.info(f"Element created on attempt {attempt}: element_id={element_id}")
+                return element_id
 
             if attempt < max_attempts:
-                logger.info(
-                    f"Voice info not yet available (attempt {attempt}/{max_attempts}), "
-                    f"waiting {interval_seconds}s..."
-                )
                 await asyncio.sleep(interval_seconds)
-            else:
-                logger.warning(
-                    f"Voice info not available after {max_attempts} attempts "
-                    f"(~{max_attempts * interval_seconds}s). Element {element_id} "
-                    f"created but voice_id is empty."
-                )
 
-        return element_id, voice_id
+        raise ValueError(
+            f"Element creation timed out after {max_attempts} attempts "
+            f"(~{max_attempts * interval_seconds}s)"
+        )
 
     async def extract_voice_from_video(
         self, avatar_id: UUID, organization_id: str, brand_id: str, video_bytes: bytes
     ) -> str:
-        """Upload a voice sample video and extract voice_id from it.
+        """Upload a voice sample video and create a custom voice from it.
 
-        Creates a temporary video element to extract voice_id, then deletes
-        the temporary element. Only the voice_id is stored on the avatar.
+        Uses the dedicated Create Custom Voice endpoint (POST /v1/general/custom-voices)
+        which accepts video files directly for voice cloning. This replaces the previous
+        approach of creating a video element and hoping for auto-extraction.
 
         Args:
             avatar_id: Avatar UUID.
             organization_id: Organization UUID.
             brand_id: Brand UUID.
-            video_bytes: Voice sample video bytes (.mp4/.mov, 3-8s with speech).
+            video_bytes: Voice sample video bytes (.mp4/.mov, 5-30s with clear speech).
 
         Returns:
-            Extracted voice_id string.
+            Created voice_id string.
 
         Raises:
-            ValueError: If no voice detected or avatar not found.
+            ValueError: If voice creation fails or avatar not found.
         """
         avatar = await self.get_avatar(avatar_id)
         if not avatar:
@@ -1059,53 +1102,40 @@ Requirements:
         await self._verify_video_url(voice_url)
 
         from .kling_video_service import KlingVideoService
-        from .kling_models import KlingEndpoint
 
         kling = KlingVideoService()
-        temp_element_id = None
         try:
-            # Create temporary video element
-            gen_result = await kling.create_video_element(
+            # Create custom voice directly from video URL
+            voice_result = await kling.create_custom_voice(
                 organization_id=organization_id,
                 brand_id=brand_id,
-                element_name=f"{avatar.name[:14]}_voice",
-                element_description=f"Voice extraction for {avatar.name}"[:100],
-                video_url=voice_url,
+                voice_name=f"{avatar.name[:14]}_voice",
+                voice_url=voice_url,
             )
 
-            task_id = gen_result.get("kling_task_id")
+            task_id = voice_result.get("kling_task_id")
             if not task_id:
-                raise ValueError("No task_id returned for voice extraction element")
+                raise ValueError("No task_id returned for custom voice creation")
 
-            # Poll for completion
-            poll_result = await kling.poll_task(
-                task_id=task_id,
-                endpoint_type=KlingEndpoint.ADVANCED_CUSTOM_ELEMENTS,
-                timeout_seconds=600,
+            logger.info(
+                f"Custom voice creation submitted: task_id={task_id}, "
+                f"avatar={avatar_id}, name={avatar.name}"
             )
 
-            task_data = poll_result.get("data", {})
-            task_status = task_data.get("task_status", "")
-
-            if task_status != "succeed":
-                error_msg = task_data.get("task_status_msg", "Unknown error")
-                raise ValueError(f"Voice extraction element creation failed: {error_msg}")
-
-            # Poll element until voice_info is available (async voice extraction)
-            # Voice extraction can take 15+ minutes per Kling docs
-            temp_element_id, voice_id = await self._poll_for_voice_info(
-                kling, task_id, max_attempts=60, interval_seconds=15
+            # Poll for voice creation completion (~2-5 minutes typical)
+            voice_id = await self._poll_for_voice_completion(
+                kling, task_id, max_attempts=40, interval_seconds=15
             )
 
             if not voice_id:
                 raise ValueError(
-                    "No voice detected in the uploaded video after waiting ~15 minutes. "
-                    "Please upload a video with clear speech."
+                    "Voice creation completed but no voice_id returned. "
+                    "Please upload a video with clear speech (5-30s, one speaker)."
                 )
 
             voice_id = str(voice_id)
 
-            # Store voice_id on avatar (don't change element_id or setup_mode)
+            # Store voice_id on avatar
             await asyncio.to_thread(
                 lambda: self.supabase.table("brand_avatars")
                     .update({"kling_voice_id": voice_id})
@@ -1113,17 +1143,10 @@ Requirements:
                     .execute()
             )
 
-            logger.info(f"Extracted voice_id {voice_id} for avatar {avatar_id}")
+            logger.info(f"Created custom voice {voice_id} for avatar {avatar_id}")
             return voice_id
 
         finally:
-            # Clean up temporary element
-            if temp_element_id:
-                try:
-                    await kling.delete_element(temp_element_id)
-                    logger.info(f"Deleted temporary voice element {temp_element_id}")
-                except Exception as e:
-                    logger.warning(f"Failed to delete temporary element {temp_element_id}: {e}")
             await kling.close()
 
     async def create_kling_video_element(
@@ -1135,12 +1158,10 @@ Requirements:
     ) -> dict:
         """Create a video-based Kling element with voice binding.
 
-        Two modes:
-        - video_bytes=None: Generate calibration video from frontal image, then create element.
-        - video_bytes provided: Use the uploaded video directly for both visual + voice.
-
-        If the avatar already has a kling_voice_id (from extract_voice_from_video),
-        it is passed as element_voice_id to preserve the same voice.
+        New workflow (using dedicated voice creation endpoint):
+        1. Prepare video (upload or generate calibration video)
+        2. If no existing voice_id, create custom voice from the video first
+        3. Create video element with element_voice_id binding the voice
 
         Args:
             avatar_id: Avatar UUID.
@@ -1204,28 +1225,57 @@ Requirements:
         # Verify the video URL is fetchable by Kling's workers
         await self._verify_video_url(video_url)
 
-        # Look up existing voice_id to bind
-        existing_voice_id = avatar.kling_voice_id
-
         from .kling_video_service import KlingVideoService
         from .kling_models import KlingEndpoint
 
         kling = KlingVideoService()
         try:
+            # Step 1: Create custom voice from the video if we don't already have one
+            voice_id = avatar.kling_voice_id
+            if not voice_id:
+                logger.info(
+                    f"No existing voice_id for avatar {avatar_id}, "
+                    f"creating custom voice from video..."
+                )
+                voice_result = await kling.create_custom_voice(
+                    organization_id=organization_id,
+                    brand_id=brand_id,
+                    voice_name=f"{avatar.name[:14]}_voice",
+                    voice_url=video_url,
+                )
+                voice_task_id = voice_result.get("kling_task_id")
+                if not voice_task_id:
+                    logger.warning("No task_id returned for voice creation, proceeding without voice")
+                else:
+                    try:
+                        voice_id = await self._poll_for_voice_completion(
+                            kling, voice_task_id, max_attempts=40, interval_seconds=15
+                        )
+                        logger.info(f"Custom voice created: voice_id={voice_id}")
+                    except ValueError as e:
+                        logger.warning(
+                            f"Voice creation failed ({e}), proceeding without voice. "
+                            f"Element will be created for visual only."
+                        )
+                        voice_id = None
+            else:
+                logger.info(f"Reusing existing voice_id={voice_id} for avatar {avatar_id}")
+
+            # Step 2: Create video element with voice binding
             gen_result = await kling.create_video_element(
                 organization_id=organization_id,
                 brand_id=brand_id,
                 element_name=avatar.name[:20],
                 element_description=f"Video avatar: {avatar.name}"[:100],
                 video_url=video_url,
-                element_voice_id=existing_voice_id,
+                element_voice_id=voice_id,
             )
 
             task_id = gen_result.get("kling_task_id")
             if not task_id:
                 raise ValueError("No task_id returned for video element creation")
 
-            # Poll for completion
+            # Poll for element completion
             poll_result = await kling.poll_task(
                 task_id=task_id,
                 endpoint_type=KlingEndpoint.ADVANCED_CUSTOM_ELEMENTS,
@@ -1239,11 +1289,12 @@ Requirements:
                 error_msg = task_data.get("task_status_msg", "Unknown error")
                 raise ValueError(f"Video element creation failed: {error_msg}")
 
-            # Poll element until voice_info is available (async voice extraction)
-            # Voice extraction can take 15+ minutes per Kling docs
-            element_id, voice_id = await self._poll_for_voice_info(
-                kling, task_id, max_attempts=60, interval_seconds=15
-            )
+            # Extract element_id from the completed task
+            task_result = task_data.get("task_result", {})
+            elements = task_result.get("elements", [])
+            if not elements:
+                raise ValueError("Element creation succeeded but no elements in response")
+            element_id = str(elements[0].get("element_id", ""))
 
             # Update avatar with new element info
             updates = {
@@ -1252,7 +1303,7 @@ Requirements:
                 "avatar_setup_mode": "video_element",
             }
             if voice_id:
-                updates["kling_voice_id"] = voice_id
+                updates["kling_voice_id"] = str(voice_id)
 
             await asyncio.to_thread(
                 lambda: self.supabase.table("brand_avatars")
@@ -1268,7 +1319,7 @@ Requirements:
 
             return {
                 "element_id": element_id,
-                "voice_id": voice_id or None,
+                "voice_id": str(voice_id) if voice_id else None,
                 "calibration_video_path": calibration_path,
             }
 

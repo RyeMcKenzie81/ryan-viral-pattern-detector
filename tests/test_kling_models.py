@@ -52,7 +52,7 @@ class TestKlingEndpoint:
         assert KlingEndpoint.ADVANCED_CUSTOM_ELEMENTS == "advanced_custom_elements"
 
     def test_endpoint_count(self):
-        assert len(KlingEndpoint) == 9
+        assert len(KlingEndpoint) == 12
 
 
 class TestKlingTaskStatus:
@@ -86,7 +86,7 @@ class TestKlingGenerationType:
         assert KlingGenerationType.ADVANCED_CUSTOM_ELEMENTS == "advanced_custom_elements"
 
     def test_type_count(self):
-        assert len(KlingGenerationType) == 9
+        assert len(KlingGenerationType) == 10
 
 
 class TestKlingMode:
