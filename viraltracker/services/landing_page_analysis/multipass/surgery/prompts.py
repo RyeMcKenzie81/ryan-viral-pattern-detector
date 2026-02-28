@@ -151,31 +151,36 @@ Current visual similarity (SSIM): {current_ssim:.3f}
 Target: >= 0.80
 
 Identify CSS-ONLY fixes to make Image 2 look more like Image 1.
-Focus on the most impactful differences:
-- Layout issues (wrong widths, broken columns, missing flexbox/grid)
-- Typography (wrong font sizes, weights, line heights)
-- Spacing (wrong margins, paddings)
-- Colors (wrong backgrounds, text colors)
-- Missing backgrounds or gradients
+Focus on COSMETIC differences only:
+- Typography (wrong font sizes, weights, line heights, font families)
+- Colors (wrong text colors, backgrounds, gradients)
+- Spacing (wrong margins, paddings, gaps)
+- Borders and shadows
+- Opacity and visibility
 {html_section}{selector_section}
-Rules:
+CRITICAL CONSTRAINTS:
+- Do NOT invent new layout structure. If the page layout (columns, grid, centering)
+  looks different from the original, respond with NO_PATCHES_NEEDED — layout is
+  handled by CSS scoping (Phase 3), not here.
+- Do NOT set max-width, width, or min-width to fixed pixel values on containers.
+- Do NOT add margin-left: auto; margin-right: auto (centering) to elements.
+- Do NOT change display, position, or float properties.
+- Prefer SPECIFIC selectors (classes, IDs) over broad descendant selectors.
 - ONLY suggest CSS changes (no HTML structure changes)
-- Use the PatchApplier format: each patch is a CSS rule with a selector
 - CRITICAL: Only use selectors that exist in the output HTML above
-- Use any valid CSS selector (class names, descendant selectors, combinators are all fine)
-- Prefer specific selectors over broad ones (e.g., '.hero h1' over 'h1')
 - Maximum 10 patches
 - Each patch should be a complete CSS rule
+- Any patches that make things worse will be automatically rejected.
 
 Respond with patches in this format:
 ```
 PATCH 1:
-selector: .hero-section
-css: display: flex; flex-direction: column; align-items: center;
+selector: .hero-section h1
+css: font-size: 3rem; font-weight: 700;
 
 PATCH 2:
-selector: h1
-css: font-size: 3rem; font-weight: 700;
+selector: .cta-button
+css: background-color: #ff6600; color: white;
 ```
 
-If the pages look similar enough, respond with: NO_PATCHES_NEEDED"""
+If the pages look similar enough or differences are layout-structural, respond with: NO_PATCHES_NEEDED"""

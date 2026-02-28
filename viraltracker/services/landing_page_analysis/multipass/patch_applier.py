@@ -55,6 +55,37 @@ def _css_contains_injection(value: str) -> bool:
     return any(x in lower for x in _CSS_INJECTION_PATTERNS)
 
 
+# Patterns that destroy page layout when injected by S4 QA patches
+_S4_DESTRUCTIVE_DECL_RE = re.compile(
+    r'(?:^|\s|;)'
+    r'(?:'
+    r'margin-left\s*:\s*auto'
+    r'|margin-right\s*:\s*auto'
+    r'|margin\s*:\s*(?:0\s+)?auto'
+    r'|float\s*:\s*(?:left|right)'
+    r'|position\s*:\s*(?:fixed|sticky)'
+    r')',
+    re.IGNORECASE,
+)
+
+
+def _strip_destructive_declarations(css_value: str) -> str:
+    """Remove layout-destructive declarations from a CSS value string.
+
+    Only used for S4 QA patches to prevent Gemini from inventing
+    layout constraints (centering, floats, fixed positioning) that
+    destroy the page structure established by S3 CSS scoping.
+    """
+    parts = [p.strip() for p in css_value.split(";") if p.strip()]
+    kept = []
+    for part in parts:
+        if _S4_DESTRUCTIVE_DECL_RE.search(part):
+            logger.info(f"S4 patch: stripped destructive declaration: {part}")
+            continue
+        kept.append(part)
+    return "; ".join(kept)
+
+
 def _add_important(css_value: str) -> str:
     """Add !important to each CSS property declaration."""
     parts = [p.strip() for p in css_value.split(";") if p.strip()]
@@ -224,7 +255,9 @@ class PatchApplier:
     - add_element payloads stripped of visible text and protected attrs
     """
 
-    def apply_patches(self, html: str, patches: List[Dict]) -> str:
+    def apply_patches(
+        self, html: str, patches: List[Dict], strip_destructive: bool = False,
+    ) -> str:
         """Apply patches deterministically. Returns modified HTML.
 
         For css_fix patches on full HTML documents (containing </head>),
@@ -240,6 +273,8 @@ class PatchApplier:
                 - type: 'css_fix', 'add_element', or 'remove_element'
                 - selector: CSS selector string
                 - value: For css_fix: CSS property string. For add_element: HTML to insert.
+            strip_destructive: If True, remove layout-destructive CSS
+                declarations from css_fix patches (S4 QA only).
 
         Returns:
             Modified HTML string.
@@ -264,7 +299,9 @@ class PatchApplier:
 
         # Apply css_fix patches as a single style block (full doc only)
         if css_fix_patches:
-            result = self._apply_css_fix_via_style_block(result, css_fix_patches)
+            result = self._apply_css_fix_via_style_block(
+                result, css_fix_patches, strip_destructive=strip_destructive,
+            )
             applied += len(css_fix_patches)
 
         # Apply remaining patches via existing per-patch logic
@@ -320,11 +357,19 @@ class PatchApplier:
         logger.info(f"PatchApplier: applied={applied}, skipped={skipped}")
         return result
 
-    def _apply_css_fix_via_style_block(self, html: str, patches: List[Dict]) -> str:
+    def _apply_css_fix_via_style_block(
+        self, html: str, patches: List[Dict], strip_destructive: bool = False,
+    ) -> str:
         """Inject css_fix patches as a <style> block before </head>.
 
         Adds !important to each property to override inline styles.
         Sanitizes selectors/values to prevent injection.
+
+        Args:
+            html: HTML document string.
+            patches: List of css_fix patch dicts.
+            strip_destructive: If True, remove layout-destructive
+                declarations before applying (S4 QA only).
         """
         rules = []
         for patch in patches:
@@ -336,6 +381,12 @@ class PatchApplier:
             if _css_contains_injection(selector) or _css_contains_injection(css_value):
                 logger.warning("CSS injection attempt blocked in selector or value, skipping")
                 continue
+            # Strip destructive declarations for S4 patches
+            if strip_destructive:
+                css_value = _strip_destructive_declarations(css_value)
+                if not css_value:
+                    logger.info("S4 patch: all declarations stripped, skipping patch")
+                    continue
             # Add !important to each property
             important_css = _add_important(css_value)
             rules.append(f"  {selector} {{ {important_css} }}")

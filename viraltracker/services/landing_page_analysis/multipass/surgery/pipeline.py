@@ -157,6 +157,29 @@ class SurgeryPipeline:
             f"api_calls={classify_stats.get('api_calls', 0)}"
         )
 
+        listicle_info = classify_stats.get("listicle", {})
+        if listicle_info.get("is_listicle"):
+            logger.info(
+                f"S2 Listicle: {listicle_info['total_items']} items across "
+                f"{len(listicle_info.get('sections', {}))} sections, "
+                f"style={listicle_info.get('prefix_style', '?')}"
+            )
+
+        # Validate slot nesting (cross-section slot guard)
+        from ..invariants import validate_slot_nesting, strip_violating_slots
+        nesting_report = validate_slot_nesting(classified_html)
+        if not nesting_report.passed:
+            logger.warning(
+                f"S2 slot nesting violations: "
+                f"{len(nesting_report.violations)} issues found, auto-stripping"
+            )
+            classified_html = strip_violating_slots(
+                classified_html, nesting_report
+            )
+            self.phase_snapshots["_s2_nesting_report"] = str(nesting_report)
+            # Update the snapshot with cleaned HTML
+            self.phase_snapshots["phase_s2_classified"] = classified_html
+
         # ------------------------------------------------------------------
         # S3: CSS Isolation & Scoping
         # ------------------------------------------------------------------
@@ -241,7 +264,8 @@ class SurgeryPipeline:
                             patches = _parse_patch_text(patches_text)
                             applier = PatchApplier()
                             patched = applier.apply_patches(
-                                scoped_html, patches
+                                scoped_html, patches,
+                                strip_destructive=True,
                             )
                             patch_count = len(patches)
 
@@ -261,8 +285,22 @@ class SurgeryPipeline:
                                     )
                                     patch_count = 0  # skip slot check below
 
+                            # Validate 2: page height must not shift dramatically
                             if patch_count > 0:
-                                # Validate 2: patches must not lose slots
+                                from PIL import Image
+                                import io as _io
+                                s3_h = Image.open(_io.BytesIO(s3_png)).height
+                                s4_h = Image.open(_io.BytesIO(s4_png)).height
+                                height_ratio = s4_h / s3_h if s3_h > 0 else 1.0
+                                if abs(height_ratio - 1.0) > 0.25:
+                                    logger.warning(
+                                        f"S4 QA: Page height shifted {height_ratio:.2f}x "
+                                        f"({s3_h}\u2192{s4_h}px), reverting"
+                                    )
+                                    patch_count = 0
+
+                            # Validate 3: patches must not lose slots
+                            if patch_count > 0:
                                 pre_slots = _extract_slots(scoped_html)
                                 post_slots = _extract_slots(patched)
                                 if len(post_slots) >= len(pre_slots):
