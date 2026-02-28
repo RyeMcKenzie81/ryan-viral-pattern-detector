@@ -387,6 +387,12 @@ class OmniVideoRequest(BaseModel):
         None,
         description="Reference video IDs"
     )
+    voice_list: Optional[List[Dict[str, str]]] = Field(
+        None,
+        description="Voice list for voice control. Each: {voice_id: str}. Max 2. "
+                    "Referenced in prompt as <<<voice_1>>>, <<<voice_2>>>. "
+                    "MUTUALLY EXCLUSIVE with element_list. Requires sound='on'."
+    )
     sound: Literal["on", "off"] = Field(
         default="on",
         description="Native audio generation: on/off"
