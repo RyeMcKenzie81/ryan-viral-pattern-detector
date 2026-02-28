@@ -898,7 +898,7 @@ Requirements:
         Args:
             kling: KlingVideoService instance.
             task_id: Kling task_id from element creation.
-            max_attempts: Max number of query attempts (default 8 = ~2 minutes).
+            max_attempts: Max number of query attempts (default 60 = ~15 minutes).
             interval_seconds: Seconds between attempts (default 15).
 
         Returns:
@@ -986,6 +986,11 @@ Requirements:
             except Exception as e:
                 raise ValueError(f"Failed to resolve org_id from brand {brand_id}: {e}")
 
+        # Normalize video to exact Kling specs (resolution, codec, audio)
+        from .ffmpeg_service import FFmpegService
+        ffmpeg_svc = FFmpegService()
+        video_bytes = await asyncio.to_thread(ffmpeg_svc.normalize_video_for_kling, video_bytes)
+
         # Upload voice video to storage
         voice_path = await self._upload_video(
             str(avatar.brand_id), str(avatar_id), video_bytes, "voice_sample.mp4"
@@ -1026,13 +1031,14 @@ Requirements:
                 raise ValueError(f"Voice extraction element creation failed: {error_msg}")
 
             # Poll element until voice_info is available (async voice extraction)
+            # Voice extraction can take 15+ minutes per Kling docs
             temp_element_id, voice_id = await self._poll_for_voice_info(
-                kling, task_id, max_attempts=8, interval_seconds=15
+                kling, task_id, max_attempts=60, interval_seconds=15
             )
 
             if not voice_id:
                 raise ValueError(
-                    "No voice detected in the uploaded video after waiting ~2 minutes. "
+                    "No voice detected in the uploaded video after waiting ~15 minutes. "
                     "Please upload a video with clear speech."
                 )
 
@@ -1106,6 +1112,11 @@ Requirements:
                 raise ValueError(f"Failed to resolve org_id from brand {brand_id}: {e}")
 
         if video_bytes:
+            # Normalize video to exact Kling specs (resolution, codec, audio)
+            from .ffmpeg_service import FFmpegService
+            ffmpeg_svc = FFmpegService()
+            video_bytes = await asyncio.to_thread(ffmpeg_svc.normalize_video_for_kling, video_bytes)
+
             # Mode: Upload video directly (visual + voice from upload)
             video_path = await self._upload_video(
                 str(avatar.brand_id), str(avatar_id), video_bytes, "video_element_source.mp4"
@@ -1165,8 +1176,9 @@ Requirements:
                 raise ValueError(f"Video element creation failed: {error_msg}")
 
             # Poll element until voice_info is available (async voice extraction)
+            # Voice extraction can take 15+ minutes per Kling docs
             element_id, voice_id = await self._poll_for_voice_info(
-                kling, task_id, max_attempts=8, interval_seconds=15
+                kling, task_id, max_attempts=60, interval_seconds=15
             )
 
             # Update avatar with new element info
