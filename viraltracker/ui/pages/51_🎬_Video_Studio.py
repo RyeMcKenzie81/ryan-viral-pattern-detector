@@ -5,6 +5,7 @@ Tabs:
 1. Candidates - View and manage scored recreation candidates
 2. Recreation - Generate videos from approved candidates (audio-first workflow)
 3. History - Browse completed recreations with cost tracking
+4. Manual Creator - Build multi-scene videos from scratch with avatar + Kling Omni
 
 Part of the Video Tools Suite (Phase 5).
 """
@@ -13,6 +14,7 @@ import asyncio
 import json
 import streamlit as st
 from datetime import datetime
+from uuid import uuid4
 
 # Page config (must be first Streamlit call)
 st.set_page_config(
@@ -48,6 +50,12 @@ def get_org_id() -> str:
     """Get current organization ID."""
     from viraltracker.ui.utils import get_current_organization_id
     return get_current_organization_id()
+
+
+def get_manual_video_service():
+    """Get ManualVideoService instance."""
+    from viraltracker.services.manual_video_service import ManualVideoService
+    return ManualVideoService()
 
 
 def _run_async(coro):
@@ -125,6 +133,16 @@ if "vs_scoring" not in st.session_state:
 if "vs_selected_candidate" not in st.session_state:
     st.session_state.vs_selected_candidate = None
 
+# Manual Creator session state
+if "vs_manual_scenes" not in st.session_state:
+    st.session_state.vs_manual_scenes = []
+if "vs_manual_frame_gallery" not in st.session_state:
+    st.session_state.vs_manual_frame_gallery = []
+if "vs_manual_session_id" not in st.session_state:
+    st.session_state.vs_manual_session_id = str(uuid4())
+if "vs_manual_final_video" not in st.session_state:
+    st.session_state.vs_manual_final_video = None
+
 
 # ============================================================================
 # Brand Selector
@@ -154,10 +172,11 @@ if org_id == "all":
 # Tabs
 # ============================================================================
 
-tab_candidates, tab_recreation, tab_history = st.tabs([
+tab_candidates, tab_recreation, tab_history, tab_manual = st.tabs([
     "📊 Candidates",
     "🎬 Recreation",
     "📁 History",
+    "🎥 Manual Creator",
 ])
 
 
@@ -650,3 +669,395 @@ with tab_history:
                             mime="application/json",
                             key=f"dl_overlays_{cand['id']}",
                         )
+
+
+# ============================================================================
+# Tab 4: Manual Creator
+# ============================================================================
+
+with tab_manual:
+    st.subheader("Manual Video Creator")
+    st.caption(
+        "Build multi-scene videos from scratch. Pick an avatar, generate keyframe images, "
+        "write prompts and dialogue per scene, then generate and stitch clips."
+    )
+
+    # ---- Global Settings ----
+    col_avatar, col_quality, col_ratio = st.columns(3)
+
+    # Load avatars for this brand
+    from viraltracker.core.database import get_supabase_client as _get_sb_manual
+    _sb_manual = _get_sb_manual()
+    _manual_avatars = (
+        _sb_manual.table("brand_avatars")
+        .select("id, name, kling_element_id, kling_voice_id")
+        .eq("brand_id", brand_id)
+        .eq("is_active", True)
+        .execute()
+    )
+    manual_avatar_list = _manual_avatars.data or []
+
+    with col_avatar:
+        if not manual_avatar_list:
+            st.warning("No avatars found. Create one in Avatar Manager first.")
+            st.stop()
+
+        avatar_display = {}
+        for a in manual_avatar_list:
+            has_element = bool(a.get("kling_element_id"))
+            has_voice = bool(a.get("kling_voice_id"))
+            status = ""
+            if has_element and has_voice:
+                status = " (Element + Voice ready)"
+            elif has_element:
+                status = " (Element only)"
+            else:
+                status = " (No element)"
+            avatar_display[f"{a['name']}{status}"] = a["id"]
+
+        selected_avatar_label = st.selectbox(
+            "Avatar",
+            list(avatar_display.keys()),
+            key="vs_manual_avatar",
+        )
+        manual_avatar_id = avatar_display.get(selected_avatar_label)
+
+        # Warn if no element
+        selected_av = next(
+            (a for a in manual_avatar_list if a["id"] == manual_avatar_id), {}
+        )
+        if not selected_av.get("kling_element_id"):
+            st.error("This avatar has no Kling element. Create one in Avatar Manager.")
+
+    with col_quality:
+        manual_mode = st.selectbox(
+            "Quality",
+            ["pro", "std"],
+            key="vs_manual_mode",
+            help="Pro = 1080p, Std = 720p",
+        )
+
+    with col_ratio:
+        manual_aspect = st.selectbox(
+            "Aspect Ratio",
+            ["9:16", "16:9", "1:1"],
+            key="vs_manual_aspect_ratio",
+            help="9:16 for vertical/reels, 16:9 for landscape, 1:1 for square",
+        )
+
+    st.divider()
+
+    # ---- Frame Gallery ----
+    st.markdown("#### Frame Gallery")
+    st.caption("Generate keyframe images to use as start/end frames for scenes.")
+
+    col_frame_input, col_frame_gallery = st.columns([1, 2])
+
+    with col_frame_input:
+        frame_prompt = st.text_area(
+            "Frame prompt",
+            placeholder="Describe the keyframe image (e.g., 'Close-up of avatar holding product, smiling at camera, bright studio lighting')",
+            key="vs_manual_frame_prompt",
+            height=120,
+        )
+        if st.button("Generate Frame", disabled=not frame_prompt.strip()):
+            with st.spinner("Generating keyframe image via Gemini..."):
+                try:
+                    svc = get_manual_video_service()
+                    result = _run_async(svc.generate_frame(
+                        brand_id=brand_id,
+                        prompt=frame_prompt.strip(),
+                        avatar_id=manual_avatar_id,
+                    ))
+                    st.session_state.vs_manual_frame_gallery.append(result)
+                    st.success("Frame generated!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Frame generation failed: {e}")
+
+    with col_frame_gallery:
+        gallery = st.session_state.vs_manual_frame_gallery
+        if not gallery:
+            st.info("No frames yet. Generate some using the prompt on the left.")
+        else:
+            # Display as grid (4-across)
+            cols = st.columns(4)
+            for i, frame in enumerate(gallery):
+                with cols[i % 4]:
+                    url = frame.get("signed_url", "")
+                    if url:
+                        st.image(url, caption=f"#{i+1}", use_container_width=True)
+                    else:
+                        st.caption(f"#{i+1} (no preview)")
+                    st.caption(frame.get("prompt", "")[:40] + "...")
+                    if st.button("Remove", key=f"rm_frame_{frame['id']}"):
+                        st.session_state.vs_manual_frame_gallery = [
+                            f for f in gallery if f["id"] != frame["id"]
+                        ]
+                        st.rerun()
+
+    st.divider()
+
+    # ---- Scenes ----
+    st.markdown("#### Scenes")
+
+    gallery = st.session_state.vs_manual_frame_gallery
+    frame_options = ["(None)"] + [
+        f"#{i+1}: {f.get('prompt', '')[:30]}..." for i, f in enumerate(gallery)
+    ]
+
+    scenes = st.session_state.vs_manual_scenes
+
+    for idx, scene in enumerate(scenes):
+        scene_label = f"Scene {idx + 1}"
+        status = scene.get("status", "draft")
+        status_icons = {
+            "draft": "📝",
+            "generating": "⏳",
+            "succeed": "✅",
+            "failed": "❌",
+        }
+        icon = status_icons.get(status, "📝")
+
+        with st.expander(f"{icon} {scene_label} — {status}", expanded=(status == "draft")):
+            col_left, col_right = st.columns([2, 1])
+
+            with col_left:
+                scene["prompt"] = st.text_area(
+                    "Visual prompt",
+                    value=scene.get("prompt", ""),
+                    key=f"vs_scene_prompt_{scene['id']}",
+                    height=80,
+                    placeholder="Describe what happens visually in this scene...",
+                )
+                scene["dialogue"] = st.text_area(
+                    "Dialogue",
+                    value=scene.get("dialogue", ""),
+                    key=f"vs_scene_dialogue_{scene['id']}",
+                    height=60,
+                    placeholder="What the avatar says (leave empty for no speech)...",
+                )
+                scene["duration"] = st.slider(
+                    "Duration (seconds)",
+                    min_value=3,
+                    max_value=15,
+                    value=scene.get("duration", 5),
+                    key=f"vs_scene_dur_{scene['id']}",
+                )
+
+                # Per-scene avatar override
+                override_options = ["(Use Global)"] + [
+                    a["name"] for a in manual_avatar_list
+                ]
+                override_choice = st.selectbox(
+                    "Avatar override",
+                    override_options,
+                    key=f"vs_scene_avatar_{scene['id']}",
+                )
+                if override_choice == "(Use Global)":
+                    scene["avatar_override_id"] = None
+                else:
+                    scene["avatar_override_id"] = next(
+                        (a["id"] for a in manual_avatar_list if a["name"] == override_choice),
+                        None,
+                    )
+
+            with col_right:
+                # Frame selection
+                start_idx = st.selectbox(
+                    "Start frame",
+                    range(len(frame_options)),
+                    format_func=lambda i: frame_options[i],
+                    key=f"vs_scene_start_{scene['id']}",
+                )
+                scene["start_frame_id"] = (
+                    gallery[start_idx - 1]["id"] if start_idx > 0 else None
+                )
+
+                end_idx = st.selectbox(
+                    "End frame",
+                    range(len(frame_options)),
+                    format_func=lambda i: frame_options[i],
+                    key=f"vs_scene_end_{scene['id']}",
+                )
+                scene["end_frame_id"] = (
+                    gallery[end_idx - 1]["id"] if end_idx > 0 else None
+                )
+
+                # Inline quick frame gen
+                quick_prompt = st.text_input(
+                    "Quick frame prompt",
+                    key=f"vs_scene_quick_{scene['id']}",
+                    placeholder="Generate a frame...",
+                )
+                if st.button("Add Frame", key=f"vs_scene_qf_{scene['id']}", disabled=not quick_prompt.strip()):
+                    with st.spinner("Generating..."):
+                        try:
+                            svc = get_manual_video_service()
+                            result = _run_async(svc.generate_frame(
+                                brand_id=brand_id,
+                                prompt=quick_prompt.strip(),
+                                avatar_id=manual_avatar_id,
+                            ))
+                            st.session_state.vs_manual_frame_gallery.append(result)
+                            st.success("Frame added to gallery!")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Failed: {e}")
+
+                # Show generation result if available
+                if scene.get("video_storage_path"):
+                    st.caption(f"Video: {scene['video_storage_path'][:40]}...")
+                if scene.get("error"):
+                    st.error(scene["error"])
+
+            # Scene action buttons
+            col_gen, col_rm = st.columns(2)
+            with col_gen:
+                if status == "draft" and st.button(
+                    "Generate This Scene", key=f"vs_gen_scene_{scene['id']}"
+                ):
+                    scene_avatar = scene.get("avatar_override_id") or manual_avatar_id
+                    if not scene.get("prompt", "").strip():
+                        st.warning("Scene prompt is empty.")
+                    else:
+                        scene["status"] = "generating"
+                        st.rerun()
+
+            with col_rm:
+                if st.button("Remove Scene", key=f"vs_rm_scene_{scene['id']}"):
+                    st.session_state.vs_manual_scenes = [
+                        s for s in scenes if s["id"] != scene["id"]
+                    ]
+                    st.rerun()
+
+    # Handle scene generation (runs after rerun with status=generating)
+    for scene in st.session_state.vs_manual_scenes:
+        if scene.get("status") == "generating":
+            scene_avatar = scene.get("avatar_override_id") or manual_avatar_id
+            with st.spinner(f"Generating scene video (this may take 5-10 minutes)..."):
+                try:
+                    svc = get_manual_video_service()
+                    result = _run_async(svc.generate_scene_video(
+                        organization_id=org_id,
+                        brand_id=brand_id,
+                        scene=scene,
+                        avatar_id=scene_avatar,
+                        frame_gallery=st.session_state.vs_manual_frame_gallery,
+                        mode=manual_mode,
+                        aspect_ratio=manual_aspect,
+                    ))
+                    scene["status"] = result.get("status", "failed")
+                    scene["generation_id"] = result.get("generation_id")
+                    scene["kling_task_id"] = result.get("kling_task_id")
+                    scene["video_storage_path"] = result.get("video_storage_path")
+                    scene["error"] = result.get("error_message")
+                except Exception as e:
+                    scene["status"] = "failed"
+                    scene["error"] = str(e)
+            st.rerun()
+
+    # Add Scene button
+    if st.button("+ Add Scene"):
+        st.session_state.vs_manual_scenes.append({
+            "id": str(uuid4()),
+            "prompt": "",
+            "dialogue": "",
+            "duration": 5,
+            "start_frame_id": None,
+            "end_frame_id": None,
+            "avatar_override_id": None,
+            "status": "draft",
+            "generation_id": None,
+            "kling_task_id": None,
+            "video_storage_path": None,
+            "error": None,
+        })
+        st.rerun()
+
+    st.divider()
+
+    # ---- Generate & Assemble ----
+    st.markdown("#### Generate & Assemble")
+
+    draft_scenes = [s for s in scenes if s.get("status") == "draft" and s.get("prompt", "").strip()]
+    successful_scenes = [s for s in scenes if s.get("status") == "succeed" and s.get("video_storage_path")]
+
+    col_cost, col_gen_all, col_stitch = st.columns(3)
+
+    with col_cost:
+        if scenes:
+            svc = get_manual_video_service()
+            estimate = svc.estimate_cost(scenes, mode=manual_mode)
+            st.metric("Est. Cost", f"${estimate['total_estimated_cost']:.2f}")
+            st.caption(f"Total duration: {estimate['total_duration_sec']}s")
+        else:
+            st.metric("Est. Cost", "—")
+
+    with col_gen_all:
+        if draft_scenes:
+            if st.button(f"Generate All ({len(draft_scenes)} draft)"):
+                progress = st.progress(0)
+                for i, scene in enumerate(draft_scenes):
+                    scene_avatar = scene.get("avatar_override_id") or manual_avatar_id
+                    st.caption(f"Generating scene {i+1}/{len(draft_scenes)}...")
+                    try:
+                        svc = get_manual_video_service()
+                        result = _run_async(svc.generate_scene_video(
+                            organization_id=org_id,
+                            brand_id=brand_id,
+                            scene=scene,
+                            avatar_id=scene_avatar,
+                            frame_gallery=st.session_state.vs_manual_frame_gallery,
+                            mode=manual_mode,
+                            aspect_ratio=manual_aspect,
+                        ))
+                        scene["status"] = result.get("status", "failed")
+                        scene["generation_id"] = result.get("generation_id")
+                        scene["kling_task_id"] = result.get("kling_task_id")
+                        scene["video_storage_path"] = result.get("video_storage_path")
+                        scene["error"] = result.get("error_message")
+                    except Exception as e:
+                        scene["status"] = "failed"
+                        scene["error"] = str(e)
+                    progress.progress((i + 1) / len(draft_scenes))
+                st.rerun()
+        else:
+            st.button("Generate All", disabled=True, help="Add scenes with prompts first")
+
+    with col_stitch:
+        if len(successful_scenes) >= 2:
+            if st.button(f"Stitch {len(successful_scenes)} Clips"):
+                with st.spinner("Concatenating clips via FFmpeg..."):
+                    try:
+                        svc = get_manual_video_service()
+                        result = _run_async(svc.concatenate_scenes(
+                            scene_clips=successful_scenes,
+                            brand_id=brand_id,
+                            session_id=st.session_state.vs_manual_session_id,
+                        ))
+                        st.session_state.vs_manual_final_video = result
+                        st.success(
+                            f"Final video assembled! Duration: {result.get('duration_sec', '?')}s"
+                        )
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Stitch failed: {e}")
+        else:
+            needed = 2 - len(successful_scenes)
+            st.button(
+                "Stitch Clips",
+                disabled=True,
+                help=f"Need {needed} more successful scene(s)",
+            )
+
+    # Final video player
+    final = st.session_state.vs_manual_final_video
+    if final and final.get("signed_url"):
+        st.markdown("---")
+        st.markdown("#### Final Video")
+        st.video(final["signed_url"])
+        st.caption(
+            f"Duration: {final.get('duration_sec', '?')}s | "
+            f"Path: {final.get('final_video_path', '')}"
+        )
