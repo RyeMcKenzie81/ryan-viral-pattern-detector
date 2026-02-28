@@ -757,12 +757,12 @@ Requirements:
         )
         return f"{self.STORAGE_BUCKET}/{path}"
 
-    async def _get_video_signed_url(self, storage_path: str, expires_in: int = 3600) -> str:
+    async def _get_video_signed_url(self, storage_path: str, expires_in: int = 86400) -> str:
         """Get a signed URL for a video in storage.
 
         Args:
             storage_path: Full storage path (bucket/path).
-            expires_in: URL expiry in seconds.
+            expires_in: URL expiry in seconds (default 24h for Kling async workers).
 
         Returns:
             Signed URL string.
@@ -975,12 +975,10 @@ Requirements:
 
             # Log full element response on first attempt and every 10th for debugging
             if attempt == 1 or attempt % 10 == 0:
+                import json as _json
                 logger.info(
-                    f"Element query response (attempt {attempt}): "
-                    f"element_id={element_id}, "
-                    f"keys={list(element.keys())}, "
-                    f"element_voice_info={element.get('element_voice_info')}, "
-                    f"task_status={query_data.get('task_status')}"
+                    f"Element query FULL response (attempt {attempt}): "
+                    f"{_json.dumps(query_result, indent=2, default=str)}"
                 )
 
             voice_info = element.get("element_voice_info") or {}
