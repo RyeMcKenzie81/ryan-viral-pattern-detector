@@ -886,6 +886,56 @@ Requirements:
         finally:
             await kling.close()
 
+    async def _verify_video_url(self, url: str) -> None:
+        """Verify a video URL is fetchable by Kling's workers.
+
+        Checks that the URL returns 200, has Content-Type video/mp4,
+        has Content-Length, and supports Range requests. Logs warnings
+        for any issues but does not raise (Kling may still succeed).
+
+        Args:
+            url: Signed video URL to verify.
+        """
+        import httpx
+
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                # HEAD request to check basic fetchability
+                head = await client.head(url, follow_redirects=True)
+                status = head.status_code
+                content_type = head.headers.get("content-type", "")
+                content_length = head.headers.get("content-length", "")
+                accept_ranges = head.headers.get("accept-ranges", "")
+
+                logger.info(
+                    f"Video URL check: status={status}, "
+                    f"content-type={content_type}, "
+                    f"content-length={content_length}, "
+                    f"accept-ranges={accept_ranges}"
+                )
+
+                if status != 200:
+                    logger.warning(f"Video URL returned {status} (expected 200)")
+                if "video" not in content_type:
+                    logger.warning(f"Video URL content-type is '{content_type}' (expected video/mp4)")
+                if not content_length:
+                    logger.warning("Video URL missing Content-Length header")
+
+                # Range request to check partial content support
+                range_resp = await client.head(
+                    url, headers={"Range": "bytes=0-1023"}, follow_redirects=True
+                )
+                if range_resp.status_code == 206:
+                    logger.info("Video URL supports Range requests (206)")
+                else:
+                    logger.warning(
+                        f"Video URL Range request returned {range_resp.status_code} "
+                        f"(expected 206 Partial Content)"
+                    )
+
+        except Exception as e:
+            logger.warning(f"Video URL verification failed: {e}")
+
     async def _poll_for_voice_info(
         self, kling, task_id: str, max_attempts: int = 8, interval_seconds: int = 15
     ) -> tuple[str, str]:
@@ -898,7 +948,7 @@ Requirements:
         Args:
             kling: KlingVideoService instance.
             task_id: Kling task_id from element creation.
-            max_attempts: Max number of query attempts (default 8 = ~2 minutes).
+            max_attempts: Max number of query attempts (default 60 = ~15 minutes).
             interval_seconds: Seconds between attempts (default 15).
 
         Returns:
@@ -923,13 +973,25 @@ Requirements:
             element = elements[0]
             element_id = str(element.get("element_id", ""))
 
+            # Log full element response on first attempt and every 10th for debugging
+            if attempt == 1 or attempt % 10 == 0:
+                logger.info(
+                    f"Element query response (attempt {attempt}): "
+                    f"element_id={element_id}, "
+                    f"keys={list(element.keys())}, "
+                    f"element_voice_info={element.get('element_voice_info')}, "
+                    f"task_status={query_data.get('task_status')}"
+                )
+
             voice_info = element.get("element_voice_info") or {}
             voice_id = str(voice_info.get("voice_id", "")) if voice_info else ""
 
             if voice_id:
                 logger.info(
                     f"Voice info found on attempt {attempt}/{max_attempts}: "
-                    f"voice_id={voice_id}"
+                    f"voice_id={voice_id}, "
+                    f"voice_name={voice_info.get('voice_name', '')}, "
+                    f"trial_url={voice_info.get('trial_url', '')}"
                 )
                 return element_id, voice_id
 
@@ -986,11 +1048,17 @@ Requirements:
             except Exception as e:
                 raise ValueError(f"Failed to resolve org_id from brand {brand_id}: {e}")
 
+        # Normalize video to exact Kling specs (resolution, codec, audio)
+        from .ffmpeg_service import FFmpegService
+        ffmpeg_svc = FFmpegService()
+        video_bytes = await asyncio.to_thread(ffmpeg_svc.normalize_video_for_kling, video_bytes)
+
         # Upload voice video to storage
         voice_path = await self._upload_video(
             str(avatar.brand_id), str(avatar_id), video_bytes, "voice_sample.mp4"
         )
         voice_url = await self._get_video_signed_url(voice_path)
+        await self._verify_video_url(voice_url)
 
         from .kling_video_service import KlingVideoService
         from .kling_models import KlingEndpoint
@@ -1026,13 +1094,14 @@ Requirements:
                 raise ValueError(f"Voice extraction element creation failed: {error_msg}")
 
             # Poll element until voice_info is available (async voice extraction)
+            # Voice extraction can take 15+ minutes per Kling docs
             temp_element_id, voice_id = await self._poll_for_voice_info(
-                kling, task_id, max_attempts=8, interval_seconds=15
+                kling, task_id, max_attempts=60, interval_seconds=15
             )
 
             if not voice_id:
                 raise ValueError(
-                    "No voice detected in the uploaded video after waiting ~2 minutes. "
+                    "No voice detected in the uploaded video after waiting ~15 minutes. "
                     "Please upload a video with clear speech."
                 )
 
@@ -1106,6 +1175,11 @@ Requirements:
                 raise ValueError(f"Failed to resolve org_id from brand {brand_id}: {e}")
 
         if video_bytes:
+            # Normalize video to exact Kling specs (resolution, codec, audio)
+            from .ffmpeg_service import FFmpegService
+            ffmpeg_svc = FFmpegService()
+            video_bytes = await asyncio.to_thread(ffmpeg_svc.normalize_video_for_kling, video_bytes)
+
             # Mode: Upload video directly (visual + voice from upload)
             video_path = await self._upload_video(
                 str(avatar.brand_id), str(avatar_id), video_bytes, "video_element_source.mp4"
@@ -1128,6 +1202,9 @@ Requirements:
                 )
                 calibration_path = cal_result["calibration_video_path"]
                 video_url = cal_result["signed_url"]
+
+        # Verify the video URL is fetchable by Kling's workers
+        await self._verify_video_url(video_url)
 
         # Look up existing voice_id to bind
         existing_voice_id = avatar.kling_voice_id
@@ -1165,8 +1242,9 @@ Requirements:
                 raise ValueError(f"Video element creation failed: {error_msg}")
 
             # Poll element until voice_info is available (async voice extraction)
+            # Voice extraction can take 15+ minutes per Kling docs
             element_id, voice_id = await self._poll_for_voice_info(
-                kling, task_id, max_attempts=8, interval_seconds=15
+                kling, task_id, max_attempts=60, interval_seconds=15
             )
 
             # Update avatar with new element info

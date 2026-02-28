@@ -1,10 +1,11 @@
 """
 FFmpeg Service
 
-Audio processing service using FFmpeg for:
+Audio and video processing service using FFmpeg for:
 - Getting audio duration
 - Adding silence/pauses
 - Concatenating audio files
+- Video normalization for Kling element creation
 - Future: pitch adjustment
 
 All sync subprocess calls should be wrapped with asyncio.to_thread()
@@ -344,3 +345,145 @@ class FFmpegService:
         except Exception as e:
             logger.error(f"Unexpected error during conversion: {e}")
             return False
+
+    def normalize_video_for_kling(self, video_bytes: bytes) -> bytes:
+        """
+        Normalize a video to meet Kling element creation specs.
+
+        Kling's video element API silently fails voice extraction if the video
+        doesn't meet exact specs. This re-encodes to guaranteed-safe output:
+        - Exact 1080x1920 (portrait) or 1920x1080 (landscape) via scale+crop
+        - H.264 Main profile level 4.1, yuv420p, 30fps
+        - AAC-LC audio at 128kbps, 48kHz mono
+        - SAR 1:1, movflags +faststart
+        - Capped at 8 seconds
+
+        NOTE: This is a sync method. When calling from async code,
+        wrap with: await asyncio.to_thread(ffmpeg.normalize_video_for_kling, video_bytes)
+
+        Args:
+            video_bytes: Raw video file bytes.
+
+        Returns:
+            Normalized video bytes (MP4).
+
+        Raises:
+            ValueError: If FFmpeg not available, no audio track, or duration < 3s.
+            RuntimeError: If FFmpeg encoding fails.
+        """
+        if not self.available:
+            raise ValueError("FFmpeg/FFprobe not available. Cannot normalize video.")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_path = Path(tmpdir) / "input.mp4"
+            output_path = Path(tmpdir) / "output.mp4"
+
+            input_path.write_bytes(video_bytes)
+
+            # Probe video properties
+            try:
+                probe_result = subprocess.run(
+                    [
+                        self._ffprobe_path,
+                        "-v", "quiet",
+                        "-print_format", "json",
+                        "-show_format",
+                        "-show_streams",
+                        str(input_path),
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                    check=True,
+                )
+            except subprocess.CalledProcessError as e:
+                raise RuntimeError(f"FFprobe failed: {e.stderr}")
+
+            import json
+            probe = json.loads(probe_result.stdout)
+
+            # Check for audio stream
+            streams = probe.get("streams", [])
+            has_audio = any(s.get("codec_type") == "audio" for s in streams)
+            if not has_audio:
+                raise ValueError(
+                    "Video has no audio track. Voice extraction requires speech."
+                )
+
+            # Check duration
+            duration = float(probe.get("format", {}).get("duration", 0))
+            if duration < 3.0:
+                raise ValueError(
+                    f"Video must be at least 3 seconds (got {duration:.1f}s)."
+                )
+
+            # Determine target resolution based on orientation
+            video_stream = next(
+                (s for s in streams if s.get("codec_type") == "video"), None
+            )
+            if not video_stream:
+                raise ValueError("Video has no video stream.")
+
+            width = int(video_stream.get("width", 0))
+            height = int(video_stream.get("height", 0))
+
+            if height > width:
+                # Portrait
+                target_w, target_h = 1080, 1920
+            else:
+                # Landscape
+                target_w, target_h = 1920, 1080
+
+            logger.info(
+                f"Normalizing video: {width}x{height} -> {target_w}x{target_h}, "
+                f"duration={duration:.1f}s (cap 8s)"
+            )
+
+            # Re-encode with FFmpeg
+            # Uses scale+crop to avoid any aspect ratio distortion,
+            # forces 30fps, H.264 Main level 4.1, AAC 48kHz mono
+            # per Kling API requirements for voice extraction.
+            vf = (
+                f"scale={target_w}:{target_h}:"
+                f"force_original_aspect_ratio=increase,"
+                f"crop={target_w}:{target_h},"
+                f"setsar=1,"
+                f"fps=30,"
+                f"format=yuv420p"
+            )
+            try:
+                result = subprocess.run(
+                    [
+                        self._ffmpeg_path,
+                        "-y",
+                        "-i", str(input_path),
+                        "-t", "8",
+                        "-vf", vf,
+                        "-c:v", "libx264",
+                        "-profile:v", "main",
+                        "-level", "4.1",
+                        "-preset", "medium",
+                        "-crf", "18",
+                        "-pix_fmt", "yuv420p",
+                        "-map", "0:v:0",
+                        "-map", "0:a:0",
+                        "-c:a", "aac",
+                        "-b:a", "128k",
+                        "-ar", "48000",
+                        "-ac", "1",
+                        "-movflags", "+faststart",
+                        str(output_path),
+                    ],
+                    capture_output=True,
+                    timeout=120,
+                    check=True,
+                )
+            except subprocess.CalledProcessError as e:
+                stderr = e.stderr.decode() if e.stderr else str(e)
+                raise RuntimeError(f"FFmpeg encoding failed: {stderr}")
+
+            normalized_bytes = output_path.read_bytes()
+            logger.info(
+                f"Video normalized: {len(video_bytes)} -> {len(normalized_bytes)} bytes"
+            )
+            return normalized_bytes
