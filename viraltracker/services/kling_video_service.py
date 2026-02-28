@@ -1664,6 +1664,7 @@ class KlingVideoService:
         sound: str = "on",
         image_list: Optional[List[Dict[str, str]]] = None,
         element_list: Optional[List[Dict[str, str]]] = None,
+        voice_list: Optional[List[Dict[str, str]]] = None,
         aspect_ratio: Optional[str] = None,
         candidate_id: Optional[str] = None,
         callback_url: Optional[str] = None,
@@ -1685,6 +1686,9 @@ class KlingVideoService:
             sound: 'on' or 'off' for native audio.
             image_list: Keyframe images. Each: {image_url: str, type: 'first_frame'|'end_frame'}.
             element_list: Pre-created element IDs. Each: {element_id: str}.
+            voice_list: Voice IDs for voice control. Each: {voice_id: str}. Max 2.
+                Mutually exclusive with element_list. Requires sound='on'.
+                Referenced in prompt as <<<voice_1>>>.
             aspect_ratio: '16:9', '9:16', '1:1'. Required when no first-frame image.
             candidate_id: Optional recreation candidate reference.
             callback_url: Callback URL.
@@ -1710,10 +1714,18 @@ class KlingVideoService:
         if len(prompt) > 2500:
             raise ValueError(f"Prompt exceeds 2500 chars ({len(prompt)})")
 
+        # Validate voice_list constraints
+        if voice_list:
+            if len(voice_list) > 2:
+                raise ValueError("voice_list supports max 2 voices")
+            if element_list:
+                raise ValueError("voice_list and element_list are mutually exclusive")
+            if sound != "on":
+                raise ValueError("sound must be 'on' when using voice_list")
+
         # Validate image+element count constraints
         num_images = len(image_list) if image_list else 0
         num_elements = len(element_list) if element_list else 0
-        has_video_ref = bool(self)  # placeholder — video_list not used yet
         has_video_ref = False  # no video refs in this implementation
         max_refs = 4 if has_video_ref else 7
         if num_images + num_elements > max_refs:
@@ -1777,6 +1789,8 @@ class KlingVideoService:
             payload["image_list"] = image_list
         if element_list:
             payload["element_list"] = element_list
+        if voice_list:
+            payload["voice_list"] = voice_list
         if aspect_ratio:
             payload["aspect_ratio"] = aspect_ratio
         if callback_url:
