@@ -83,6 +83,9 @@ class KlingVideoService:
         KlingEndpoint.MULTI_SHOT: "/v1/general/ai-multi-shot",
         KlingEndpoint.OMNI_VIDEO: "/v1/videos/omni-video",
         KlingEndpoint.ADVANCED_CUSTOM_ELEMENTS: "/v1/general/advanced-custom-elements",
+        KlingEndpoint.CUSTOM_VOICES: "/v1/general/custom-voices",
+        KlingEndpoint.DELETE_VOICES: "/v1/general/delete-voices",
+        KlingEndpoint.PRESETS_VOICES: "/v1/general/presets-voices",
     }
 
     # API task statuses
@@ -1463,6 +1466,189 @@ class KlingVideoService:
         response = await client.post(
             url,
             json={"element_id": element_id},
+            headers=self._headers(),
+        )
+        response.raise_for_status()
+        return response.json()
+
+    # ========================================================================
+    # Custom Voice CRUD
+    # ========================================================================
+
+    async def create_custom_voice(
+        self,
+        organization_id: str,
+        brand_id: str,
+        voice_name: str,
+        voice_url: Optional[str] = None,
+        video_id: Optional[str] = None,
+        callback_url: Optional[str] = None,
+        external_task_id: Optional[str] = None,
+    ) -> dict:
+        """Create a custom voice clone from audio/video.
+
+        Endpoint: POST /v1/general/custom-voices
+
+        Either voice_url or video_id must be provided (mutually exclusive).
+        voice_url accepts .mp3/.wav audio or .mp4/.mov video files.
+        The audio must be 5-30 seconds of clean speech with one speaker.
+
+        Args:
+            organization_id: Organization UUID.
+            brand_id: Brand UUID.
+            voice_name: Voice name (max 20 chars).
+            voice_url: URL to audio/video file for voice cloning.
+            video_id: Kling-generated video ID (V2.6+ with sound, Avatar, or Lip-Sync).
+            callback_url: Callback URL.
+            external_task_id: Custom task ID.
+
+        Returns:
+            Dict with generation_id, kling_task_id, status.
+        """
+        self._enforce_limit()
+
+        if not voice_url and not video_id:
+            raise ValueError("Either voice_url or video_id is required for voice creation")
+        if voice_url and video_id:
+            raise ValueError("Provide either voice_url or video_id, not both")
+
+        generation_id = str(uuid.uuid4())
+        ext_task_id = external_task_id or generation_id
+
+        await self._create_db_record({
+            "id": generation_id,
+            "organization_id": organization_id,
+            "brand_id": brand_id,
+            "generation_type": KlingGenerationType.CUSTOM_VOICE.value,
+            "status": KlingTaskStatus.PENDING.value,
+            "kling_external_task_id": ext_task_id,
+        })
+
+        payload: Dict[str, Any] = {
+            "voice_name": voice_name[:20],
+            "external_task_id": ext_task_id,
+        }
+        if voice_url:
+            payload["voice_url"] = voice_url
+        if video_id:
+            payload["video_id"] = video_id
+        if callback_url:
+            payload["callback_url"] = callback_url
+
+        try:
+            async with self._generation_semaphore:
+                response = await self._post(KlingEndpoint.CUSTOM_VOICES, payload)
+
+            data = response.get("data", {})
+            kling_task_id = data.get("task_id")
+            request_id = response.get("request_id", "")
+
+            await self._update_db_record(generation_id, {
+                "kling_task_id": kling_task_id,
+                "kling_request_id": request_id,
+                "status": data.get("task_status", KlingTaskStatus.SUBMITTED.value),
+            })
+
+            self._track_usage(
+                operation="create_custom_voice",
+                unit_type="kling_multi_shot",
+                units=1,
+                cost_usd=Config.get_unit_cost("kling_multi_shot"),
+                metadata={"generation_id": generation_id},
+            )
+
+            return {
+                "generation_id": generation_id,
+                "kling_task_id": kling_task_id,
+                "status": data.get("task_status", "submitted"),
+                "request_id": request_id,
+            }
+
+        except Exception as e:
+            error_code = getattr(e, "code", None)
+            await self._update_db_record(generation_id, {
+                "status": KlingTaskStatus.FAILED.value,
+                "error_message": str(e),
+                "error_code": error_code,
+            })
+            raise
+
+    async def query_custom_voice(self, task_id: str) -> dict:
+        """Query a custom voice creation task.
+
+        Endpoint: GET /v1/general/custom-voices/{task_id}
+
+        After voice creation succeeds, the response contains:
+        - task_result.voices[0].voice_id
+        - task_result.voices[0].voice_name
+        - task_result.voices[0].trial_url
+        - task_result.voices[0].owned_by
+
+        Args:
+            task_id: Kling task_id from create_custom_voice response.
+
+        Returns:
+            Full voice query response data.
+        """
+        url = f"{self.BASE_URL}{self.ENDPOINTS[KlingEndpoint.CUSTOM_VOICES]}/{task_id}"
+        return await self._get(url)
+
+    async def query_custom_voices_list(
+        self, page_num: int = 1, page_size: int = 30
+    ) -> dict:
+        """List all custom voices for the account.
+
+        Endpoint: GET /v1/general/custom-voices?pageNum=X&pageSize=Y
+
+        Args:
+            page_num: Page number (1-1000).
+            page_size: Items per page (1-1000).
+
+        Returns:
+            List of voice task records with voice_id, voice_name, etc.
+        """
+        url = (
+            f"{self.BASE_URL}{self.ENDPOINTS[KlingEndpoint.CUSTOM_VOICES]}"
+            f"?pageNum={page_num}&pageSize={page_size}"
+        )
+        return await self._get(url)
+
+    async def query_preset_voices(
+        self, page_num: int = 1, page_size: int = 30
+    ) -> dict:
+        """List official preset voices from Kling's voice library.
+
+        Endpoint: GET /v1/general/presets-voices?pageNum=X&pageSize=Y
+
+        Args:
+            page_num: Page number (1-1000).
+            page_size: Items per page (1-500).
+
+        Returns:
+            List of preset voice records.
+        """
+        url = (
+            f"{self.BASE_URL}{self.ENDPOINTS[KlingEndpoint.PRESETS_VOICES]}"
+            f"?pageNum={page_num}&pageSize={page_size}"
+        )
+        return await self._get(url)
+
+    async def delete_custom_voice(self, voice_id: str) -> dict:
+        """Delete a custom voice.
+
+        Endpoint: POST /v1/general/delete-voices
+
+        Args:
+            voice_id: Voice ID to delete.
+
+        Returns:
+            API response dict.
+        """
+        url = f"{self.BASE_URL}{self.ENDPOINTS[KlingEndpoint.DELETE_VOICES]}"
+        client = await self._get_client()
+        response = await client.post(
+            url,
+            json={"voice_id": voice_id},
             headers=self._headers(),
         )
         response.raise_for_status()

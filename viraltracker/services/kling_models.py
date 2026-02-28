@@ -33,6 +33,9 @@ class KlingEndpoint(str, Enum):
     MULTI_SHOT = "multi_shot"
     OMNI_VIDEO = "omni_video"
     ADVANCED_CUSTOM_ELEMENTS = "advanced_custom_elements"
+    CUSTOM_VOICES = "custom_voices"
+    DELETE_VOICES = "delete_voices"
+    PRESETS_VOICES = "presets_voices"
 
 
 class KlingTaskStatus(str, Enum):
@@ -60,6 +63,7 @@ class KlingGenerationType(str, Enum):
     MULTI_SHOT = "multi_shot"
     OMNI_VIDEO = "omni_video"
     ADVANCED_CUSTOM_ELEMENTS = "advanced_custom_elements"
+    CUSTOM_VOICE = "custom_voice"
 
 
 class KlingAspectRatio(str, Enum):
@@ -445,6 +449,36 @@ class CreateElementRequest(BaseModel):
     external_task_id: Optional[str] = Field(None, description="Custom task ID for tracking")
 
 
+class CreateVoiceRequest(BaseModel):
+    """Request for creating a custom voice clone.
+
+    Endpoint: POST /v1/general/custom-voices
+
+    Creates a voice from an audio/video file. The voice can then be bound
+    to elements via element_voice_id for consistent character voice across
+    Omni Video generations.
+    """
+    voice_name: str = Field(
+        ...,
+        max_length=20,
+        description="Voice name (max 20 chars)"
+    )
+    voice_url: Optional[str] = Field(
+        None,
+        description="URL of voice data file (.mp3/.wav audio or .mp4/.mov video). "
+        "5-30 seconds of clean speech with one speaker. "
+        "Mutually exclusive with video_id."
+    )
+    video_id: Optional[str] = Field(
+        None,
+        description="Reference a previously generated Kling video ID for voice cloning. "
+        "Only works with V2.6+ (sound=on), Avatar API, or Lip-Sync API outputs. "
+        "Mutually exclusive with voice_url."
+    )
+    callback_url: Optional[str] = Field(None, description="Callback URL")
+    external_task_id: Optional[str] = Field(None, description="Custom task ID for tracking")
+
+
 # ============================================================================
 # API Response Models
 # ============================================================================
@@ -465,6 +499,14 @@ class KlingImageResult(BaseModel):
     """Single image result from multi-shot query response."""
     index: int = Field(..., description="Image index (0, 1, 2)")
     url: str = Field(..., description="Image URL")
+
+
+class KlingVoiceResult(BaseModel):
+    """Single voice result from custom voice query response."""
+    voice_id: str = Field(..., description="Voice ID (globally unique)")
+    voice_name: str = Field(..., description="Voice name")
+    trial_url: Optional[str] = Field(None, description="Trial audio/video URL")
+    owned_by: Optional[str] = Field(None, description="Voice source: 'kling' for official, creator ID otherwise")
 
 
 class KlingFaceData(BaseModel):
