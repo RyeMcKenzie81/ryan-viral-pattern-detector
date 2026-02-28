@@ -886,6 +886,56 @@ Requirements:
         finally:
             await kling.close()
 
+    async def _verify_video_url(self, url: str) -> None:
+        """Verify a video URL is fetchable by Kling's workers.
+
+        Checks that the URL returns 200, has Content-Type video/mp4,
+        has Content-Length, and supports Range requests. Logs warnings
+        for any issues but does not raise (Kling may still succeed).
+
+        Args:
+            url: Signed video URL to verify.
+        """
+        import httpx
+
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                # HEAD request to check basic fetchability
+                head = await client.head(url, follow_redirects=True)
+                status = head.status_code
+                content_type = head.headers.get("content-type", "")
+                content_length = head.headers.get("content-length", "")
+                accept_ranges = head.headers.get("accept-ranges", "")
+
+                logger.info(
+                    f"Video URL check: status={status}, "
+                    f"content-type={content_type}, "
+                    f"content-length={content_length}, "
+                    f"accept-ranges={accept_ranges}"
+                )
+
+                if status != 200:
+                    logger.warning(f"Video URL returned {status} (expected 200)")
+                if "video" not in content_type:
+                    logger.warning(f"Video URL content-type is '{content_type}' (expected video/mp4)")
+                if not content_length:
+                    logger.warning("Video URL missing Content-Length header")
+
+                # Range request to check partial content support
+                range_resp = await client.head(
+                    url, headers={"Range": "bytes=0-1023"}, follow_redirects=True
+                )
+                if range_resp.status_code == 206:
+                    logger.info("Video URL supports Range requests (206)")
+                else:
+                    logger.warning(
+                        f"Video URL Range request returned {range_resp.status_code} "
+                        f"(expected 206 Partial Content)"
+                    )
+
+        except Exception as e:
+            logger.warning(f"Video URL verification failed: {e}")
+
     async def _poll_for_voice_info(
         self, kling, task_id: str, max_attempts: int = 8, interval_seconds: int = 15
     ) -> tuple[str, str]:
@@ -923,13 +973,25 @@ Requirements:
             element = elements[0]
             element_id = str(element.get("element_id", ""))
 
+            # Log full element response on first attempt and every 10th for debugging
+            if attempt == 1 or attempt % 10 == 0:
+                logger.info(
+                    f"Element query response (attempt {attempt}): "
+                    f"element_id={element_id}, "
+                    f"keys={list(element.keys())}, "
+                    f"element_voice_info={element.get('element_voice_info')}, "
+                    f"task_status={query_data.get('task_status')}"
+                )
+
             voice_info = element.get("element_voice_info") or {}
             voice_id = str(voice_info.get("voice_id", "")) if voice_info else ""
 
             if voice_id:
                 logger.info(
                     f"Voice info found on attempt {attempt}/{max_attempts}: "
-                    f"voice_id={voice_id}"
+                    f"voice_id={voice_id}, "
+                    f"voice_name={voice_info.get('voice_name', '')}, "
+                    f"trial_url={voice_info.get('trial_url', '')}"
                 )
                 return element_id, voice_id
 
@@ -996,6 +1058,7 @@ Requirements:
             str(avatar.brand_id), str(avatar_id), video_bytes, "voice_sample.mp4"
         )
         voice_url = await self._get_video_signed_url(voice_path)
+        await self._verify_video_url(voice_url)
 
         from .kling_video_service import KlingVideoService
         from .kling_models import KlingEndpoint
@@ -1139,6 +1202,9 @@ Requirements:
                 )
                 calibration_path = cal_result["calibration_video_path"]
                 video_url = cal_result["signed_url"]
+
+        # Verify the video URL is fetchable by Kling's workers
+        await self._verify_video_url(video_url)
 
         # Look up existing voice_id to bind
         existing_voice_id = avatar.kling_voice_id
