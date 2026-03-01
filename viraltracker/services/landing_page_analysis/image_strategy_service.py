@@ -70,10 +70,11 @@ class ImageStrategyService:
                 self._supabase.table("product_visual_playbooks")
                 .select("playbook, brand_profile_hash")
                 .eq("product_id", str(product_id))
-                .maybe_single()
                 .execute()
             )
-            return result.data if result.data else None
+            if result.data and len(result.data) > 0:
+                return result.data[0]
+            return None
         except Exception as e:
             logger.warning(f"Failed to load cached playbook: {e}")
             return None
@@ -201,9 +202,13 @@ class ImageStrategyService:
         if progress_cb:
             progress_cb(0, 1, "Directing page narrative...")
 
-        briefs = await self._direct_page_narrative(
-            slots, playbook, brand_profile, persona, blueprint_sections
-        )
+        try:
+            briefs = await self._direct_page_narrative(
+                slots, playbook, brand_profile, persona, blueprint_sections
+            )
+        except Exception as e:
+            logger.error(f"Narrative director failed: {e}", exc_info=True)
+            return
 
         passed, violations = self._validate_briefs(briefs, playbook)
         if not passed:
@@ -225,11 +230,22 @@ class ImageStrategyService:
 
         # Apply briefs to slots
         index_map = {s.index: s for s in slots}
+        applied = 0
         for brief in briefs:
             idx = brief.get("slot_index")
+            # Coerce string indices to int (LLMs sometimes return "0" instead of 0)
+            if isinstance(idx, str):
+                try:
+                    idx = int(idx)
+                except (ValueError, TypeError):
+                    continue
             if idx is not None and idx in index_map:
                 if brief.get("action") != "skip":
                     index_map[idx].scene_direction = brief
+                    applied += 1
+        logger.info(
+            f"Applied {applied}/{len(briefs)} briefs to {len(slots)} slots"
+        )
 
     async def _direct_page_narrative(
         self,
@@ -329,7 +345,14 @@ class ImageStrategyService:
             operation="narrative_director",
         )
 
+        logger.info(
+            f"Narrative director response length: {len(result.output)} chars"
+        )
         parsed = self._parse_json(result.output)
+        logger.info(
+            f"Parsed narrative briefs: type={type(parsed).__name__}, "
+            f"count={len(parsed) if isinstance(parsed, list) else 'N/A'}"
+        )
         # Ensure it's a list
         if isinstance(parsed, dict):
             # Might be wrapped in a key
