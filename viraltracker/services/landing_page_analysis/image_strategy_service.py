@@ -516,32 +516,72 @@ class ImageStrategyService:
 
     @staticmethod
     def _parse_json(text: str) -> Any:
-        """Parse JSON from LLM response, handling markdown fences and arrays."""
-        clean = text.strip()
-        # Strip markdown code fences
-        if clean.startswith("```"):
-            lines = clean.split("\n")
-            if lines[0].startswith("```"):
-                lines = lines[1:]
-            if lines and lines[-1].strip() == "```":
-                lines = lines[:-1]
-            clean = "\n".join(lines).strip()
+        """Parse JSON from LLM response, handling markdown fences and chain-of-thought.
 
+        Opus often returns chain-of-thought reasoning before/after the JSON.
+        This parser handles: raw JSON, markdown-fenced JSON, and JSON embedded
+        in free-form text (finds the largest valid JSON array or object).
+        """
+        clean = text.strip()
+
+        # Strategy 1: Direct parse (already clean JSON)
         try:
             return json.loads(clean)
         except json.JSONDecodeError:
             pass
 
-        # Try extracting JSON array
-        start_arr = clean.find("[")
-        end_arr = clean.rfind("]")
-        if start_arr != -1 and end_arr != -1 and end_arr > start_arr:
+        # Strategy 2: Extract from markdown code fences (```json ... ```)
+        import re
+        fence_pattern = re.compile(r"```(?:json)?\s*\n(.*?)```", re.DOTALL)
+        fences = fence_pattern.findall(clean)
+        for fenced in fences:
             try:
-                return json.loads(clean[start_arr : end_arr + 1])
+                return json.loads(fenced.strip())
             except json.JSONDecodeError:
-                pass
+                continue
 
-        # Try extracting JSON object
+        # Strategy 3: Find the largest valid JSON array by scanning for [ and
+        # finding its matching ]. Walk forward from each [ tracking bracket depth.
+        best_array = None
+        best_len = 0
+        for i, ch in enumerate(clean):
+            if ch == "[":
+                depth = 0
+                in_str = False
+                escape = False
+                for j in range(i, len(clean)):
+                    c = clean[j]
+                    if escape:
+                        escape = False
+                        continue
+                    if c == "\\":
+                        escape = True
+                        continue
+                    if c == '"' and not escape:
+                        in_str = not in_str
+                        continue
+                    if in_str:
+                        continue
+                    if c == "[":
+                        depth += 1
+                    elif c == "]":
+                        depth -= 1
+                        if depth == 0:
+                            candidate = clean[i : j + 1]
+                            if len(candidate) > best_len:
+                                try:
+                                    parsed = json.loads(candidate)
+                                    if isinstance(parsed, list) and len(parsed) > 0:
+                                        best_array = parsed
+                                        best_len = len(candidate)
+                                except json.JSONDecodeError:
+                                    pass
+                            break
+
+        if best_array is not None:
+            return best_array
+
+        # Strategy 4: Try extracting JSON object (first { to last })
         start_obj = clean.find("{")
         end_obj = clean.rfind("}")
         if start_obj != -1 and end_obj != -1 and end_obj > start_obj:
