@@ -907,24 +907,46 @@ with tab_manual:
                         except Exception as e:
                             st.error(f"Failed: {e}")
 
-                # Show generation result if available
-                if scene.get("video_storage_path"):
-                    st.caption(f"Video: {scene['video_storage_path'][:40]}...")
                 if scene.get("error"):
                     st.error(scene["error"])
 
+            # Video preview for completed scenes
+            if status == "succeed" and scene.get("video_storage_path"):
+                st.markdown("**Preview:**")
+                storage_path = scene["video_storage_path"]
+                parts = storage_path.split("/", 1)
+                if len(parts) == 2:
+                    signed = _get_sb_manual().storage.from_(parts[0]).create_signed_url(
+                        parts[1], 3600
+                    )
+                    preview_url = signed.get("signedURL", "") if isinstance(signed, dict) else ""
+                    if preview_url:
+                        st.video(preview_url)
+                    else:
+                        st.caption(f"Video at: {storage_path[:50]}...")
+
             # Scene action buttons
-            col_gen, col_rm = st.columns(2)
+            col_gen, col_regen, col_rm = st.columns(3)
             with col_gen:
                 if status == "draft" and st.button(
                     "Generate This Scene", key=f"vs_gen_scene_{scene['id']}"
                 ):
-                    scene_avatar = scene.get("avatar_override_id") or manual_avatar_id
                     if not scene.get("prompt", "").strip():
                         st.warning("Scene prompt is empty.")
                     else:
                         scene["status"] = "generating"
                         st.rerun()
+
+            with col_regen:
+                if status in ("succeed", "failed") and st.button(
+                    "Regenerate", key=f"vs_regen_scene_{scene['id']}"
+                ):
+                    scene["status"] = "generating"
+                    scene["generation_id"] = None
+                    scene["kling_task_id"] = None
+                    scene["video_storage_path"] = None
+                    scene["error"] = None
+                    st.rerun()
 
             with col_rm:
                 if st.button("Remove Scene", key=f"vs_rm_scene_{scene['id']}"):
