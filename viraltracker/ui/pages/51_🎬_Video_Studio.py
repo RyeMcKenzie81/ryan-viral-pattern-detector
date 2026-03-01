@@ -981,9 +981,19 @@ with tab_manual:
                     scene["error"] = str(e)
             st.rerun()
 
-    # Add Scene button
-    if st.button("+ Add Scene"):
-        st.session_state.vs_manual_scenes.append({
+    # Add Scene controls
+    col_add, col_inherit = st.columns([1, 2])
+    with col_add:
+        add_scene_clicked = st.button("+ Add Scene")
+    with col_inherit:
+        inherit_prev = st.checkbox(
+            "Inherit from previous scene (prompt, start/end frames)",
+            value=False,
+            key="vs_manual_inherit_prev",
+        )
+
+    if add_scene_clicked:
+        new_scene = {
             "id": str(uuid4()),
             "prompt": "",
             "dialogue": "",
@@ -996,7 +1006,17 @@ with tab_manual:
             "kling_task_id": None,
             "video_storage_path": None,
             "error": None,
-        })
+        }
+
+        if inherit_prev and scenes:
+            prev = scenes[-1]
+            new_scene["prompt"] = prev.get("prompt", "")
+            new_scene["start_frame_id"] = prev.get("start_frame_id")
+            new_scene["end_frame_id"] = prev.get("end_frame_id")
+            new_scene["avatar_override_id"] = prev.get("avatar_override_id")
+            new_scene["duration"] = prev.get("duration", 5)
+
+        st.session_state.vs_manual_scenes.append(new_scene)
         st.rerun()
 
     st.divider()
