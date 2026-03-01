@@ -1793,11 +1793,21 @@ def _render_generate_images_section(
                     except Exception:
                         pass
 
+                # Extract blueprint sections for strategy pipeline
+                _bp_sections = None
+                if bp_record:
+                    _bp_data = bp_record.get("blueprint", {})
+                    _rb = _bp_data.get("reconstruction_blueprint", _bp_data)
+                    _bp_sections = _rb.get("sections", [])
+
                 try:
                     slots, download_count = asyncio.run(
                         svc.analyze_blueprint_images(
                             blueprint_id, mockup_html, on_progress,
                             product_info=_product_info, persona=_persona_data,
+                            blueprint_sections=_bp_sections,
+                            brand_profile=brand_profile,
+                            product_id=product_id,
                         )
                     )
                     if not slots:

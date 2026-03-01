@@ -323,6 +323,10 @@ NARRATIVE_ROLE_STYLES = {
     "transformation": "Before-and-after style photo",
     "educational": "Clean infographic-style image",
     "hero_attention": "Wide cinematic hero image",
+    "trust_credibility": "Professional authoritative photo",
+    "process_explainer": "Clear step-by-step instructional image",
+    "objection_handler": "Reassuring, confidence-building photo",
+    "pattern_interrupt": "Bold, unexpected attention-grabbing image",
 }
 
 
@@ -843,6 +847,11 @@ class BlueprintImageService:
         # Should the product be shown? Respect the LLM's decision.
         show_product = scene.get("show_product", False)
 
+        # New strategy pipeline fields
+        persuasion_job = scene.get("persuasion_job", "")
+        product_placement = scene.get("product_placement", "")
+        gaze = scene.get("gaze_direction", "")
+
         # Compose prompt
         parts = [style_prefix]
         if person_desc and role not in ("product_showcase", "educational"):
@@ -855,10 +864,18 @@ class BlueprintImageService:
             parts.append(f"Mood: {emotional_tone}.")
         # Only mention the product when the scene calls for it
         if show_product and product_name:
-            if role == "product_showcase":
+            if product_placement:
+                parts.append(f"{product_name}{product_desc} — {product_placement}.")
+            elif role == "product_showcase":
                 parts.append(f"Featuring {product_name}{product_desc}.")
             else:
                 parts.append(f"{product_name}{product_desc} visible nearby.")
+        # Persuasion context for richer generation
+        if persuasion_job:
+            parts.append(f"This image should {persuasion_job.lower()}.")
+        # Gaze direction for people images
+        if gaze and (has_people or person_desc):
+            parts.append(f"Subject looking {gaze}.")
         if style_cues:
             parts.append(f"Style: {style_cues}.")
         if color_note:
@@ -982,12 +999,18 @@ class BlueprintImageService:
         progress_cb: Optional[Callable] = None,
         product_info: Optional[Dict[str, Any]] = None,
         persona: Optional[Dict[str, Any]] = None,
+        blueprint_sections: Optional[list] = None,
+        brand_profile: Optional[Dict[str, Any]] = None,
+        product_id: Optional[str] = None,
     ) -> Tuple[List[ImageSlot], int]:
         """Phase 1: Extract, download, and analyze images. Saves analysis to DB.
 
         Args:
             product_info: Product dict for scene direction context.
             persona: Persona dict for scene direction demographics.
+            blueprint_sections: Reconstruction blueprint sections for strategy pipeline.
+            brand_profile: Full brand profile dict for strategy pipeline.
+            product_id: Product UUID for playbook caching.
         """
         from viraltracker.services.gemini_service import GeminiService
 
@@ -1008,16 +1031,51 @@ class BlueprintImageService:
         if self._tracker:
             vision_svc.set_tracking_context(self._tracker, self._user_id, self._org_id)
 
-        # Create separate Scene Director service (independent rate limiter)
-        scene_svc = GeminiService(model="gemini-2.5-flash")
-        if self._tracker:
-            scene_svc.set_tracking_context(self._tracker, self._user_id, self._org_id)
+        # Image Strategy Pipeline (replaces Scene Director when full context available)
+        if product_id and brand_profile:
+            from viraltracker.services.landing_page_analysis.image_strategy_service import (
+                ImageStrategyService,
+            )
 
-        # Run Vision analysis and Scene Direction in parallel — zero added latency
-        await asyncio.gather(
-            self.analyze_original_images(slots, vision_svc, progress_cb),
-            self.direct_scenes_for_slots(slots, scene_svc, product_info, persona),
-        )
+            strategy_svc = ImageStrategyService(
+                supabase=self._supabase if hasattr(self, '_supabase') else self.supabase,
+                org_id=self._org_id,
+            )
+            if self._tracker:
+                strategy_svc.set_tracking_context(
+                    self._tracker, self._user_id, self._org_id
+                )
+
+            # Step 1 (playbook, cached) || Vision in parallel
+            playbook_coro = strategy_svc.get_or_create_visual_playbook(
+                product_id, brand_profile
+            )
+            vision_coro = self.analyze_original_images(slots, vision_svc, progress_cb)
+            playbook, _ = await asyncio.gather(playbook_coro, vision_coro)
+
+            # Step 2 (needs both Vision results and playbook) + deterministic QA
+            await strategy_svc.run_narrative_and_validate(
+                slots=slots,
+                playbook=playbook,
+                brand_profile=brand_profile,
+                persona=persona,
+                blueprint_sections=blueprint_sections,
+                progress_cb=progress_cb,
+            )
+        elif product_info:
+            # Fallback: old Scene Director + Vision in parallel
+            scene_svc = GeminiService(model="gemini-2.5-flash")
+            if self._tracker:
+                scene_svc.set_tracking_context(
+                    self._tracker, self._user_id, self._org_id
+                )
+            await asyncio.gather(
+                self.analyze_original_images(slots, vision_svc, progress_cb),
+                self.direct_scenes_for_slots(slots, scene_svc, product_info, persona),
+            )
+        else:
+            # No product context — Vision analysis only
+            await self.analyze_original_images(slots, vision_svc, progress_cb)
 
         # Build and save analysis meta
         meta = {}
