@@ -1308,7 +1308,7 @@ def _render_qa_controls(record: dict, record_type: str, service, org_id: str):
             st.rerun()
 
 
-def _render_share_controls(blueprint: dict, bp_service, blueprint_id: str):
+def _render_share_controls(blueprint: dict, bp_service, blueprint_id: str, key_suffix: str = ""):
     """Render public share link controls for a completed blueprint."""
     import os
     app_base_url = os.environ.get("APP_BASE_URL", "").rstrip("/")
@@ -1320,15 +1320,16 @@ def _render_share_controls(blueprint: dict, bp_service, blueprint_id: str):
 
     share_enabled = blueprint.get("public_share_enabled", False)
     share_token = blueprint.get("public_share_token", "")
+    ks = f"_{key_suffix}" if key_suffix else ""
 
     if share_enabled and share_token:
         share_url = f"{app_base_url}/Public_Blueprint?token={share_token}"
         st.code(share_url, language=None)
-        if st.button("Disable Sharing", key=f"share_disable_{blueprint_id}"):
+        if st.button("Disable Sharing", key=f"share_disable_{blueprint_id}{ks}"):
             bp_service.disable_share_link(blueprint_id)
             st.rerun()
     else:
-        if st.button("Generate Share Link", key=f"share_gen_{blueprint_id}"):
+        if st.button("Generate Share Link", key=f"share_gen_{blueprint_id}{ks}"):
             token = bp_service.generate_share_link(blueprint_id)
             share_url = f"{app_base_url}/Public_Blueprint?token={token}"
             st.code(share_url, language=None)
@@ -2824,7 +2825,7 @@ def _render_blueprint_history(org_id: str, brand_id: str):
             if (
                 full.get("blueprint_mockup_html_with_images") or full.get("blueprint_mockup_html")
             ):
-                _render_share_controls(full, bp_service, bp["id"])
+                _render_share_controls(full, bp_service, bp["id"], key_suffix="hist")
 
 
 # ---------------------------------------------------------------------------
