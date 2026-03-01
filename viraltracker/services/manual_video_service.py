@@ -36,19 +36,31 @@ class ManualVideoService:
     def __init__(self):
         self.supabase = get_supabase_client()
 
+    # Map Kling aspect ratios to pixel dimensions for frame generation
+    ASPECT_RATIO_DIMENSIONS = {
+        "9:16": (1080, 1920),
+        "16:9": (1920, 1080),
+        "1:1": (1080, 1080),
+    }
+
     async def generate_frame(
         self,
         brand_id: str,
         prompt: str,
         avatar_id: Optional[str] = None,
+        aspect_ratio: str = "9:16",
     ) -> Dict[str, Any]:
         """
         Generate a keyframe image using Gemini with optional avatar reference.
+
+        The image is generated at the correct aspect ratio so Kling Omni
+        uses it properly when assigned as a first/end frame.
 
         Args:
             brand_id: Brand UUID string
             prompt: Image generation prompt
             avatar_id: Optional avatar UUID for reference consistency
+            aspect_ratio: Target aspect ratio ("9:16", "16:9", "1:1")
 
         Returns:
             Dict with id, storage_path, signed_url, prompt, created_at
@@ -68,9 +80,17 @@ class ManualVideoService:
             if ref_bytes:
                 ref_images_b64 = [base64.b64encode(ref_bytes).decode("utf-8")]
 
+        # Add aspect ratio instruction to prompt so Gemini generates the right shape
+        w, h = self.ASPECT_RATIO_DIMENSIONS.get(aspect_ratio, (1080, 1920))
+        ratio_prompt = (
+            f"{prompt}\n\n"
+            f"IMPORTANT: Generate this image in {aspect_ratio} aspect ratio "
+            f"({w}x{h} pixels, {'portrait/vertical' if h > w else 'landscape/horizontal' if w > h else 'square'} orientation)."
+        )
+
         # Generate via Gemini
         result_b64 = await gemini_svc.generate_image(
-            prompt=prompt,
+            prompt=ratio_prompt,
             reference_images=ref_images_b64,
             temperature=0.4,
             image_size="2K",

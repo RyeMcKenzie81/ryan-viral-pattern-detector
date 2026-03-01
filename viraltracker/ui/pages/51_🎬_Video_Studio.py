@@ -768,6 +768,7 @@ with tab_manual:
                         brand_id=brand_id,
                         prompt=frame_prompt.strip(),
                         avatar_id=manual_avatar_id,
+                        aspect_ratio=manual_aspect,
                     ))
                     st.session_state.vs_manual_frame_gallery.append(result)
                     st.success("Frame generated!")
@@ -786,7 +787,7 @@ with tab_manual:
                 with cols[i % 4]:
                     url = frame.get("signed_url", "")
                     if url:
-                        st.image(url, caption=f"#{i+1}", use_container_width=True)
+                        st.image(url, caption=f"#{i+1}", width="stretch")
                     else:
                         st.caption(f"#{i+1} (no preview)")
                     st.caption(frame.get("prompt", "")[:40] + "...")
@@ -898,6 +899,7 @@ with tab_manual:
                                 brand_id=brand_id,
                                 prompt=quick_prompt.strip(),
                                 avatar_id=manual_avatar_id,
+                                aspect_ratio=manual_aspect,
                             ))
                             st.session_state.vs_manual_frame_gallery.append(result)
                             st.success("Frame added to gallery!")
