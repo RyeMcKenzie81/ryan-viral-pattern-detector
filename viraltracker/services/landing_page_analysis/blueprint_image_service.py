@@ -993,9 +993,13 @@ class BlueprintImageService:
                     {"content-type": "image/png"},
                 )
 
-                # Get public URL
-                public_url_resp = bucket.get_public_url(file_path)
-                slot.storage_url = public_url_resp
+                # Get signed URL (bucket is not public, so get_public_url returns 400)
+                signed = bucket.create_signed_url(file_path, 60 * 60 * 24 * 365)  # 1 year
+                slot.storage_url = signed.get("signedURL", "") if isinstance(signed, dict) else signed
+                if not slot.storage_url:
+                    logger.error(f"Failed to get signed URL for slot {slot.index}: {signed}")
+                    slot.error = "Failed to generate signed URL"
+                    continue
 
                 replacements[slot.index] = slot.storage_url
             except Exception as e:
@@ -1005,7 +1009,18 @@ class BlueprintImageService:
             meta[str(slot.index)] = self._build_slot_meta(slot, storage_path=file_path)
 
         # Replace image sources in HTML
+        logger.info(
+            f"Image replacement: {len(replacements)} replacements to apply, "
+            f"indices={sorted(replacements.keys())}, "
+            f"html_len={len(html)}"
+        )
         new_html = replace_image_sources(html, replacements) if replacements else html
+        if replacements:
+            logger.info(
+                f"Image replacement done: input_len={len(html)}, "
+                f"output_len={len(new_html)}, "
+                f"changed={html != new_html}"
+            )
 
         return new_html, meta
 
@@ -1316,7 +1331,8 @@ class BlueprintImageService:
                 img_bytes,
                 {"content-type": "image/png"},
             )
-            slot.storage_url = bucket.get_public_url(file_path)
+            signed = bucket.create_signed_url(file_path, 60 * 60 * 24 * 365)  # 1 year
+            slot.storage_url = signed.get("signedURL", "") if isinstance(signed, dict) else signed
         except Exception as e:
             logger.error(f"Upload failed for regen slot {slot_index}: {e}")
             return existing_html, False
