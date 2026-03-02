@@ -461,12 +461,12 @@ def render_video_avatar_section(avatar, brand_id: str):
     st.markdown("---")
     st.markdown("**Step 1 (Optional): Upload Voice Sample**")
     st.caption(
-        "Upload a 3-8 second video of the person speaking to extract their voice. "
-        "If skipped, voice will be auto-generated from the calibration video."
+        "Upload a 5-30 second video of the person speaking clearly (one speaker). "
+        "If skipped, voice will be auto-created from the calibration video."
     )
 
     voice_file = st.file_uploader(
-        "Voice sample video (.mp4/.mov, 3-8s with speech)",
+        "Voice sample video (.mp4/.mov, 5-30s with clear speech)",
         type=["mp4", "mov"],
         key=f"voice_upload_{avatar.id}",
     )
@@ -533,12 +533,12 @@ def render_video_avatar_section(avatar, brand_id: str):
     st.markdown("---")
     st.markdown("**Alternative: Upload Video (Visual + Voice)**")
     st.caption(
-        "Upload a 3-8 second video of the person speaking. Both appearance "
+        "Upload a 5-30 second video of the person speaking clearly. Both appearance "
         "and voice will come from this video."
     )
 
     upload_video = st.file_uploader(
-        "Video file (.mp4/.mov, 3-8s, 1080p, 16:9 or 9:16)",
+        "Video file (.mp4/.mov, 5-30s, 1080p, 16:9 or 9:16)",
         type=["mp4", "mov"],
         key=f"video_upload_{avatar.id}",
     )

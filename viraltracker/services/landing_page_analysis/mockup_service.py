@@ -310,7 +310,9 @@ _ALLOWED_TAGS = [
 ]
 
 _ALLOWED_ATTRS = {
-    "*": ["class", "id", "style", "data-slot", "data-section", "data-pipeline", "role", "aria-label"],
+    "*": ["class", "id", "style", "data-slot", "data-section", "data-pipeline",
+          "data-listicle-prefix", "data-listicle-start", "data-listicle-count", "data-listicle-style",
+          "role", "aria-label"],
     "a": ["href", "target", "rel"],
     "link": ["href", "rel", "type", "crossorigin"],
     "img": [
@@ -754,11 +756,18 @@ class MockupService:
                     # 3. Map slots to blueprint sections
                     slot_sections = self._map_slots_to_sections(page_body, blueprint)
 
+                    # 3b. Extract pre-computed listicle data from surgery HTML
+                    listicle_from_html = (
+                        self._extract_listicle_from_html(rewritten_body)
+                        if self.is_surgery_mode else {}
+                    )
+
                     # 4. AI rewrite: JSON in, JSON out (no HTML sent to AI)
                     rewritten_map = self._rewrite_slots_for_brand(
                         slot_contents, slot_sections, blueprint, brand_profile,
                         slot_metadata=slot_metadata,
                         rewrite_strategy=rewrite_strategy,
+                        listicle_from_html=listicle_from_html,
                     )
 
                     # 5. Programmatic slot injection (deterministic, no AI risk)
@@ -1940,26 +1949,43 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
     _SLOT_REWRITE_PROMPT_BASE = (
         "You are an expert direct-response copywriter. You receive a structured JSON "
         "payload describing a landing page's text slots grouped by section, along with "
-        "brand data and strategic directions.\n\n"
-        "Your job: rewrite EVERY slot's text for the target brand.\n\n"
+        "comprehensive brand data, product details, and strategic directions.\n\n"
+        "## Your Mission\n"
+        "You are creating NEW landing page copy for the target brand. The `current` text "
+        "in each slot comes from a COMPETITOR page and serves only as a structural template "
+        "showing the slot's role and approximate length. Do NOT paraphrase the competitor copy. "
+        "Instead, write ORIGINAL content using the brand's actual product data, mechanism, "
+        "benefits, pain points, and testimonials provided in the payload.\n\n"
+        "## Content Sources (USE THESE)\n"
+        "- `brand.product` / `brand.benefits` / `brand.features`: the target product's real benefits and features\n"
+        "- `brand.mechanism`: how the product works (name, problem it solves, solution)\n"
+        "- `brand.ingredients`: real ingredients to reference\n"
+        "- `brand.pain_points` / `brand.desires`: audience pain points and goals\n"
+        "- `brand.testimonials` / `brand.transformation_quotes`: real customer quotes\n"
+        "- `brand.guarantee` / `brand.pricing` / `brand.results_timeline`: real offer details\n"
+        "- Each section's `copy_direction`: strategic guidance for that section\n"
+        "- Each section's `brand_data`: section-specific content mapping from the blueprint\n\n"
         "## Rules\n"
         "- Return ONLY the rewrites dict mapping slot_name -> new plain text.\n"
         "- EVERY input slot name MUST appear in your output. Missing slots = failure.\n"
         "- Values MUST be plain text only. NO HTML tags. NO markdown formatting.\n"
         "- NEVER use em dashes (\u2014) or en dashes (\u2013). Use commas, periods, colons, or semicolons.\n"
         "- Match the brand's voice and tone throughout.\n"
+        "- Use REAL data from the brand profile: real benefits, real ingredients, real mechanism.\n"
         "- Maintain congruence: every slot supports one cohesive argument across all sections.\n"
-        "- Never repeat a benefit, statistic, or emotional hook across sections.\n\n"
+        "- Never repeat a benefit, statistic, or emotional hook across sections.\n"
+        "- The competitor's `current` text shows the ROLE of each slot (headline, body, CTA), "
+        "not the content to keep. Write fresh copy that fills the same role.\n\n"
         "## Slot Type Guidelines\n"
-        "- headline: punchy and benefit-driven\n"
-        "- subheadline: expands on headline promise\n"
-        "- heading: section-specific benefit or transition\n"
-        "- body: persuasive copy matching section direction\n"
+        "- headline: punchy and benefit-driven, use brand's actual key benefit\n"
+        "- subheadline: expands on headline promise with brand-specific detail\n"
+        "- heading: section-specific benefit or transition using brand data\n"
+        "- body: persuasive copy using brand's mechanism, ingredients, or pain points\n"
         "- cta: action verb first (e.g., 'Get Your Free Sample')\n"
-        "- testimonial: use real customer quotes from brand data when available\n"
-        "- feature: specific benefit or ingredient highlight, concise\n"
-        "- list: concise list item, one clear benefit or point per item, match the tone of surrounding content\n"
-        "- badge/price/guarantee: concise, factual, trust-building\n\n"
+        "- testimonial: use REAL customer quotes from brand.testimonials or brand.transformation_quotes\n"
+        "- feature: specific benefit or ingredient from brand.features or brand.ingredients\n"
+        "- list: concise list item drawing from brand's real benefits or features\n"
+        "- badge/price/guarantee: use brand.guarantee, brand.pricing, brand.results_timeline\n\n"
         "## Numbered Prefix Preservation (Listicle Pages)\n"
         "When a slot includes a `prefix` field:\n"
         "- Start your rewrite with EXACTLY the value of `prefix`, followed by a space, then your new copy.\n"
@@ -2039,6 +2065,7 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
         brand_profile: Dict,
         slot_metadata: Optional[Dict[str, Dict]] = None,
         rewrite_strategy: str = "slot_constrained",
+        listicle_from_html: Optional[Dict] = None,
     ) -> Dict[str, str]:
         """AI rewrites slot text via structured JSON. Returns {slot_name: new_text}.
 
@@ -2051,6 +2078,7 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
             brand_profile: Full brand profile.
             slot_metadata: Optional {slot_name: {word_count, char_count}}.
             rewrite_strategy: "slot_constrained" (runtime) or "section_guided" (blueprint).
+            listicle_from_html: Pre-computed listicle data from S2 HTML attributes.
 
         All returned values are plain text, HTML-escaped, and dash-sanitized.
         """
@@ -2060,11 +2088,13 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
 
         if rewrite_strategy == "section_guided":
             config = self._build_blueprint_rewrite_config(
-                slot_contents, slot_sections, blueprint, brand_profile, slot_metadata
+                slot_contents, slot_sections, blueprint, brand_profile, slot_metadata,
+                listicle_from_html=listicle_from_html,
             )
         else:
             config = self._build_runtime_rewrite_config(
-                slot_contents, slot_sections, blueprint, brand_profile, slot_metadata
+                slot_contents, slot_sections, blueprint, brand_profile, slot_metadata,
+                listicle_from_html=listicle_from_html,
             )
         return self._execute_slot_rewrite_pipeline(config)
 
@@ -2076,16 +2106,33 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
         Returns (brand_data, page_strategy) tuple.
         """
         bb = brand_profile.get("brand_basics") or {}
+        prod = brand_profile.get("product") or {}
+        mech = brand_profile.get("mechanism") or {}
+        sp = brand_profile.get("social_proof") or {}
+        pp = brand_profile.get("pain_points") or {}
+        ov = brand_profile.get("offer_variant") or {}
         brand_data = {
             "name": bb.get("name", ""),
             "voice_tone": bb.get("voice_tone", bb.get("tone", "")),
-            "product": bb.get("product_name", bb.get("product", "")),
-            "benefits": bb.get("key_benefits", bb.get("benefits", [])),
-            "ingredients": bb.get("key_ingredients", bb.get("ingredients", [])),
-            "testimonials": bb.get("testimonials", []),
-            "statistics": bb.get("statistics", bb.get("stats", [])),
-            "guarantee": bb.get("guarantee", ""),
-            "offer": bb.get("offer", ""),
+            "description": bb.get("description", ""),
+            "product": prod.get("name", bb.get("product_name", "")),
+            "target_audience": prod.get("target_audience", ""),
+            "benefits": prod.get("key_benefits") or [],
+            "problems_solved": prod.get("key_problems_solved") or [],
+            "features": prod.get("features") or [],
+            "ingredients": brand_profile.get("ingredients") or [],
+            "mechanism": {
+                "name": mech.get("name", ""),
+                "problem": mech.get("problem", ""),
+                "solution": mech.get("solution", ""),
+            } if mech.get("name") else {},
+            "pain_points": pp.get("pain_points") or ov.get("pain_points") or [],
+            "desires": ov.get("desires_goals") or [],
+            "testimonials": sp.get("top_positive_quotes") or [],
+            "transformation_quotes": sp.get("transformation_quotes") or [],
+            "guarantee": (brand_profile.get("guarantee") or {}).get("text", ""),
+            "results_timeline": brand_profile.get("results_timeline") or [],
+            "pricing": brand_profile.get("pricing") or {},
         }
 
         rb = blueprint
@@ -2106,6 +2153,7 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
         blueprint: Dict,
         brand_profile: Dict,
         slot_metadata: Optional[Dict[str, Dict]] = None,
+        listicle_from_html: Optional[Dict] = None,
     ) -> "_SlotRewriteConfig":
         """Build config for runtime (slot_constrained) rewrite strategy.
 
@@ -2147,8 +2195,8 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
 
         ordered_sections = [section_groups[k] for k in sorted(section_groups.keys())]
 
-        # Detect listicle structure and inject prefix into slot payloads
-        listicle_data = self._detect_listicle_structure(slot_contents, slot_sections)
+        # Prefer pre-computed listicle data from S2 HTML; fall back to runtime detection
+        listicle_data = listicle_from_html or self._detect_listicle_structure(slot_contents, slot_sections)
         listicle_prefixes = listicle_data.get("prefixes", {})
         if listicle_prefixes:
             for g in ordered_sections:
@@ -2189,6 +2237,7 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
         blueprint: Dict,
         brand_profile: Dict,
         slot_metadata: Optional[Dict[str, Dict]] = None,
+        listicle_from_html: Optional[Dict] = None,
     ) -> "_SlotRewriteConfig":
         """Build config for blueprint (section_guided) rewrite strategy.
 
@@ -2248,8 +2297,8 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
             if sec_name in space_budgets:
                 group["space_budget"] = space_budgets[sec_name]
 
-        # Detect listicle structure and inject prefix into slot payloads
-        listicle_data = self._detect_listicle_structure(slot_contents, slot_sections)
+        # Prefer pre-computed listicle data from S2 HTML; fall back to runtime detection
+        listicle_data = listicle_from_html or self._detect_listicle_structure(slot_contents, slot_sections)
         listicle_prefixes = listicle_data.get("prefixes", {})
         if listicle_prefixes:
             for g in ordered_sections:
@@ -2300,6 +2349,51 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
     # Listicle Detection & Numbering Enforcement
     # ------------------------------------------------------------------
 
+    def _extract_listicle_from_html(self, html: str) -> Dict:
+        """Extract pre-computed listicle data from surgery HTML data-listicle-* attributes.
+
+        Reads data-listicle-prefix attributes injected by S2 element_classifier
+        and returns the same dict format as _detect_listicle_structure():
+            {"prefixes": {"heading-5": "1.", ...}, "total_count": N, "prefix_style": "numeric_dot"}
+
+        Returns {} if no data-listicle-* attributes found (non-surgery HTML).
+        """
+        from html.parser import HTMLParser as _HTMLParser
+
+        class _ListicleAttrReader(_HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.prefixes: Dict[str, str] = {}
+                self.prefix_style: Optional[str] = None
+
+            def handle_starttag(self, tag, attrs):
+                attr_dict = dict(attrs)
+                slot_name = attr_dict.get("data-slot", "")
+                listicle_prefix = attr_dict.get("data-listicle-prefix")
+                if slot_name and listicle_prefix:
+                    self.prefixes[slot_name] = listicle_prefix
+                listicle_style = attr_dict.get("data-listicle-style")
+                if listicle_style and self.prefix_style is None:
+                    self.prefix_style = listicle_style
+
+            def handle_startendtag(self, tag, attrs):
+                self.handle_starttag(tag, attrs)
+
+        reader = _ListicleAttrReader()
+        try:
+            reader.feed(html)
+        except Exception:
+            return {}
+
+        if not reader.prefixes:
+            return {}
+
+        return {
+            "prefixes": reader.prefixes,
+            "total_count": len(reader.prefixes),
+            "prefix_style": reader.prefix_style or "numeric_dot",
+        }
+
     # Matches ordinal prefixes like "3.", "3)", "3:", "#3", "Reason 3:", "Step 3."
     _LISTICLE_PREFIX_RE = re.compile(
         r'^(\d{1,2}[\.\)\:]\s'
@@ -2338,6 +2432,11 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
     ) -> Dict:
         """Detect if page has listicle structure and extract prefix mapping.
 
+        Groups numbered headings by section to avoid interleaving when a page
+        has multiple independent listicle sequences (e.g., sections A has items
+        1-5 and section B has items 1-8). Each section is numbered independently
+        and the sequences are concatenated in flow_order.
+
         Returns dict with:
             prefixes: {slot_name: "3." } mapping for heading slots
             total_count: int or None (extracted from headline)
@@ -2345,49 +2444,53 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
         Returns empty dict if not a listicle.
         """
         heading_types = {"heading", "subheadline"}
-        heading_slots = []
+
+        # Group numbered headings by section
+        section_matches: Dict[str, list] = {}
+        section_flow_order: Dict[str, int] = {}
+        all_heading_count = 0
 
         for slot_name, content in slot_contents.items():
             ctx = slot_sections.get(slot_name, {})
             slot_type = ctx.get("slot_type", self._infer_slot_type(slot_name))
-            if slot_type in heading_types:
-                heading_slots.append((slot_name, content, slot_type))
+            if slot_type not in heading_types:
+                continue
+            all_heading_count += 1
 
-        if len(heading_slots) < 2:
-            return {}
-
-        # Check each heading against listicle pattern
-        matches = []
-        for slot_name, content, slot_type in heading_slots:
             text = content.strip()
-            # Skip false positives
             if self._LISTICLE_FALSE_POSITIVE_RE.match(text):
                 continue
             m = self._LISTICLE_PREFIX_RE.match(text)
-            if m:
-                prefix_str = m.group(0).rstrip()
-                ordinal_m = self._LISTICLE_ORDINAL_RE.search(prefix_str)
-                if ordinal_m:
-                    ordinal = int(ordinal_m.group(1))
-                    # Reject ordinals > 20 (likely not a listicle item)
-                    if ordinal <= 20:
-                        matches.append({
-                            "slot_name": slot_name,
-                            "prefix": prefix_str,
-                            "ordinal": ordinal,
-                            "content": text,
-                        })
+            if not m:
+                continue
+            prefix_str = m.group(0).rstrip()
+            ordinal_m = self._LISTICLE_ORDINAL_RE.search(prefix_str)
+            if not ordinal_m:
+                continue
+            ordinal = int(ordinal_m.group(1))
+            if ordinal > 20:
+                continue
 
-        # Need 3+ heading matches to be a listicle (or 2 if total headings <= 3)
-        min_matches = 2 if len(heading_slots) <= 3 else 3
-        if len(matches) < min_matches:
+            sec_key = ctx.get("section_name", "global")
+            flow = ctx.get("flow_order", 999)
+            if sec_key not in section_matches:
+                section_matches[sec_key] = []
+                section_flow_order[sec_key] = flow
+            section_matches[sec_key].append({
+                "slot_name": slot_name,
+                "prefix": prefix_str,
+                "ordinal": ordinal,
+                "content": text,
+            })
+
+        # Flatten all matches for threshold check
+        all_matches = [m for group in section_matches.values() for m in group]
+        min_matches = 2 if all_heading_count <= 3 else 3
+        if len(all_matches) < min_matches:
             return {}
 
-        # Sort by ordinal to assign sequential numbers
-        matches.sort(key=lambda x: x["ordinal"])
-
         # Detect prefix style from the first match
-        first_prefix = matches[0]["prefix"]
+        first_prefix = all_matches[0]["prefix"]
         if first_prefix.startswith("#"):
             prefix_style = "hash"
         elif re.match(r'(?:Reason|Step|Tip|Way|Thing|Secret|Benefit|Fact|Sign|Mistake)',
@@ -2400,28 +2503,32 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
         else:
             prefix_style = "numeric_dot"
 
-        # Build prefix mapping with corrected sequential numbering
+        # Number each section independently, then concatenate in flow_order
+        ordered_sections = sorted(section_matches.keys(),
+                                  key=lambda s: section_flow_order[s])
         prefixes = {}
-        for idx, match in enumerate(matches, start=1):
-            # Reconstruct prefix with correct ordinal
-            old_prefix = match["prefix"]
-            correct_ordinal = str(idx)
-            if prefix_style == "hash":
-                prefixes[match["slot_name"]] = f"#{correct_ordinal}"
-            elif prefix_style == "word_prefix":
-                # Extract the word part (e.g., "Reason")
-                word_m = re.match(r'([A-Za-z]+)', old_prefix)
-                word = word_m.group(1) if word_m else "Reason"
-                # Preserve the separator (. or : or ))
-                sep_m = re.search(r'[\.\)\:]', old_prefix)
-                sep = sep_m.group(0) if sep_m else "."
-                prefixes[match["slot_name"]] = f"{word} {correct_ordinal}{sep}"
-            elif prefix_style == "numeric_paren":
-                prefixes[match["slot_name"]] = f"{correct_ordinal})"
-            elif prefix_style == "numeric_colon":
-                prefixes[match["slot_name"]] = f"{correct_ordinal}:"
-            else:
-                prefixes[match["slot_name"]] = f"{correct_ordinal}."
+        running_ordinal = 0
+        for sec_key in ordered_sections:
+            group = section_matches[sec_key]
+            group.sort(key=lambda x: x["ordinal"])
+            for match in group:
+                running_ordinal += 1
+                correct_ordinal = str(running_ordinal)
+                old_prefix = match["prefix"]
+                if prefix_style == "hash":
+                    prefixes[match["slot_name"]] = f"#{correct_ordinal}"
+                elif prefix_style == "word_prefix":
+                    word_m = re.match(r'([A-Za-z]+)', old_prefix)
+                    word = word_m.group(1) if word_m else "Reason"
+                    sep_m = re.search(r'[\.\)\:]', old_prefix)
+                    sep = sep_m.group(0) if sep_m else "."
+                    prefixes[match["slot_name"]] = f"{word} {correct_ordinal}{sep}"
+                elif prefix_style == "numeric_paren":
+                    prefixes[match["slot_name"]] = f"{correct_ordinal})"
+                elif prefix_style == "numeric_colon":
+                    prefixes[match["slot_name"]] = f"{correct_ordinal}:"
+                else:
+                    prefixes[match["slot_name"]] = f"{correct_ordinal}."
 
         # Try to extract total count from headline/subheadline
         total_count = None
@@ -2435,7 +2542,8 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
                     break
 
         logger.info(
-            f"Listicle detected: {len(prefixes)} items, "
+            f"Listicle detected: {len(prefixes)} items across "
+            f"{len(ordered_sections)} sections, "
             f"style={prefix_style}, total_count={total_count}"
         )
         return {

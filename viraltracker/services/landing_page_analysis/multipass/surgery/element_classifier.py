@@ -43,6 +43,34 @@ _HIDDEN_STYLE_RE = re.compile(
     re.IGNORECASE,
 )
 
+# ---------------------------------------------------------------------------
+# Listicle detection patterns (authoritative copies; mockup_service has
+# identical patterns for the runtime fallback path on non-surgery pages)
+# ---------------------------------------------------------------------------
+
+# Matches ordinal prefixes like "3.", "3)", "3:", "#3", "Reason 3:", "Step 3."
+_LISTICLE_PREFIX_RE = re.compile(
+    r'^(\d{1,2}[\.\)\:]\s'
+    r'|#\d{1,2}\s'
+    r'|(?:Reason|Step|Tip|Way|Thing|Secret|Benefit|Fact|Sign|Mistake)\s+\d{1,2}[\.\)\:]\s)',
+    re.IGNORECASE,
+)
+
+# False positives: "100% Natural", "24/7 Support", "500mg", "3x Faster"
+_LISTICLE_FALSE_POSITIVE_RE = re.compile(
+    r'^\d{1,3}\s*(%|mg|ml|g|oz|lb|x\b|k\b|,\d|/\d|hour|day|week|minute)',
+    re.IGNORECASE,
+)
+
+# Extracts the leading ordinal number from a prefix match
+_LISTICLE_ORDINAL_RE = re.compile(r'(\d{1,2})')
+
+# Extracts total count from headline text: "7 Reasons...", "Top 10 Tips..."
+_LISTICLE_COUNT_RE = re.compile(
+    r'(?:^|\s)(\d{1,2})\s+(?:Reason|Step|Tip|Way|Thing|Secret|Benefit|Fact|Sign|Mistake)s?\b',
+    re.IGNORECASE,
+)
+
 
 def _is_visually_hidden(attrs_str: str) -> bool:
     """Check if an element's attributes indicate it is visually hidden.
@@ -104,6 +132,7 @@ class ElementClassifier:
         stats["total_slots"] = det_stats["slot_count"]
         stats["has_headline"] = det_stats["has_headline"]
         stats["has_cta"] = det_stats["has_cta"]
+        stats["listicle"] = det_stats.get("listicle", {})
 
         # Stage 2B: LLM refinement (optional, skip if no Gemini service)
         # Skip LLM if deterministic already found enough slots
@@ -241,6 +270,10 @@ class ElementClassifier:
         html = self._slot_blockquotes(html)
         html = self._slot_list_items(html)
 
+        # Detect and tag listicle structure per-section (BEFORE strip_cross_section_slots
+        # so all data-slot attributes are intact for grouping)
+        html, listicle_info = self._detect_and_tag_listicles(html)
+
         # Strip cross-section slots (must run after all slot assignment)
         html = self._strip_cross_section_slots(html)
 
@@ -250,6 +283,7 @@ class ElementClassifier:
             "slot_count": slot_count,
             "has_headline": has_headline,
             "has_cta": has_cta,
+            "listicle": listicle_info,
         }
 
     def _slot_blockquotes(self, html: str) -> str:
@@ -338,6 +372,248 @@ class ElementClassifier:
         )
 
         return html
+
+    def _detect_and_tag_listicles(self, html: str) -> Tuple[str, dict]:
+        """Detect listicle structure per-section and inject data-listicle-* attributes.
+
+        Runs during S2A BEFORE _strip_cross_section_slots so all data-slot
+        attributes are still intact.  Each section's listicle items are numbered
+        independently starting from 1, avoiding the interleaving bug that occurs
+        when numbering is global across sections.
+
+        Section assignment uses **nearest preceding section** in document order
+        rather than strict DOM nesting, because headings are often siblings of
+        section containers rather than children.
+
+        Returns (modified_html, listicle_stats) where listicle_stats contains:
+            is_listicle, sections, total_items, prefix_style
+        Returns ({}, empty stats) if no listicle detected.
+        """
+        # -----------------------------------------------------------
+        # Phase 1: Parse HTML to collect sections and heading slots
+        #          in document order (position-based section assignment)
+        # -----------------------------------------------------------
+
+        class _PositionalCollector(HTMLParser):
+            """Collect sections and heading slots with document-order positions."""
+
+            def __init__(self):
+                super().__init__()
+                self._depth = 0
+                # Ordered list of (position_index, "section", section_name)
+                # or (position_index, "heading", {slot_name, tag, depth})
+                self.events: List[Tuple[int, str, Any]] = []
+                self._event_counter = 0
+                self._current_heading: Optional[dict] = None
+                self._heading_inner: List[str] = []
+
+            def handle_starttag(self, tag, attrs):
+                if tag in _VOID_ELEMENTS:
+                    return
+                self._depth += 1
+                attr_dict = dict(attrs)
+
+                section_name = attr_dict.get("data-section")
+                if section_name:
+                    self._event_counter += 1
+                    self.events.append((self._event_counter, "section", section_name))
+
+                slot_name = attr_dict.get("data-slot", "")
+                if slot_name and any(slot_name.startswith(p) for p in ("heading-", "subheadline")):
+                    self._current_heading = {
+                        "slot_name": slot_name,
+                        "tag": tag,
+                        "depth": self._depth,
+                    }
+                    self._heading_inner = []
+
+            def handle_endtag(self, tag):
+                if tag in _VOID_ELEMENTS:
+                    return
+                if (self._current_heading
+                        and tag == self._current_heading["tag"]
+                        and self._depth == self._current_heading["depth"]):
+                    text = re.sub(r'<[^>]+>', '', ''.join(self._heading_inner)).strip()
+                    text = ' '.join(text.split())
+                    self._event_counter += 1
+                    self.events.append((self._event_counter, "heading", {
+                        "slot_name": self._current_heading["slot_name"],
+                        "text": text,
+                    }))
+                    self._current_heading = None
+                    self._heading_inner = []
+                self._depth -= 1
+
+            def handle_data(self, data):
+                if self._current_heading is not None:
+                    self._heading_inner.append(data)
+
+            def handle_startendtag(self, tag, attrs):
+                pass
+
+        collector = _PositionalCollector()
+        try:
+            collector.feed(html)
+        except Exception:
+            return html, {}
+
+        if not collector.events:
+            return html, {}
+
+        # -----------------------------------------------------------
+        # Phase 1b: Assign each heading to nearest preceding section
+        # -----------------------------------------------------------
+        current_section: Optional[str] = None
+        headings: List[dict] = []
+
+        for _, event_type, payload in collector.events:
+            if event_type == "section":
+                current_section = payload
+            elif event_type == "heading":
+                headings.append({
+                    "slot_name": payload["slot_name"],
+                    "text": payload["text"],
+                    "section": current_section,
+                })
+
+        if not headings:
+            return html, {}
+
+        # -----------------------------------------------------------
+        # Phase 2: Group headings by section and detect listicle pattern
+        # -----------------------------------------------------------
+        section_matches: Dict[str, list] = {}
+        all_heading_count = 0
+        seen_keys: set = set()
+
+        for h in headings:
+            sec = h.get("section") or "_pre"
+            all_heading_count += 1
+            text = h["text"]
+
+            if _LISTICLE_FALSE_POSITIVE_RE.match(text):
+                continue
+            m = _LISTICLE_PREFIX_RE.match(text)
+            if not m:
+                continue
+            prefix_str = m.group(0).rstrip()
+            ordinal_m = _LISTICLE_ORDINAL_RE.search(prefix_str)
+            if not ordinal_m:
+                continue
+            ordinal = int(ordinal_m.group(1))
+            if ordinal > 20:
+                continue
+
+            # Deduplicate by (ordinal, text[:50]) within section
+            dedup_key = (sec, ordinal, text[:50])
+            if dedup_key in seen_keys:
+                continue
+            seen_keys.add(dedup_key)
+
+            if sec not in section_matches:
+                section_matches[sec] = []
+            section_matches[sec].append({
+                "slot_name": h["slot_name"],
+                "prefix": prefix_str,
+                "ordinal": ordinal,
+                "text": text,
+            })
+
+        # Threshold check
+        all_matches = [m for group in section_matches.values() for m in group]
+        min_matches = 2 if all_heading_count <= 3 else 3
+        if len(all_matches) < min_matches:
+            return html, {}
+
+        # Detect prefix style from first match
+        first_prefix = all_matches[0]["prefix"]
+        if first_prefix.startswith("#"):
+            prefix_style = "hash"
+        elif re.match(r'(?:Reason|Step|Tip|Way|Thing|Secret|Benefit|Fact|Sign|Mistake)',
+                       first_prefix, re.IGNORECASE):
+            prefix_style = "word_prefix"
+        elif ")" in first_prefix:
+            prefix_style = "numeric_paren"
+        elif ":" in first_prefix:
+            prefix_style = "numeric_colon"
+        else:
+            prefix_style = "numeric_dot"
+
+        # -----------------------------------------------------------
+        # Phase 3: Number each section independently starting from 1
+        # -----------------------------------------------------------
+        # slot_name -> assigned prefix string
+        slot_prefixes: Dict[str, str] = {}
+        section_stats: Dict[str, dict] = {}
+        total_items = 0
+
+        for sec_key, group in section_matches.items():
+            group.sort(key=lambda x: x["ordinal"])
+            section_start = 1
+            section_count = len(group)
+            total_items += section_count
+
+            for i, match in enumerate(group, start=section_start):
+                correct_ordinal = str(i)
+                old_prefix = match["prefix"]
+                if prefix_style == "hash":
+                    slot_prefixes[match["slot_name"]] = f"#{correct_ordinal}"
+                elif prefix_style == "word_prefix":
+                    word_m = re.match(r'([A-Za-z]+)', old_prefix)
+                    word = word_m.group(1) if word_m else "Reason"
+                    sep_m = re.search(r'[\.\)\:]', old_prefix)
+                    sep = sep_m.group(0) if sep_m else "."
+                    slot_prefixes[match["slot_name"]] = f"{word} {correct_ordinal}{sep}"
+                elif prefix_style == "numeric_paren":
+                    slot_prefixes[match["slot_name"]] = f"{correct_ordinal})"
+                elif prefix_style == "numeric_colon":
+                    slot_prefixes[match["slot_name"]] = f"{correct_ordinal}:"
+                else:
+                    slot_prefixes[match["slot_name"]] = f"{correct_ordinal}."
+
+            section_stats[sec_key] = {
+                "start": section_start,
+                "count": section_count,
+                "style": prefix_style,
+            }
+
+        # -----------------------------------------------------------
+        # Phase 4: Inject data-listicle-* attributes into HTML
+        # -----------------------------------------------------------
+        # 4a. Add data-listicle-prefix on heading elements (before the closing >)
+        for slot_name, prefix_val in slot_prefixes.items():
+            escaped_slot = re.escape(slot_name)
+            # Match opening tag with this data-slot value and inject data-listicle-prefix
+            html = re.sub(
+                rf'(<[^>]*data-slot="{escaped_slot}"[^>]*?)(\s*/?>)',
+                rf'\1 data-listicle-prefix="{prefix_val}"\2',
+                html,
+                count=1,
+            )
+
+        # 4b. Add data-listicle-start, data-listicle-count, data-listicle-style on section containers
+        for sec_key, stats in section_stats.items():
+            escaped_sec = re.escape(sec_key)
+            html = re.sub(
+                rf'(<[^>]*data-section="{escaped_sec}"[^>]*?)(\s*/?>)',
+                rf'\1 data-listicle-start="{stats["start"]}" data-listicle-count="{stats["count"]}" data-listicle-style="{stats["style"]}"\2',
+                html,
+                count=1,
+            )
+
+        listicle_info = {
+            "is_listicle": True,
+            "sections": section_stats,
+            "total_items": total_items,
+            "prefix_style": prefix_style,
+        }
+
+        logger.info(
+            f"S2 listicle tagged: {total_items} items across "
+            f"{len(section_stats)} sections, style={prefix_style}"
+        )
+
+        return html, listicle_info
 
     def _strip_cross_section_slots(self, html: str) -> str:
         """Remove data-slot attributes from elements whose subtree spans sections.
