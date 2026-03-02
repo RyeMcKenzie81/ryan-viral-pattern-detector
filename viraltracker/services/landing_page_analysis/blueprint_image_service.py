@@ -10,6 +10,7 @@ Each image slot tracks its own metadata for selective per-image regeneration.
 
 import asyncio
 import base64
+import html as _html_module
 import json
 import logging
 import time
@@ -176,70 +177,23 @@ class _ImageContextExtractor(HTMLParser):
 
 
 class _SrcReplacer(HTMLParser):
-    """Replace <img> src attributes by DOM-order index."""
+    """Replace <img> src attributes by DOM-order index.
+
+    When an <img> inside a <picture> is replaced, the sibling <source>
+    elements are dropped so the browser uses the new src instead of the
+    original srcset URLs.
+    """
 
     def __init__(self, replacements: Dict[int, str]):
-        super().__init__()
+        super().__init__(convert_charrefs=False)
         self._replacements = replacements
         self._img_index = 0
         self._output_parts: List[str] = []
+        # <picture> buffering: collect <source> tags until we see the <img>
+        self._in_picture = False
+        self._picture_buffer: List[str] = []
 
-    def handle_starttag(self, tag: str, attrs: list):
-        if tag == "img":
-            if self._img_index in self._replacements:
-                # Rebuild <img> with new src, preserving all other attrs
-                new_attrs = []
-                for name, value in attrs:
-                    if name == "src":
-                        new_attrs.append(("src", self._replacements[self._img_index]))
-                    else:
-                        new_attrs.append((name, value))
-                attr_str = " ".join(
-                    f'{n}="{v}"' if v is not None else n for n, v in new_attrs
-                )
-                self._output_parts.append(f"<img {attr_str}>")
-            else:
-                self._output_parts.append(self._reconstruct_tag(tag, attrs))
-            self._img_index += 1
-        else:
-            self._output_parts.append(self._reconstruct_tag(tag, attrs))
-
-    def handle_endtag(self, tag: str):
-        self._output_parts.append(f"</{tag}>")
-
-    def handle_data(self, data: str):
-        self._output_parts.append(data)
-
-    def handle_startendtag(self, tag: str, attrs: list):
-        if tag == "img":
-            if self._img_index in self._replacements:
-                new_attrs = []
-                for name, value in attrs:
-                    if name == "src":
-                        new_attrs.append(("src", self._replacements[self._img_index]))
-                    else:
-                        new_attrs.append((name, value))
-                attr_str = " ".join(
-                    f'{n}="{v}"' if v is not None else n for n, v in new_attrs
-                )
-                self._output_parts.append(f"<img {attr_str} />")
-            else:
-                self._output_parts.append(self._reconstruct_tag(tag, attrs, self_closing=True))
-            self._img_index += 1
-        else:
-            self._output_parts.append(self._reconstruct_tag(tag, attrs, self_closing=True))
-
-    def handle_comment(self, data: str):
-        self._output_parts.append(f"<!--{data}-->")
-
-    def handle_decl(self, decl: str):
-        self._output_parts.append(f"<!{decl}>")
-
-    def handle_entityref(self, name: str):
-        self._output_parts.append(f"&{name};")
-
-    def handle_charref(self, name: str):
-        self._output_parts.append(f"&#{name};")
+    # -- helpers -----------------------------------------------------------
 
     @staticmethod
     def _reconstruct_tag(tag: str, attrs: list, self_closing: bool = False) -> str:
@@ -248,12 +202,114 @@ class _SrcReplacer(HTMLParser):
             parts = []
             for name, value in attrs:
                 if value is not None:
-                    parts.append(f'{name}="{value}"')
+                    parts.append(f'{name}="{_html_module.escape(value, quote=True)}"')
                 else:
                     parts.append(name)
             attr_str = " " + " ".join(parts)
         close = " /" if self_closing else ""
         return f"<{tag}{attr_str}{close}>"
+
+    def _build_replaced_img(self, attrs: list, self_closing: bool = False) -> str:
+        """Build an <img> tag with the replacement src for the current index."""
+        new_attrs = []
+        for name, value in attrs:
+            if name == "src":
+                new_attrs.append(("src", self._replacements[self._img_index]))
+            elif name == "srcset":
+                continue  # drop srcset on replaced <img> too
+            else:
+                new_attrs.append((name, value))
+        attr_str = " ".join(
+            f'{n}="{_html_module.escape(v, quote=True)}"' if v is not None else n
+            for n, v in new_attrs
+        )
+        close = " /" if self_closing else ""
+        return f"<img {attr_str}{close}>"
+
+    def _flush_picture_buffer(self):
+        """Emit buffered <source> tags (used when <img> is NOT replaced)."""
+        self._output_parts.extend(self._picture_buffer)
+        self._picture_buffer = []
+
+    def _drop_picture_buffer(self):
+        """Discard buffered <source> tags (used when <img> IS replaced)."""
+        self._picture_buffer = []
+
+    def _emit(self, html: str):
+        """Append to output, respecting picture buffering for <source> tags."""
+        self._output_parts.append(html)
+
+    # -- HTMLParser callbacks ----------------------------------------------
+
+    def handle_starttag(self, tag: str, attrs: list):
+        if tag == "picture":
+            self._in_picture = True
+            self._picture_buffer = []
+            self._emit(self._reconstruct_tag(tag, attrs))
+            return
+
+        if tag == "source" and self._in_picture:
+            # Buffer <source> — we decide whether to keep or drop at <img>
+            self._picture_buffer.append(self._reconstruct_tag(tag, attrs))
+            return
+
+        if tag == "img":
+            if self._img_index in self._replacements:
+                if self._in_picture:
+                    self._drop_picture_buffer()
+                self._emit(self._build_replaced_img(attrs, self_closing=False))
+            else:
+                if self._in_picture:
+                    self._flush_picture_buffer()
+                self._emit(self._reconstruct_tag(tag, attrs))
+            self._img_index += 1
+            return
+
+        self._emit(self._reconstruct_tag(tag, attrs))
+
+    def handle_endtag(self, tag: str):
+        if tag == "picture":
+            self._flush_picture_buffer()  # flush any remaining
+            self._in_picture = False
+        self._emit(f"</{tag}>")
+
+    def handle_data(self, data: str):
+        if self._in_picture and self._picture_buffer:
+            # Whitespace/text between <source> tags — buffer it too
+            self._picture_buffer.append(data)
+        else:
+            self._emit(data)
+
+    def handle_startendtag(self, tag: str, attrs: list):
+        if tag == "source" and self._in_picture:
+            self._picture_buffer.append(self._reconstruct_tag(tag, attrs, self_closing=True))
+            return
+
+        if tag == "img":
+            if self._img_index in self._replacements:
+                if self._in_picture:
+                    self._drop_picture_buffer()
+                self._emit(self._build_replaced_img(attrs, self_closing=True))
+            else:
+                if self._in_picture:
+                    self._flush_picture_buffer()
+                self._emit(self._reconstruct_tag(tag, attrs, self_closing=True))
+            self._img_index += 1
+            return
+
+        self._emit(self._reconstruct_tag(tag, attrs, self_closing=True))
+
+    def handle_comment(self, data: str):
+        self._emit(f"<!--{data}-->")
+
+    def handle_decl(self, decl: str):
+        self._emit(f"<!{decl}>")
+
+    def handle_entityref(self, name: str):
+        self._emit(f"&{name};")
+
+    def handle_charref(self, name: str):
+        self._emit(f"&#{name};")
 
     def get_output(self) -> str:
         return "".join(self._output_parts)
@@ -993,13 +1049,8 @@ class BlueprintImageService:
                     {"content-type": "image/png"},
                 )
 
-                # Get signed URL (bucket is not public, so get_public_url returns 400)
-                signed = bucket.create_signed_url(file_path, 60 * 60 * 24 * 365)  # 1 year
-                slot.storage_url = signed.get("signedURL", "") if isinstance(signed, dict) else signed
-                if not slot.storage_url:
-                    logger.error(f"Failed to get signed URL for slot {slot.index}: {signed}")
-                    slot.error = "Failed to generate signed URL"
-                    continue
+                # Get public URL
+                slot.storage_url = bucket.get_public_url(file_path)
 
                 replacements[slot.index] = slot.storage_url
             except Exception as e:
@@ -1331,8 +1382,7 @@ class BlueprintImageService:
                 img_bytes,
                 {"content-type": "image/png"},
             )
-            signed = bucket.create_signed_url(file_path, 60 * 60 * 24 * 365)  # 1 year
-            slot.storage_url = signed.get("signedURL", "") if isinstance(signed, dict) else signed
+            slot.storage_url = bucket.get_public_url(file_path)
         except Exception as e:
             logger.error(f"Upload failed for regen slot {slot_index}: {e}")
             return existing_html, False
