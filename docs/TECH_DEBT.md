@@ -717,3 +717,21 @@ Implemented in commit `7d744cd` — 6-phase plan covering Brand Research "Create
 - `viraltracker/services/kling_video_service.py` — `generate_omni_video()` would need multi_shot params
 - `viraltracker/services/kling_models.py` — `OmniVideoRequest` already has `multi_shot` field
 
+### 30. Video Buckets — Product & Language Detection
+
+**Priority**: Medium
+**Complexity**: Medium
+**Added**: 2026-03-02
+
+**Context**: Video Buckets currently categorizes uploaded videos into content buckets via Gemini analysis, but doesn't detect which product or language the video is for. When a brand has multiple products or runs multilingual campaigns, videos from different products/languages get mixed together in the same buckets.
+
+**What's needed**:
+1. **Product detection** — During Gemini video analysis, identify which product the video features (match against brand's product catalog). Store as `product_id` on the categorized result.
+2. **Language detection** — Detect the spoken/text language of the video. Store as `language` on the categorized result.
+3. **Filtering UI** — Add product and language filters to the Results and Uploaded tabs so users can view videos for a specific product/language combination.
+4. **Grouping** — Consider grouping the results view by product and/or language instead of (or in addition to) bucket.
+
+**Related files**:
+- `viraltracker/ui/pages/37_📦_Video_Buckets.py` — UI page
+- `viraltracker/services/content_bucket_service.py` — categorization service
+
