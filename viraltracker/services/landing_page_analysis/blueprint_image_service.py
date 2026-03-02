@@ -85,6 +85,39 @@ class _ImageContextExtractor(HTMLParser):
         self._in_heading = False
         self._heading_tag = ""
 
+    def _process_img(self, attrs_dict: dict):
+        """Process an <img> tag, always incrementing the DOM-order counter."""
+        src = attrs_dict.get("src", "")
+        alt = attrs_dict.get("alt", "")
+        width = attrs_dict.get("width", "")
+        height = attrs_dict.get("height", "")
+
+        # Always capture current index, then increment (must match _SrcReplacer)
+        current_index = self._img_index
+        self._img_index += 1
+
+        # Filter out small icons
+        try:
+            if width and height and int(width) < 48 and int(height) < 48:
+                return
+        except (ValueError, TypeError):
+            pass
+
+        # Validate URL
+        if not src:
+            return
+        if not self._is_valid_image_url(src):
+            return
+
+        slot = ImageSlot(
+            index=current_index,
+            original_src=src,
+            alt_text=alt,
+            surrounding_text=" ".join(self._current_section_text[-20:]).strip()[:500],
+            section_heading=self._current_heading,
+        )
+        self.slots.append(slot)
+
     def handle_starttag(self, tag: str, attrs: list):
         attrs_dict = dict(attrs)
 
@@ -99,33 +132,18 @@ class _ImageContextExtractor(HTMLParser):
             pass
 
         if tag == "img":
-            src = attrs_dict.get("src", "")
-            alt = attrs_dict.get("alt", "")
-            width = attrs_dict.get("width", "")
-            height = attrs_dict.get("height", "")
+            self._process_img(attrs_dict)
 
-            # Filter out small icons
-            try:
-                if width and height and int(width) < 48 and int(height) < 48:
-                    return
-            except (ValueError, TypeError):
-                pass
-
-            # Validate URL
-            if not src:
-                return
-            if not self._is_valid_image_url(src):
-                return
-
-            slot = ImageSlot(
-                index=self._img_index,
-                original_src=src,
-                alt_text=alt,
-                surrounding_text=" ".join(self._current_section_text[-20:]).strip()[:500],
-                section_heading=self._current_heading,
-            )
-            self.slots.append(slot)
-            self._img_index += 1
+    def handle_startendtag(self, tag: str, attrs: list):
+        """Handle self-closing <img /> tags (XHTML style)."""
+        if tag == "img":
+            self._process_img(dict(attrs))
+        # Track headings that might be self-closing (unlikely but safe)
+        attrs_dict = dict(attrs)
+        if tag in ("h1", "h2", "h3", "h4", "h5", "h6"):
+            text = attrs_dict.get("title", "")
+            if text:
+                self._current_heading = text
 
     def handle_endtag(self, tag: str):
         if tag == self._heading_tag and self._in_heading:
@@ -649,6 +667,9 @@ class BlueprintImageService:
             # Scene-directed path: when scene_direction is available,
             # use the contextual prompt instead of generic templates
             if slot.scene_direction:
+                # Skip slots that the narrative director marked as skip
+                if slot.scene_direction.get("action") == "skip":
+                    continue
                 slot.prompt = self._build_scene_directed_prompt(
                     slot, product_name, product_desc, persona, brand_colors,
                 )

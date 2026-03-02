@@ -240,7 +240,10 @@ class ImageStrategyService:
                 except (ValueError, TypeError):
                     continue
             if idx is not None and idx in index_map:
-                if brief.get("action") != "skip":
+                if brief.get("action") == "skip":
+                    # Store skip directive so UI can default-uncheck this slot
+                    index_map[idx].scene_direction = {"action": "skip"}
+                else:
                     index_map[idx].scene_direction = brief
                     applied += 1
         logger.info(
