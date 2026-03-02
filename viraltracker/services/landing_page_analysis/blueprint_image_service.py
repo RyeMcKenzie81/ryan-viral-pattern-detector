@@ -34,6 +34,18 @@ STANDARD_RATIOS = {
     (21, 9): "21:9",
 }
 
+# Pixel dimensions for each standard ratio (used in prompt injection)
+ASPECT_RATIO_DIMENSIONS = {
+    "16:9": (1600, 900),
+    "9:16": (900, 1600),
+    "4:3": (1200, 900),
+    "3:4": (900, 1200),
+    "3:2": (1200, 800),
+    "2:3": (800, 1200),
+    "1:1": (1080, 1080),
+    "21:9": (2100, 900),
+}
+
 
 def snap_aspect_ratio(width: int, height: int) -> str:
     """Snap image dimensions to the nearest standard aspect ratio."""
@@ -959,6 +971,14 @@ class BlueprintImageService:
             parts.append(color_note.lstrip(", ") + ".")
         parts.append("No text overlays.")
 
+        if slot.aspect_ratio and slot.aspect_ratio != "1:1":
+            w, h = ASPECT_RATIO_DIMENSIONS.get(slot.aspect_ratio, (1080, 1080))
+            orient = "portrait/vertical" if h > w else "landscape/horizontal"
+            parts.append(
+                f"IMPORTANT: Compose this image in {slot.aspect_ratio} aspect ratio "
+                f"({w}x{h} pixels, {orient} orientation)."
+            )
+
         return " ".join(parts)
 
     async def generate_images(
@@ -1001,6 +1021,13 @@ class BlueprintImageService:
                             f"Professional product photography of a wellness product on a clean surface, "
                             f"studio lighting, neutral background, sharp focus, no people, no text overlays"
                         )
+                        if slot.aspect_ratio:
+                            w, h = ASPECT_RATIO_DIMENSIONS.get(slot.aspect_ratio, (1080, 1080))
+                            orient = "portrait/vertical" if h > w else "landscape/horizontal" if w > h else "square"
+                            fallback_prompt += (
+                                f"\n\nIMPORTANT: Generate this image in {slot.aspect_ratio} aspect ratio "
+                                f"({w}x{h} pixels, {orient} orientation)."
+                            )
                         result = await gemini_service.generate_image(
                             fallback_prompt,
                             reference_images=reference_images_b64[:3] if reference_images_b64 else None,
