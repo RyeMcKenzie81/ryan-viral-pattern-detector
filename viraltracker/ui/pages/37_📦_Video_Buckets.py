@@ -225,11 +225,11 @@ def render_categorize_videos(product_id: str, org_id: str):
     uploaded_files = st.file_uploader(
         "Upload videos",
         accept_multiple_files=True,
-        type=["mp4", "mov", "avi", "webm"],
-        help="Upload 1-20 videos at a time. Each will be analyzed individually.",
+        type=["mp4", "mov", "avi", "webm", "mpeg"],
+        help="Upload 1-30 videos at a time. Each will be analyzed individually.",
     )
 
-    if uploaded_files and len(uploaded_files) <= 20:
+    if uploaded_files and len(uploaded_files) <= 30:
         # Estimate time
         est_minutes = (len(uploaded_files) * 12 + 30) // 60  # ~12s per video + buffer
         st.info(f"**{len(uploaded_files)} video(s)** ready. Estimated time: ~{est_minutes} minute(s).")
@@ -280,8 +280,8 @@ def render_categorize_videos(product_id: str, org_id: str):
                 st.error(f"Batch processing error: {e}")
                 st.session_state.vb_processing = False
 
-    elif uploaded_files and len(uploaded_files) > 20:
-        st.error("Maximum 20 videos per batch. Please reduce your selection.")
+    elif uploaded_files and len(uploaded_files) > 30:
+        st.error(f"Maximum 30 videos per batch ({len(uploaded_files)} selected). Please reduce your selection.")
     elif not uploaded_files:
         st.info("Upload videos above to begin categorization.")
 
