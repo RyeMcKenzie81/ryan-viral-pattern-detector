@@ -46,6 +46,8 @@ _CUSTOM_URL_PATHS: Dict[str, str] = {
     "61_📅_Scheduled_Tasks.py": "scheduled-tasks",
     "64_🗄️_Database_Browser.py": "database-browser",
     "64_⚙️_Platform_Settings.py": "platform-settings",
+    "67_🔬_Public_Analysis.py": "Public_Analysis",
+    "68_🏗️_Public_Blueprint.py": "Public_Blueprint",
 }
 
 _DEFAULT_PAGE_FILE = "00_🎯_Agent_Chat.py"
