@@ -529,57 +529,85 @@ class ImageStrategyService:
 
         # Strategy 1: Direct parse (already clean JSON)
         try:
-            return json.loads(clean)
+            result = json.loads(clean)
+            logger.info("JSON parser: Strategy 1 (direct parse) succeeded")
+            return result
         except json.JSONDecodeError:
             pass
 
         # Strategy 2: Extract from markdown code fences (```json ... ```)
         import re
-        fence_pattern = re.compile(r"```(?:json)?\s*\n(.*?)```", re.DOTALL)
+        fence_pattern = re.compile(r"```(?:json)?\s*\n?(.*?)```", re.DOTALL)
         fences = fence_pattern.findall(clean)
-        for fenced in fences:
+        logger.info(f"JSON parser: Strategy 2 found {len(fences)} code fences")
+        for idx, fenced in enumerate(fences):
             try:
-                return json.loads(fenced.strip())
-            except json.JSONDecodeError:
+                result = json.loads(fenced.strip())
+                logger.info(f"JSON parser: Strategy 2 (fence {idx}) succeeded")
+                return result
+            except json.JSONDecodeError as e:
+                logger.debug(f"JSON parser: Fence {idx} failed: {e}")
                 continue
 
-        # Strategy 3: Find the largest valid JSON array by scanning for [ and
-        # finding its matching ]. Walk forward from each [ tracking bracket depth.
+        # Strategy 3: Find valid JSON arrays by looking for [{"slot_index" pattern
+        # (more targeted than scanning every [ in the text)
         best_array = None
         best_len = 0
-        for i, ch in enumerate(clean):
-            if ch == "[":
-                depth = 0
-                in_str = False
-                escape = False
-                for j in range(i, len(clean)):
-                    c = clean[j]
-                    if escape:
-                        escape = False
-                        continue
-                    if c == "\\":
-                        escape = True
-                        continue
-                    if c == '"' and not escape:
-                        in_str = not in_str
-                        continue
+        # First try the targeted pattern for our expected output
+        slot_starts = [m.start() for m in re.finditer(r'\[\s*\{', clean)]
+        # Also try all [ positions as fallback
+        all_bracket_starts = [i for i, c in enumerate(clean) if c == '[']
+        # Deduplicate, prioritizing slot_starts
+        seen = set()
+        search_positions = []
+        for pos in slot_starts + all_bracket_starts:
+            if pos not in seen:
+                seen.add(pos)
+                search_positions.append(pos)
+
+        logger.info(
+            f"JSON parser: Strategy 3 scanning {len(search_positions)} "
+            f"bracket positions ({len(slot_starts)} targeted)"
+        )
+
+        for i in search_positions:
+            depth = 0
+            in_str = False
+            escape = False
+            for j in range(i, len(clean)):
+                c = clean[j]
+                if escape:
+                    escape = False
+                    continue
+                if c == '\\':
                     if in_str:
-                        continue
-                    if c == "[":
-                        depth += 1
-                    elif c == "]":
-                        depth -= 1
-                        if depth == 0:
-                            candidate = clean[i : j + 1]
-                            if len(candidate) > best_len:
-                                try:
-                                    parsed = json.loads(candidate)
-                                    if isinstance(parsed, list) and len(parsed) > 0:
-                                        best_array = parsed
-                                        best_len = len(candidate)
-                                except json.JSONDecodeError:
-                                    pass
-                            break
+                        escape = True
+                    continue
+                if c == '"':
+                    in_str = not in_str
+                    continue
+                if in_str:
+                    continue
+                if c == '[':
+                    depth += 1
+                elif c == ']':
+                    depth -= 1
+                    if depth == 0:
+                        candidate = clean[i : j + 1]
+                        if len(candidate) > best_len:
+                            try:
+                                parsed = json.loads(candidate)
+                                if isinstance(parsed, list) and len(parsed) > 0:
+                                    best_array = parsed
+                                    best_len = len(candidate)
+                                    logger.info(
+                                        f"JSON parser: Strategy 3 found valid array "
+                                        f"at pos {i}, len={len(candidate)}, "
+                                        f"items={len(parsed)}"
+                                    )
+                            except json.JSONDecodeError:
+                                pass
+                        break
 
         if best_array is not None:
             return best_array
@@ -589,8 +617,18 @@ class ImageStrategyService:
         end_obj = clean.rfind("}")
         if start_obj != -1 and end_obj != -1 and end_obj > start_obj:
             try:
-                return json.loads(clean[start_obj : end_obj + 1])
+                result = json.loads(clean[start_obj : end_obj + 1])
+                logger.info("JSON parser: Strategy 4 (object extraction) succeeded")
+                return result
             except json.JSONDecodeError:
                 pass
 
+        # Log diagnostic info for debugging
+        logger.error(
+            f"JSON parser: All strategies failed. "
+            f"Text length={len(clean)}, "
+            f"starts_with={clean[:80]!r}, "
+            f"contains_bracket_brace={('[{' in clean)}, "
+            f"bracket_count={clean.count('[')}/{clean.count(']')}"
+        )
         raise ValueError(f"Could not parse JSON from LLM response: {clean[:200]}...")

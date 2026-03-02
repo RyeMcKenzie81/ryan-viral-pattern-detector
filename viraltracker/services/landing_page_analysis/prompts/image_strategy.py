@@ -134,7 +134,7 @@ Revise any issues before outputting.
 
 ## OUTPUT FORMAT
 
-Return a JSON array with one object per image slot:
+CRITICAL: Your ENTIRE response must be ONLY a JSON array. No analysis text, no reasoning, no markdown headers, no explanations before or after. Start your response with `[` and end with `]`.
 
 ```json
 [
