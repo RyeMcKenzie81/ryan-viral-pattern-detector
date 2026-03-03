@@ -2524,19 +2524,23 @@ def _render_selective_regen_section(
         for section_name, section_slots in grouped.items():
             st.markdown(f"**{section_name}**")
 
-            # "Select all" for this section
+            # "Select all" for this section — use callback to avoid
+            # setting session state before individual widgets render
             select_all_key = f"regen_all_{blueprint_id}_{section_name}"
-            select_all = st.checkbox(
+            slot_keys_for_section = [
+                f"regen_{blueprint_id}_{slot['name']}" for slot in section_slots
+            ]
+
+            def _on_select_all(keys=slot_keys_for_section, sa_key=select_all_key):
+                checked_now = st.session_state.get(sa_key, False)
+                for k in keys:
+                    st.session_state[k] = checked_now
+
+            st.checkbox(
                 "Select all",
                 key=select_all_key,
-                value=False,
+                on_change=_on_select_all,
             )
-
-            # QA-4: When select-all is toggled, force individual checkboxes
-            if select_all:
-                for slot in section_slots:
-                    slot_key = f"regen_{blueprint_id}_{slot['name']}"
-                    st.session_state[slot_key] = True
 
             for slot in section_slots:
                 slot_key = f"regen_{blueprint_id}_{slot['name']}"
