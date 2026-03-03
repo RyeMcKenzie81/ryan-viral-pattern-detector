@@ -517,6 +517,7 @@ class MockupService:
         blueprint: Dict,
         brand_profile: Dict,
         rewrite_strategy: str = "slot_constrained",
+        user_instructions: Optional[str] = None,
     ) -> str:
         """Selectively regenerate specific slots while preserving all others.
 
@@ -531,6 +532,8 @@ class MockupService:
             blueprint: Reconstruction blueprint dict.
             brand_profile: Full brand profile dict.
             rewrite_strategy: "slot_constrained" (default).
+            user_instructions: Optional free-text guidance for the AI
+                (e.g. "make body-5 the main headline" or "copy body-4 content into body-5").
 
         Returns:
             Updated full mockup HTML with only the selected slots rewritten.
@@ -651,6 +654,7 @@ class MockupService:
             slot_specs_lookup=slot_specs_lookup,
             slot_contents=all_slot_contents,
             listicle_data=listicle_data,
+            user_instructions=user_instructions,
         )
 
         # 10. Apply regen results on FULL mockup HTML (no strip-and-rewrap)
@@ -3277,6 +3281,7 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
         slot_specs_lookup: Dict[str, Dict],
         slot_contents: Dict[str, str],
         listicle_data: Optional[Dict] = None,
+        user_instructions: Optional[str] = None,
     ) -> Dict[str, str]:
         """Run AI selective regen for a subset of slots with frozen context.
 
@@ -3288,6 +3293,7 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
             slot_specs_lookup: {slot_name: {max_words, type, ...}} for regen slots.
             slot_contents: Original {slot_name: text} for fallback.
             listicle_data: Optional listicle prefix data.
+            user_instructions: Optional free-text guidance for the AI.
 
         Returns {slot_name: rewritten_text} for regenerated slots only.
         """
@@ -3317,11 +3323,23 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
             "frozen_slots": frozen_slots,
             "regenerate_sections": regenerate_sections,
         }
+        if user_instructions:
+            payload["user_instructions"] = user_instructions
+
+        system_prompt = self._SELECTIVE_REGEN_SYSTEM_PROMPT
+        if user_instructions:
+            system_prompt += (
+                "\n\n## User Instructions (HIGHEST PRIORITY)\n"
+                "The user has provided specific instructions for this regeneration. "
+                "Follow these instructions exactly, even if they override copy directions "
+                "or other guidance above. The user's instructions are in the "
+                "`user_instructions` field of the payload.\n"
+            )
 
         agent = Agent(
             model=Config.get_model("creative"),
             output_type=SlotRewriteResult,
-            system_prompt=self._SELECTIVE_REGEN_SYSTEM_PROMPT,
+            system_prompt=system_prompt,
             retries=2,
             output_retries=3,
         )

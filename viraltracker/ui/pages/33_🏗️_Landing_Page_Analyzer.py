@@ -2557,6 +2557,14 @@ def _render_selective_regen_section(
 
         st.divider()
 
+        # Optional instructions for the AI
+        regen_instructions = st.text_area(
+            "Instructions (optional)",
+            placeholder='e.g. "Replace body-5 with body-4\'s content" or "Make the headline more urgent"',
+            key=f"lpa_regen_instructions_{blueprint_id}",
+            height=68,
+        )
+
         # Action buttons
         btn_col1, btn_col2 = st.columns([2, 1])
         with btn_col1:
@@ -2609,6 +2617,7 @@ def _render_selective_regen_section(
                             slots_to_regenerate=selected_slots,
                             blueprint=blueprint,
                             brand_profile=brand_profile,
+                            user_instructions=regen_instructions or None,
                         )
                         _apply_regen_result(blueprint_id, updated_html)
                         st.rerun()
