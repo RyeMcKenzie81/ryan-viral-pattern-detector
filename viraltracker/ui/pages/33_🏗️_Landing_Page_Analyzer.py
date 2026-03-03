@@ -2446,21 +2446,40 @@ def _render_blueprint_mockup_section(
 # ---------------------------------------------------------------------------
 
 def _apply_regen_result(blueprint_id: str, html: str):
-    """Persist selective regen result to session cache, DB, and invalidate images."""
+    """Persist selective regen result to session cache and DB.
+
+    Also propagates text slot changes to the brand-images HTML variant
+    (if it exists) so generated images are preserved.
+    """
     _cache_mockup("blueprint", blueprint_id, html)
     try:
         bp_svc = get_blueprint_service()
         bp_svc.save_blueprint_mockup_html(blueprint_id, html)
     except Exception as e:
         logger.warning(f"Failed to persist selective regen to DB: {e}")
+
+    # Propagate text changes to the _with_images variant (preserves generated images)
     try:
-        bp_img_svc = get_blueprint_image_service()
-        bp_img_svc.clear_generated_images(blueprint_id)
-        st.session_state.pop(f"lpa_blueprint_images_{blueprint_id}", None)
+        bp_svc_img = get_blueprint_service()
+        bp_record = bp_svc_img.get_blueprint(blueprint_id)
+        images_html = bp_record.get("blueprint_mockup_html_with_images") if bp_record else None
+        if images_html:
+            mockup_svc = get_mockup_service()
+            # Extract the new slot text from the updated base HTML
+            body, _ = mockup_svc._extract_page_css_and_strip(html)
+            new_slots = mockup_svc._extract_slots_with_content(body)
+            if new_slots:
+                import html as _html_mod
+                escaped_slots = {k: _html_mod.escape(v) for k, v in new_slots.items()}
+                updated_images_html = mockup_svc._template_swap(
+                    images_html, {}, slot_map=escaped_slots, apply_brand_colors=False,
+                )
+                bp_svc_img.supabase.table("landing_page_blueprints").update({
+                    "blueprint_mockup_html_with_images": updated_images_html,
+                }).eq("id", blueprint_id).execute()
+                logger.info(f"Propagated slot regen to images HTML for blueprint {blueprint_id}")
     except Exception as e:
-        logger.warning(f"Failed to clear stale images after regen: {e}")
-    # QA-6: clear image view toggle so it doesn't show stale "Brand Images"
-    st.session_state.pop(f"lpa_img_view_{blueprint_id}", None)
+        logger.warning(f"Failed to propagate regen to images HTML: {e}")
 
 
 def _render_selective_regen_section(
