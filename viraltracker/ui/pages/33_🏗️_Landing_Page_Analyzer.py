@@ -301,10 +301,11 @@ def _render_mockup_preview(html_str: str, key_suffix: str, download_html: str = 
     # Download + Open in New Tab
     col1, col2 = st.columns(2)
     with col1:
+        is_annotated = download_html is not None and _SLOT_ANNOTATION_CSS[:30] in (download_html or "")
         st.download_button(
-            "Download HTML Mockup",
+            "Download Annotated Mockup" if is_annotated else "Download HTML Mockup",
             data=download_html or html_str,
-            file_name=f"mockup_{key_suffix}.html",
+            file_name=f"mockup_{key_suffix}{'_annotated' if is_annotated else ''}.html",
             mime="text/html",
             key=f"lpa_mockup_dl_{key_suffix}",
         )
@@ -2235,7 +2236,8 @@ def _render_blueprint_mockup_section(
         # Apply annotations to whatever is being displayed
         if annotated:
             display_html = _inject_slot_annotations(base_html, include_js=False)
-            _render_mockup_preview(display_html, suffix, download_html=base_html)
+            annotated_download = _inject_slot_annotations(base_html, include_js=True)
+            _render_mockup_preview(display_html, suffix, download_html=annotated_download)
         else:
             _render_mockup_preview(base_html, suffix)
 
