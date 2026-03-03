@@ -86,8 +86,13 @@ def _strip_destructive_declarations(css_value: str) -> str:
     return "; ".join(kept)
 
 
+_MARKDOWN_FENCE_PA_RE = re.compile(r'```(?:css|scss|less|text)?\s*\n?', re.IGNORECASE)
+
+
 def _add_important(css_value: str) -> str:
     """Add !important to each CSS property declaration."""
+    # Strip markdown fences that LLMs sometimes leak into CSS values
+    css_value = _MARKDOWN_FENCE_PA_RE.sub('', css_value).strip()
     parts = [p.strip() for p in css_value.split(";") if p.strip()]
     result = []
     for part in parts:

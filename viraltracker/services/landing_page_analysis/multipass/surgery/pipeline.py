@@ -10,6 +10,7 @@ Coordinates 5 passes (S0-S4) of HTML surgery:
 
 import logging
 import os
+import re
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -22,8 +23,10 @@ SURGERY_VISION_MODEL = os.environ.get(
     "SURGERY_VISION_MODEL", "gemini-2.5-pro"
 )
 
-# SSIM threshold below which S4 QA patches are applied
-S4_SSIM_THRESHOLD = 0.80
+# S4 Visual QA disabled: data shows +0.000 SSIM improvement in 2/3 cases,
+# with phantom UUID selectors and markdown fence leakage causing regression.
+# Set to 0.80 to re-enable. See CHECKPOINT_CSS_REGRESSION.md for analysis.
+S4_SSIM_THRESHOLD = 0.0
 
 # Max wall clock for surgery pipeline
 SURGERY_MAX_WALL_CLOCK = 180  # 3 minutes (much faster than reconstruction)
@@ -262,6 +265,7 @@ class SurgeryPipeline:
                             patched = scoped_html
                         else:
                             patches = _parse_patch_text(patches_text)
+                            patches = _validate_patch_selectors(patches, scoped_html)
                             applier = PatchApplier()
                             patched = applier.apply_patches(
                                 scoped_html, patches,
@@ -371,6 +375,86 @@ class SurgeryPipeline:
         return html
 
 
+_MARKDOWN_FENCE_RE = re.compile(r'```(?:css|scss|less|text)?\s*\n?', re.IGNORECASE)
+
+
+def _strip_markdown_fences(text: str) -> str:
+    """Strip markdown code fences from LLM output text."""
+    return _MARKDOWN_FENCE_RE.sub('', text).strip()
+
+
+_UUID_RE = re.compile(
+    r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}',
+    re.IGNORECASE,
+)
+
+
+def _validate_patch_selectors(patches: List[Dict], html: str) -> List[Dict]:
+    """Filter patches to only those whose selectors match elements in the HTML.
+
+    Rejects:
+    - Selectors containing UUID IDs (phantom selectors invented by LLM)
+    - ID selectors (#foo) where the ID doesn't exist in the HTML
+    - Class selectors (.foo) where the class doesn't exist in the HTML
+    - data-slot selectors where the slot value doesn't exist in the HTML
+
+    Args:
+        patches: List of patch dicts with 'selector' keys.
+        html: The HTML document to validate selectors against.
+
+    Returns:
+        Filtered list of patches with valid selectors only.
+    """
+    valid = []
+    for patch in patches:
+        selector = patch.get("selector", "")
+
+        # Reject selectors containing UUIDs (phantom selectors)
+        if _UUID_RE.search(selector):
+            logger.warning(f"S4 patch: rejected phantom UUID selector: {selector}")
+            continue
+
+        # Extract individual selector parts for validation
+        rejected = False
+        for part in selector.split():
+            # Check #id selectors
+            id_match = re.search(r'#([a-zA-Z_-][a-zA-Z0-9_-]*)', part)
+            if id_match:
+                id_val = id_match.group(1)
+                if f'id="{id_val}"' not in html and f"id='{id_val}'" not in html:
+                    logger.warning(f"S4 patch: rejected non-existent ID #{id_val}")
+                    rejected = True
+                    break
+
+            # Check .class selectors
+            class_matches = re.findall(r'\.([a-zA-Z_-][a-zA-Z0-9_-]*)', part)
+            for cls in class_matches:
+                if cls not in html:
+                    logger.warning(f"S4 patch: rejected non-existent class .{cls}")
+                    rejected = True
+                    break
+            if rejected:
+                break
+
+            # Check data-slot selectors
+            slot_match = re.search(r'\[data-slot=[\'"]([^\'"]+)[\'"]\]', part)
+            if slot_match:
+                slot_val = slot_match.group(1)
+                if f'data-slot="{slot_val}"' not in html and f"data-slot='{slot_val}'" not in html:
+                    logger.warning(f"S4 patch: rejected non-existent data-slot={slot_val}")
+                    rejected = True
+                    break
+
+        if not rejected:
+            valid.append(patch)
+
+    if len(valid) < len(patches):
+        logger.info(
+            f"S4 patch validation: {len(valid)}/{len(patches)} patches passed"
+        )
+    return valid
+
+
 def _parse_patch_text(text: str) -> List[Dict]:
     """Parse LLM patch response into PatchApplier-compatible dicts.
 
@@ -379,9 +463,12 @@ def _parse_patch_text(text: str) -> List[Dict]:
         selector: .lp-mockup .hero-section
         css: display: flex; flex-direction: column;
 
+    Strips markdown code fences from LLM output before parsing.
+
     Returns list of dicts with keys: type, selector, value.
     """
-    import re
+    # Strip markdown fences that LLMs sometimes leak
+    text = _strip_markdown_fences(text)
 
     patches = []
     # Split on PATCH N: headers
@@ -396,8 +483,8 @@ def _parse_patch_text(text: str) -> List[Dict]:
         css_match = re.search(r'css:\s*(.+)', block, re.IGNORECASE | re.DOTALL)
 
         if selector_match and css_match:
-            selector = selector_match.group(1).strip()
-            css_value = css_match.group(1).strip()
+            selector = _strip_markdown_fences(selector_match.group(1).strip())
+            css_value = _strip_markdown_fences(css_match.group(1).strip())
             # Stop css_value at the next "selector:" or end
             css_value = re.split(r'\n\s*selector:', css_value)[0].strip()
 

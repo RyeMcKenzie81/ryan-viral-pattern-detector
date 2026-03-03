@@ -1,6 +1,6 @@
 """Tests for the multipass mockup generation pipeline.
 
-~45 tests covering:
+~71 tests covering:
 - PatchApplier (7 tests)
 - Bounding box normalization (6 tests)
 - Per-section invariants (7 tests)
@@ -9,6 +9,12 @@
 - PopupFilter (4 tests)
 - Pipeline integration (9 tests, mocked Gemini)
 - Eval harness (5 tests)
+- Surgery S4 patch parsing & fence stripping (8 tests)
+- _add_important markdown stripping (2 tests)
+- Selector validation (10 tests)
+- S4 phantom selector integration (3 tests)
+- S4 regression patterns from Mar 1/Mar 2 (2 tests)
+- S4 disabled verification (1 test)
 """
 
 import asyncio
@@ -1289,3 +1295,452 @@ class TestEvalHarness:
         result = evaluate_benchmark(good_scores + [bad_score])
         assert result.passed is False
         assert len(result.failures) > 0
+
+
+# ---------------------------------------------------------------------------
+# Surgery S4: _parse_patch_text tests (with markdown fence stripping)
+# ---------------------------------------------------------------------------
+
+
+class TestParsePatchText:
+    """Test LLM patch text parsing including markdown fence stripping."""
+
+    def test_basic_patch_parsing(self):
+        from viraltracker.services.landing_page_analysis.multipass.surgery.pipeline import (
+            _parse_patch_text,
+        )
+
+        text = """PATCH 1:
+selector: .lp-mockup .hero-section
+css: display: flex; flex-direction: column;
+"""
+        patches = _parse_patch_text(text)
+        assert len(patches) == 1
+        assert patches[0]["selector"] == ".lp-mockup .hero-section"
+        assert "display: flex" in patches[0]["value"]
+
+    def test_multiple_patches(self):
+        from viraltracker.services.landing_page_analysis.multipass.surgery.pipeline import (
+            _parse_patch_text,
+        )
+
+        text = """PATCH 1:
+selector: .hero
+css: color: red;
+
+PATCH 2:
+selector: .footer
+css: background: blue;
+"""
+        patches = _parse_patch_text(text)
+        assert len(patches) == 2
+        assert patches[0]["selector"] == ".hero"
+        assert patches[1]["selector"] == ".footer"
+
+    def test_strips_markdown_fences_from_input(self):
+        from viraltracker.services.landing_page_analysis.multipass.surgery.pipeline import (
+            _parse_patch_text,
+        )
+
+        text = """```css
+PATCH 1:
+selector: .hero
+css: color: red;
+```"""
+        patches = _parse_patch_text(text)
+        assert len(patches) == 1
+        assert patches[0]["selector"] == ".hero"
+        assert "```" not in patches[0]["value"]
+
+    def test_strips_fences_from_selector_value(self):
+        from viraltracker.services.landing_page_analysis.multipass.surgery.pipeline import (
+            _parse_patch_text,
+        )
+
+        text = """PATCH 1:
+selector: ```css .hero ```
+css: ```css color: red; ```
+"""
+        patches = _parse_patch_text(text)
+        assert len(patches) == 1
+        assert "```" not in patches[0]["selector"]
+        assert "```" not in patches[0]["value"]
+
+    def test_empty_input(self):
+        from viraltracker.services.landing_page_analysis.multipass.surgery.pipeline import (
+            _parse_patch_text,
+        )
+
+        assert _parse_patch_text("") == []
+        assert _parse_patch_text("   ") == []
+
+    def test_no_patches_text(self):
+        from viraltracker.services.landing_page_analysis.multipass.surgery.pipeline import (
+            _parse_patch_text,
+        )
+
+        assert _parse_patch_text("NO_PATCHES_NEEDED") == []
+
+    def test_malformed_input(self):
+        from viraltracker.services.landing_page_analysis.multipass.surgery.pipeline import (
+            _parse_patch_text,
+        )
+
+        # Missing css: line
+        text = """PATCH 1:
+selector: .hero
+"""
+        assert _parse_patch_text(text) == []
+
+    def test_case_insensitive_headers(self):
+        from viraltracker.services.landing_page_analysis.multipass.surgery.pipeline import (
+            _parse_patch_text,
+        )
+
+        text = """patch 1:
+Selector: .hero
+CSS: color: red;
+"""
+        patches = _parse_patch_text(text)
+        assert len(patches) == 1
+
+
+# ---------------------------------------------------------------------------
+# _add_important markdown stripping tests
+# ---------------------------------------------------------------------------
+
+
+class TestAddImportantMarkdownStripping:
+    """Test that _add_important strips markdown fences before processing."""
+
+    def test_strips_fences_from_css(self):
+        from viraltracker.services.landing_page_analysis.multipass.patch_applier import (
+            _add_important,
+        )
+
+        result = _add_important("```css color: red; font-size: 14px; ```")
+        assert "```" not in result
+        assert "color: red !important" in result
+        assert "font-size: 14px !important" in result
+
+    def test_normal_css_unaffected(self):
+        from viraltracker.services.landing_page_analysis.multipass.patch_applier import (
+            _add_important,
+        )
+
+        result = _add_important("color: red; font-size: 14px;")
+        assert "color: red !important" in result
+        assert "font-size: 14px !important" in result
+
+
+# ---------------------------------------------------------------------------
+# Selector validation tests
+# ---------------------------------------------------------------------------
+
+
+class TestSelectorValidation:
+    """Test _validate_patch_selectors rejects phantom/invalid selectors."""
+
+    SAMPLE_HTML = """<html><head></head><body>
+    <div class="lp-mockup">
+        <section data-section="sec_0" id="hero-section">
+            <h1 data-slot="headline" class="hero-title">Welcome</h1>
+            <p data-slot="body-1" class="hero-body">Body text</p>
+        </section>
+        <section data-section="sec_1" id="features">
+            <h2 data-slot="heading-1">Features</h2>
+        </section>
+    </div>
+    </body></html>"""
+
+    def test_valid_class_selector_passes(self):
+        from viraltracker.services.landing_page_analysis.multipass.surgery.pipeline import (
+            _validate_patch_selectors,
+        )
+
+        patches = [{"selector": ".hero-title", "value": "color: red;"}]
+        result = _validate_patch_selectors(patches, self.SAMPLE_HTML)
+        assert len(result) == 1
+
+    def test_valid_id_selector_passes(self):
+        from viraltracker.services.landing_page_analysis.multipass.surgery.pipeline import (
+            _validate_patch_selectors,
+        )
+
+        patches = [{"selector": "#hero-section", "value": "color: red;"}]
+        result = _validate_patch_selectors(patches, self.SAMPLE_HTML)
+        assert len(result) == 1
+
+    def test_uuid_selector_rejected(self):
+        from viraltracker.services.landing_page_analysis.multipass.surgery.pipeline import (
+            _validate_patch_selectors,
+        )
+
+        patches = [{"selector": "#76e6a18d-1234-5678-9abc-def012345678", "value": "color: red;"}]
+        result = _validate_patch_selectors(patches, self.SAMPLE_HTML)
+        assert len(result) == 0
+
+    def test_uuid_in_compound_selector_rejected(self):
+        from viraltracker.services.landing_page_analysis.multipass.surgery.pipeline import (
+            _validate_patch_selectors,
+        )
+
+        patches = [{"selector": ".lp-mockup #76e6a18d-1234-5678-9abc-def012345678", "value": "color: red;"}]
+        result = _validate_patch_selectors(patches, self.SAMPLE_HTML)
+        assert len(result) == 0
+
+    def test_nonexistent_id_rejected(self):
+        from viraltracker.services.landing_page_analysis.multipass.surgery.pipeline import (
+            _validate_patch_selectors,
+        )
+
+        patches = [{"selector": "#nonexistent-id", "value": "color: red;"}]
+        result = _validate_patch_selectors(patches, self.SAMPLE_HTML)
+        assert len(result) == 0
+
+    def test_nonexistent_class_rejected(self):
+        from viraltracker.services.landing_page_analysis.multipass.surgery.pipeline import (
+            _validate_patch_selectors,
+        )
+
+        patches = [{"selector": ".phantom-class", "value": "color: red;"}]
+        result = _validate_patch_selectors(patches, self.SAMPLE_HTML)
+        assert len(result) == 0
+
+    def test_nonexistent_data_slot_rejected(self):
+        from viraltracker.services.landing_page_analysis.multipass.surgery.pipeline import (
+            _validate_patch_selectors,
+        )
+
+        patches = [{"selector": "[data-slot='phantom-slot']", "value": "color: red;"}]
+        result = _validate_patch_selectors(patches, self.SAMPLE_HTML)
+        assert len(result) == 0
+
+    def test_valid_data_slot_passes(self):
+        from viraltracker.services.landing_page_analysis.multipass.surgery.pipeline import (
+            _validate_patch_selectors,
+        )
+
+        patches = [{"selector": "[data-slot='headline']", "value": "color: red;"}]
+        result = _validate_patch_selectors(patches, self.SAMPLE_HTML)
+        assert len(result) == 1
+
+    def test_mixed_valid_and_invalid_filtered(self):
+        from viraltracker.services.landing_page_analysis.multipass.surgery.pipeline import (
+            _validate_patch_selectors,
+        )
+
+        patches = [
+            {"selector": ".hero-title", "value": "color: red;"},
+            {"selector": "#76e6a18d-1234-5678-9abc-def012345678", "value": "font-size: 2rem;"},
+            {"selector": ".hero-body", "value": "padding: 10px;"},
+            {"selector": ".phantom-class", "value": "margin: 0;"},
+        ]
+        result = _validate_patch_selectors(patches, self.SAMPLE_HTML)
+        assert len(result) == 2
+        assert result[0]["selector"] == ".hero-title"
+        assert result[1]["selector"] == ".hero-body"
+
+    def test_tag_selector_passes(self):
+        from viraltracker.services.landing_page_analysis.multipass.surgery.pipeline import (
+            _validate_patch_selectors,
+        )
+
+        # Tag-only selectors don't have IDs/classes to validate
+        patches = [{"selector": "section", "value": "padding: 20px;"}]
+        result = _validate_patch_selectors(patches, self.SAMPLE_HTML)
+        assert len(result) == 1
+
+
+# ---------------------------------------------------------------------------
+# S4 phantom selector integration tests
+# ---------------------------------------------------------------------------
+
+
+class TestS4PhantomSelectorIntegration:
+    """Test full parse→validate→apply flow with phantom selectors."""
+
+    SAMPLE_HTML = """<html><head><style>.hero { color: black; }</style></head><body>
+    <div class="lp-mockup">
+        <section data-section="sec_0" class="hero">
+            <h1 data-slot="headline">Welcome</h1>
+        </section>
+    </div>
+    </body></html>"""
+
+    def test_phantom_uuid_patches_filtered_out(self):
+        from viraltracker.services.landing_page_analysis.multipass.surgery.pipeline import (
+            _parse_patch_text,
+            _validate_patch_selectors,
+        )
+        from viraltracker.services.landing_page_analysis.multipass.patch_applier import (
+            PatchApplier,
+        )
+
+        text = """PATCH 1:
+selector: #76e6a18d-abcd-1234-ef56-789012345678
+css: color: red;
+
+PATCH 2:
+selector: .hero
+css: padding: 20px;
+"""
+        patches = _parse_patch_text(text)
+        assert len(patches) == 2  # Both parsed
+
+        valid = _validate_patch_selectors(patches, self.SAMPLE_HTML)
+        assert len(valid) == 1  # UUID filtered out
+        assert valid[0]["selector"] == ".hero"
+
+        result = PatchApplier().apply_patches(self.SAMPLE_HTML, valid)
+        assert "padding: 20px" in result
+
+    def test_all_phantom_patches_produce_unchanged_html(self):
+        from viraltracker.services.landing_page_analysis.multipass.surgery.pipeline import (
+            _parse_patch_text,
+            _validate_patch_selectors,
+        )
+        from viraltracker.services.landing_page_analysis.multipass.patch_applier import (
+            PatchApplier,
+        )
+
+        text = """PATCH 1:
+selector: #aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee
+css: color: red;
+
+PATCH 2:
+selector: .nonexistent-class
+css: padding: 20px;
+"""
+        patches = _parse_patch_text(text)
+        valid = _validate_patch_selectors(patches, self.SAMPLE_HTML)
+        assert len(valid) == 0
+
+        result = PatchApplier().apply_patches(self.SAMPLE_HTML, valid)
+        assert result == self.SAMPLE_HTML  # No changes
+
+    def test_markdown_fences_cleaned_before_validation(self):
+        from viraltracker.services.landing_page_analysis.multipass.surgery.pipeline import (
+            _parse_patch_text,
+            _validate_patch_selectors,
+        )
+
+        text = """```css
+PATCH 1:
+selector: .hero
+css: color: blue;
+```"""
+        patches = _parse_patch_text(text)
+        assert len(patches) == 1
+        assert "```" not in patches[0]["selector"]
+
+        valid = _validate_patch_selectors(patches, self.SAMPLE_HTML)
+        assert len(valid) == 1
+
+
+# ---------------------------------------------------------------------------
+# S4 regression tests (exact patterns from Mar 1 and Mar 2 failures)
+# ---------------------------------------------------------------------------
+
+
+class TestS4RegressionMar2:
+    """Reproduce exact failure patterns from Mar 1 (fences) and Mar 2 (UUIDs)."""
+
+    SAMPLE_HTML = """<html><head><style>.lp-mockup { max-width: 100%; }</style></head><body>
+    <div class="lp-mockup">
+        <section data-section="sec_0" class="hero-section">
+            <h1 data-slot="headline" class="hero-heading">Welcome</h1>
+            <p data-slot="body-1">Body text here.</p>
+        </section>
+    </div>
+    </body></html>"""
+
+    def test_mar1_markdown_fence_leakage(self):
+        """Mar 1 failure: LLM output had markdown fences in CSS values."""
+        from viraltracker.services.landing_page_analysis.multipass.surgery.pipeline import (
+            _parse_patch_text,
+            _validate_patch_selectors,
+        )
+        from viraltracker.services.landing_page_analysis.multipass.patch_applier import (
+            PatchApplier,
+        )
+
+        # Exact pattern from Mar 1 failure: fences in output
+        text = """```css
+PATCH 1:
+selector: .hero-section
+css: ```css padding: 40px 20px; background-color: #f8f9fa; ```
+
+PATCH 2:
+selector: .hero-heading
+css: font-size: 2.5rem; color: #333;
+```"""
+        patches = _parse_patch_text(text)
+        valid = _validate_patch_selectors(patches, self.SAMPLE_HTML)
+
+        # Both should survive validation (classes exist in HTML)
+        assert len(valid) == 2
+        # Fences should be stripped from values
+        for p in valid:
+            assert "```" not in p["selector"]
+            assert "```" not in p["value"]
+
+        result = PatchApplier().apply_patches(self.SAMPLE_HTML, valid)
+        assert "```" not in result
+
+    def test_mar2_phantom_uuid_selectors(self):
+        """Mar 2 failure: LLM invented UUID ID selectors that match nothing."""
+        from viraltracker.services.landing_page_analysis.multipass.surgery.pipeline import (
+            _parse_patch_text,
+            _validate_patch_selectors,
+        )
+
+        # Exact pattern from Mar 2 failure: phantom UUID selectors
+        text = """PATCH 1:
+selector: #76e6a18d-3fa2-4b7c-8d1e-9f0a2b3c4d5e
+css: display: flex; align-items: center;
+
+PATCH 2:
+selector: #a1b2c3d4-e5f6-7890-abcd-ef1234567890
+css: padding: 20px;
+
+PATCH 3:
+selector: .hero-section
+css: margin-top: 0;
+
+PATCH 4:
+selector: #deadbeef-1234-5678-9abc-def012345678
+css: color: red;
+
+PATCH 5:
+selector: .lp-mockup .hero-heading
+css: line-height: 1.4;
+"""
+        patches = _parse_patch_text(text)
+        assert len(patches) == 5  # All 5 parsed
+
+        valid = _validate_patch_selectors(patches, self.SAMPLE_HTML)
+        # Only patches 3 and 5 should survive (real selectors)
+        assert len(valid) == 2
+        selectors = [p["selector"] for p in valid]
+        assert ".hero-section" in selectors
+        assert ".lp-mockup .hero-heading" in selectors
+
+
+# ---------------------------------------------------------------------------
+# S4 disabled verification
+# ---------------------------------------------------------------------------
+
+
+class TestS4Disabled:
+    """Verify S4 is disabled and cannot fire."""
+
+    def test_s4_threshold_is_zero(self):
+        from viraltracker.services.landing_page_analysis.multipass.surgery.pipeline import (
+            S4_SSIM_THRESHOLD,
+        )
+
+        assert S4_SSIM_THRESHOLD == 0.0, (
+            f"S4_SSIM_THRESHOLD should be 0.0 (disabled) but is {S4_SSIM_THRESHOLD}. "
+            "SSIM is always >= 0.0, so S4 will never fire at threshold 0.0."
+        )
