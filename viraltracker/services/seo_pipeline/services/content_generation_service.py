@@ -51,7 +51,7 @@ class ContentGenerationService:
         """Lazy-load UsageTracker."""
         if self._usage_tracker is None:
             from viraltracker.services.usage_tracker import UsageTracker
-            self._usage_tracker = UsageTracker()
+            self._usage_tracker = UsageTracker(self.supabase)
         return self._usage_tracker
 
     @property
