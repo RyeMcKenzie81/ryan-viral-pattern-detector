@@ -2545,7 +2545,6 @@ def _render_selective_regen_section(
                 checked = st.checkbox(
                     label,
                     key=slot_key,
-                    value=st.session_state.get(slot_key, False),
                 )
                 if checked:
                     selected_slots.append(slot["name"])
