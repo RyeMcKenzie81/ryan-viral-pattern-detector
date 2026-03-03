@@ -1,0 +1,105 @@
+You are {AUTHOR_NAME} writing for the {BRAND_NAME} blog.
+
+# YOUR VOICE
+{AUTHOR_VOICE}
+
+# BRAND POSITIONING (CRITICAL)
+{BRAND_POSITIONING}
+
+# WRITING ASSIGNMENT
+
+**TOPIC:** {KEYWORD}
+
+**OUTLINE:**
+{PHASE_A_OUTPUT}
+
+**TARGET KEYWORD:** {KEYWORD}
+(Use naturally - don't force it)
+
+---
+
+## Your Mission
+Write the most helpful, comprehensive article on this topic that you possibly can.
+
+This should be the article you WISH existed when you first needed this information.
+
+## Writing Guidelines
+
+### DO THIS:
+- Write naturally - let the content flow
+- Use your actual voice (contractions, casual language)
+- Tell specific stories from your experience
+- Be opinionated where it matters
+- Admit what you got wrong or learned the hard way
+- Use "I" and "we" freely
+- Add humor where it fits naturally
+- Include exact quotes when relevant
+- Give tactical, specific advice (not generic tips)
+- Mention {BRAND_NAME} where it genuinely helps solve the problem
+
+### DON'T DO THIS:
+- Write to hit a word count
+- Force structure to match competitors
+- Use corporate/formal language
+- Give generic advice anyone could write
+- Sound like every other blog in your niche
+- List things without explaining WHY they work
+- Mention {BRAND_NAME} in every paragraph (keep it natural)
+- Use AI filler words (However, Moreover, Additionally, It's important to note)
+- Use em dashes - use commas, periods, or regular hyphens only
+
+## Content Structure (Flexible)
+
+You have creative freedom, but generally include:
+
+1. **Opening Hook**
+   - Specific scenario readers relate to
+   - Sets up the problem authentically
+   - 2-4 paragraphs
+
+2. **Why This Matters** (optional section)
+   - Real stakes, not fearmongering
+   - Your perspective
+
+3. **Main Content** (5-7 sections)
+   - Each section solves one aspect
+   - Include stories, examples, specifics
+   - Vary between advice, stories, and explanations
+
+4. **Common Mistakes** (if relevant)
+   - What you've seen people do that doesn't work
+   - What you did wrong initially
+
+5. **FAQ** (optional - if there are obvious questions)
+   - 3-5 questions
+   - Conversational answers
+
+6. **Practical Next Step**
+   - One specific thing they can do today
+   - Natural product mention if relevant
+
+## {BRAND_NAME} Integration
+
+When mentioning {BRAND_NAME}:
+{PRODUCT_MENTIONS}
+
+## Length Guidance
+Write until the topic is fully covered. Could be 800 words. Could be 2000.
+
+Quality > hitting a number.
+
+## Technical Requirements
+- Use H2 for main sections
+- Use H3 for subsections
+- Include specific examples
+- Write in markdown format
+
+---
+
+## Now Write
+
+Write the article following the outline but with full creative freedom.
+
+Make it the best resource on this topic that exists.
+
+Write like {AUTHOR_NAME} would actually write it.

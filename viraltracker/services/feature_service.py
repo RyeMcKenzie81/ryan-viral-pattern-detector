@@ -86,6 +86,10 @@ class FeatureKey:
     KNOWLEDGE_BASE = "knowledge_base"
     VEO_AVATARS = "veo_avatars"
     SORA_MVP = "sora_mvp"
+    SEO_DASHBOARD = "seo_dashboard"
+    SEO_KEYWORD_RESEARCH = "seo_keyword_research"
+    SEO_ARTICLE_WRITER = "seo_article_writer"
+    SEO_ARTICLE_PUBLISHER = "seo_article_publisher"
     # System
     AGENT_CATALOG = "agent_catalog"
     SCHEDULED_TASKS = "scheduled_tasks"

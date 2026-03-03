@@ -1,0 +1,185 @@
+You are an SEO specialist optimizing a finished article.
+
+# OPTIMIZATION PHASE
+
+**ARTICLE:**
+{PHASE_B_OUTPUT}
+
+**TARGET KEYWORD:** {KEYWORD}
+
+**COMPETITOR DATA:**
+{COMPETITOR_STATS}
+
+---
+
+## Your Job
+Add SEO optimization layers WITHOUT changing the voice or core content.
+
+Think of this as "packaging" the article for search engines while keeping the human quality intact.
+
+## Tasks
+
+### 1. Schema Markup
+Add these at the end of the article:
+
+#### Article Schema
+```json
+{{
+  "@context": "https://schema.org",
+  "@type": "Article",
+  "headline": "[Article Title]",
+  "author": {{
+    "@type": "Person",
+    "name": "{AUTHOR_NAME}",
+    "url": "{AUTHOR_URL}",
+    "image": "{AUTHOR_IMAGE_URL}",
+    "jobTitle": "{AUTHOR_JOB_TITLE}",
+    "worksFor": {{
+      "@type": "Organization",
+      "name": "{BRAND_NAME}"
+    }}
+  }},
+  "datePublished": "[YYYY-MM-DD]",
+  "dateModified": "[YYYY-MM-DD]",
+  "image": "[featured-image-url]",
+  "publisher": {{
+    "@type": "Organization",
+    "name": "{BRAND_NAME}",
+    "logo": {{
+      "@type": "ImageObject",
+      "url": "[logo-url]"
+    }}
+  }}
+}}
+```
+
+#### FAQ Schema (if article has FAQ section)
+```json
+{{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    {{
+      "@type": "Question",
+      "name": "[Question text]",
+      "acceptedAnswer": {{
+        "@type": "Answer",
+        "text": "[Answer text]"
+      }}
+    }}
+  ]
+}}
+```
+
+### 2. Internal Links
+{INTERNAL_LINKS_CONTEXT}
+
+**Add 2-4 contextual links** where topics overlap naturally.
+
+**Add "Related Articles" section** before FAQ:
+```markdown
+## Related Articles
+
+- [Article Title 1](url-1)
+- [Article Title 2](url-2)
+```
+
+**Rules:**
+- Only link where it adds value (don't force it)
+- Use natural anchor text (not "click here")
+- Don't break the reading flow
+
+### 3. Meta Tags
+Create optimized meta tags:
+
+```markdown
+---
+title: "[60-character SEO title with keyword]"
+description: "[155-character meta description with keyword and hook]"
+keyword: "{KEYWORD}"
+author: "{AUTHOR_NAME}"
+date: "[YYYY-MM-DD]"
+updated: "[YYYY-MM-DD]"
+---
+```
+
+**Title formula:** Keyword + Benefit or Hook
+**Description formula:** Problem + Solution + CTA
+
+### 4. Image Suggestions
+Suggest 6-8 images with:
+- Placement in article (after which section)
+- Description of what to show
+- Alt text (keyword-relevant, descriptive)
+
+### 5. Keyword Check
+Verify target keyword appears naturally in:
+- [ ] Title
+- [ ] First 100 words
+- [ ] 2-3 H2 headings (natural placement only)
+- [ ] Alt text for hero image
+- [ ] Meta description
+
+**If missing:** Suggest minimal edits to add keyword naturally (max 1-2 sentence tweaks).
+
+**DO NOT:** Force keyword stuffing or change the voice.
+
+### 6. Readability Check
+- Confirm Flesch Reading Ease is 60-70 (8th-9th grade level)
+- If too complex (below 60), suggest simplifying 2-3 sentences
+- If too simple (above 75), okay to leave it
+
+### 7. External Links
+Identify 2-3 places to add authority links:
+- Research studies
+- Reputable resources
+- Educational sites
+
+**Rules:**
+- Only link to support claims
+- Use rel="nofollow" for commercial sites
+
+### 8. Author Bio
+Add at the end:
+
+```markdown
+---
+
+**About the Author:** {AUTHOR_BIO}
+
+**Last Updated:** [Date]
+```
+
+---
+
+## Output Format
+
+Return the article with:
+1. Meta tags at top (YAML frontmatter)
+2. Optimized content (minimal changes to voice)
+3. Internal link suggestions marked [LINK: anchor](url)
+4. Image suggestions marked [IMAGE: description]
+5. Schema markup at bottom
+6. Author bio at bottom
+
+---
+
+## Quality Check
+
+Before finalizing, confirm:
+- [ ] Article voice is unchanged
+- [ ] Keyword appears naturally (not forced)
+- [ ] Links add value
+- [ ] Schema is valid JSON
+- [ ] Meta tags are compelling
+- [ ] Images enhance understanding
+
+**Remember:** SEO is the packaging, not the product. Keep the article quality intact.
+
+---
+
+## CRITICAL: Image Metadata Placement
+
+**DO NOT include image descriptions in the article markdown body.**
+
+Image descriptions and placement instructions should be in a SEPARATE section at the end, clearly labeled as image metadata. The article markdown should be clean and publishable.

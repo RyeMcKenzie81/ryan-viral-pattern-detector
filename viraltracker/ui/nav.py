@@ -150,6 +150,10 @@ def _get_org_features_cached(org_id: str) -> Dict[str, bool]:
             FeatureKey.KNOWLEDGE_BASE: True,
             FeatureKey.VEO_AVATARS: True,
             FeatureKey.SORA_MVP: True,
+            FeatureKey.SEO_DASHBOARD: True,
+            FeatureKey.SEO_KEYWORD_RESEARCH: True,
+            FeatureKey.SEO_ARTICLE_WRITER: True,
+            FeatureKey.SEO_ARTICLE_PUBLISHER: True,
             # System pages
             FeatureKey.AGENT_CATALOG: True,
             FeatureKey.SCHEDULED_TASKS: True,
@@ -317,6 +321,14 @@ def build_navigation_pages() -> Dict[str, List[st.Page]]:
         content.append(st.Page("pages/47_🎬_Veo_Avatars.py", title="Veo Avatars", icon="🎬"))
     if visible(SK_CONTENT, "sora_mvp"):
         content.append(st.Page("pages/99_🎥_Sora_MVP.py", title="Sora MVP", icon="🎥"))
+    if visible(SK_CONTENT, "seo_dashboard"):
+        content.append(st.Page("pages/48_🔍_SEO_Dashboard.py", title="SEO Dashboard", icon="🔍"))
+    if visible(SK_CONTENT, "seo_keyword_research"):
+        content.append(st.Page("pages/49_🔑_Keyword_Research.py", title="Keyword Research", icon="🔑"))
+    if visible(SK_CONTENT, "seo_article_writer"):
+        content.append(st.Page("pages/50_✍️_Article_Writer.py", title="Article Writer", icon="✍️"))
+    if visible(SK_CONTENT, "seo_article_publisher"):
+        content.append(st.Page("pages/51_📤_Article_Publisher.py", title="Article Publisher", icon="📤"))
     if content:
         pages["Content"] = content
 
