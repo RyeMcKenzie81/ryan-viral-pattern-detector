@@ -510,6 +510,166 @@ class MockupService:
     # Public API
     # ------------------------------------------------------------------
 
+    def regenerate_selected_slots(
+        self,
+        current_mockup_html: str,
+        slots_to_regenerate: List[str],
+        blueprint: Dict,
+        brand_profile: Dict,
+        rewrite_strategy: str = "slot_constrained",
+    ) -> str:
+        """Selectively regenerate specific slots while preserving all others.
+
+        Splits slots into frozen (read-only context) and regenerate groups,
+        then runs the AI with both groups for coherent partial rewriting.
+        Operates on the full mockup HTML (no strip-and-rewrap) to preserve
+        the wrapper, CSS, and metadata bar.
+
+        Args:
+            current_mockup_html: Full mockup HTML including wrapper/CSS.
+            slots_to_regenerate: List of slot names to rewrite.
+            blueprint: Reconstruction blueprint dict.
+            brand_profile: Full brand profile dict.
+            rewrite_strategy: "slot_constrained" (default).
+
+        Returns:
+            Updated full mockup HTML with only the selected slots rewritten.
+        """
+        if not slots_to_regenerate:
+            return current_mockup_html
+
+        # 1. Extract slot content from stripped body (for AI payload)
+        body, _ = self._extract_page_css_and_strip(current_mockup_html)
+        all_slot_contents = self._extract_slots_with_content(body)
+
+        if not all_slot_contents:
+            logger.warning("No slots found in mockup HTML for selective regen")
+            return current_mockup_html
+
+        # 2. Validate requested slots exist
+        valid_regen = [s for s in slots_to_regenerate if s in all_slot_contents]
+        if not valid_regen:
+            logger.warning(
+                f"None of the requested slots exist: {slots_to_regenerate[:5]}"
+            )
+            return current_mockup_html
+
+        regen_set = set(valid_regen)
+        frozen_names = [s for s in all_slot_contents if s not in regen_set]
+
+        logger.info(
+            f"Selective regen: {len(valid_regen)} slots to regenerate, "
+            f"{len(frozen_names)} frozen"
+        )
+
+        # 3. Map slots to sections
+        slot_sections = self._map_slots_to_sections(body, blueprint)
+
+        # 4. Build brand context
+        brand_data, page_strategy = self._build_shared_brand_context(
+            blueprint, brand_profile
+        )
+
+        # 5. Build frozen slot data (read-only context for AI)
+        frozen_slots: List[Dict] = []
+        for name in frozen_names:
+            ctx = slot_sections.get(name, {})
+            frozen_slots.append({
+                "name": name,
+                "section_name": ctx.get("section_name", "global"),
+                "type": ctx.get("slot_type", self._infer_slot_type(name)),
+                "content": all_slot_contents[name],
+            })
+
+        # 6. Build regenerate section groups (matching existing pattern)
+        section_groups: Dict[str, dict] = {}
+        for slot_name in valid_regen:
+            content = all_slot_contents[slot_name]
+            ctx = slot_sections.get(slot_name, {})
+            sec_key = ctx.get("section_name", "global")
+            flow = ctx.get("flow_order", 999)
+            group_key = f"{flow:04d}_{sec_key}"
+
+            if group_key not in section_groups:
+                section_groups[group_key] = {
+                    "section_name": sec_key,
+                    "copy_direction": ctx.get("copy_direction", ""),
+                    "brand_data": ctx.get("brand_mapping", {}),
+                    "slots": [],
+                }
+
+            slot_type = ctx.get("slot_type", self._infer_slot_type(slot_name))
+            word_count = len(content.split()) if content else 0
+            char_count = len(content)
+            length_spec = self._compute_slot_length_spec(
+                slot_type, word_count, char_count
+            )
+
+            section_groups[group_key]["slots"].append({
+                "name": slot_name,
+                "type": slot_type,
+                "current": content,
+                "max_words": length_spec["max_words"],
+                "original_words": length_spec["original_words"],
+                "original_chars": length_spec["original_chars"],
+                "length_note": length_spec["length_note"],
+            })
+
+        ordered_sections = [section_groups[k] for k in sorted(section_groups.keys())]
+
+        # 7. Handle listicle prefixes
+        listicle_data = self._detect_listicle_structure(
+            all_slot_contents, slot_sections
+        )
+        listicle_prefixes = listicle_data.get("prefixes", {})
+        if listicle_prefixes:
+            for g in ordered_sections:
+                for s in g["slots"]:
+                    if s["name"] in listicle_prefixes:
+                        s["prefix"] = listicle_prefixes[s["name"]]
+
+        # 8. Build slot_specs_lookup for regen validation
+        slot_specs_lookup: Dict[str, Dict] = {}
+        for g in ordered_sections:
+            for s in g["slots"]:
+                spec = {
+                    "max_words": s["max_words"],
+                    "type": s["type"],
+                    "original_words": s.get("original_words", 0),
+                    "length_note": s.get("length_note", ""),
+                }
+                if s["name"] in listicle_prefixes:
+                    spec["prefix"] = listicle_prefixes[s["name"]]
+                slot_specs_lookup[s["name"]] = spec
+
+        # 9. Run selective regen AI call
+        regen_result = self._execute_selective_regen(
+            frozen_slots=frozen_slots,
+            regenerate_sections=ordered_sections,
+            brand_data=brand_data,
+            page_strategy=page_strategy,
+            slot_specs_lookup=slot_specs_lookup,
+            slot_contents=all_slot_contents,
+            listicle_data=listicle_data,
+        )
+
+        # 10. Apply regen results on FULL mockup HTML (no strip-and-rewrap)
+        # _template_swap only replaces slots present in slot_map, so frozen
+        # slots are naturally preserved.
+        updated_html = self._template_swap(
+            current_mockup_html,
+            blueprint,
+            brand_profile=None,
+            slot_map=regen_result,
+            apply_brand_colors=False,
+        )
+
+        logger.info(
+            f"Selective regen complete: replaced {len(regen_result)} slots "
+            f"in mockup HTML ({len(current_mockup_html)} -> {len(updated_html)} chars)"
+        )
+        return updated_html
+
     def generate_analysis_mockup(
         self,
         screenshot_b64: Optional[str] = None,
@@ -2055,6 +2215,63 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
         "- If a slot has a `prefix` field, your rewrite MUST start with that exact prefix followed by a space.\n"
     )
 
+    _SELECTIVE_REGEN_SYSTEM_PROMPT = (
+        "You are an expert direct-response copywriter performing a SELECTIVE rewrite "
+        "of specific landing page text slots. You receive two groups of slots:\n\n"
+        "1. `frozen_slots` — READ-ONLY context. These slots are finalized and must NOT be rewritten.\n"
+        "   Use them ONLY to understand the page's narrative flow, tone, and claims already made.\n"
+        "2. `regenerate_slots` — These are the slots you MUST rewrite with fresh copy.\n\n"
+        "## Your Mission\n"
+        "Rewrite ONLY the `regenerate_slots` using the brand data, page strategy, "
+        "and copy directions provided. Your output must maintain coherence with the "
+        "frozen slots while delivering original, persuasive content.\n\n"
+        "## Coherence Rules (CRITICAL)\n"
+        "- NEVER repeat a benefit, statistic, hook, or emotional phrase that already appears "
+        "in a frozen slot. The frozen slots are final — you must complement, not duplicate.\n"
+        "- NEVER contradict a claim or promise in a frozen slot.\n"
+        "- Maintain the same voice and tone as the frozen slots.\n"
+        "- Respect the narrative arc: if frozen slots establish a problem, your regenerated "
+        "slot should continue the argument (not restart it).\n\n"
+        "## Content Sources (USE THESE)\n"
+        "- `brand.product` / `brand.benefits` / `brand.features`: real product benefits\n"
+        "- `brand.mechanism`: how the product works\n"
+        "- `brand.ingredients`: real ingredients to reference\n"
+        "- `brand.pain_points` / `brand.desires`: audience pain points and goals\n"
+        "- `brand.testimonials` / `brand.transformation_quotes`: real customer quotes\n"
+        "- `brand.guarantee` / `brand.pricing` / `brand.results_timeline`: offer details\n"
+        "- Each section's `copy_direction`: strategic guidance\n\n"
+        "## Rules\n"
+        "- Return ONLY a JSON dict mapping slot_name -> rewritten plain text.\n"
+        "- Output ONLY the regenerated slot names. Do NOT include frozen slots.\n"
+        "- EVERY regenerate_slot name MUST appear in your output.\n"
+        "- Values MUST be plain text only. NO HTML tags. NO markdown.\n"
+        "- NEVER use em dashes (\u2014) or en dashes (\u2013). Use commas, periods, colons, or semicolons.\n"
+        "- Match the brand's voice and tone throughout.\n\n"
+        "## Length Matching\n"
+        "Each regenerate_slot includes `max_words` — the hard upper limit for the slot's "
+        "visual space. Your rewrite MUST NOT exceed this count.\n"
+        "- Aim for 90-100% of max_words. Shorter is better than longer.\n"
+        "- HEADLINES must be complete thoughts. Never end mid-sentence.\n"
+        "- CTA slots must start with an action verb.\n\n"
+        "## Numbered Prefix Preservation (Listicle Pages)\n"
+        "When a slot includes a `prefix` field, start your rewrite with EXACTLY that prefix "
+        "followed by a space, then your new copy. Do NOT alter or renumber the prefix.\n"
+    )
+
+    _SELECTIVE_REGEN_PROMPT = (
+        "You are an expert direct-response copywriter editing for length.\n"
+        "You receive slots that ran over their target word count.\n"
+        "Rewrite each one to fit the target while maintaining coherence with frozen context.\n\n"
+        "## Rules\n"
+        "- Return ONLY a JSON dict mapping slot_name -> rewritten plain text.\n"
+        "- EVERY input slot name MUST appear in your output.\n"
+        "- NEVER use em dashes or en dashes. Use commas, periods, colons, or semicolons.\n"
+        "- max_words is a HARD ceiling. Aim for 90-100% of it.\n"
+        "- HEADLINES must be complete thoughts. Never produce a headline that ends mid-sentence.\n"
+        "- CTA slots must start with an action verb.\n"
+        "- If a slot has a `prefix` field, your rewrite MUST start with that exact prefix followed by a space.\n"
+    )
+
     _MAX_SLOTS_PER_BATCH = 80
 
     def _rewrite_slots_for_brand(
@@ -3046,6 +3263,228 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
         )
 
         return all_rewrites
+
+    # ------------------------------------------------------------------
+    # Selective Slot Regeneration (partial rewrite)
+    # ------------------------------------------------------------------
+
+    def _execute_selective_regen(
+        self,
+        frozen_slots: List[Dict],
+        regenerate_sections: List[Dict],
+        brand_data: Dict,
+        page_strategy: Dict,
+        slot_specs_lookup: Dict[str, Dict],
+        slot_contents: Dict[str, str],
+        listicle_data: Optional[Dict] = None,
+    ) -> Dict[str, str]:
+        """Run AI selective regen for a subset of slots with frozen context.
+
+        Args:
+            frozen_slots: [{name, section_name, type, content}] — read-only context.
+            regenerate_sections: Ordered section groups with slots to rewrite.
+            brand_data: Brand context from _build_shared_brand_context.
+            page_strategy: Page strategy from _build_shared_brand_context.
+            slot_specs_lookup: {slot_name: {max_words, type, ...}} for regen slots.
+            slot_contents: Original {slot_name: text} for fallback.
+            listicle_data: Optional listicle prefix data.
+
+        Returns {slot_name: rewritten_text} for regenerated slots only.
+        """
+        import json
+        from pydantic import BaseModel, Field
+        from pydantic_ai import Agent
+        from pydantic_ai.settings import ModelSettings
+        from viraltracker.core.config import Config
+        from viraltracker.services.agent_tracking import run_agent_sync_with_tracking
+
+        class SlotRewriteResult(BaseModel):
+            rewrites: Dict[str, str] = Field(
+                description="Map of slot_name to rewritten plain text content. "
+                "Keys MUST exactly match the regenerate_slot names. "
+                "Values MUST be plain text only - no HTML tags, no markdown."
+            )
+
+        # Collect all regen slot names
+        regen_slot_names: set = set()
+        for g in regenerate_sections:
+            for s in g["slots"]:
+                regen_slot_names.add(s["name"])
+
+        payload = {
+            "page_strategy": page_strategy,
+            "brand": brand_data,
+            "frozen_slots": frozen_slots,
+            "regenerate_sections": regenerate_sections,
+        }
+
+        agent = Agent(
+            model=Config.get_model("creative"),
+            output_type=SlotRewriteResult,
+            system_prompt=self._SELECTIVE_REGEN_SYSTEM_PROMPT,
+            retries=2,
+            output_retries=3,
+        )
+
+        try:
+            result = run_agent_sync_with_tracking(
+                agent, json.dumps(payload, ensure_ascii=False),
+                tracker=self._usage_tracker,
+                user_id=self._user_id,
+                organization_id=self._organization_id,
+                tool_name="mockup_service",
+                operation="selective_slot_regen",
+                model_settings=ModelSettings(max_tokens=16384),
+            )
+
+            if result is None or result.output is None:
+                raise ValueError("AI selective regen returned no result")
+
+            batch_rewrites = result.output.rewrites
+            if not batch_rewrites:
+                raise ValueError("AI returned empty rewrites dict")
+
+            # Post-validation
+            validated: Dict[str, str] = {}
+            listicle_prefixes = (listicle_data or {}).get("prefixes", {})
+            for name, value in batch_rewrites.items():
+                if name not in regen_slot_names:
+                    logger.warning(f"AI hallucinated slot '{name}' in selective regen - stripping")
+                    continue
+                clean = re.sub(r'<[^>]+>', '', str(value))
+                clean = _sanitize_dashes(clean)
+                clean = _html_module.escape(clean)
+                spec = slot_specs_lookup.get(name)
+                slot_type = spec["type"] if spec else "body"
+
+                # Quality gate: nav junk
+                if self._detect_nav_junk(clean):
+                    logger.warning(f"Quality gate: selective regen slot '{name}' is nav junk — falling back")
+                    clean = _html_module.escape(slot_contents.get(name, ""))
+                # Quality gate: incomplete sentence (mark for regen loop)
+                elif self._detect_incomplete_sentence(clean, slot_type):
+                    logger.warning(f"Quality gate: selective regen slot '{name}' incomplete — marking for regen")
+
+                validated[name] = clean
+
+            # Listicle prefix enforcement
+            if listicle_prefixes:
+                for name, clean in validated.items():
+                    prefix = slot_specs_lookup.get(name, {}).get("prefix")
+                    if not prefix:
+                        continue
+                    clean_raw = _html_module.unescape(clean)
+                    if not clean_raw.startswith(prefix + " "):
+                        stripped = self._LEADING_ORDINAL_RE.sub("", clean_raw).lstrip()
+                        if stripped:
+                            validated[name] = _html_module.escape(f"{prefix} {stripped}")
+
+            # Fill missing regen slots with original text
+            missing = regen_slot_names - set(validated.keys())
+            if missing:
+                logger.warning(f"AI missed {len(missing)} selective regen slots: {sorted(missing)[:10]}")
+                for name in missing:
+                    validated[name] = _html_module.escape(slot_contents.get(name, ""))
+
+        except Exception as e:
+            logger.error(f"Selective slot regen failed: {e}")
+            # Fallback: return original text for all requested slots
+            validated = {}
+            for name in regen_slot_names:
+                validated[name] = _html_module.escape(slot_contents.get(name, ""))
+
+        # ── Regen loop for over-length slots ──
+        MAX_REGEN_ROUNDS = 2
+        for regen_round in range(MAX_REGEN_ROUNDS):
+            violations: Dict[str, Dict] = {}
+            for name, text in validated.items():
+                spec = slot_specs_lookup.get(name)
+                if not spec:
+                    continue
+                word_count = len(text.split())
+                slot_type = spec["type"]
+                is_over = word_count > spec["max_words"]
+                is_incomplete = self._detect_incomplete_sentence(text, slot_type)
+                if is_over or is_incomplete:
+                    violations[name] = {
+                        "current_text": text,
+                        "current_words": word_count,
+                        "max_words": spec["max_words"],
+                        "type": slot_type,
+                        "reason": "over_length" if is_over else "incomplete_sentence",
+                    }
+
+            if not violations:
+                break
+
+            logger.info(f"Selective regen round {regen_round + 1}: {len(violations)} slots need regen")
+
+            regen_slots = []
+            for name, v in violations.items():
+                slot_entry = {
+                    "name": name,
+                    "current_text": v["current_text"],
+                    "current_words": v["current_words"],
+                    "max_words": v["max_words"],
+                    "type": v["type"],
+                    "reason": v["reason"],
+                }
+                if name in (listicle_data or {}).get("prefixes", {}):
+                    slot_entry["prefix"] = listicle_data["prefixes"][name]
+                regen_slots.append(slot_entry)
+
+            regen_payload = {
+                "task": "Rewrite these slots to fit within max_words while maintaining persuasive power.",
+                "slots": regen_slots,
+            }
+
+            try:
+                regen_agent = Agent(
+                    model=Config.get_model("creative"),
+                    output_type=SlotRewriteResult,
+                    system_prompt=self._SELECTIVE_REGEN_PROMPT,
+                    retries=1,
+                    output_retries=2,
+                )
+                regen_result = run_agent_sync_with_tracking(
+                    regen_agent, json.dumps(regen_payload, ensure_ascii=False),
+                    tracker=self._usage_tracker,
+                    user_id=self._user_id,
+                    organization_id=self._organization_id,
+                    tool_name="mockup_service",
+                    operation=f"selective_regen_fix_r{regen_round}",
+                    model_settings=ModelSettings(max_tokens=4096),
+                )
+                if regen_result and regen_result.output and regen_result.output.rewrites:
+                    improved = 0
+                    for name, value in regen_result.output.rewrites.items():
+                        if name not in violations:
+                            continue
+                        clean = re.sub(r'<[^>]+>', '', str(value))
+                        clean = _sanitize_dashes(clean)
+                        clean = _html_module.escape(clean)
+                        if not self._detect_nav_junk(clean):
+                            validated[name] = clean
+                            improved += 1
+                    if improved == 0:
+                        break
+            except Exception as e:
+                logger.warning(f"Selective regen fix round {regen_round + 1} failed: {e}")
+                break
+
+        # Final fallback: keep original for nav junk / incomplete
+        for name, text in list(validated.items()):
+            spec = slot_specs_lookup.get(name)
+            if not spec:
+                continue
+            slot_type = spec["type"]
+            if self._detect_nav_junk(text) or self._detect_incomplete_sentence(text, slot_type):
+                original = _html_module.escape(slot_contents.get(name, ""))
+                if original.strip():
+                    validated[name] = original
+
+        logger.info(f"Selective regen complete: {len(validated)} slots rewritten")
+        return validated
 
     # ------------------------------------------------------------------
     # AI Vision Generation
@@ -4114,12 +4553,67 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
         # Default → first section
         return bp_sections[0]
 
+    def extract_slots_grouped_by_section(
+        self,
+        mockup_html: str,
+        blueprint: Optional[Dict] = None,
+    ) -> Dict[str, List[Dict[str, str]]]:
+        """Group all text slots by their blueprint section for UI rendering.
+
+        Returns {section_name: [{name, type, content, section}]} ordered by flow_order.
+        Sections with no slots are omitted.
+
+        Args:
+            mockup_html: Full mockup HTML (wrapped or unwrapped).
+            blueprint: Blueprint dict for section mapping. If None, all slots
+                are placed under a single "Page Content" section.
+        """
+        body, _ = self._extract_page_css_and_strip(mockup_html)
+        slot_contents = self._extract_slots_with_content(body)
+        if not slot_contents:
+            return {}
+
+        if blueprint:
+            slot_sections = self._map_slots_to_sections(body, blueprint)
+        else:
+            slot_sections = {}
+
+        # Group by section_name, preserving flow_order
+        groups: Dict[str, Dict] = {}  # group_key -> {section_name, flow_order, slots}
+        for slot_name, content in slot_contents.items():
+            ctx = slot_sections.get(slot_name, {})
+            sec_name = ctx.get("section_name", "Page Content")
+            flow = ctx.get("flow_order", 999)
+            slot_type = ctx.get("slot_type", self._infer_slot_type(slot_name))
+            group_key = f"{flow:04d}_{sec_name}"
+
+            if group_key not in groups:
+                groups[group_key] = {
+                    "section_name": sec_name,
+                    "flow_order": flow,
+                    "slots": [],
+                }
+            groups[group_key]["slots"].append({
+                "name": slot_name,
+                "type": slot_type,
+                "content": content,
+                "section": sec_name,
+            })
+
+        # Build ordered result
+        result: Dict[str, List[Dict[str, str]]] = {}
+        for key in sorted(groups.keys()):
+            g = groups[key]
+            result[g["section_name"]] = g["slots"]
+        return result
+
     def _template_swap(
         self,
         template_html: str,
         blueprint: Dict,
         brand_profile: Optional[Dict] = None,
         slot_map: Optional[Dict[str, str]] = None,
+        apply_brand_colors: bool = True,
     ) -> str:
         """Replace data-slot content using DOM-aware parsing.
 
@@ -4133,6 +4627,9 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
             brand_profile: Brand profile for color injection.
             slot_map: Pre-built {slot_name: escaped_text} map (from AI rewrite).
                 If None, falls back to _build_slot_map(blueprint).
+            apply_brand_colors: When True, inject brand primary color as body
+                background. Set to False for selective regen to avoid
+                double-applying colors on already-styled HTML.
         """
         if slot_map is not None:
             slot_content = slot_map
@@ -4229,7 +4726,9 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
         replacer.feed(template_html)
         result = replacer.get_result()
 
-        # Apply brand colors as inline styles
+        # Apply brand colors as inline styles (skip for selective regen)
+        if not apply_brand_colors:
+            return result
         brand_style = self._extract_brand_style(brand_profile)
         if brand_style:
             primary = brand_style.get("primary", "")

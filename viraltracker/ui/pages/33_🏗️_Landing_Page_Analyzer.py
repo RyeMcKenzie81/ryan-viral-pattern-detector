@@ -49,6 +49,9 @@ if "lpa_mockup_analysis_ids" not in st.session_state:
     st.session_state.lpa_mockup_analysis_ids = []
 if "lpa_mockup_blueprint_ids" not in st.session_state:
     st.session_state.lpa_mockup_blueprint_ids = []
+# Selective slot regen undo state
+if "lpa_slot_regen_previous_html" not in st.session_state:
+    st.session_state.lpa_slot_regen_previous_html = None
 
 
 # ---------------------------------------------------------------------------
@@ -2120,6 +2123,16 @@ def _render_blueprint_mockup_section(
             bp_svc_share = get_blueprint_service()
             _render_share_controls(bp_record_for_images, bp_svc_share, blueprint_id)
 
+        # Selective slot regeneration
+        _render_selective_regen_section(
+            blueprint_id=blueprint_id,
+            current_html=cached,
+            result=result,
+            brand_id=brand_id,
+            product_id=product_id,
+            org_id=org_id,
+        )
+
         # Image generation section
         _render_generate_images_section(
             blueprint_id=blueprint_id,
@@ -2276,6 +2289,182 @@ def _render_blueprint_mockup_section(
         except Exception as e:
             st.error(f"AI copy rewrite failed: {e}")
             logger.error(f"Blueprint mockup generation failed: {e}", exc_info=True)
+
+
+# ---------------------------------------------------------------------------
+# Selective Slot Regeneration
+# ---------------------------------------------------------------------------
+
+def _apply_regen_result(blueprint_id: str, html: str):
+    """Persist selective regen result to session cache, DB, and invalidate images."""
+    _cache_mockup("blueprint", blueprint_id, html)
+    try:
+        bp_svc = get_blueprint_service()
+        bp_svc.save_blueprint_mockup_html(blueprint_id, html)
+    except Exception as e:
+        logger.warning(f"Failed to persist selective regen to DB: {e}")
+    try:
+        bp_img_svc = get_blueprint_image_service()
+        bp_img_svc.clear_generated_images(blueprint_id)
+        st.session_state.pop(f"lpa_blueprint_images_{blueprint_id}", None)
+    except Exception as e:
+        logger.warning(f"Failed to clear stale images after regen: {e}")
+    # QA-6: clear image view toggle so it doesn't show stale "Brand Images"
+    st.session_state.pop(f"lpa_img_view_{blueprint_id}", None)
+
+
+def _render_selective_regen_section(
+    blueprint_id: str,
+    current_html: str,
+    result: dict,
+    brand_id: Optional[str] = None,
+    product_id: Optional[str] = None,
+    org_id: Optional[str] = None,
+):
+    """Render the selective slot regeneration UI inside an expander."""
+    # QA-7: Don't render if brand/product missing
+    if not brand_id or not product_id:
+        return
+
+    # QA-3: Ensure blueprint data is available
+    blueprint = None
+    if result:
+        blueprint = result.get("blueprint")
+        if not blueprint and result.get("reconstruction_blueprint"):
+            blueprint = result
+    if not blueprint:
+        try:
+            bp_svc = get_blueprint_service()
+            bp_record = bp_svc.get_blueprint(blueprint_id)
+            if bp_record:
+                blueprint = bp_record.get("blueprint", bp_record)
+        except Exception:
+            pass
+    if not blueprint:
+        return
+
+    with st.expander("Regenerate Selected Slots", expanded=False):
+        mockup_svc = get_mockup_service()
+        grouped = mockup_svc.extract_slots_grouped_by_section(current_html, blueprint)
+
+        if not grouped:
+            st.info("No text slots found in this mockup.")
+            return
+
+        st.caption(
+            "Select individual slots to regenerate. Unchecked slots are frozen "
+            "and used as context for coherent rewriting."
+        )
+
+        # Collect all slot names for counting
+        all_slot_names = []
+        for section_slots in grouped.values():
+            for slot in section_slots:
+                all_slot_names.append(slot["name"])
+
+        # Render sections with checkboxes
+        selected_slots: list = []
+        for section_name, section_slots in grouped.items():
+            st.markdown(f"**{section_name}**")
+
+            # "Select all" for this section
+            select_all_key = f"regen_all_{blueprint_id}_{section_name}"
+            select_all = st.checkbox(
+                "Select all",
+                key=select_all_key,
+                value=False,
+            )
+
+            # QA-4: When select-all is toggled, force individual checkboxes
+            if select_all:
+                for slot in section_slots:
+                    slot_key = f"regen_{blueprint_id}_{slot['name']}"
+                    st.session_state[slot_key] = True
+
+            for slot in section_slots:
+                slot_key = f"regen_{blueprint_id}_{slot['name']}"
+                preview = slot["content"][:80] + ("..." if len(slot["content"]) > 80 else "")
+                label = f"`{slot['name']}` ({slot['type']}): {preview}"
+                checked = st.checkbox(
+                    label,
+                    key=slot_key,
+                    value=st.session_state.get(slot_key, False),
+                )
+                if checked:
+                    selected_slots.append(slot["name"])
+
+        st.divider()
+
+        # Action buttons
+        btn_col1, btn_col2 = st.columns([2, 1])
+        with btn_col1:
+            regen_disabled = len(selected_slots) == 0
+            regen_label = (
+                f"Regenerate {len(selected_slots)} Selected Slot{'s' if len(selected_slots) != 1 else ''}"
+                if selected_slots else "Select slots to regenerate"
+            )
+            if st.button(
+                regen_label,
+                key=f"lpa_selective_regen_{blueprint_id}",
+                type="primary",
+                disabled=regen_disabled,
+            ):
+                # Save current HTML for undo
+                st.session_state.lpa_slot_regen_previous_html = {
+                    "blueprint_id": blueprint_id,
+                    "html": current_html,
+                }
+
+                # Load brand profile
+                brand_profile = None
+                try:
+                    from viraltracker.services.landing_page_analysis import BrandProfileService
+                    bp_svc = BrandProfileService(get_supabase_client())
+                    brand_profile = bp_svc.get_brand_profile(brand_id, product_id)
+                except Exception as e:
+                    st.error(f"Failed to load brand profile: {e}")
+                    return
+
+                if not brand_profile:
+                    st.error("Brand profile not found. Cannot regenerate slots.")
+                    return
+
+                # Run selective regen
+                regen_svc = get_mockup_service()
+                if org_id:
+                    try:
+                        from viraltracker.services.usage_tracker import UsageTracker
+                        tracker = UsageTracker(get_supabase_client())
+                        user_id = st.session_state.get("user_id")
+                        regen_svc.set_tracking_context(tracker, user_id, org_id)
+                    except Exception:
+                        pass
+
+                with st.spinner(f"Regenerating {len(selected_slots)} slots..."):
+                    try:
+                        updated_html = regen_svc.regenerate_selected_slots(
+                            current_mockup_html=current_html,
+                            slots_to_regenerate=selected_slots,
+                            blueprint=blueprint,
+                            brand_profile=brand_profile,
+                        )
+                        _apply_regen_result(blueprint_id, updated_html)
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Selective regeneration failed: {e}")
+                        logger.error(f"Selective regen error: {e}", exc_info=True)
+
+        with btn_col2:
+            # Undo button
+            prev = st.session_state.get("lpa_slot_regen_previous_html")
+            if prev and prev.get("blueprint_id") == blueprint_id:
+                if st.button(
+                    "Undo Last Regen",
+                    key=f"lpa_undo_regen_{blueprint_id}",
+                ):
+                    _apply_regen_result(blueprint_id, prev["html"])
+                    st.session_state.lpa_slot_regen_previous_html = None
+                    st.rerun()
 
 
 # ---------------------------------------------------------------------------

@@ -3449,3 +3449,193 @@ class TestSurgeryModeDetection:
         assert "max-width: 100vw" in _SURGERY_CRITICAL_CSS
         assert "overflow-x: hidden" in _SURGERY_CRITICAL_CSS
         assert "max-width: 100%" in _SURGERY_CRITICAL_CSS
+
+
+# ---------------------------------------------------------------------------
+# Selective Slot Regeneration
+# ---------------------------------------------------------------------------
+
+class TestExtractSlotsGroupedBySection:
+    """Test extract_slots_grouped_by_section public method."""
+
+    def _wrap(self, body: str) -> str:
+        """Wrap body in minimal mockup shell so _extract_page_css_and_strip can strip it."""
+        return f"<!DOCTYPE html><html><head></head><body>{body}</body></html>"
+
+    def test_basic_grouping(self, service):
+        html = self._wrap(
+            '<div data-section="sec-hero">'
+            '<h1 data-slot="headline">Big Headline</h1>'
+            '<p data-slot="body-1">Body text</p>'
+            '</div>'
+            '<div data-section="sec-features">'
+            '<h2 data-slot="heading-1">Feature</h2>'
+            '</div>'
+        )
+        blueprint = {
+            "sections": [
+                {"flow_order": 1, "section_name": "Hero", "copy_direction": "Lead"},
+                {"flow_order": 2, "section_name": "Features", "copy_direction": "Expand"},
+            ],
+        }
+        result = service.extract_slots_grouped_by_section(html, blueprint)
+        assert "Hero" in result
+        assert "Features" in result
+        assert len(result["Hero"]) == 2
+        assert len(result["Features"]) == 1
+        # Check slot dict shape
+        slot = result["Hero"][0]
+        assert "name" in slot
+        assert "type" in slot
+        assert "content" in slot
+        assert "section" in slot
+
+    def test_no_blueprint_groups_under_page_content(self, service):
+        html = self._wrap(
+            '<h1 data-slot="headline">Head</h1>'
+            '<p data-slot="body-1">Body</p>'
+        )
+        result = service.extract_slots_grouped_by_section(html, blueprint=None)
+        assert "Page Content" in result
+        assert len(result["Page Content"]) == 2
+
+    def test_empty_html_returns_empty(self, service):
+        html = self._wrap('<div>No slots here</div>')
+        result = service.extract_slots_grouped_by_section(html, blueprint=None)
+        assert result == {}
+
+    def test_sections_ordered_by_flow_order(self, service):
+        html = self._wrap(
+            '<div data-section="sec-b">'
+            '<h2 data-slot="heading-1">Second</h2>'
+            '</div>'
+            '<div data-section="sec-a">'
+            '<h1 data-slot="headline">First</h1>'
+            '</div>'
+        )
+        blueprint = {
+            "sections": [
+                {"flow_order": 1, "section_name": "Hero"},
+                {"flow_order": 2, "section_name": "Features"},
+            ],
+        }
+        result = service.extract_slots_grouped_by_section(html, blueprint)
+        section_names = list(result.keys())
+        # sec-b maps to Hero (idx 0), sec-a maps to Features (idx 1)
+        # Ordered by flow_order, so Hero comes first
+        assert section_names[0] == "Hero"
+        assert section_names[1] == "Features"
+
+
+class TestRegenerateSelectedSlots:
+    """Test regenerate_selected_slots orchestration."""
+
+    def test_empty_slots_returns_unchanged(self, service):
+        html = '<h1 data-slot="headline">Keep</h1>'
+        result = service.regenerate_selected_slots(
+            current_mockup_html=html,
+            slots_to_regenerate=[],
+            blueprint={"sections": []},
+            brand_profile={"brand_basics": {"name": "Test"}},
+        )
+        assert result == html
+
+    def test_nonexistent_slots_returns_unchanged(self, service):
+        html = (
+            '<!DOCTYPE html><html><head></head><body>'
+            '<h1 data-slot="headline">Keep</h1>'
+            '</body></html>'
+        )
+        result = service.regenerate_selected_slots(
+            current_mockup_html=html,
+            slots_to_regenerate=["nonexistent"],
+            blueprint={"sections": []},
+            brand_profile={"brand_basics": {"name": "Test"}},
+        )
+        assert result == html
+
+    @patch("viraltracker.services.agent_tracking.run_agent_sync_with_tracking")
+    def test_happy_path_replaces_selected_preserves_frozen(self, mock_run, service):
+        """Selected slots get new content, frozen slots stay unchanged."""
+        mock_result = MagicMock()
+        mock_result.output = MagicMock()
+        mock_result.output.rewrites = {"headline": "Brand New Headline"}
+        mock_run.return_value = mock_result
+
+        html = (
+            '<!DOCTYPE html><html><head></head><body>'
+            '<div data-section="sec-hero">'
+            '<h1 data-slot="headline">Old Headline</h1>'
+            '<p data-slot="body-1">Frozen body text stays</p>'
+            '</div>'
+            '</body></html>'
+        )
+        blueprint = {
+            "sections": [
+                {"flow_order": 1, "section_name": "Hero", "copy_direction": "Lead"},
+            ],
+        }
+        brand_profile = {"brand_basics": {"name": "TestBrand"}}
+
+        result = service.regenerate_selected_slots(
+            current_mockup_html=html,
+            slots_to_regenerate=["headline"],
+            blueprint=blueprint,
+            brand_profile=brand_profile,
+        )
+
+        assert "Brand New Headline" in result
+        assert "Frozen body text stays" in result
+        assert "Old Headline" not in result
+
+    @patch("viraltracker.services.agent_tracking.run_agent_sync_with_tracking",
+           side_effect=Exception("AI timeout"))
+    def test_ai_failure_preserves_original(self, mock_run, service):
+        """When AI call fails entirely, slots keep original text."""
+        html = (
+            '<!DOCTYPE html><html><head></head><body>'
+            '<h1 data-slot="headline">Original Headline</h1>'
+            '</body></html>'
+        )
+        result = service.regenerate_selected_slots(
+            current_mockup_html=html,
+            slots_to_regenerate=["headline"],
+            blueprint={"sections": [{"flow_order": 1, "section_name": "Hero"}]},
+            brand_profile={"brand_basics": {"name": "Test"}},
+        )
+        # Should still contain original text (fallback)
+        assert "Original Headline" in result
+
+
+class TestTemplateSwapBrandColors:
+    """Test _template_swap apply_brand_colors parameter."""
+
+    def test_brand_colors_applied_by_default(self, service):
+        template = '<body><h1 data-slot="headline">Old</h1></body>'
+        brand_profile = {
+            "brand_basics": {"name": "Test", "colors": {"primary": "#ff0000"}},
+        }
+        result = service._template_swap(
+            template,
+            blueprint={"sections": []},
+            brand_profile=brand_profile,
+            slot_map={"headline": "New"},
+        )
+        assert "background-color:#ff0000" in result
+
+    def test_brand_colors_skipped_when_false(self, service):
+        template = '<body><h1 data-slot="headline">Old</h1></body>'
+        brand_profile = {
+            "brand_basics": {"name": "Test", "colors": {"primary": "#ff0000"}},
+        }
+        result = service._template_swap(
+            template,
+            blueprint={"sections": []},
+            brand_profile=brand_profile,
+            slot_map={"headline": "New"},
+            apply_brand_colors=False,
+        )
+        assert "background-color" not in result
+        # But slot content IS still replaced
+        assert "New" in result
+        assert "Old" not in result
