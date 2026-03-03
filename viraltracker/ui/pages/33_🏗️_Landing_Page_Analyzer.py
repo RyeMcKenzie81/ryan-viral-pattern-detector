@@ -139,7 +139,134 @@ def _get_cached_mockup(cache_type: str, item_id: str) -> Optional[str]:
     return st.session_state.get(f"lpa_mockup_{cache_type}_{item_id}")
 
 
-def _render_mockup_preview(html_str: str, key_suffix: str):
+# ---------------------------------------------------------------------------
+# Slot Annotation Overlay (CSS outlines + JS labels for debug inspection)
+# ---------------------------------------------------------------------------
+
+_SLOT_TYPE_COLORS = {
+    "headline": ("#3b82f6", "blue"),
+    "subheadline": ("#6366f1", "indigo"),
+    "heading": ("#8b5cf6", "violet"),
+    "body": ("#22c55e", "green"),
+    "cta": ("#f97316", "orange"),
+    "testimonial": ("#ec4899", "pink"),
+    "feature": ("#14b8a6", "teal"),
+    "list": ("#84cc16", "lime"),
+    "price": ("#eab308", "yellow"),
+    "guarantee": ("#eab308", "yellow"),
+    "badge": ("#a855f7", "purple"),
+}
+
+_SLOT_ANNOTATION_CSS = """
+[data-slot] {
+    --slot-color: #94a3b8;
+    outline: 3px dashed var(--slot-color) !important;
+    outline-offset: -1px !important;
+}
+[data-slot^="headline"] { --slot-color: #3b82f6; }
+[data-slot^="subheadline"] { --slot-color: #6366f1; }
+[data-slot^="heading"] { --slot-color: #8b5cf6; }
+[data-slot^="body"] { --slot-color: #22c55e; }
+[data-slot^="cta"] { --slot-color: #f97316; }
+[data-slot^="testimonial"] { --slot-color: #ec4899; }
+[data-slot^="feature"] { --slot-color: #14b8a6; }
+[data-slot^="list"] { --slot-color: #84cc16; }
+[data-slot^="price"], [data-slot^="guarantee"] { --slot-color: #eab308; }
+[data-slot^="badge"] { --slot-color: #a855f7; }
+.slot-annotation-label {
+    position: absolute !important;
+    top: 0 !important;
+    left: 0 !important;
+    transform: translateY(-100%) !important;
+    color: #fff !important;
+    font-size: 10px !important;
+    font-family: monospace !important;
+    font-weight: 600 !important;
+    line-height: 1 !important;
+    padding: 2px 4px !important;
+    border-radius: 2px 2px 0 0 !important;
+    white-space: nowrap !important;
+    z-index: 2147483647 !important;
+    pointer-events: none !important;
+}
+"""
+
+_SLOT_ANNOTATION_JS = """
+(function() {
+    var VOID_TAGS = /^(AREA|BASE|BR|COL|EMBED|HR|IMG|INPUT|LINK|META|PARAM|SOURCE|TRACK|WBR)$/i;
+    var TABLE_TAGS = /^(TABLE|THEAD|TBODY|TFOOT|TR|COLGROUP|SELECT|OPTGROUP)$/i;
+    var slotData = [];
+    document.querySelectorAll('[data-slot]').forEach(function(el) {
+        var cs = window.getComputedStyle(el);
+        slotData.push({
+            el: el,
+            pos: cs.position,
+            display: cs.display,
+            color: cs.getPropertyValue('--slot-color').trim() || '#94a3b8',
+            tag: el.tagName,
+            name: el.getAttribute('data-slot')
+        });
+    });
+    slotData.forEach(function(d) {
+        if (VOID_TAGS.test(d.tag) || TABLE_TAGS.test(d.tag)) return;
+        if (d.pos === 'static') {
+            d.el.style.setProperty('position', 'relative', 'important');
+        }
+        if (d.display === 'inline') {
+            d.el.style.setProperty('display', 'inline-block', 'important');
+        }
+        var label = document.createElement('span');
+        label.className = 'slot-annotation-label';
+        label.textContent = d.name;
+        label.style.setProperty('background', d.color, 'important');
+        d.el.insertBefore(label, d.el.firstChild);
+    });
+    document.body.style.setProperty('padding-top', '20px', 'important');
+})();
+"""
+
+
+def _inject_slot_annotations(html_str: str, include_js: bool = True) -> str:
+    """Inject annotation CSS (and optionally JS labels) into mockup HTML.
+
+    Args:
+        html_str: The mockup HTML to annotate.
+        include_js: If True, inject label JS too (for new-tab view).
+                    If False, inject CSS outlines only (for inline thumbnail).
+    """
+    import re
+
+    css_tag = f"<style>{_SLOT_ANNOTATION_CSS}</style>"
+    html_str, n = re.subn(r'(</head>)', css_tag + r'\1', html_str, count=1, flags=re.IGNORECASE)
+    if n == 0:
+        html_str = css_tag + html_str
+
+    if include_js:
+        js_tag = f"<script>{_SLOT_ANNOTATION_JS}</script>"
+        html_str, n = re.subn(r'(</body>)', js_tag + r'\1', html_str, count=1, flags=re.IGNORECASE)
+        if n == 0:
+            html_str = html_str + js_tag
+
+    return html_str
+
+
+def _render_slot_type_legend():
+    """Render inline color legend for slot annotation types."""
+    chips = []
+    seen = set()
+    for slot_type, (hex_color, _) in _SLOT_TYPE_COLORS.items():
+        if hex_color in seen:
+            continue
+        seen.add(hex_color)
+        chips.append(
+            f'<span style="display:inline-block;background:{hex_color};color:#fff;'
+            f'font-size:11px;font-family:monospace;padding:2px 6px;border-radius:3px;'
+            f'margin:1px 2px;">{slot_type}</span>'
+        )
+    st.markdown(" ".join(chips), unsafe_allow_html=True)
+
+
+def _render_mockup_preview(html_str: str, key_suffix: str, download_html: str = None):
     """Render mockup thumbnail, download button, and open-in-new-tab link."""
     import base64
     import streamlit.components.v1 as components
@@ -152,6 +279,12 @@ def _render_mockup_preview(html_str: str, key_suffix: str):
         html_str = restore_background_images(html_str)
     except Exception:
         pass  # Non-fatal: markers stay as <img> tags
+
+    # If annotations are active (CSS already injected), prepare a JS-enhanced
+    # version for "Open in New Tab" so labels are readable at full size.
+    newtab_html = html_str
+    if _SLOT_ANNOTATION_CSS[:30] in html_str:
+        newtab_html = _inject_slot_annotations(html_str, include_js=True)
 
     # Thumbnail preview (scaled down via CSS transform)
     thumbnail_html = f"""
@@ -170,14 +303,14 @@ def _render_mockup_preview(html_str: str, key_suffix: str):
     with col1:
         st.download_button(
             "Download HTML Mockup",
-            data=html_str,
+            data=download_html or html_str,
             file_name=f"mockup_{key_suffix}.html",
             mime="text/html",
             key=f"lpa_mockup_dl_{key_suffix}",
         )
     with col2:
         # Best-effort: open in new tab via Blob URL
-        html_b64 = base64.b64encode(html_str.encode("utf-8")).decode("ascii")
+        html_b64 = base64.b64encode(newtab_html.encode("utf-8")).decode("ascii")
         uid = key_suffix.replace("-", "")[:16]
         open_script = f"""
         <span id="mb64-{uid}" style="display:none">{html_b64}</span>
@@ -2077,6 +2210,11 @@ def _render_blueprint_mockup_section(
         if bp_record_for_images:
             images_html = bp_record_for_images.get("blueprint_mockup_html_with_images")
 
+        # Check annotation state (set by toggle in selective regen section)
+        annotation_key = f"lpa_show_annotations_{blueprint_id}"
+        annotated = st.session_state.get(annotation_key, False)
+
+        # Determine which HTML variant to display
         if images_html:
             view_mode = st.radio(
                 "View",
@@ -2085,11 +2223,21 @@ def _render_blueprint_mockup_section(
                 horizontal=True,
             )
             if view_mode == "Brand Images":
-                _render_mockup_preview(images_html, f"blueprint_{blueprint_id}_images")
+                base_html = images_html
+                suffix = f"blueprint_{blueprint_id}_images"
             else:
-                _render_mockup_preview(cached, f"blueprint_{blueprint_id}")
+                base_html = cached
+                suffix = f"blueprint_{blueprint_id}"
         else:
-            _render_mockup_preview(cached, f"blueprint_{blueprint_id}")
+            base_html = cached
+            suffix = f"blueprint_{blueprint_id}"
+
+        # Apply annotations to whatever is being displayed
+        if annotated:
+            display_html = _inject_slot_annotations(base_html, include_js=False)
+            _render_mockup_preview(display_html, suffix, download_html=base_html)
+        else:
+            _render_mockup_preview(base_html, suffix)
 
         if st.button(
             "Regenerate Mockup",
@@ -2355,6 +2503,15 @@ def _render_selective_regen_section(
             "Select individual slots to regenerate. Unchecked slots are frozen "
             "and used as context for coherent rewriting."
         )
+
+        show_annotations = st.toggle(
+            "Show Slot Annotations on Page",
+            key=f"lpa_show_annotations_{blueprint_id}",
+            value=False,
+        )
+        if show_annotations:
+            _render_slot_type_legend()
+            st.caption("Colored outlines shown on preview above. Open in New Tab for full labels.")
 
         # Collect all slot names for counting
         all_slot_names = []
