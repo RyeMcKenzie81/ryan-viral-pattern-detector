@@ -1964,7 +1964,10 @@ def _render_generate_images_section(
     if not has_generated:
         # Collect selected indices from checkboxes
         selected_key = f"lpa_img_selected_{blueprint_id}"
-        selected_indices = st.session_state.get(selected_key, list(range(len(existing_meta))))
+        selected_indices = st.session_state.get(
+            selected_key,
+            [int(k) for k in existing_meta.keys() if k.isdigit()],
+        )
 
         # Prompt editor (expandable) — let users tweak before generating
         with st.expander("Edit prompts before generating", expanded=False):

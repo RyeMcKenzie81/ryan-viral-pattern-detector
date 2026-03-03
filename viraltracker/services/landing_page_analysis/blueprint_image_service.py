@@ -13,6 +13,7 @@ import base64
 import html as _html_module
 import json
 import logging
+import re
 import time
 from dataclasses import dataclass
 from html.parser import HTMLParser
@@ -83,11 +84,57 @@ class ImageSlot:
 
 
 # ---------------------------------------------------------------------------
+# Visibility filter constants
+# ---------------------------------------------------------------------------
+
+# CSS class names that indicate an element is hidden
+_HIDDEN_CLASSES = frozenset({
+    "hidden", "d-none", "d-md-none", "d-lg-none",
+    "visually-hidden", "sr-only", "screen-reader-text",
+    "collapse",  # hidden unless paired with "show"
+    "invisible",
+    "wp-hidden", "elementor-hidden-desktop", "elementor-hidden-tablet",
+})
+
+# Inline style patterns that indicate hiding (case-insensitive, whitespace-tolerant)
+_HIDING_STYLE_PATTERNS = [
+    re.compile(r"display\s*:\s*none", re.IGNORECASE),
+    re.compile(r"visibility\s*:\s*hidden", re.IGNORECASE),
+    re.compile(r"opacity\s*:\s*0(?:[;\s]|$)", re.IGNORECASE),
+    re.compile(r"max-height\s*:\s*0", re.IGNORECASE),
+    re.compile(r"(?<![a-z-])height\s*:\s*0(?:px)?(?:[;\s]|$)", re.IGNORECASE),
+    re.compile(r"clip\s*:\s*rect\(0", re.IGNORECASE),
+    re.compile(r"clip-path\s*:\s*inset\(100%\)", re.IGNORECASE),
+    re.compile(r"position\s*:\s*absolute.*?left\s*:\s*-\d{4,}", re.IGNORECASE | re.DOTALL),
+    re.compile(r"position\s*:\s*absolute.*?top\s*:\s*-\d{4,}", re.IGNORECASE | re.DOTALL),
+]
+
+# Tags that can contain children (safe to push onto the hidden stack)
+_CONTAINER_TAGS = frozenset({
+    "div", "section", "article", "aside", "nav", "header", "footer", "main",
+    "figure", "details", "summary", "fieldset", "form",
+    "table", "thead", "tbody", "tr", "td", "th",
+    "ul", "ol", "dl", "li", "dd", "dt",
+    "span", "p", "blockquote", "a",
+    "noscript", "template",
+})
+
+# Tags that are always hidden (browser never renders their content)
+_ALWAYS_HIDDEN_TAGS = frozenset({"noscript", "template"})
+
+
+# ---------------------------------------------------------------------------
 # HTML Parsers
 # ---------------------------------------------------------------------------
 
 class _ImageContextExtractor(HTMLParser):
-    """Walk HTML, extract <img> tags with surrounding text context."""
+    """Walk HTML, extract <img> tags with surrounding text context.
+
+    Includes a heuristic CSS visibility filter that skips images hidden by
+    inline styles, CSS classes, HTML attributes, or ancestor containers.
+    The _img_index counter always increments for every <img> (hidden or not)
+    to maintain DOM-order parity with _SrcReplacer.
+    """
 
     def __init__(self):
         super().__init__()
@@ -97,9 +144,60 @@ class _ImageContextExtractor(HTMLParser):
         self._current_heading = ""
         self._in_heading = False
         self._heading_tag = ""
+        # Visibility tracking: stack of hidden container tags
+        self._hidden_stack: List[str] = []
+        self._hidden_depth: int = 0
 
-    def _process_img(self, attrs_dict: dict):
-        """Process an <img> tag, always incrementing the DOM-order counter."""
+    @staticmethod
+    def _is_element_hidden(attrs_dict: dict) -> bool:
+        """Check if an element's attributes indicate it is CSS-hidden.
+
+        Checks inline styles, CSS classes, and HTML attributes for common
+        hiding signals. Errs on the side of inclusion (returns False if
+        uncertain).
+        """
+        # Check HTML hidden attribute
+        if "hidden" in attrs_dict:
+            return True
+
+        # Check aria-hidden="true"
+        if attrs_dict.get("aria-hidden", "").lower() == "true":
+            return True
+
+        # Check data attributes
+        if "data-hidden" in attrs_dict:
+            return True
+        if attrs_dict.get("data-visible", "").lower() == "false":
+            return True
+
+        # Check inline styles
+        style = attrs_dict.get("style", "")
+        if style:
+            for pattern in _HIDING_STYLE_PATTERNS:
+                if pattern.search(style):
+                    return True
+
+        # Check CSS classes
+        classes = set(attrs_dict.get("class", "").split())
+        if classes:
+            # Direct match against known hiding classes
+            if classes & _HIDDEN_CLASSES:
+                # Special case: "collapse" is hidden only without "show"
+                if classes & _HIDDEN_CLASSES == {"collapse"} and "show" in classes:
+                    pass  # collapse + show = visible
+                else:
+                    return True
+
+        return False
+
+    def _process_img(self, attrs_dict: dict, is_self_hidden: bool = False):
+        """Process an <img> tag, always incrementing the DOM-order counter.
+
+        Args:
+            attrs_dict: Parsed attributes of the <img> tag.
+            is_self_hidden: Whether this <img> itself has hiding attributes
+                (checked by caller for self-closing tags or direct attrs).
+        """
         src = attrs_dict.get("src", "")
         alt = attrs_dict.get("alt", "")
         width = attrs_dict.get("width", "")
@@ -108,6 +206,22 @@ class _ImageContextExtractor(HTMLParser):
         # Always capture current index, then increment (must match _SrcReplacer)
         current_index = self._img_index
         self._img_index += 1
+
+        # Skip images inside hidden ancestor containers
+        if self._hidden_depth > 0:
+            logger.debug(
+                "Visibility filter: skipping img %d (hidden ancestor, depth=%d) src=%s",
+                current_index, self._hidden_depth, src[:80] if src else "",
+            )
+            return
+
+        # Skip images that are themselves hidden
+        if is_self_hidden:
+            logger.debug(
+                "Visibility filter: skipping img %d (self-hidden) src=%s",
+                current_index, src[:80] if src else "",
+            )
+            return
 
         # Filter out small icons
         try:
@@ -134,6 +248,12 @@ class _ImageContextExtractor(HTMLParser):
     def handle_starttag(self, tag: str, attrs: list):
         attrs_dict = dict(attrs)
 
+        # --- Visibility tracking for container tags ---
+        if tag in _CONTAINER_TAGS:
+            if tag in _ALWAYS_HIDDEN_TAGS or self._is_element_hidden(attrs_dict):
+                self._hidden_stack.append(tag)
+                self._hidden_depth += 1
+
         # Track section headings
         if tag in ("h1", "h2", "h3", "h4", "h5", "h6"):
             self._in_heading = True
@@ -145,20 +265,40 @@ class _ImageContextExtractor(HTMLParser):
             pass
 
         if tag == "img":
-            self._process_img(attrs_dict)
+            # Check if the <img> itself has hiding attributes
+            self_hidden = self._is_element_hidden(attrs_dict)
+            self._process_img(attrs_dict, is_self_hidden=self_hidden)
 
     def handle_startendtag(self, tag: str, attrs: list):
-        """Handle self-closing <img /> tags (XHTML style)."""
-        if tag == "img":
-            self._process_img(dict(attrs))
-        # Track headings that might be self-closing (unlikely but safe)
+        """Handle self-closing tags (XHTML style).
+
+        Self-closing tags have no children, so we do NOT push onto the
+        hidden stack (no matching endtag will ever fire). We only check
+        self-hiding for <img/> tags.
+        """
         attrs_dict = dict(attrs)
+        if tag == "img":
+            self_hidden = self._is_element_hidden(attrs_dict)
+            self._process_img(attrs_dict, is_self_hidden=self_hidden)
+        # Track headings that might be self-closing (unlikely but safe)
         if tag in ("h1", "h2", "h3", "h4", "h5", "h6"):
             text = attrs_dict.get("title", "")
             if text:
                 self._current_heading = text
 
     def handle_endtag(self, tag: str):
+        # --- Unwind hidden container stack ---
+        if self._hidden_stack and tag == self._hidden_stack[-1]:
+            self._hidden_stack.pop()
+            self._hidden_depth = max(0, self._hidden_depth - 1)
+        elif self._hidden_stack and tag in _CONTAINER_TAGS:
+            # Tag mismatch — malformed HTML. Log but don't pop to avoid
+            # corrupting the stack (defensive tolerance).
+            logger.debug(
+                "Visibility filter: endtag <%s> doesn't match top of hidden stack <%s>",
+                tag, self._hidden_stack[-1],
+            )
+
         if tag == self._heading_tag and self._in_heading:
             self._in_heading = False
             self._heading_tag = ""
