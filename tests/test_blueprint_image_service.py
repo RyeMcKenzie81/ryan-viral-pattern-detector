@@ -7,7 +7,10 @@ from viraltracker.services.landing_page_analysis.blueprint_image_service import 
     BlueprintImageService,
     ImageSlot,
     NARRATIVE_ROLE_STYLES,
+    _DUPLICATE_IMAGE_THRESHOLD,
     _SrcReplacer,
+    _filter_duplicate_image_slots,
+    _normalize_img_src,
     replace_image_sources,
     snap_aspect_ratio,
 )
@@ -99,6 +102,7 @@ class TestExtractImageSlots:
         assert "example.com" in slots[0].original_src
 
     def test_duplicate_urls_get_separate_slots(self):
+        """2x duplicates are below the _DUPLICATE_IMAGE_THRESHOLD and kept."""
         html = """<div>
           <img src="https://example.com/same.jpg" alt="First">
           <img src="https://example.com/same.jpg" alt="Second">
@@ -652,3 +656,159 @@ class TestSceneDirection:
         rebuilt = svc._rebuild_slots_from_meta(meta)
         assert len(rebuilt) == 1
         assert rebuilt[0].scene_direction is None
+
+
+# ---------------------------------------------------------------------------
+# Template Placeholder Image Filter
+# ---------------------------------------------------------------------------
+
+class TestTemplatePlaceholderFilter:
+    """Tests for the post-processing frequency filter that removes template
+    placeholder images (e.g. 18 identical 'Doe Beauty' stock photos from Replo).
+    """
+
+    @staticmethod
+    def _make_slot(index: int, src: str) -> ImageSlot:
+        return ImageSlot(
+            index=index,
+            original_src=src,
+            alt_text=f"alt-{index}",
+            surrounding_text="",
+            section_heading="",
+        )
+
+    # 1. 3+ duplicates filtered
+    def test_three_plus_duplicates_filtered(self):
+        """3x same URL + 1 unique → 1 slot (the unique one)."""
+        slots = [
+            self._make_slot(0, "https://cdn.replo.co/template/doe-beauty.webp"),
+            self._make_slot(1, "https://cdn.replo.co/template/doe-beauty.webp"),
+            self._make_slot(2, "https://cdn.replo.co/template/doe-beauty.webp"),
+            self._make_slot(3, "https://example.com/unique.jpg"),
+        ]
+        result = _filter_duplicate_image_slots(slots)
+        assert len(result) == 1
+        assert result[0].index == 3
+
+    # 2. 2x duplicates kept (below threshold)
+    def test_two_duplicates_kept(self):
+        """2x same URL → 2 slots (below threshold)."""
+        slots = [
+            self._make_slot(0, "https://example.com/same.jpg"),
+            self._make_slot(1, "https://example.com/same.jpg"),
+        ]
+        result = _filter_duplicate_image_slots(slots)
+        assert len(result) == 2
+
+    # 3. DOM-order indices preserved with gaps
+    def test_dom_order_indices_preserved(self):
+        """Filtered slots leave index gaps, surviving slots keep original indices."""
+        slots = [
+            self._make_slot(0, "https://cdn.replo.co/template.webp"),
+            self._make_slot(1, "https://example.com/real-a.jpg"),
+            self._make_slot(2, "https://cdn.replo.co/template.webp"),
+            self._make_slot(3, "https://cdn.replo.co/template.webp"),
+            self._make_slot(4, "https://example.com/real-b.jpg"),
+        ]
+        result = _filter_duplicate_image_slots(slots)
+        assert [s.index for s in result] == [1, 4]
+
+    # 4. URL normalization: percent-encoding
+    def test_normalize_percent_encoding(self):
+        """Doe%20Beauty.webp and Doe Beauty.webp counted as same."""
+        slots = [
+            self._make_slot(0, "https://cdn.replo.co/Doe%20Beauty.webp"),
+            self._make_slot(1, "https://cdn.replo.co/Doe Beauty.webp"),
+            self._make_slot(2, "https://cdn.replo.co/Doe%20Beauty.webp"),
+            self._make_slot(3, "https://example.com/unique.jpg"),
+        ]
+        result = _filter_duplicate_image_slots(slots)
+        assert len(result) == 1
+        assert result[0].index == 3
+
+    # 5. URL normalization: query params
+    def test_normalize_query_params(self):
+        """img.jpg?v=1 and img.jpg?v=2 counted as same."""
+        slots = [
+            self._make_slot(0, "https://cdn.replo.co/img.jpg?v=1"),
+            self._make_slot(1, "https://cdn.replo.co/img.jpg?v=2"),
+            self._make_slot(2, "https://cdn.replo.co/img.jpg?v=3"),
+            self._make_slot(3, "https://example.com/other.jpg"),
+        ]
+        result = _filter_duplicate_image_slots(slots)
+        assert len(result) == 1
+        assert result[0].index == 3
+
+    # 6. Mixed thresholds
+    def test_mixed_thresholds(self):
+        """URL-A (3x filtered) + URL-B (2x kept) + URL-C (1x kept)."""
+        slots = [
+            self._make_slot(0, "https://cdn.replo.co/template-a.webp"),
+            self._make_slot(1, "https://example.com/real-b.jpg"),
+            self._make_slot(2, "https://cdn.replo.co/template-a.webp"),
+            self._make_slot(3, "https://example.com/real-b.jpg"),
+            self._make_slot(4, "https://cdn.replo.co/template-a.webp"),
+            self._make_slot(5, "https://example.com/unique-c.jpg"),
+        ]
+        result = _filter_duplicate_image_slots(slots)
+        assert len(result) == 3
+        assert {s.index for s in result} == {1, 3, 5}
+
+    # 7. Self-closing <img /> tags handled correctly
+    def test_self_closing_img_tags(self):
+        """Self-closing <img /> tags are parsed and filtered identically."""
+        html = """<div>
+          <img src="https://cdn.replo.co/template.webp" />
+          <img src="https://cdn.replo.co/template.webp" />
+          <img src="https://cdn.replo.co/template.webp" />
+          <img src="https://example.com/unique.jpg" />
+        </div>"""
+        svc = BlueprintImageService.__new__(BlueprintImageService)
+        slots = svc.extract_image_slots(html)
+        assert len(slots) == 1
+        assert slots[0].original_src == "https://example.com/unique.jpg"
+
+    # 8. Empty src never interferes
+    def test_empty_src_does_not_interfere(self):
+        """5x <img src=""> + 2 unique → 2 slots (empty src already filtered by URL check)."""
+        html = """<div>
+          <img src="">
+          <img src="">
+          <img src="">
+          <img src="">
+          <img src="">
+          <img src="https://example.com/a.jpg" alt="A">
+          <img src="https://example.com/b.jpg" alt="B">
+        </div>"""
+        svc = BlueprintImageService.__new__(BlueprintImageService)
+        slots = svc.extract_image_slots(html)
+        assert len(slots) == 2
+        srcs = {s.original_src for s in slots}
+        assert "https://example.com/a.jpg" in srcs
+        assert "https://example.com/b.jpg" in srcs
+
+    # 9. SrcReplacer parity — filtering creates gaps, replacer still works
+    def test_src_replacer_parity_with_gaps(self):
+        """After filtering creates index gaps, replace_image_sources() still
+        replaces correct DOM positions.
+        """
+        html = """<div>
+<img src="https://cdn.replo.co/template.webp" alt="t0">
+<img src="https://example.com/real.jpg" alt="real">
+<img src="https://cdn.replo.co/template.webp" alt="t1">
+<img src="https://cdn.replo.co/template.webp" alt="t2">
+</div>"""
+        svc = BlueprintImageService.__new__(BlueprintImageService)
+        slots = svc.extract_image_slots(html)
+        # Only the unique image at DOM index 1 survives
+        assert len(slots) == 1
+        assert slots[0].index == 1
+
+        # Replace only slot 1 (the surviving one)
+        new_html = replace_image_sources(html, {1: "https://new.com/generated.png"})
+        # Replaced slot shows new URL
+        assert "https://new.com/generated.png" in new_html
+        # Template slots unchanged (they're still in the HTML, just not in the slot list)
+        assert new_html.count("https://cdn.replo.co/template.webp") == 3
+        # Original unique image URL replaced
+        assert "https://example.com/real.jpg" not in new_html

@@ -122,6 +122,56 @@ _CONTAINER_TAGS = frozenset({
 # Tags that are always hidden (browser never renders their content)
 _ALWAYS_HIDDEN_TAGS = frozenset({"noscript", "template"})
 
+# Template placeholder images repeat many times (e.g., 18 identical "Doe Beauty"
+# stock photos from Replo's S3 template library).  Real content images almost
+# never appear 3+ times among visible slots.
+_DUPLICATE_IMAGE_THRESHOLD = 3
+
+
+# ---------------------------------------------------------------------------
+# Duplicate image helpers
+# ---------------------------------------------------------------------------
+
+
+def _normalize_img_src(url: str) -> str:
+    """Normalize an image URL for duplicate comparison.
+
+    Strips query params/fragments and unquotes percent-encoding so that
+    ``img%20photo.webp?v=123`` and ``img photo.webp`` compare as equal.
+    Empty strings and data URIs are returned unmodified.
+    """
+    if not url or url.startswith("data:"):
+        return url
+    from urllib.parse import unquote, urlparse, urlunparse
+
+    parsed = urlparse(unquote(url))
+    # Reconstruct without query and fragment
+    return urlunparse((parsed.scheme, parsed.netloc, parsed.path, "", "", ""))
+
+
+def _filter_duplicate_image_slots(slots: List[ImageSlot]) -> List[ImageSlot]:
+    """Remove template placeholder images that repeat >= threshold times.
+
+    Operates on the already-filtered slot list (after visibility, size, URL
+    filters).  Counts normalized ``original_src`` frequencies and removes ALL
+    slots whose URL appears >= ``_DUPLICATE_IMAGE_THRESHOLD`` times.
+    """
+    from collections import Counter
+
+    counts: Counter = Counter(_normalize_img_src(s.original_src) for s in slots)
+    duplicates = {src for src, n in counts.items() if n >= _DUPLICATE_IMAGE_THRESHOLD}
+    if not duplicates:
+        return slots
+
+    before = len(slots)
+    filtered = [s for s in slots if _normalize_img_src(s.original_src) not in duplicates]
+    removed = before - len(filtered)
+    logger.info(
+        "Duplicate image filter: removed %d slots (%d unique URLs repeated >= %d times)",
+        removed, len(duplicates), _DUPLICATE_IMAGE_THRESHOLD,
+    )
+    return filtered
+
 
 # ---------------------------------------------------------------------------
 # HTML Parsers
@@ -581,7 +631,7 @@ class BlueprintImageService:
         """Parse HTML and extract <img> tags with surrounding context."""
         parser = _ImageContextExtractor()
         parser.feed(html)
-        return parser.slots
+        return _filter_duplicate_image_slots(parser.slots)
 
     async def download_images_parallel(
         self, slots: List[ImageSlot], progress_cb: Optional[Callable] = None
