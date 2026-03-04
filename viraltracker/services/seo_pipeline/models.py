@@ -92,6 +92,37 @@ class LinkPlacement(str, Enum):
     END = "end"
 
 
+class ClusterStatus(str, Enum):
+    """Lifecycle status of a topic cluster."""
+    DRAFT = "draft"
+    ACTIVE = "active"
+    PUBLISHING = "publishing"
+    COMPLETE = "complete"
+    ARCHIVED = "archived"
+
+
+class ClusterIntent(str, Enum):
+    """Search intent classification for a cluster."""
+    INFORMATIONAL = "informational"
+    COMMERCIAL = "commercial"
+    NAVIGATIONAL = "navigational"
+    TRANSACTIONAL = "transactional"
+
+
+class SpokeRole(str, Enum):
+    """Role of a keyword within a cluster."""
+    PILLAR = "pillar"
+    SPOKE = "spoke"
+
+
+class SpokeStatus(str, Enum):
+    """Lifecycle status of a spoke article."""
+    PLANNED = "planned"
+    WRITING = "writing"
+    PUBLISHED = "published"
+    SKIPPED = "skipped"
+
+
 # =============================================================================
 # PYDANTIC MODELS
 # =============================================================================

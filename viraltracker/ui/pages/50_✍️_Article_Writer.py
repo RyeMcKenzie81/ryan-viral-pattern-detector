@@ -117,6 +117,25 @@ with col_right:
             if not author_id:
                 author_id = None
 
+        # Optional cluster spoke linking
+        spoke_id_to_link = None
+        try:
+            from viraltracker.services.seo_pipeline.services.cluster_management_service import ClusterManagementService
+            _cluster_svc = ClusterManagementService()
+            _planned_spokes = _cluster_svc.get_unlinked_planned_spokes(selected_project_id)
+            if _planned_spokes:
+                spoke_opts = {"": "(None)"} | {
+                    s["spoke_id"]: f"{s['cluster_name']}: {s['keyword']}" for s in _planned_spokes
+                }
+                spoke_id_to_link = st.selectbox(
+                    "Link to Cluster Spoke",
+                    options=list(spoke_opts.keys()),
+                    format_func=lambda x: spoke_opts[x],
+                    key="seo_writer_spoke_link",
+                ) or None
+        except Exception:
+            pass  # Cluster service not available, skip
+
         if st.button("Create Article", key="seo_writer_create_btn"):
             if new_keyword:
                 article = content_service.create_article(
@@ -127,6 +146,14 @@ with col_right:
                     author_id=author_id,
                 )
                 st.session_state.seo_writer_article_id = article["id"]
+
+                # Link to spoke if selected
+                if spoke_id_to_link:
+                    try:
+                        _cluster_svc.assign_article_to_spoke(spoke_id_to_link, article["id"])
+                    except Exception as e:
+                        logger.warning(f"Failed to link article to spoke: {e}")
+
                 st.success(f"Created article for '{new_keyword}'")
                 st.rerun()
 

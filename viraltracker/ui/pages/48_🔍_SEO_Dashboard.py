@@ -138,6 +138,39 @@ else:
 
 
 # =============================================================================
+# TOPIC CLUSTERS SUMMARY
+# =============================================================================
+
+st.divider()
+st.subheader("Topic Clusters")
+
+try:
+    from viraltracker.services.seo_pipeline.services.cluster_management_service import ClusterManagementService
+    _cluster_svc = ClusterManagementService()
+    _clusters = _cluster_svc.list_clusters(selected_project_id)
+
+    if _clusters:
+        _cluster_cols = st.columns(min(len(_clusters), 3))
+        for _i, _c in enumerate(_clusters[:6]):
+            with _cluster_cols[_i % len(_cluster_cols)]:
+                _stats = _c.get("spoke_stats", {})
+                _total = _stats.get("total", 0)
+                _pub = _stats.get("published", 0)
+                with st.container(border=True):
+                    st.markdown(f"**{_c['name']}**  `{_c.get('status', 'draft')}`")
+                    if _total > 0:
+                        st.progress(_pub / _total, text=f"{_pub}/{_total} published")
+                    else:
+                        st.caption("No spokes")
+        if len(_clusters) > 6:
+            st.caption(f"... and {len(_clusters) - 6} more clusters")
+    else:
+        st.info("No topic clusters yet. Create them in the SEO Clusters page.")
+except Exception as _e:
+    logger.warning(f"Failed to load cluster summary: {_e}")
+
+
+# =============================================================================
 # LINK MANAGEMENT
 # =============================================================================
 

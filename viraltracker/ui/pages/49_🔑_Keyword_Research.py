@@ -186,6 +186,49 @@ else:
 
 
 # =============================================================================
+# CLUSTER ASSIGNMENT
+# =============================================================================
+
+if keywords:
+    with st.expander("Assign Keywords to Cluster"):
+        from viraltracker.services.seo_pipeline.services.cluster_management_service import ClusterManagementService
+        cluster_svc = ClusterManagementService()
+        clusters = cluster_svc.list_clusters(selected_project_id)
+
+        if clusters:
+            ca_c1, ca_c2 = st.columns([2, 1])
+            with ca_c1:
+                cluster_opts = {c["id"]: c["name"] for c in clusters}
+                assign_cluster = st.selectbox(
+                    "Cluster",
+                    options=list(cluster_opts.keys()),
+                    format_func=lambda x: cluster_opts[x],
+                    key="seo_kw_page_assign_cluster",
+                )
+            with ca_c2:
+                # Filter to unassigned keywords only
+                unassigned = [k for k in keywords if not k.get("cluster_id")]
+                assign_kws = st.multiselect(
+                    "Keywords to assign",
+                    options=[k["id"] for k in unassigned],
+                    format_func=lambda x: next(
+                        (k["keyword"] for k in unassigned if k["id"] == x), x
+                    ),
+                    key="seo_kw_page_assign_kws",
+                )
+
+            if st.button("Assign to Cluster", key="seo_kw_page_assign_btn"):
+                if assign_kws and assign_cluster:
+                    results = cluster_svc.bulk_assign_keywords(assign_cluster, assign_kws)
+                    st.success(f"Assigned {len(results)} keyword(s) to {cluster_opts[assign_cluster]}")
+                    st.rerun()
+                else:
+                    st.warning("Select keywords and a cluster.")
+        else:
+            st.info("No clusters yet. Create clusters in the SEO Clusters page first.")
+
+
+# =============================================================================
 # COMPETITOR ANALYSIS
 # =============================================================================
 

@@ -258,6 +258,15 @@ else:
                     st.markdown(f"[View in Shopify Admin]({result['admin_url']})")
                 if result.get("published_url"):
                     st.markdown(f"[View Article]({result['published_url']})")
+
+                # Auto-update cluster spoke status on publish
+                if not draft:
+                    try:
+                        from viraltracker.services.seo_pipeline.services.cluster_management_service import ClusterManagementService
+                        _csvc = ClusterManagementService()
+                        _csvc.mark_spokes_published_for_article(selected_article_id)
+                    except Exception as _e:
+                        logger.warning(f"Failed to update spoke status: {_e}")
             except Exception as e:
                 st.error(f"Publishing failed: {e}")
 
