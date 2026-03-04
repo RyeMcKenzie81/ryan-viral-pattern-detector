@@ -997,6 +997,102 @@ class MetaAdsService:
 
         return statuses
 
+    async def sync_campaigns_to_db(
+        self,
+        campaign_ids: List[str],
+        ad_account_id: str,
+        brand_id: Optional[UUID] = None,
+    ) -> Dict[str, str]:
+        """
+        Fetch campaign metadata from Meta API and upsert into meta_campaigns.
+
+        Args:
+            campaign_ids: List of Meta campaign IDs to sync.
+            ad_account_id: The Meta ad account ID these campaigns belong to.
+            brand_id: Optional brand UUID to associate.
+
+        Returns:
+            Dict mapping campaign_id -> objective (for enrichment).
+            On failure, returns empty dict (non-fatal).
+        """
+        if not campaign_ids:
+            return {}
+
+        from ..core.database import get_supabase_client
+
+        objectives: Dict[str, str] = {}
+
+        try:
+            self._ensure_sdk()
+            await self._rate_limit()
+
+            campaign_data = await asyncio.to_thread(
+                self._fetch_campaigns_sync, campaign_ids
+            )
+
+            if not campaign_data:
+                logger.warning(f"No campaign data returned for {len(campaign_ids)} campaign IDs")
+                return {}
+
+            supabase = get_supabase_client()
+            synced = 0
+
+            for camp in campaign_data:
+                camp_id = camp.get("id")
+                objective = camp.get("objective", "UNKNOWN")
+                objectives[camp_id] = objective
+
+                record = {
+                    "meta_ad_account_id": ad_account_id,
+                    "meta_campaign_id": camp_id,
+                    "name": camp.get("name"),
+                    "objective": objective,
+                    "status": camp.get("status"),
+                    "brand_id": str(brand_id) if brand_id else None,
+                    "synced_at": datetime.now().isoformat(),
+                }
+
+                try:
+                    supabase.table("meta_campaigns").upsert(
+                        record,
+                        on_conflict="meta_ad_account_id,meta_campaign_id"
+                    ).execute()
+                    synced += 1
+                except Exception as e:
+                    logger.warning(f"Failed to upsert campaign {camp_id}: {e}")
+
+            logger.info(f"Synced {synced}/{len(campaign_data)} campaigns to meta_campaigns")
+            return objectives
+
+        except Exception as e:
+            logger.warning(
+                f"Campaign sync failed (non-fatal): {e}. "
+                f"Campaign IDs: {campaign_ids[:5]}{'...' if len(campaign_ids) > 5 else ''}"
+            )
+            return {}
+
+    def _fetch_campaigns_sync(self, campaign_ids: List[str]) -> List[Dict[str, Any]]:
+        """Synchronous call to fetch campaign metadata from Meta API."""
+        from facebook_business.adobjects.campaign import Campaign
+
+        results = []
+
+        # Batch fetch to reduce API calls (up to 50 at a time)
+        batch_size = 50
+        for i in range(0, len(campaign_ids), batch_size):
+            batch_ids = campaign_ids[i:i + batch_size]
+
+            for camp_id in batch_ids:
+                try:
+                    campaign = Campaign(camp_id)
+                    data = campaign.api_get(fields=["id", "name", "objective", "status"])
+                    results.append(dict(data))
+                except Exception as e:
+                    logger.warning(f"Failed to fetch campaign {camp_id}: {e}")
+                    continue
+
+        return results
+
     async def sync_performance_to_db(
         self,
         insights: List[Dict[str, Any]],
@@ -1026,6 +1122,33 @@ class MetaAdsService:
             if unique_ad_ids:
                 logger.info(f"Fetching statuses for {len(unique_ad_ids)} unique ads...")
                 ad_statuses = await self.fetch_ad_statuses(unique_ad_ids)
+
+        # Part A+B: Sync campaigns and build objective cache for enrichment
+        campaign_objectives: Dict[str, str] = {}
+        if insights:
+            unique_campaign_ids = list(set(
+                i.get("meta_campaign_id") for i in insights
+                if i.get("meta_campaign_id")
+            ))
+            if unique_campaign_ids:
+                # Determine ad_account_id from first insight
+                account_id = insights[0].get(
+                    "meta_ad_account_id", self._default_ad_account_id
+                )
+                campaign_objectives = await self.sync_campaigns_to_db(
+                    campaign_ids=unique_campaign_ids,
+                    ad_account_id=account_id,
+                    brand_id=brand_id,
+                )
+                if campaign_objectives:
+                    logger.info(
+                        f"Campaign objective cache: {len(campaign_objectives)} campaigns"
+                    )
+                else:
+                    logger.warning(
+                        "Campaign sync returned no objectives — "
+                        "campaign_objective will be 'UNKNOWN' for all records"
+                    )
 
         for insight in insights:
             try:
@@ -1075,6 +1198,9 @@ class MetaAdsService:
                     "cost_per_initiate_checkout": insight.get("cost_per_initiate_checkout"),
                     "brand_id": str(brand_id) if brand_id else None,
                     "ad_status": ad_statuses.get(ad_id),  # Add status if fetched
+                    "campaign_objective": campaign_objectives.get(
+                        insight.get("meta_campaign_id"), "UNKNOWN"
+                    ),
                 }
 
                 # Upsert (on conflict with meta_ad_id + date)

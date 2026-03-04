@@ -345,7 +345,7 @@ class AdIntelligenceService:
             }
             await self._complete_run(run.id, "completed", summary)
 
-            return AccountAnalysisResult(
+            result = AccountAnalysisResult(
                 run_id=run.id,
                 brand_name=brand_name,
                 date_range=f"Last {config.days_back} days",
@@ -365,6 +365,18 @@ class AdIntelligenceService:
                 format_aggregates=format_aggregates,
                 creative_insights=creative_insights,
             )
+
+            # Render and persist markdown for instant retrieval by agent tool
+            try:
+                from .chat_renderer import ChatRenderer
+                rendered_md = ChatRenderer.render_account_analysis(result)
+                self.supabase.table("ad_intelligence_runs").update({
+                    "rendered_markdown": rendered_md,
+                }).eq("id", str(run.id)).execute()
+            except Exception as e:
+                logger.warning(f"Failed to persist rendered markdown for run {run.id}: {e}")
+
+            return result
 
         except Exception as e:
             logger.error(f"Full analysis failed for brand {brand_id}: {e}")
@@ -426,9 +438,101 @@ class AdIntelligenceService:
                     error_message=row.get("error_message"),
                     created_at=row.get("created_at"),
                     completed_at=row.get("completed_at"),
+                    rendered_markdown=row.get("rendered_markdown"),
                 )
         except Exception as e:
             logger.warning(f"Error fetching latest run: {e}")
+        return None
+
+    async def get_latest_completed_analysis(
+        self, brand_id: UUID, days_back: int = 30,
+    ) -> Optional[AnalysisRun]:
+        """Get latest completed full analysis with rendered markdown.
+
+        Filters (all in SQL via PostgREST):
+        - status = 'completed'
+        - rendered_markdown IS NOT NULL (excludes bg classification runs)
+        - config->>'days_back' = days_back (strict parameter match via JSONB)
+        - completed_at within last 24 hours
+
+        Side effect: cleans up stale running runs (>120 min) for this brand.
+        """
+        # Clean up stale running runs (>120 min)
+        stale_cutoff = (datetime.now(timezone.utc) - timedelta(minutes=120)).isoformat()
+        try:
+            self.supabase.table("ad_intelligence_runs").update({
+                "status": "failed",
+                "error_message": "Timed out (stale >120 min)",
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+            }).eq("brand_id", str(brand_id)).eq("status", "running").lt(
+                "created_at", stale_cutoff
+            ).execute()
+        except Exception as e:
+            logger.warning(f"Stale run cleanup failed: {e}")
+
+        # Find latest completed with matching days_back (JSONB filter in SQL)
+        freshness_cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+        result = self.supabase.table("ad_intelligence_runs").select("*").eq(
+            "brand_id", str(brand_id)
+        ).eq("status", "completed").not_.is_(
+            "rendered_markdown", "null"
+        ).filter(
+            "config->>days_back", "eq", str(days_back)
+        ).gte("completed_at", freshness_cutoff).order(
+            "completed_at", desc=True
+        ).limit(1).execute()
+
+        if result.data:
+            row = result.data[0]
+            return AnalysisRun(
+                id=UUID(row["id"]),
+                organization_id=UUID(row["organization_id"]),
+                brand_id=UUID(row["brand_id"]),
+                date_range_start=row.get("date_range_start", date.today()),
+                date_range_end=row.get("date_range_end", date.today()),
+                goal=row.get("goal"),
+                config=RunConfig(**row["config"]) if row.get("config") else RunConfig(),
+                status=row.get("status", "completed"),
+                summary=row.get("summary"),
+                created_at=row.get("created_at"),
+                completed_at=row.get("completed_at"),
+                rendered_markdown=row.get("rendered_markdown"),
+            )
+        return None
+
+    async def get_latest_completed_analysis_any_params(
+        self, brand_id: UUID,
+    ) -> Optional[AnalysisRun]:
+        """Get latest completed analysis regardless of days_back.
+
+        Used only for the hint: 'Latest available is a X-day analysis from <date>'.
+        No stale cleanup (already done in get_latest_completed_analysis).
+        """
+        freshness_cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+        result = self.supabase.table("ad_intelligence_runs").select("*").eq(
+            "brand_id", str(brand_id)
+        ).eq("status", "completed").not_.is_(
+            "rendered_markdown", "null"
+        ).gte("completed_at", freshness_cutoff).order(
+            "completed_at", desc=True
+        ).limit(1).execute()
+
+        if result.data:
+            row = result.data[0]
+            return AnalysisRun(
+                id=UUID(row["id"]),
+                organization_id=UUID(row["organization_id"]),
+                brand_id=UUID(row["brand_id"]),
+                date_range_start=row.get("date_range_start", date.today()),
+                date_range_end=row.get("date_range_end", date.today()),
+                goal=row.get("goal"),
+                config=RunConfig(**row["config"]) if row.get("config") else RunConfig(),
+                status=row.get("status", "completed"),
+                summary=row.get("summary"),
+                created_at=row.get("created_at"),
+                completed_at=row.get("completed_at"),
+                rendered_markdown=row.get("rendered_markdown"),
+            )
         return None
 
     async def handle_rec_done(

@@ -117,10 +117,18 @@ class BrandAvatar(BaseModel):
     name: str = Field(..., description="Avatar name (e.g., 'Sarah - Brand Ambassador')")
     description: Optional[str] = Field(None, description="Avatar description and personality")
 
-    # Reference images for character consistency (up to 3)
-    reference_image_1: Optional[str] = Field(None, description="Primary reference image storage path")
-    reference_image_2: Optional[str] = Field(None, description="Secondary reference image storage path")
-    reference_image_3: Optional[str] = Field(None, description="Tertiary reference image storage path")
+    # Reference images for character consistency (up to 4)
+    # Slots: 1=Frontal, 2=3/4 View, 3=Side Profile, 4=Full Body
+    reference_image_1: Optional[str] = Field(None, description="Frontal reference image storage path")
+    reference_image_2: Optional[str] = Field(None, description="3/4 view reference image storage path")
+    reference_image_3: Optional[str] = Field(None, description="Side profile reference image storage path")
+    reference_image_4: Optional[str] = Field(None, description="Full body reference image storage path")
+
+    # Kling element ID for character consistency in video generation
+    kling_element_id: Optional[str] = Field(None, description="Kling AI element ID for this avatar")
+    kling_voice_id: Optional[str] = Field(None, description="Kling AI voice ID from element_voice_info")
+    calibration_video_path: Optional[str] = Field(None, description="Storage path for calibration video")
+    avatar_setup_mode: str = Field(default="multi_image", description="Element mode: multi_image or video_element")
 
     # Generation prompt used to create the avatar
     generation_prompt: Optional[str] = Field(
@@ -161,6 +169,8 @@ class BrandAvatar(BaseModel):
             images.append(self.reference_image_2)
         if self.reference_image_3:
             images.append(self.reference_image_3)
+        if self.reference_image_4:
+            images.append(self.reference_image_4)
         return images
 
     @property

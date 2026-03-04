@@ -19,6 +19,20 @@ from .models import HookAnalysis
 logger = logging.getLogger(__name__)
 
 
+class RateLimitError(Exception):
+    """Raised when a Gemini API call hits a 429 rate limit.
+
+    Used by the multipass pipeline to distinguish rate limits from other errors
+    so the PipelineRateLimiter can back off RPM adaptively.
+    """
+    pass
+
+
+class SafetyFilterError(Exception):
+    """Raised when Gemini blocks generation due to safety filters."""
+    pass
+
+
 # Hook types from Hook Intelligence framework
 HOOK_TYPES = [
     "relatable_slice", "shock_violation", "listicle_howto", "hot_take",
@@ -554,7 +568,8 @@ Generate the article now:"""
         max_retries: int = 3,
         return_metadata: bool = False,
         temperature: float = 0.4,
-        image_size: str = "2K"
+        image_size: str = "2K",
+        aspect_ratio: str = None,
     ) -> str | dict:
         """
         Generate an image using Gemini 3 Pro Image Preview API.
@@ -569,6 +584,7 @@ Generate the article now:"""
             return_metadata: If True, return dict with image and generation metadata
             temperature: Generation temperature (0.0-1.0). Lower = more deterministic. Default 0.4.
             image_size: Output resolution - "1K", "2K", or "4K". Default "2K" for better text quality.
+            aspect_ratio: Output aspect ratio - "1:1", "2:3", "3:2", "3:4", "4:3", "9:16", "16:9", "21:9". Default None (uses image_size).
 
         Returns:
             If return_metadata=False: Base64-encoded generated image (string)
@@ -580,6 +596,7 @@ Generate the article now:"""
                 - retries: Number of retries needed
 
         Raises:
+            SafetyFilterError: If generation is blocked by safety filters
             Exception: If all retries fail or non-retryable error occurs
         """
         self._check_usage_limit()
@@ -639,15 +656,17 @@ Generate the article now:"""
                 # Use dedicated image generation model (not the default text model)
                 # Temperature controls randomness - lower = more deterministic
                 # image_size controls output resolution: "1K", "2K", or "4K"
+                image_config_kwargs = {"image_size": image_size}
+                if aspect_ratio:
+                    image_config_kwargs["aspect_ratio"] = aspect_ratio
+
                 response = self.client.models.generate_content(
                     model="gemini-3-pro-image-preview",
                     contents=contents,
                     config=types.GenerateContentConfig(
                         temperature=temperature,
                         response_modalities=[types.Modality.TEXT, types.Modality.IMAGE],
-                        image_config=types.ImageConfig(
-                            image_size=image_size
-                        )
+                        image_config=types.ImageConfig(**image_config_kwargs)
                     )
                 )
 
@@ -666,6 +685,22 @@ Generate the article now:"""
                         model_used = model_requested
                 except Exception:
                     model_used = model_requested
+
+                # Check for blocked or empty response (safety filters)
+                if not response.candidates:
+                    block_reason = getattr(response.prompt_feedback, 'block_reason', 'UNKNOWN')
+                    raise SafetyFilterError(f"Image generation blocked by safety filter: {block_reason}")
+
+                candidate = response.candidates[0]
+                if hasattr(candidate, 'finish_reason') and candidate.finish_reason not in (
+                    None, types.FinishReason.STOP, types.FinishReason.MAX_TOKENS
+                ):
+                    raise SafetyFilterError(f"Image generation blocked: finish_reason={candidate.finish_reason}")
+
+                if not hasattr(candidate, 'content') or not candidate.content:
+                    raise SafetyFilterError("Image generation returned empty content")
+                if not hasattr(candidate.content, 'parts') or not candidate.content.parts:
+                    raise SafetyFilterError("Image generation returned no parts")
 
                 # Extract generated image from response
                 # Look for parts with inline_data
@@ -973,3 +1008,308 @@ Generate the article now:"""
                     raise
 
         raise last_error or Exception("Unknown error during text analysis")
+
+    # ------------------------------------------------------------------
+    # Async methods for multipass pipeline
+    # ------------------------------------------------------------------
+
+    async def analyze_image_async(
+        self,
+        image_data: str,
+        prompt: str,
+        model: Optional[str] = None,
+        max_retries: int = 3,
+        skip_internal_rate_limit: bool = False,
+    ) -> str:
+        """Analyze an image using true async via client.aio.models.generate_content.
+
+        When skip_internal_rate_limit=True (pipeline path):
+        - Bypasses _rate_limit() (pipeline has its own PipelineRateLimiter)
+        - Forces max_retries=1 (only retry once on transient HTTP errors)
+        - Raises RateLimitError on 429 (never retries 429 internally)
+
+        When skip_internal_rate_limit=False (default):
+        - Same behavior as sync analyze_image()
+
+        Args:
+            image_data: Base64-encoded image data
+            prompt: Analysis prompt/question about the image
+            model: Model to use (defaults to self.model_name)
+            max_retries: Maximum retries (overridden to 1 when skip_internal_rate_limit=True)
+            skip_internal_rate_limit: If True, bypass internal rate limiting
+
+        Returns:
+            Text response from the model
+
+        Raises:
+            RateLimitError: On 429 when skip_internal_rate_limit=True
+            Exception: If all retries fail or non-retryable error occurs
+        """
+        self._check_usage_limit()
+
+        if skip_internal_rate_limit:
+            max_retries = 1
+        else:
+            await self._rate_limit()
+
+        use_model = model or self.model_name
+        retry_count = 0
+        last_error = None
+
+        while retry_count <= max_retries:
+            try:
+                import base64
+                from PIL import Image
+                from io import BytesIO
+
+                if isinstance(image_data, bytes):
+                    image_data = base64.b64encode(image_data).decode('utf-8')
+
+                clean_data = image_data.strip().replace('\n', '').replace('\r', '').replace(' ', '')
+                missing_padding = len(clean_data) % 4
+                if missing_padding:
+                    clean_data += '=' * (4 - missing_padding)
+
+                try:
+                    image_bytes = base64.b64decode(clean_data)
+                except (TypeError, ValueError):
+                    image_bytes = base64.b64decode(clean_data.encode('ascii'))
+                image = Image.open(BytesIO(image_bytes))
+
+                response = await self.client.aio.models.generate_content(
+                    model=use_model,
+                    contents=[prompt, image],
+                )
+
+                if not response.candidates:
+                    block_reason = getattr(response.prompt_feedback, 'block_reason', 'UNKNOWN')
+                    raise Exception(f"Gemini response blocked: {block_reason}")
+
+                candidate = response.candidates[0]
+                if hasattr(candidate, 'finish_reason') and candidate.finish_reason not in (
+                    None, types.FinishReason.STOP, types.FinishReason.MAX_TOKENS
+                ):
+                    raise Exception(f"Gemini response blocked: finish_reason={candidate.finish_reason}")
+
+                if not hasattr(candidate, 'content') or not candidate.content:
+                    raise Exception("Gemini response has no content")
+                if not hasattr(candidate.content, 'parts') or not candidate.content.parts:
+                    raise Exception("Gemini response has no content parts")
+
+                self._track_usage(
+                    operation="analyze_image_async",
+                    model=use_model,
+                    response=response,
+                )
+
+                return response.text
+
+            except Exception as e:
+                last_error = e
+
+                if skip_internal_rate_limit and self._is_rate_limit_error(e):
+                    raise RateLimitError(str(e)) from e
+
+                if self._is_retryable_error(e):
+                    retry_count += 1
+                    if retry_count <= max_retries:
+                        retry_delay = 15 * (2 ** (retry_count - 1))
+                        logger.warning(
+                            f"Retryable error ({type(e).__name__}). "
+                            f"Retry {retry_count}/{max_retries} after {retry_delay}s: {e}"
+                        )
+                        await asyncio.sleep(retry_delay)
+                        continue
+                    else:
+                        raise Exception(f"Max retries exceeded ({max_retries}): {e}")
+                else:
+                    raise
+
+        raise last_error or Exception("Unknown error during async image analysis")
+
+    async def analyze_text_async(
+        self,
+        text: str,
+        prompt: str,
+        model: Optional[str] = None,
+        max_retries: int = 3,
+        skip_internal_rate_limit: bool = False,
+    ) -> str:
+        """Analyze text using true async via client.aio.models.generate_content.
+
+        Same skip_internal_rate_limit semantics as analyze_image_async.
+
+        Args:
+            text: Text content to analyze
+            prompt: Analysis instructions/question
+            model: Model to use (defaults to self.model_name)
+            max_retries: Maximum retries (overridden to 1 when skip_internal_rate_limit=True)
+            skip_internal_rate_limit: If True, bypass internal rate limiting
+
+        Returns:
+            AI analysis result as string
+
+        Raises:
+            RateLimitError: On 429 when skip_internal_rate_limit=True
+            Exception: If all retries fail or non-retryable error occurs
+        """
+        self._check_usage_limit()
+
+        if skip_internal_rate_limit:
+            max_retries = 1
+        else:
+            await self._rate_limit()
+
+        use_model = model or self.model_name
+        full_prompt = f"{prompt}\n\n{text}"
+
+        retry_count = 0
+        last_error = None
+
+        while retry_count <= max_retries:
+            try:
+                response = await self.client.aio.models.generate_content(
+                    model=use_model,
+                    contents=[full_prompt],
+                )
+
+                if not response.candidates:
+                    block_reason = getattr(response.prompt_feedback, 'block_reason', 'UNKNOWN')
+                    raise Exception(f"Gemini response blocked: {block_reason}")
+
+                candidate = response.candidates[0]
+                if hasattr(candidate, 'finish_reason') and candidate.finish_reason not in (
+                    None, types.FinishReason.STOP, types.FinishReason.MAX_TOKENS
+                ):
+                    raise Exception(f"Gemini response blocked: finish_reason={candidate.finish_reason}")
+
+                if not hasattr(candidate, 'content') or not candidate.content:
+                    raise Exception("Gemini response has no content")
+                if not hasattr(candidate.content, 'parts') or not candidate.content.parts:
+                    raise Exception("Gemini response has no content parts")
+
+                self._track_usage(
+                    operation="analyze_text_async",
+                    model=use_model,
+                    response=response,
+                )
+
+                return response.text
+
+            except Exception as e:
+                last_error = e
+
+                if skip_internal_rate_limit and self._is_rate_limit_error(e):
+                    raise RateLimitError(str(e)) from e
+
+                if self._is_retryable_error(e):
+                    retry_count += 1
+                    if retry_count <= max_retries:
+                        retry_delay = 15 * (2 ** (retry_count - 1))
+                        logger.warning(
+                            f"Retryable error ({type(e).__name__}). "
+                            f"Retry {retry_count}/{max_retries} after {retry_delay}s: {e}"
+                        )
+                        await asyncio.sleep(retry_delay)
+                        continue
+                    else:
+                        raise Exception(f"Max retries exceeded ({max_retries}): {e}")
+                else:
+                    raise
+
+        raise last_error or Exception("Unknown error during async text analysis")
+
+    async def generate_content_async(
+        self,
+        contents: list,
+        model: Optional[str] = None,
+        max_retries: int = 3,
+    ):
+        """Low-level async generate_content for multimodal calls (surgery pipeline).
+
+        Accepts raw google-genai contents list (dicts with mime_type/data, strings, etc.)
+        and returns the raw response object.
+
+        Args:
+            contents: List of content parts (image dicts, text strings, etc.)
+            model: Model to use (defaults to self.model_name)
+            max_retries: Maximum retries on transient errors
+
+        Returns:
+            Raw Gemini response object (has .text attribute)
+        """
+        self._check_usage_limit()
+        await self._rate_limit()
+
+        use_model = model or self.model_name
+        retry_count = 0
+        last_error = None
+
+        # Convert image dicts to Part objects
+        from google.genai import types as genai_types
+
+        processed = []
+        for item in contents:
+            if isinstance(item, dict) and "mime_type" in item and "data" in item:
+                import base64 as b64mod
+                raw = item["data"]
+                if isinstance(raw, str):
+                    raw = b64mod.b64decode(raw)
+                processed.append(
+                    genai_types.Part.from_bytes(data=raw, mime_type=item["mime_type"])
+                )
+            else:
+                processed.append(item)
+
+        while retry_count <= max_retries:
+            try:
+                response = await self.client.aio.models.generate_content(
+                    model=use_model,
+                    contents=processed,
+                )
+
+                if not response.candidates:
+                    block_reason = getattr(response.prompt_feedback, 'block_reason', 'UNKNOWN')
+                    raise Exception(f"Gemini response blocked: {block_reason}")
+
+                candidate = response.candidates[0]
+                if hasattr(candidate, 'finish_reason') and candidate.finish_reason not in (
+                    None, types.FinishReason.STOP, types.FinishReason.MAX_TOKENS
+                ):
+                    raise Exception(f"Gemini response blocked: finish_reason={candidate.finish_reason}")
+
+                self._track_usage(
+                    operation="generate_content_async",
+                    model=use_model,
+                    response=response,
+                )
+
+                return response
+
+            except Exception as e:
+                last_error = e
+
+                if self._is_retryable_error(e):
+                    retry_count += 1
+                    if retry_count <= max_retries:
+                        retry_delay = 15 * (2 ** (retry_count - 1))
+                        logger.warning(
+                            f"Retryable error ({type(e).__name__}). "
+                            f"Retry {retry_count}/{max_retries} after {retry_delay}s: {e}"
+                        )
+                        await asyncio.sleep(retry_delay)
+                        continue
+                    else:
+                        raise Exception(f"Max retries exceeded ({max_retries}): {e}")
+                else:
+                    raise
+
+        raise last_error or Exception("Unknown error during async content generation")
+
+    @staticmethod
+    def _is_rate_limit_error(error: Exception) -> bool:
+        """Check if an error is specifically a rate limit (429) error."""
+        error_str = str(error)
+        error_lower = error_str.lower()
+        return "429" in error_str or "quota" in error_lower or "rate" in error_lower
+

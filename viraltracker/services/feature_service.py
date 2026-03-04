@@ -71,6 +71,8 @@ class FeatureKey:
     CONGRUENCE_INSIGHTS = "congruence_insights"
     LANDING_PAGE_ANALYZER = "landing_page_analyzer"
     HOOK_ANALYSIS = "hook_analysis"
+    EXPERIMENTS = "experiments"
+    VIDEO_BUCKETS = "video_buckets"
     PLAN_LIST = "plan_list"
     PLAN_EXECUTOR = "plan_executor"
     TEMPLATE_QUEUE = "template_queue"
@@ -90,6 +92,10 @@ class FeatureKey:
     SEO_KEYWORD_RESEARCH = "seo_keyword_research"
     SEO_ARTICLE_WRITER = "seo_article_writer"
     SEO_ARTICLE_PUBLISHER = "seo_article_publisher"
+    # Video Tools
+    SECTION_VIDEO_TOOLS = "section_video_tools"
+    INSTAGRAM_CONTENT = "instagram_content"
+    VIDEO_STUDIO = "video_studio"
     # System
     AGENT_CATALOG = "agent_catalog"
     SCHEDULED_TASKS = "scheduled_tasks"
@@ -244,6 +250,7 @@ class FeatureService:
             FeatureKey.CONGRUENCE_INSIGHTS,
             FeatureKey.LANDING_PAGE_ANALYZER,
             FeatureKey.HOOK_ANALYSIS,
+            FeatureKey.EXPERIMENTS,
             FeatureKey.PLAN_LIST,
             FeatureKey.PLAN_EXECUTOR,
             FeatureKey.TEMPLATE_QUEUE,
@@ -259,6 +266,10 @@ class FeatureService:
             FeatureKey.KNOWLEDGE_BASE,
             FeatureKey.VEO_AVATARS,
             FeatureKey.SORA_MVP,
+            # Video Tools pages
+            FeatureKey.SECTION_VIDEO_TOOLS,
+            FeatureKey.INSTAGRAM_CONTENT,
+            FeatureKey.VIDEO_STUDIO,
             # System pages
             FeatureKey.AGENT_CATALOG,
             FeatureKey.SCHEDULED_TASKS,

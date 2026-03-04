@@ -62,6 +62,10 @@ def init_observability():
             send_to_logfire=True,
             console=False,
         )
+        # Set the global flag so get_logfire() returns the real module
+        # (app.py configures logfire directly, not via setup_logfire())
+        import viraltracker.core.observability as _obs
+        _obs._logfire_configured = True
         print("LOGFIRE: Configured", file=sys.stderr, flush=True)
 
         logging.basicConfig(
@@ -112,6 +116,17 @@ if is_authenticated():
 
     pages = build_navigation_pages()
 
+    # Register public pages so share links work even when authenticated.
+    # These are hidden from the sidebar (position="hidden") but routable.
+    _public_pages = [
+        st.Page("pages/67_🔬_Public_Analysis.py", title="Public Analysis", icon="🔬", url_path="Public_Analysis"),
+        st.Page("pages/68_🏗️_Public_Blueprint.py", title="Public Blueprint", icon="🏗️", url_path="Public_Blueprint"),
+    ]
+    if "" not in pages:
+        pages[""] = _public_pages
+    else:
+        pages[""].extend(_public_pages)
+
     # Hide the default navigation so we can build a custom sidebar
     # with the org selector above the page links.
     pg = st.navigation(pages, position="hidden")
@@ -129,10 +144,11 @@ if is_authenticated():
         render_organization_selector()
         st.divider()
 
-        # Render page links grouped by section
+        # Render page links grouped by section (skip hidden sections)
         for section, page_list in pages.items():
-            if section:
-                st.header(section)
+            if not section:
+                continue  # Hidden pages (e.g. public share pages) — routable but not in sidebar
+            st.header(section)
             for page in page_list:
                 st.page_link(page, icon=page.icon)
 
@@ -150,6 +166,8 @@ else:
     pages = [
         st.Page("pages/login.py", title="Sign In", icon="🔐", default=True),
         st.Page("pages/66_🌐_Public_Gallery.py", title="Public Gallery", icon="🌐"),
+        st.Page("pages/67_🔬_Public_Analysis.py", title="Public Analysis", icon="🔬", url_path="Public_Analysis"),
+        st.Page("pages/68_🏗️_Public_Blueprint.py", title="Public Blueprint", icon="🏗️", url_path="Public_Blueprint"),
     ]
     pg = st.navigation(pages)
     pg.run()

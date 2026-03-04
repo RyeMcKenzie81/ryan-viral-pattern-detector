@@ -22,6 +22,21 @@ from viraltracker.services.landing_page_analysis.utils import parse_llm_json as 
 logger = logging.getLogger(__name__)
 
 
+def _firecrawl_html_fallback(scraper, url: str) -> str:
+    """Fallback: fetch full HTML via FireCrawl when Playwright is unavailable."""
+    try:
+        html_result = scraper.scrape_url(
+            url,
+            formats=["html"],
+            only_main_content=False,
+            wait_for=2000,
+        )
+        return html_result.html or ""
+    except Exception as e:
+        logger.warning(f"FireCrawl HTML fallback failed (non-fatal): {e}")
+        return ""
+
+
 class LandingPageAnalysisService:
     """Orchestrates the landing page analysis pipeline (Skills 1-4).
 
@@ -45,6 +60,8 @@ class LandingPageAnalysisService:
         )
     """
 
+    SCREENSHOT_BUCKET = "landing-page-screenshots"
+
     def __init__(self, supabase=None):
         from viraltracker.core.database import get_supabase_client
         self.supabase = supabase or get_supabase_client()
@@ -62,40 +79,98 @@ class LandingPageAnalysisService:
     # Input methods
     # ------------------------------------------------------------------
 
+    # Max page_html size before extracting <head> only
+    _MAX_PAGE_HTML_SIZE = 10 * 1024 * 1024  # 10MB (raised for surgery pipeline)
+
     def scrape_landing_page(self, url: str) -> Dict[str, Any]:
-        """Scrape a URL via FireCrawl, returning markdown + screenshot (base64)."""
+        """Scrape a URL via FireCrawl, returning markdown + screenshot + page HTML."""
         import base64
         import httpx
         from firecrawl.v2.types import ScreenshotFormat
         from viraltracker.services.web_scraping_service import WebScrapingService
 
         scraper = WebScrapingService()
+
+        # Primary scrape: markdown + screenshot (main content only)
         result = scraper.scrape_url(
             url,
             formats=["markdown", ScreenshotFormat(full_page=True)],
+            only_main_content=True,
         )
 
         if not result.success:
             raise ValueError(f"Failed to scrape {url}: {result.error}")
 
-        # FireCrawl v4 returns a URL for screenshots — download and convert to base64
-        screenshot_b64 = None
-        if result.screenshot and result.screenshot.startswith("http"):
-            try:
-                resp = httpx.get(result.screenshot, timeout=30)
-                resp.raise_for_status()
-                screenshot_b64 = base64.b64encode(resp.content).decode("utf-8")
-            except Exception as e:
-                logger.warning(f"Failed to download screenshot: {e}")
-        elif result.screenshot:
-            screenshot_b64 = result.screenshot
+        # --- Stage 2: Post-JS DOM via Playwright (primary) or FireCrawl (fallback) ---
+        capture_method = "firecrawl"  # default
+        page_html = ""
+        playwright_screenshot_b64 = None
+        try:
+            from .page_capture import capture_rendered_page, PlaywrightNotInstalledError
+            capture = capture_rendered_page(url, capture_screenshot=True)
+            if capture:
+                page_html = capture.dom_html
+                capture_method = "playwright"
+                if capture.screenshot_bytes:
+                    playwright_screenshot_b64 = base64.b64encode(capture.screenshot_bytes).decode("utf-8")
+                logger.info(
+                    f"Playwright DOM capture: {len(page_html):,} chars, "
+                    f"visible_text={capture.visible_text_len:,}, "
+                    f"screenshot={'yes' if playwright_screenshot_b64 else 'no'}, "
+                    f"{capture.capture_time_ms}ms"
+                )
+            else:
+                logger.info("Playwright capture returned None, falling back to FireCrawl")
+                page_html = _firecrawl_html_fallback(scraper, url)
+        except PlaywrightNotInstalledError:
+            logger.info("Playwright not installed, using FireCrawl HTML")
+            page_html = _firecrawl_html_fallback(scraper, url)
+        except Exception as e:
+            logger.warning(f"Playwright capture failed: {e}")
+            page_html = _firecrawl_html_fallback(scraper, url)
+
+        # Dual-scrape consistency check (only for Firecrawl — Playwright asymmetry is expected)
+        if page_html and result.markdown and capture_method != "playwright":
+            from .multipass.html_extractor import check_scrape_consistency
+            if not check_scrape_consistency(page_html, result.markdown, url):
+                logger.warning("Dual-scrape drift detected, discarding page_html")
+                page_html = ""
+
+        # Size guardrail for page_html
+        if page_html and len(page_html) > self._MAX_PAGE_HTML_SIZE:
+            logger.warning(
+                f"page_html too large ({len(page_html)} chars), extracting <head> only"
+            )
+            from .multipass.html_extractor import _extract_head_section
+            head_html = _extract_head_section(page_html)
+            if head_html and len(head_html) < self._MAX_PAGE_HTML_SIZE:
+                page_html = head_html
+            else:
+                page_html = ""
+
+        # Prefer Playwright screenshot (higher quality, full-page)
+        screenshot_b64 = playwright_screenshot_b64
+
+        # Fall back to Firecrawl screenshot if Playwright didn't provide one
+        if not screenshot_b64 and result.screenshot:
+            if result.screenshot.startswith("http"):
+                try:
+                    resp = httpx.get(result.screenshot, timeout=30)
+                    resp.raise_for_status()
+                    screenshot_b64 = base64.b64encode(resp.content).decode("utf-8")
+                except Exception as e:
+                    logger.warning(f"Failed to download Firecrawl screenshot: {e}")
+            else:
+                screenshot_b64 = result.screenshot
 
         return {
             "url": url,
             "markdown": result.markdown or "",
             "screenshot": screenshot_b64,
+            "page_html": page_html,
             "source_type": "url",
             "source_id": None,
+            "capture_method": capture_method,
         }
 
     def load_from_competitor_lp(self, competitor_lp_id: str) -> Dict[str, Any]:
@@ -149,6 +224,7 @@ class LandingPageAnalysisService:
         source_type: str = "url",
         source_id: Optional[str] = None,
         progress_callback: Optional[Callable[[int, str], None]] = None,
+        page_html: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Run the full 4-skill analysis pipeline.
 
@@ -160,6 +236,7 @@ class LandingPageAnalysisService:
             source_type: 'url', 'competitor_lp', or 'brand_lp'
             source_id: FK to source table if applicable
             progress_callback: Called with (step_number, status_message)
+            page_html: Optional full page HTML for multipass v4 extraction
 
         Returns:
             Dict with analysis_id and all skill results
@@ -181,7 +258,15 @@ class LandingPageAnalysisService:
             source_id=source_id,
             page_markdown=page_content,
             screenshot_storage_path=None,
+            page_html=page_html,
         )
+
+        # Store screenshot after row exists (non-blocking on failure)
+        if screenshot_b64:
+            try:
+                self._store_screenshot(analysis_id, org_id, screenshot_b64)
+            except Exception as e:
+                logger.warning(f"Failed to store screenshot for {analysis_id}: {e}")
 
         try:
             # --- Skill 1: Page Classifier ---
@@ -412,6 +497,81 @@ class LandingPageAnalysisService:
         return _parse_llm_json(response)
 
     # ------------------------------------------------------------------
+    # Screenshot storage
+    # ------------------------------------------------------------------
+
+    def _store_screenshot(self, analysis_id: str, org_id: str, screenshot_b64: str) -> Optional[str]:
+        """Upload screenshot to Supabase Storage. Returns bucket-relative path or None."""
+        import base64
+
+        image_bytes = base64.b64decode(screenshot_b64)
+        image_bytes, fmt = self._prepare_screenshot(image_bytes, max_bytes=4_000_000)
+
+        ext = "jpg" if fmt == "JPEG" else "png"
+        content_type = "image/jpeg" if fmt == "JPEG" else "image/png"
+        storage_path = f"{org_id}/{analysis_id}.{ext}"
+
+        self.supabase.storage.from_(self.SCREENSHOT_BUCKET).upload(
+            storage_path, image_bytes,
+            {"content-type": content_type, "upsert": "true"}
+        )
+
+        self.supabase.table("landing_page_analyses").update(
+            {"screenshot_storage_path": storage_path, "analysis_mockup_html": None}
+        ).eq("id", analysis_id).execute()
+
+        logger.info(f"Stored screenshot: {self.SCREENSHOT_BUCKET}/{storage_path}")
+        return storage_path
+
+    def _prepare_screenshot(self, image_bytes: bytes, max_bytes: int = 4_000_000) -> tuple:
+        """Resize/compress screenshot to fit within max_bytes.
+
+        Always re-encodes through PIL to ensure format matches the returned label.
+
+        Returns:
+            (processed_bytes, format_str) where format_str is "PNG" or "JPEG"
+        """
+        from PIL import Image
+        import io
+
+        # Allow large Playwright full-page screenshots (matches eval_harness.py)
+        Image.MAX_IMAGE_PIXELS = 300_000_000
+
+        img = Image.open(io.BytesIO(image_bytes))
+
+        # Always scale down width to 1280px max (matches Playwright viewport width)
+        if img.width > 1280:
+            ratio = 1280 / img.width
+            img = img.resize((1280, int(img.height * ratio)), Image.Resampling.LANCZOS)
+
+        # Try PNG with optimize first
+        buf = io.BytesIO()
+        img.save(buf, format="PNG", optimize=True)
+        result = buf.getvalue()
+        if len(result) <= max_bytes:
+            return result, "PNG"
+
+        # Fall back to JPEG with iterative quality reduction
+        for quality in (85, 70, 50):
+            buf = io.BytesIO()
+            img.convert("RGB").save(buf, format="JPEG", quality=quality)
+            result = buf.getvalue()
+            if len(result) <= max_bytes:
+                return result, "JPEG"
+
+        # Final guard: return best-effort JPEG even if still over limit
+        logger.warning(f"Screenshot still {len(result)} bytes after compression (max {max_bytes})")
+        return result, "JPEG"
+
+    def _load_screenshot(self, storage_path: str) -> Optional[bytes]:
+        """Download screenshot bytes from Supabase Storage."""
+        try:
+            return self.supabase.storage.from_(self.SCREENSHOT_BUCKET).download(storage_path)
+        except Exception as e:
+            logger.warning(f"Failed to download screenshot {storage_path}: {e}")
+            return None
+
+    # ------------------------------------------------------------------
     # Persistence
     # ------------------------------------------------------------------
 
@@ -423,6 +583,7 @@ class LandingPageAnalysisService:
         source_id: Optional[str],
         page_markdown: Optional[str],
         screenshot_storage_path: Optional[str],
+        page_html: Optional[str] = None,
     ) -> str:
         """Create initial analysis record, return its ID."""
         record = {
@@ -435,6 +596,8 @@ class LandingPageAnalysisService:
         }
         if source_id:
             record["source_id"] = source_id
+        if page_html is not None:
+            record["page_html"] = page_html
 
         result = self.supabase.table("landing_page_analyses").insert(record).execute()
         return result.data[0]["id"]
@@ -496,11 +659,177 @@ class LandingPageAnalysisService:
             update["overall_score"] = cs.get("overall_score", 0)
             update["overall_grade"] = cs.get("overall_grade", "")
 
+        # Denormalize content patterns (deterministic detection from elements)
+        if elements:
+            content_patterns_data = self._extract_content_patterns(elements)
+            if content_patterns_data:
+                update["content_patterns"] = json.dumps(content_patterns_data)
+                update["primary_content_pattern"] = content_patterns_data.get("primary_pattern")
+
         self.supabase.table("landing_page_analyses").update(update).eq("id", analysis_id).execute()
+
+    @staticmethod
+    def _extract_content_patterns(elements: Dict) -> Dict:
+        """Extract content pattern tags from element detection results.
+
+        Maps detected content_patterns (feature_list, testimonial_list, etc.)
+        to human-readable tags (listicle, faq, testimonial_grid, etc.).
+        """
+        ed = elements.get("element_detection", elements)
+        detected_patterns_raw = ed.get("content_patterns", [])
+        if not detected_patterns_raw:
+            return {}
+
+        # Map content_patterns.py types to tag names
+        # NOTE: feature_list is handled specially below (dominant vs secondary)
+        TYPE_MAP = {
+            "testimonial_list": "testimonial_grid",
+            "faq_list": "faq",
+            "stats_list": "stats_showcase",
+        }
+
+        detected = []
+        pattern_tags = []
+        for cp in detected_patterns_raw:
+            if isinstance(cp, dict):
+                cp_type = cp.get("type", cp.get("pattern_type", ""))
+                item_count = cp.get("item_count", len(cp.get("items", [])))
+                confidence = cp.get("confidence", 0.8)
+            elif isinstance(cp, str):
+                cp_type = cp
+                item_count = 0
+                confidence = 0.5
+            else:
+                continue
+
+            tag = TYPE_MAP.get(cp_type)
+            if not tag:
+                # Feature list: dominant (3+ items) = listicle, secondary = feature_showcase
+                if cp_type == "feature_list":
+                    is_dominant = cp.get("is_dominant", item_count >= 3) if isinstance(cp, dict) else False
+                    tag = "listicle" if is_dominant else "feature_showcase"
+                else:
+                    continue
+
+            if tag not in pattern_tags:
+                pattern_tags.append(tag)
+            entry = {"type": tag, "confidence": confidence}
+            if item_count:
+                entry["item_count"] = item_count
+            detected.append(entry)
+
+        if not pattern_tags:
+            return {}
+
+        # Determine primary pattern (first detected, highest confidence)
+        if len(pattern_tags) == 1:
+            primary = pattern_tags[0]
+        else:
+            primary = "mixed"
+            # Pick highest-confidence single pattern if one dominates
+            if detected:
+                best = max(detected, key=lambda d: d.get("confidence", 0))
+                if best.get("confidence", 0) >= 0.8:
+                    primary = best["type"]
+
+        result = {
+            "patterns": pattern_tags,
+            "primary_pattern": primary,
+            "detected_patterns": detected,
+        }
+        # Add listicle item count if present
+        for d in detected:
+            if d["type"] == "listicle" and d.get("item_count"):
+                result["listicle_item_count"] = d["item_count"]
+                break
+
+        return result
 
     # ------------------------------------------------------------------
     # Query methods
     # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # Public share link methods
+    # ------------------------------------------------------------------
+
+    def generate_share_link(self, analysis_id: str) -> str:
+        """Generate or return existing share token for an analysis.
+
+        Uses 128-bit tokens (token_urlsafe(16)) for security.
+        Re-enables sharing if token exists but was previously disabled.
+
+        Returns:
+            The share token string.
+        """
+        import secrets
+
+        existing = (
+            self.supabase.table("landing_page_analyses")
+            .select("public_share_token, public_share_enabled")
+            .eq("id", analysis_id)
+            .single()
+            .execute()
+        )
+        if existing.data and existing.data.get("public_share_token"):
+            # Re-enable if disabled
+            if not existing.data.get("public_share_enabled"):
+                self.supabase.table("landing_page_analyses").update(
+                    {"public_share_enabled": True}
+                ).eq("id", analysis_id).execute()
+            return existing.data["public_share_token"]
+
+        # Generate new 128-bit token (~22 chars URL-safe)
+        token = secrets.token_urlsafe(16)
+        from datetime import datetime, timezone
+        self.supabase.table("landing_page_analyses").update({
+            "public_share_token": token,
+            "public_share_enabled": True,
+            "public_share_created_at": datetime.now(timezone.utc).isoformat(),
+        }).eq("id", analysis_id).execute()
+
+        logger.info(f"Generated share token for analysis {analysis_id}")
+        return token
+
+    def disable_share_link(self, analysis_id: str) -> None:
+        """Disable sharing (keeps token for re-enabling)."""
+        self.supabase.table("landing_page_analyses").update(
+            {"public_share_enabled": False}
+        ).eq("id", analysis_id).execute()
+        logger.info(f"Disabled share link for analysis {analysis_id}")
+
+    def get_analysis_by_share_token(self, token: str) -> Optional[Dict]:
+        """Fetch analysis by share token. Returns None if not found or disabled.
+
+        Uses the service-role Supabase client (self.supabase) which bypasses RLS,
+        since this is called from the unauthenticated public share endpoint.
+        """
+        result = (
+            self.supabase.table("landing_page_analyses")
+            .select("id, analysis_mockup_html, url")
+            .eq("public_share_token", token)
+            .eq("public_share_enabled", True)
+            .limit(1)
+            .execute()
+        )
+        if not result.data:
+            return None
+        row = result.data[0]
+        html = row.get("analysis_mockup_html")
+        if not html:
+            return None
+        return {
+            "id": row["id"],
+            "html": html,
+            "source_url": row.get("url", ""),
+        }
+
+    def save_analysis_mockup_html(self, analysis_id: str, html: str) -> None:
+        """Persist analysis mockup HTML to the database record."""
+        self.supabase.table("landing_page_analyses").update(
+            {"analysis_mockup_html": html}
+        ).eq("id", analysis_id).execute()
+        logger.info(f"Saved analysis_mockup_html ({len(html)} chars) for {analysis_id}")
 
     def get_analysis(self, analysis_id: str) -> Optional[Dict[str, Any]]:
         """Get a single analysis by ID."""
@@ -518,6 +847,7 @@ class LandingPageAnalysisService:
         org_id: str,
         brand_id: Optional[str] = None,
         limit: int = 50,
+        qa_status_filter: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """List analyses for an organization, most recent first."""
         query = (
@@ -525,14 +855,54 @@ class LandingPageAnalysisService:
             .select(
                 "id, url, source_type, awareness_level, architecture_type, "
                 "element_count, completeness_score, overall_score, overall_grade, "
-                "status, processing_time_ms, created_at"
+                "status, processing_time_ms, created_at, "
+                "qa_status, primary_content_pattern, public_share_enabled"
             )
         )
         if org_id and org_id != "all":
             query = query.eq("organization_id", org_id)
+        if qa_status_filter:
+            query = query.eq("qa_status", qa_status_filter)
 
         result = query.order("created_at", desc=True).limit(limit).execute()
         return result.data or []
+
+    def update_qa_status(
+        self,
+        analysis_id: str,
+        qa_status: str,
+        qa_notes: Optional[str] = None,
+        reviewed_by: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Update QA approval status on an analysis.
+
+        Args:
+            analysis_id: The analysis UUID.
+            qa_status: One of 'pending', 'approved', 'rejected', 'needs_revision'.
+            qa_notes: Optional reviewer notes.
+            reviewed_by: UUID of the reviewer (user).
+        """
+        valid_statuses = ("pending", "approved", "rejected", "needs_revision")
+        if qa_status not in valid_statuses:
+            raise ValueError(f"qa_status must be one of {valid_statuses}, got '{qa_status}'")
+
+        update = {"qa_status": qa_status}
+        if qa_notes is not None:
+            update["qa_notes"] = qa_notes
+        if reviewed_by:
+            update["qa_reviewed_by"] = reviewed_by
+        if qa_status != "pending":
+            from datetime import datetime, timezone
+            update["qa_reviewed_at"] = datetime.now(timezone.utc).isoformat()
+
+        result = (
+            self.supabase.table("landing_page_analyses")
+            .update(update)
+            .eq("id", analysis_id)
+            .execute()
+        )
+        logger.info(f"Updated QA status for analysis {analysis_id}: {qa_status}")
+        return result.data[0] if result.data else {}
 
     def get_competitor_lps(self, brand_id: str) -> List[Dict[str, Any]]:
         """Get competitor landing pages for dropdown selection."""

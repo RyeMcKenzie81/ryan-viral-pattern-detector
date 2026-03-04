@@ -111,6 +111,7 @@ We spent 3+ hours debugging audio sync issues that would have been avoided by re
 | ImageMagick | Image manipulation, compositing |
 | Supabase | Storage, RLS policies, edge functions |
 | OpenAI/Anthropic APIs | Rate limits, best practices, token optimization |
+| Gemini API | Models, vision, multimodal — [Model reference](https://ai.google.dev/gemini-api/docs/models) |
 | Any new library | Check docs for gotchas and recommended patterns |
 
 ### How to Research

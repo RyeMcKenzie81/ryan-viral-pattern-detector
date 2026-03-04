@@ -1,0 +1,2871 @@
+"""Multi-pass pipeline orchestrator.
+
+Orchestrates 5 phases of HTML generation with invariant checks,
+adaptive rate control, and phase-local degradation.
+"""
+
+import asyncio
+import base64
+import copy
+import hashlib
+import json
+import logging
+import os
+import re
+import time
+from dataclasses import dataclass, field
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
+from viraltracker.core.config import Config
+from viraltracker.core.observability import get_logfire
+from viraltracker.services.gemini_service import GeminiService, RateLimitError
+
+from .cropper import (
+    NormalizedBox,
+    boxes_from_char_ratios,
+    crop_section,
+    normalize_bounding_boxes,
+)
+from .invariants import (
+    PipelineInvariants,
+    _parse_sections,
+    capture_pipeline_invariants,
+    check_global_invariants,
+    check_section_invariant,
+)
+from .content_assembler import assemble_content, filter_seo_ghost_text, phase_2_fallback
+from .html_extractor import (
+    CSSExtractor,
+    ImageRegistry,
+    ResponsiveCSS,
+    _scope_css_under_class,
+    _word_jaccard,
+)
+from .patch_applier import PatchApplier
+from .popup_filter import PopupFilter
+from .prompts import (
+    PROMPT_VERSIONS,
+    build_phase_0_prompt,
+    build_phase_1_prompt,
+    build_phase_1_classify_prompt,
+    build_phase_1a_visual_audit_prompt,
+    build_phase_1c_skeleton_codegen_prompt,
+    build_phase_2_prompt,
+    build_phase_3_prompt,
+    build_phase_3_css_prompt_fullpage,
+    build_phase_3_css_prompt_section,
+    build_phase_4_prompt,
+)
+from .markdown_cleaner import classify_markdown
+from .segmenter import SegmenterSection, segment_markdown
+
+# Feature flag: template pipeline (strict binary compat when False)
+USE_TEMPLATE_PIPELINE = os.environ.get(
+    "MULTIPASS_TEMPLATE_PIPELINE", "true"
+).lower() == "true"
+
+# Phase 3 mode: "fullpage" (1 LLM call), "per_section" (N calls), "disabled"
+MULTIPASS_PHASE3_MODE = os.environ.get("MULTIPASS_PHASE3_MODE", "fullpage")
+
+# Phase 1 mode: "original" (LLM skeleton), "template" (classify+templates), "v2" (Gemini sees, Claude builds)
+MULTIPASS_PHASE1_MODE = os.environ.get("MULTIPASS_PHASE1_MODE", "template")
+
+# Pipeline mode: "reconstruct" (original v4), "surgery" (new v5 — operate on original HTML)
+MULTIPASS_PIPELINE_MODE = os.environ.get("MULTIPASS_PIPELINE_MODE", "surgery")
+
+# Claude model for skeleton codegen (Step 1C)
+MULTIPASS_SKELETON_MODEL = os.environ.get(
+    "MULTIPASS_SKELETON_MODEL", Config.DEFAULT_MODEL
+)
+
+logger = logging.getLogger(__name__)
+
+# Models (from Config constants)
+_VISION_MODEL = Config.GEMINI_IMAGE_MODEL
+_TEXT_MODEL = getattr(Config, "GEMINI_TEXT_MODEL", Config.GEMINI_IMAGE_MODEL)
+
+PHASE_MODELS = {
+    0: _VISION_MODEL,
+    1: _VISION_MODEL,
+    2: _TEXT_MODEL,
+    3: _VISION_MODEL,
+    4: _VISION_MODEL,
+}
+
+# Hard limits
+MAX_WALL_CLOCK = 420  # seconds (7 min — 8 sections × ~30s each + phases 0-2 + phase 4)
+MAX_SECTIONS = 8
+MARKDOWN_BUDGET = 30_000
+
+# Default design system (Phase 0 fallback)
+DEFAULT_DESIGN_SYSTEM = {
+    "colors": {
+        "primary": "#333333",
+        "secondary": "#666666",
+        "accent": "#0066cc",
+        "background": "#ffffff",
+        "surface": "#f5f5f5",
+        "text_primary": "#1a1a1a",
+        "text_secondary": "#666666",
+        "border": "#e0e0e0",
+        "cta": "#0066cc",
+    },
+    "typography": {
+        "heading_font": "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+        "body_font": "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+        "h1_size": "3rem",
+        "h2_size": "2rem",
+        "h3_size": "1.5rem",
+        "body_size": "1rem",
+        "line_height": "1.7",
+    },
+    "spacing": {
+        "section_padding_v": "70px",
+        "section_padding_h": "30px",
+        "element_gap": "20px",
+        "group_gap": "40px",
+    },
+    "overlays": [],
+}
+
+
+class PipelineRateLimiter:
+    """Single rate controller for all pipeline API calls.
+
+    Manages both concurrency (max in-flight) and pacing (min delay between calls).
+    """
+
+    def __init__(
+        self,
+        initial_rpm: int = 30,
+        max_rpm: int = 60,
+        min_rpm: int = 5,
+        max_concurrent: int = 3,
+    ):
+        self._current_rpm = initial_rpm
+        self._max_rpm = max_rpm
+        self._min_rpm = min_rpm
+        self._sem = asyncio.Semaphore(max_concurrent)
+        self._last_call_time = 0.0
+        self._lock = asyncio.Lock()
+        self._call_count = 0
+        self._consecutive_successes = 0
+
+    async def acquire(self, provider: str = "gemini"):
+        """Acquire concurrency slot, then pace before dispatch.
+
+        Args:
+            provider: API provider ("gemini" or "anthropic"). Different
+                      providers have independent rate limits so only Gemini
+                      calls are paced relative to each other.
+        """
+        await self._sem.acquire()
+        if provider == "gemini":
+            async with self._lock:
+                now = asyncio.get_event_loop().time()
+                min_delay = 60.0 / self._current_rpm
+                elapsed = now - self._last_call_time
+                if elapsed < min_delay:
+                    await asyncio.sleep(min_delay - elapsed)
+                self._last_call_time = asyncio.get_event_loop().time()
+        self._call_count += 1
+
+    def release(self, success: bool = True, rate_limited: bool = False, provider: str = "gemini"):
+        """Release concurrency slot and update adaptive pacing.
+
+        Args:
+            success: Whether the call succeeded.
+            rate_limited: Whether the call was rate-limited.
+            provider: API provider ("gemini" or "anthropic").
+        """
+        self._sem.release()
+        if provider != "gemini":
+            return  # Only adapt pacing for Gemini calls
+        if rate_limited:
+            self._consecutive_successes = 0
+            self._current_rpm = max(self._current_rpm - 5, self._min_rpm)
+            logger.info(f"Rate limiter: backed off to {self._current_rpm} RPM")
+        elif success:
+            self._consecutive_successes += 1
+            if self._consecutive_successes >= 5:
+                self._current_rpm = min(self._current_rpm + 5, self._max_rpm)
+                self._consecutive_successes = 0
+                logger.debug(f"Rate limiter: ramped up to {self._current_rpm} RPM")
+
+    @property
+    def call_count(self) -> int:
+        return self._call_count
+
+
+@dataclass
+class PipelineResult:
+    """Result from the multipass pipeline."""
+    html: str
+    phase_reached: int = 4
+    api_calls: int = 0
+    wall_clock_seconds: float = 0.0
+    sections_refined: int = 0
+    sections_rejected: int = 0
+    patches_applied: int = 0
+    overlays_removed: int = 0
+
+
+def compute_cache_key(
+    phase: int,
+    screenshot_b64: str,
+    page_markdown: str,
+    model: str,
+    prompt_version: str,
+    section_id: Optional[str] = None,
+    section_bbox: Optional[Tuple[float, float]] = None,
+    section_html_hash: Optional[str] = None,
+) -> str:
+    """Deterministic, collision-resistant cache key."""
+    h = hashlib.sha256()
+    h.update(f"phase={phase}".encode())
+    h.update(f"model={model}".encode())
+    h.update(f"prompt_v={prompt_version}".encode())
+    h.update(hashlib.sha256(screenshot_b64.encode()).digest())
+    h.update(hashlib.sha256(page_markdown.encode()).digest())
+    if section_id is not None:
+        h.update(f"section={section_id}".encode())
+    if section_bbox is not None:
+        h.update(f"bbox={section_bbox[0]:.4f},{section_bbox[1]:.4f}".encode())
+    if section_html_hash is not None:
+        h.update(f"html={section_html_hash}".encode())
+    return h.hexdigest()[:32]
+
+
+def _truncate_markdown(markdown: str, max_chars: int = MARKDOWN_BUDGET) -> str:
+    """Truncate markdown at a heading boundary."""
+    if len(markdown) <= max_chars:
+        return markdown
+    search_region = markdown[:max_chars]
+    for pattern in (r'\n## ', r'\n### ', r'\n# '):
+        matches = list(re.finditer(pattern, search_region))
+        if matches:
+            cut_point = matches[-1].start()
+            if cut_point > max_chars // 2:
+                return markdown[:cut_point] + "\n\n[... content truncated ...]"
+    last_break = search_region.rfind('\n\n')
+    if last_break > max_chars // 2:
+        return markdown[:last_break] + "\n\n[... content truncated ...]"
+    return markdown[:max_chars] + "\n\n[... content truncated ...]"
+
+
+def _strip_code_fences(text: str) -> str:
+    """Strip markdown code fences from model output."""
+    text = text.strip()
+    if text.startswith("```json"):
+        text = text[7:]
+    elif text.startswith("```html"):
+        text = text[7:]
+    elif text.startswith("```"):
+        text = text[3:]
+    if text.endswith("```"):
+        text = text[:-3]
+    return text.strip()
+
+
+def _parse_json_response(text: str) -> Any:
+    """Parse JSON from model response, stripping code fences."""
+    return json.loads(_strip_code_fences(text))
+
+
+def _ensure_section_attributes(
+    html: str,
+    section_map: Dict[str, Any],
+    lf: Any = None,
+) -> str:
+    """Re-inject data-section attributes if Phase 2 stripped them.
+
+    Phase 2 (Gemini text model) sometimes drops data-section attributes
+    from the skeleton HTML. Without them, Phase 3 can't find sections
+    to refine. This function deterministically re-adds them.
+
+    Strategy: strip ALL existing data-section attrs, then reassign
+    sec_0..sec_N to the <section> tags top-to-bottom. This avoids
+    the partial-presence bug where nested sections corrupt the parser.
+    """
+    from .invariants import _SectionParser
+
+    # Check if sections are already present
+    parser = _SectionParser()
+    parser.feed(html)
+    expected = len(section_map)
+
+    if len(parser.sections) >= expected:
+        return html  # All sections present, nothing to do
+
+    if lf:
+        lf.warning(
+            "Phase 2 dropped data-section attrs: found {found}/{expected}, re-injecting",
+            found=len(parser.sections),
+            expected=expected,
+        )
+
+    section_ids = sorted(section_map.keys(), key=lambda x: int(x.split("_")[1]))
+
+    # Step 1: Strip ALL existing data-section attributes to start clean.
+    # This prevents nested data-section tags from corrupting the parser.
+    # Handle both single- and double-quoted attributes.
+    html = re.sub(r'''\s*data-section=["'][^"']*["']''', '', html)
+
+    # Step 2: Find section-like tags (including semantic elements like
+    # <footer>, <header>, etc.) that Phase 1 may have used instead of
+    # <section>.  Use <section> depth tracking to skip nested ones.
+    _SECTION_TAGS = r'section|footer|header|nav|article|aside|main'
+    all_section_re = re.compile(r'</?section[\s>]', re.IGNORECASE)
+    open_section_re = re.compile(
+        rf'<({_SECTION_TAGS})(\s[^>]*)?>',  re.IGNORECASE
+    )
+    top_level_matches = []
+    for m in open_section_re.finditer(html):
+        # Count <section> depth before this position to determine nesting.
+        # Semantic tags (<footer> etc.) are only nested if inside a <section>.
+        depth = 0
+        for tag_m in all_section_re.finditer(html[:m.start()]):
+            tag_text = tag_m.group(0)
+            if tag_text.startswith('</'):
+                depth = max(0, depth - 1)
+            else:
+                depth += 1
+        if depth == 0:
+            top_level_matches.append(m)
+
+    if len(top_level_matches) >= expected:
+        # Enough section-like tags -- assign IDs top-to-bottom
+        offset = 0
+        for i, match in enumerate(top_level_matches):
+            if i >= expected:
+                break
+            sec_id = section_ids[i]
+            old_tag = match.group(0)
+            tag_name = match.group(1)  # 'section', 'footer', etc.
+            new_tag = old_tag.replace(
+                f'<{tag_name}', f'<{tag_name} data-section="{sec_id}"', 1
+            )
+            pos = match.start() + offset
+            html = html[:pos] + new_tag + html[pos + len(old_tag):]
+            offset += len(new_tag) - len(old_tag)
+
+        if lf:
+            tag_types = [m.group(1).lower() for m in top_level_matches[:expected]]
+            lf.info(
+                "Re-injected data-section attrs into {count} tags ({tags})",
+                count=min(len(top_level_matches), expected),
+                tags=", ".join(tag_types),
+            )
+        return html
+
+    # Step 3: Not enough section-like tags found. Do NOT attempt the
+    # destructive heading-boundary split — it produces broken HTML with
+    # leaked tags.  Return as-is and let the pre-Phase-3 gate rebuild
+    # from the fallback skeleton.
+    if lf:
+        lf.warning(
+            "Cannot re-inject sections: found {found} section-like tags but "
+            "need {expected}. Deferring to pre-Phase-3 gate for recovery.",
+            found=len(top_level_matches),
+            expected=expected,
+        )
+    return html
+
+
+def _ensure_minimum_slots(html: str) -> str:
+    """Deterministic slotizer: add data-slot attributes if < 3 present.
+
+    Uses the canonical slot naming convention:
+    - First <h1>: headline
+    - First <h2>: subheadline
+    - Subsequent headings: heading-1, heading-2, ...
+    - Paragraphs: body-1, body-2, ...
+    - Buttons/links with CTA-like text: cta-1, cta-2, ...
+    """
+    from .invariants import _extract_slots
+    existing = _extract_slots(html)
+    if len(existing) >= 3:
+        return html
+
+    logger.info(f"Slotizer: only {len(existing)} slots, adding deterministic slots")
+
+    heading_counter = 0
+    body_counter = 0
+    cta_counter = 0
+    found_h1 = False
+    found_h2 = False
+
+    def _add_slot(match: re.Match) -> str:
+        nonlocal heading_counter, body_counter, cta_counter, found_h1, found_h2
+        tag = match.group(1)
+        attrs = match.group(2) or ""
+        rest = match.group(3)
+
+        if "data-slot=" in attrs:
+            return match.group(0)
+
+        slot_name = None
+        if tag == "h1" and not found_h1:
+            slot_name = "headline"
+            found_h1 = True
+        elif tag == "h2" and not found_h2:
+            slot_name = "subheadline"
+            found_h2 = True
+        elif tag in ("h1", "h2", "h3", "h4"):
+            heading_counter += 1
+            slot_name = f"heading-{heading_counter}"
+        elif tag == "p":
+            body_counter += 1
+            slot_name = f"body-{body_counter}"
+        elif tag in ("a", "button"):
+            cta_counter += 1
+            slot_name = f"cta-{cta_counter}"
+
+        if slot_name:
+            return f'<{tag}{attrs} data-slot="{slot_name}"{rest}'
+        return match.group(0)
+
+    # Match opening tags for slottable elements
+    pattern = re.compile(
+        r'<(h[1-4]|p|a|button)((?:\s+[^>]*)?)(\s*/?)>',
+        re.IGNORECASE,
+    )
+    result = pattern.sub(_add_slot, html)
+    return result
+
+
+def _reconcile_sections(
+    segmenter_sections: List[SegmenterSection],
+    phase1_sections: List[Dict],
+    skeleton_html: str,
+) -> Tuple[Dict[str, NormalizedBox], str]:
+    """Reconcile Phase 1 sections with segmenter sections.
+
+    Returns:
+        (section_map, rewritten_skeleton_html)
+        section_map: Dict[str, NormalizedBox] keyed by sec_N IDs
+        rewritten_skeleton_html: Skeleton with matching sec_N IDs
+    """
+    seg_count = len(segmenter_sections)
+    p1_count = len(phase1_sections)
+
+    # Build normalized boxes from Phase 1 output
+    raw_boxes = [
+        {
+            "section_id": f"sec_{i}",
+            "name": sec.get("name", "section"),
+            "y_start_pct": sec.get("y_start_pct", 0),
+            "y_end_pct": sec.get("y_end_pct", 0),
+        }
+        for i, sec in enumerate(phase1_sections)
+    ]
+
+    # If Phase 1 count differs by > 2, discard bounding boxes entirely
+    if abs(p1_count - seg_count) > 2:
+        logger.warning(
+            f"Phase 1 section count ({p1_count}) differs from segmenter ({seg_count}) "
+            f"by > 2, using char-ratio fallback"
+        )
+        return _char_ratio_fallback(segmenter_sections, skeleton_html)
+
+    normalized = normalize_bounding_boxes(raw_boxes)
+    if normalized is None:
+        logger.warning("Bounding box normalization failed, using char-ratio fallback")
+        return _char_ratio_fallback(segmenter_sections, skeleton_html)
+
+    # Reconcile counts
+    if p1_count == seg_count:
+        # 1:1 mapping by position
+        final_boxes = normalized[:seg_count]
+    elif p1_count > seg_count:
+        # Merge adjacent Phase 1 sections (smallest-pair-first) until counts match
+        boxes_list = list(normalized)
+        while len(boxes_list) > seg_count and len(boxes_list) > 1:
+            min_combined = float("inf")
+            min_idx = 0
+            for i in range(len(boxes_list) - 1):
+                height_i = boxes_list[i].y_end_pct - boxes_list[i].y_start_pct
+                height_j = boxes_list[i + 1].y_end_pct - boxes_list[i + 1].y_start_pct
+                combined = height_i + height_j
+                if combined < min_combined:
+                    min_combined = combined
+                    min_idx = i
+            merged = NormalizedBox(
+                section_id=boxes_list[min_idx].section_id,
+                name=boxes_list[min_idx].name,
+                y_start_pct=boxes_list[min_idx].y_start_pct,
+                y_end_pct=boxes_list[min_idx + 1].y_end_pct,
+            )
+            boxes_list = boxes_list[:min_idx] + [merged] + boxes_list[min_idx + 2:]
+        final_boxes = boxes_list
+    else:
+        # Phase 1 has fewer: split largest segmenter section proportionally
+        boxes_list = list(normalized)
+        while len(boxes_list) < seg_count:
+            # Find largest box
+            max_height = 0
+            max_idx = 0
+            for i, box in enumerate(boxes_list):
+                height = box.y_end_pct - box.y_start_pct
+                if height > max_height:
+                    max_height = height
+                    max_idx = i
+            # Split in half
+            box = boxes_list[max_idx]
+            mid = (box.y_start_pct + box.y_end_pct) / 2
+            top_half = NormalizedBox(
+                section_id=box.section_id,
+                name=box.name,
+                y_start_pct=box.y_start_pct,
+                y_end_pct=mid,
+            )
+            bottom_half = NormalizedBox(
+                section_id=f"sec_{len(boxes_list)}",
+                name="section",
+                y_start_pct=mid,
+                y_end_pct=box.y_end_pct,
+            )
+            boxes_list = boxes_list[:max_idx] + [top_half, bottom_half] + boxes_list[max_idx + 1:]
+        final_boxes = boxes_list
+
+    # Renumber all sections deterministically as sec_0..sec_k
+    section_map = {}
+    for i, box in enumerate(final_boxes):
+        new_id = f"sec_{i}"
+        section_map[new_id] = NormalizedBox(
+            section_id=new_id,
+            name=box.name,
+            y_start_pct=box.y_start_pct,
+            y_end_pct=box.y_end_pct,
+        )
+
+    # Rewrite skeleton HTML to match reconciled IDs
+    rewritten = _rewrite_skeleton(skeleton_html, len(final_boxes))
+
+    return section_map, rewritten
+
+
+def _char_ratio_fallback(
+    segmenter_sections: List[SegmenterSection],
+    skeleton_html: str,
+) -> Tuple[Dict[str, NormalizedBox], str]:
+    """Build section_map from char ratios and rewrite skeleton."""
+    boxes = boxes_from_char_ratios(segmenter_sections)
+    section_map = {box.section_id: box for box in boxes}
+    rewritten = _rewrite_skeleton(skeleton_html, len(boxes))
+    return section_map, rewritten
+
+
+def _rewrite_skeleton(skeleton_html: str, section_count: int) -> str:
+    """Rewrite skeleton HTML to have exactly sec_0..sec_{n-1} IDs and placeholders.
+
+    Handles both single- and double-quoted data-section attributes, adds
+    data-section to bare <section> tags if needed, normalizes placeholder
+    variants like {{sec_3_part1}} to {{sec_3}}, and deduplicates placeholders.
+    """
+    html = skeleton_html
+
+    # Step A: Match both quote styles for data-section attributes
+    existing_sections = re.findall(r'data-section=["\']([^"\']+)["\']', html)
+
+    for i, old_id in enumerate(existing_sections):
+        if i < section_count:
+            new_id = f"sec_{i}"
+            # Replace both quote styles
+            html = html.replace(f'data-section="{old_id}"', f'data-section="{new_id}"', 1)
+            html = html.replace(f"data-section='{old_id}'", f'data-section="{new_id}"', 1)
+            # Also replace placeholder patterns
+            html = html.replace(f'{{{{{old_id}}}}}', f'{{{{{new_id}}}}}')
+
+    # Step B: If no data-section attributes found, add to bare section-like tags
+    # (including <footer>, <header>, etc. that Phase 1 may use).
+    if not existing_sections:
+        _SECTION_TAGS = r'section|footer|header|nav|article|aside|main'
+        open_section_re = re.compile(
+            rf'<({_SECTION_TAGS})(\s[^>]*)?>',  re.IGNORECASE
+        )
+        matches = list(open_section_re.finditer(html))
+        offset = 0
+        for i, match in enumerate(matches):
+            if i >= section_count:
+                break
+            sec_id = f"sec_{i}"
+            old_tag = match.group(0)
+            tag_name = match.group(1)
+            if 'data-section' not in old_tag.lower():
+                new_tag = old_tag.replace(
+                    f'<{tag_name}', f'<{tag_name} data-section="{sec_id}"', 1
+                )
+                pos = match.start() + offset
+                html = html[:pos] + new_tag + html[pos + len(old_tag):]
+                offset += len(new_tag) - len(old_tag)
+
+    # Step C: Normalize all placeholder variants (e.g. {{sec_3_part1}} → {{sec_3}})
+    html = re.sub(r'\{\{(sec_\d+)[^}]*\}\}', lambda m: f'{{{{{m.group(1)}}}}}', html)
+
+    # Step D: Deduplicate placeholders (keep first occurrence per section)
+    seen: set = set()
+
+    def _dedup(m: re.Match) -> str:
+        pid = m.group(0)
+        if pid in seen:
+            return ''
+        seen.add(pid)
+        return pid
+
+    html = re.sub(r'\{\{sec_\d+\}\}', _dedup, html)
+
+    # Step E: Ensure each section has its placeholder inside the correct section body.
+    # Parse section boundaries and verify placeholder placement.
+    from .invariants import _SectionParser
+    parser = _SectionParser()
+    try:
+        parser.feed(html)
+    except Exception:
+        pass
+
+    for i in range(section_count):
+        sec_id = f"sec_{i}"
+        placeholder = f"{{{{{sec_id}}}}}"
+        section_inner = parser.sections.get(sec_id, "")
+
+        if placeholder not in section_inner and sec_id in parser.sections:
+            # Placeholder is missing from this section's body — inject after opening tag.
+            # Match any tag type (section, footer, header, etc.) with data-section.
+            tag_re = re.compile(
+                rf'(<(?:section|footer|header|nav|article|aside|main)\s[^>]*data-section="{re.escape(sec_id)}"[^>]*>)',
+                re.IGNORECASE,
+            )
+            tag_match = tag_re.search(html)
+            if tag_match:
+                insert_pos = tag_match.end()
+                html = html[:insert_pos] + placeholder + html[insert_pos:]
+
+    return html
+
+
+def _reconcile_bounding_boxes(
+    segmenter_sections: List[SegmenterSection],
+    phase1_sections: List[Dict],
+) -> Tuple[Dict[str, NormalizedBox], Dict[str, List[int]]]:
+    """Reconcile Phase 1 bounding boxes with segmenter sections (no skeleton rewriting).
+
+    Template-path only. Returns bounding boxes and a mapping of which source
+    Phase 1 indices contributed to each reconciled section.
+
+    Returns:
+        (section_map, reconcile_mapping)
+        section_map: Dict[str, NormalizedBox] keyed by sec_N IDs
+        reconcile_mapping: reconciled_sec_id → list of source Phase 1 indices
+    """
+    seg_count = len(segmenter_sections)
+    p1_count = len(phase1_sections)
+
+    raw_boxes = [
+        {
+            "section_id": f"sec_{i}",
+            "name": sec.get("name", "section"),
+            "y_start_pct": sec.get("y_start_pct", 0),
+            "y_end_pct": sec.get("y_end_pct", 0),
+        }
+        for i, sec in enumerate(phase1_sections)
+    ]
+
+    # Track which source indices map to each reconciled section
+    # Start with 1:1 mapping
+    index_tracking = [[i] for i in range(p1_count)]
+
+    if abs(p1_count - seg_count) > 2:
+        logger.warning(
+            f"Phase 1 section count ({p1_count}) differs from segmenter ({seg_count}) "
+            f"by > 2, using char-ratio fallback for bounding boxes"
+        )
+        boxes = boxes_from_char_ratios(segmenter_sections)
+        section_map = {box.section_id: box for box in boxes}
+        reconcile_mapping = _best_effort_reconcile(segmenter_sections, phase1_sections)
+        return section_map, reconcile_mapping
+
+    normalized = normalize_bounding_boxes(raw_boxes)
+    if normalized is None:
+        logger.warning("Bounding box normalization failed, using char-ratio fallback")
+        boxes = boxes_from_char_ratios(segmenter_sections)
+        section_map = {box.section_id: box for box in boxes}
+        reconcile_mapping = _best_effort_reconcile(segmenter_sections, phase1_sections)
+        return section_map, reconcile_mapping
+
+    if p1_count == seg_count:
+        final_boxes = list(normalized[:seg_count])
+        final_tracking = index_tracking[:seg_count]
+    elif p1_count > seg_count:
+        boxes_list = list(normalized)
+        tracking = list(index_tracking)
+        while len(boxes_list) > seg_count and len(boxes_list) > 1:
+            min_combined = float("inf")
+            min_idx = 0
+            for i in range(len(boxes_list) - 1):
+                height_i = boxes_list[i].y_end_pct - boxes_list[i].y_start_pct
+                height_j = boxes_list[i + 1].y_end_pct - boxes_list[i + 1].y_start_pct
+                combined = height_i + height_j
+                if combined < min_combined:
+                    min_combined = combined
+                    min_idx = i
+            merged = NormalizedBox(
+                section_id=boxes_list[min_idx].section_id,
+                name=boxes_list[min_idx].name,
+                y_start_pct=boxes_list[min_idx].y_start_pct,
+                y_end_pct=boxes_list[min_idx + 1].y_end_pct,
+            )
+            merged_tracking = tracking[min_idx] + tracking[min_idx + 1]
+            boxes_list = boxes_list[:min_idx] + [merged] + boxes_list[min_idx + 2:]
+            tracking = tracking[:min_idx] + [merged_tracking] + tracking[min_idx + 2:]
+        final_boxes = boxes_list
+        final_tracking = tracking
+    else:
+        boxes_list = list(normalized)
+        tracking = list(index_tracking)
+        while len(boxes_list) < seg_count:
+            max_height = 0
+            max_idx = 0
+            for i, box in enumerate(boxes_list):
+                height = box.y_end_pct - box.y_start_pct
+                if height > max_height:
+                    max_height = height
+                    max_idx = i
+            box = boxes_list[max_idx]
+            mid = (box.y_start_pct + box.y_end_pct) / 2
+            top_half = NormalizedBox(
+                section_id=box.section_id,
+                name=box.name,
+                y_start_pct=box.y_start_pct,
+                y_end_pct=mid,
+            )
+            bottom_half = NormalizedBox(
+                section_id=f"sec_{len(boxes_list)}",
+                name="section",
+                y_start_pct=mid,
+                y_end_pct=box.y_end_pct,
+            )
+            parent_tracking = tracking[max_idx]
+            boxes_list = boxes_list[:max_idx] + [top_half, bottom_half] + boxes_list[max_idx + 1:]
+            tracking = tracking[:max_idx] + [parent_tracking, parent_tracking] + tracking[max_idx + 1:]
+        final_boxes = boxes_list
+        final_tracking = tracking
+
+    # Renumber all sections deterministically
+    section_map = {}
+    reconcile_mapping = {}
+    for i, box in enumerate(final_boxes):
+        new_id = f"sec_{i}"
+        section_map[new_id] = NormalizedBox(
+            section_id=new_id,
+            name=box.name,
+            y_start_pct=box.y_start_pct,
+            y_end_pct=box.y_end_pct,
+        )
+        reconcile_mapping[new_id] = final_tracking[i] if i < len(final_tracking) else []
+
+    return section_map, reconcile_mapping
+
+
+def _best_effort_reconcile(
+    segmenter_sections: List[SegmenterSection],
+    phase1_sections: List[Dict],
+) -> Dict[str, List[int]]:
+    """Best-effort mapping when section counts diverge.
+
+    Uses name-based Jaccard matching first, then positional fill for leftovers.
+    Every sec_id is guaranteed at least one P1 index in the result.
+
+    Args:
+        segmenter_sections: SegmenterSection objects from segmenter.
+        phase1_sections: Phase 1 dicts with "name" key.
+
+    Returns:
+        {sec_id: [p1_index, ...]} — every sec_id gets at least one index.
+    """
+    seg_count = len(segmenter_sections)
+    p1_count = len(phase1_sections)
+
+    # Guard: if no P1 sections, map everything to index 0 (defensive)
+    if p1_count == 0:
+        return {sec.section_id: [0] for sec in segmenter_sections}
+
+    mapping: Dict[str, List[int]] = {}
+    used_p1: set = set()
+
+    # Strategy 1: Word-Jaccard name matching (greedy, in section order)
+    for sec in segmenter_sections:
+        sec_name = (sec.name or "").lower().strip()
+        if not sec_name:
+            continue
+
+        best_score = 0.0
+        best_idx = -1
+        for j, p1 in enumerate(phase1_sections):
+            if j in used_p1:
+                continue
+            p1_name = (p1.get("name") or "").lower().strip()
+            if not p1_name:
+                continue
+            score = _word_jaccard(sec_name, p1_name)
+            if score > best_score:
+                best_score = score
+                best_idx = j
+
+        if best_score >= 0.3 and best_idx >= 0:
+            mapping[sec.section_id] = [best_idx]
+            used_p1.add(best_idx)
+
+    # Strategy 2: Endpoint-to-endpoint positional fill for unmatched sections
+    for i, sec in enumerate(segmenter_sections):
+        if sec.section_id in mapping:
+            continue
+        target = round(i * (p1_count - 1) / max(seg_count - 1, 1))
+        # Find closest unused P1 index, or fall back to target if all used
+        if target not in used_p1:
+            chosen = target
+        else:
+            # Search outward from target for nearest unused
+            chosen = target
+            for offset in range(1, p1_count):
+                if target + offset < p1_count and (target + offset) not in used_p1:
+                    chosen = target + offset
+                    break
+                if target - offset >= 0 and (target - offset) not in used_p1:
+                    chosen = target - offset
+                    break
+            else:
+                # All used — reuse target anyway (guarantee non-empty)
+                chosen = target
+        mapping[sec.section_id] = [chosen]
+        used_p1.add(chosen)
+
+    return mapping
+
+
+def _augment_design_system(
+    design_system: Dict,
+    design_tokens: Any,
+) -> Dict:
+    """Merge deterministic CSS-extracted tokens into LLM-generated design system.
+
+    Replaces LLM-guessed colors with CSS ground-truth when they closely match
+    (Euclidean RGB distance < 40). For fonts, uses case-insensitive substring matching.
+    """
+    ds = copy.deepcopy(design_system)
+
+    if not design_tokens:
+        return ds
+
+    # Color augmentation
+    if hasattr(design_tokens, 'colors') and design_tokens.colors:
+        # Get top-3 CSS colors by frequency
+        sorted_colors = sorted(
+            design_tokens.colors.items(), key=lambda x: x[1], reverse=True
+        )[:10]
+
+        colors = ds.get("colors", {})
+        for key, llm_hex in list(colors.items()):
+            for css_hex, _ in sorted_colors:
+                if _hex_distance(llm_hex, css_hex) < 40:
+                    colors[key] = css_hex
+                    break
+        ds["colors"] = colors
+
+    # Font augmentation
+    if hasattr(design_tokens, 'fonts') and design_tokens.fonts:
+        sorted_fonts = sorted(
+            design_tokens.fonts.items(), key=lambda x: x[1], reverse=True
+        )[:3]
+
+        typography = ds.get("typography", {})
+        if sorted_fonts:
+            top_font = sorted_fonts[0][0]
+            for key in ("heading_font", "body_font"):
+                llm_font = typography.get(key, "")
+                # If CSS font is a substring of LLM font stack, keep LLM version
+                # Otherwise, if LLM used a generic stack, replace with CSS font
+                if top_font.lower() not in llm_font.lower():
+                    if "system" in llm_font.lower() or "sans-serif" == llm_font.lower():
+                        typography[key] = top_font
+        ds["typography"] = typography
+
+    return ds
+
+
+def _hex_distance(hex1: str, hex2: str) -> float:
+    """Euclidean distance in RGB space between two hex colors."""
+    try:
+        h1 = hex1.lstrip('#')
+        h2 = hex2.lstrip('#')
+        if len(h1) == 3:
+            h1 = h1[0]*2 + h1[1]*2 + h1[2]*2
+        if len(h2) == 3:
+            h2 = h2[0]*2 + h2[1]*2 + h2[2]*2
+        r1, g1, b1 = int(h1[0:2], 16), int(h1[2:4], 16), int(h1[4:6], 16)
+        r2, g2, b2 = int(h2[0:2], 16), int(h2[2:4], 16), int(h2[4:6], 16)
+        return ((r1-r2)**2 + (g1-g2)**2 + (b1-b2)**2) ** 0.5
+    except (ValueError, IndexError):
+        return 999.0
+
+
+def _wrap_json_as_html(json_data: Any) -> str:
+    """Wrap JSON payload as viewable HTML string for phase_snapshots."""
+    json_str = json.dumps(json_data, indent=2, default=str)
+    return f"<html><body><pre><code>{json_str}</code></pre></body></html>"
+
+
+def _parse_phase1_classifications(
+    result: Dict,
+    reconcile_mapping: Dict[str, List[int]],
+    layout_hints: Optional[Dict] = None,
+) -> Dict:
+    """Parse Phase 1 classification response into layout_map.
+
+    Shared between happy path and retry path.
+
+    Args:
+        result: Parsed JSON from Phase 1 response.
+        reconcile_mapping: sec_id → list of source Phase 1 indices.
+        layout_hints: Optional HTML analysis hints for fallback.
+
+    Returns:
+        layout_map: Dict of sec_id → LayoutHint.
+    """
+    from .layout_analyzer import LayoutHint
+
+    raw_sections = result.get("sections", [])
+    layout_map = {}
+
+    for sec_id, source_indices in reconcile_mapping.items():
+        if source_indices and source_indices[0] < len(raw_sections):
+            sec = raw_sections[source_indices[0]]
+            params = sec.get("layout_params", {})
+            layout_type = sec.get("layout_type", "generic")
+            if layout_type not in (
+                "nav_bar", "hero_centered", "hero_split", "feature_grid",
+                "testimonial_cards", "cta_banner", "faq_list", "pricing_table",
+                "logo_bar", "stats_row", "content_block", "footer_columns", "generic",
+            ):
+                layout_type = "generic"
+            layout_map[sec_id] = LayoutHint(
+                layout_type=layout_type,
+                column_count=params.get("column_count", 1),
+                text_position=params.get("text_position", "left"),
+                has_image=params.get("has_image", False),
+            )
+
+    # Merge HTML analysis hints (fill gaps, don't override vision)
+    if layout_hints:
+        for sec_id, html_hint in layout_hints.items():
+            if sec_id not in layout_map:
+                layout_map[sec_id] = html_hint
+
+    return layout_map
+
+
+def _strip_unresolved_placeholders(html: str) -> Tuple[str, int]:
+    """Strip only unresolved {{sec_N...}} placeholders. Returns (html, removal_count)."""
+    count = 0
+
+    def _remove(m: re.Match) -> str:
+        nonlocal count
+        count += 1
+        return ''
+
+    result = re.sub(r'\{\{sec_\d+[^}]*\}\}', _remove, html)
+    return result, count
+
+
+def _build_fallback_skeleton(sections: List[SegmenterSection]) -> str:
+    """Build a basic skeleton HTML from segmenter sections."""
+    parts = [
+        '<style>',
+        '  body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, '
+        "'Segoe UI', Roboto, sans-serif; }",
+        '  .section { padding: 70px 30px; }',
+        '  .container { max-width: 1200px; margin: 0 auto; }',
+        '</style>',
+    ]
+
+    for sec in sections:
+        parts.append(
+            f'<section data-section="{sec.section_id}" class="section">'
+            f'<div class="container">{{{{{sec.section_id}}}}}</div>'
+            f'</section>'
+        )
+
+    return '\n'.join(parts)
+
+
+# ---------------------------------------------------------------------------
+# v2 skeleton CSS post-processing
+# ---------------------------------------------------------------------------
+
+# Regex to find CSS range values like "16-24px", "60-80px", "32-48px"
+_CSS_RANGE_RE = re.compile(r'(\d+)-(\d+)(px|rem|em|%)')
+
+
+def _fix_css_range_value(match: re.Match) -> str:
+    """Replace a CSS range like '16-24px' with its midpoint '20px'."""
+    low = int(match.group(1))
+    high = int(match.group(2))
+    unit = match.group(3)
+    midpoint = (low + high) // 2
+    return f"{midpoint}{unit}"
+
+
+def _fix_v2_skeleton_css(skeleton_html: str, design_system: Dict) -> str:
+    """Fix Claude's CSS and append shared CSS for reliable rendering.
+
+    Claude generates CSS with documentation-style range values (e.g.,
+    'gap: 16-24px') that are invalid CSS, and may use custom classes
+    not in the shared CSS. This function:
+    1. Fixes range values in Claude's <style> block (preserving custom classes).
+    2. Appends _build_shared_css() after Claude's CSS to override common
+       mp-* selectors with valid design system values.
+    3. Fixes inline style="" range values with midpoint values.
+
+    Args:
+        skeleton_html: Raw skeleton from Claude with potentially invalid CSS.
+        design_system: Design system dict for _build_shared_css().
+
+    Returns:
+        Skeleton HTML with valid CSS.
+    """
+    from .section_templates import _build_shared_css
+
+    shared_css = _build_shared_css(design_system)
+
+    # Fix range values inside Claude's <style> block (keep custom classes)
+    style_re = re.compile(r'(<style[^>]*>)(.*?)(</style>)', re.DOTALL | re.IGNORECASE)
+    style_match = style_re.search(skeleton_html)
+    if style_match:
+        fixed_css_content = _CSS_RANGE_RE.sub(
+            _fix_css_range_value, style_match.group(2)
+        )
+        skeleton_html = (
+            skeleton_html[:style_match.start()]
+            + style_match.group(1) + fixed_css_content + style_match.group(3)
+            + '\n' + shared_css
+            + skeleton_html[style_match.end():]
+        )
+    else:
+        skeleton_html = f'{shared_css}\n{skeleton_html}'
+
+    # Fix inline style="" range values (e.g., "padding: 60-80px 30px")
+    def _fix_inline_style(match: re.Match) -> str:
+        style_value = match.group(1)
+        fixed = _CSS_RANGE_RE.sub(_fix_css_range_value, style_value)
+        return f'style="{fixed}"'
+
+    skeleton_html = re.sub(
+        r'style="([^"]*)"',
+        _fix_inline_style,
+        skeleton_html,
+    )
+
+    return skeleton_html
+
+
+def _clean_phase3_inline_conflicts(html: str) -> str:
+    """Remove duplicate CSS properties from inline style attributes.
+
+    Phase 3 Gemini sometimes appends new style properties to existing
+    inline styles, producing declarations like:
+      style="padding: 60px 30px;; padding: 80px 0;"
+
+    This function:
+    1. Removes double semicolons
+    2. Deduplicates CSS properties (keeps last occurrence)
+    """
+    def _dedup_style(match: re.Match) -> str:
+        style_val = match.group(1)
+        # Fix double semicolons
+        style_val = re.sub(r';{2,}', ';', style_val)
+        # Parse individual declarations and deduplicate (last wins)
+        props: dict[str, str] = {}
+        for decl in style_val.split(';'):
+            decl = decl.strip()
+            if not decl or ':' not in decl:
+                continue
+            prop, _, value = decl.partition(':')
+            props[prop.strip().lower()] = f"{prop.strip()}: {value.strip()}"
+        if not props:
+            return match.group(0)
+        return f'style="{"; ".join(props.values())}"'
+
+    return re.sub(r'style="([^"]*)"', _dedup_style, html)
+
+
+# ---------------------------------------------------------------------------
+# Placeholder contract: layout_type → expected placeholder suffixes
+# ---------------------------------------------------------------------------
+
+LAYOUT_PLACEHOLDER_MAP = {
+    "hero_centered": [""],              # {{sec_N}}
+    "hero_split": ["_text", "_image"],  # {{sec_N_text}}, {{sec_N_image}}
+    "feature_grid": ["_header", "_items"],
+    "testimonial_cards": ["_header", "_items"],
+    "faq_list": ["_header", "_items"],
+    "pricing_table": ["_header", "_items"],
+    "logo_bar": ["_header", "_items"],
+    "stats_row": ["_header", "_items"],
+    "cta_banner": [""],
+    "content_block": [""],
+    "nav_bar": [""],
+    "footer_columns": ["_items"],
+    "generic": [""],
+}
+
+
+@dataclass
+class SkeletonValidationResult:
+    """Result from skeleton HTML validation."""
+    valid: bool
+    errors: List[str] = field(default_factory=list)
+    warnings: List[str] = field(default_factory=list)
+
+
+def _validate_skeleton(
+    skeleton_html: str,
+    layout_map: Dict[str, Any],
+    section_count: int,
+) -> SkeletonValidationResult:
+    """Validate Claude's skeleton HTML against the Phase 2 contract.
+
+    Checks:
+    1. Every section has data-section="sec_N" attribute
+    2. Every section contains its expected placeholder(s) per layout_type
+    3. No orphaned placeholders outside expected set
+    4. Valid HTML structure (no unclosed tags)
+    5. Has <style> block with CSS
+    6. Does NOT contain .lp-mockup wrapper (added externally)
+
+    Args:
+        skeleton_html: The skeleton HTML to validate.
+        layout_map: Dict of sec_id → LayoutHint with layout_type.
+        section_count: Expected number of sections.
+
+    Returns:
+        SkeletonValidationResult with valid flag and error details.
+    """
+    errors: List[str] = []
+    warnings: List[str] = []
+
+    # Check 1: data-section attributes
+    found_sections = re.findall(r'data-section="(sec_\d+)"', skeleton_html)
+    found_set = set(found_sections)
+    expected_set = {f"sec_{i}" for i in range(section_count)}
+
+    missing_sections = expected_set - found_set
+    if missing_sections:
+        errors.append(f"Missing data-section attrs: {sorted(missing_sections)}")
+
+    # Check duplicates
+    if len(found_sections) != len(found_set):
+        from collections import Counter
+        dupes = [s for s, c in Counter(found_sections).items() if c > 1]
+        errors.append(f"Duplicate data-section attrs: {dupes}")
+
+    # Check 2: Expected placeholders per layout_type
+    for sec_id in sorted(expected_set):
+        hint = layout_map.get(sec_id)
+        if hint is None:
+            continue
+        layout_type = hint.layout_type if hasattr(hint, 'layout_type') else str(hint)
+        expected_suffixes = LAYOUT_PLACEHOLDER_MAP.get(layout_type, [""])
+
+        for suffix in expected_suffixes:
+            placeholder = "{{" + sec_id + suffix + "}}"
+            if placeholder not in skeleton_html:
+                errors.append(f"Missing placeholder {placeholder} for {sec_id} ({layout_type})")
+
+    # Check 3: Orphaned placeholders
+    all_placeholders = re.findall(r'\{\{([^}]+)\}\}', skeleton_html)
+    expected_placeholders = set()
+    for sec_id in expected_set:
+        hint = layout_map.get(sec_id)
+        layout_type = "generic"
+        if hint and hasattr(hint, 'layout_type'):
+            layout_type = hint.layout_type
+        suffixes = LAYOUT_PLACEHOLDER_MAP.get(layout_type, [""])
+        for suffix in suffixes:
+            expected_placeholders.add(sec_id + suffix)
+
+    orphaned = [p for p in all_placeholders if p not in expected_placeholders]
+    if orphaned:
+        warnings.append(f"Orphaned placeholders: {orphaned[:5]}")
+
+    # Check 4: Basic HTML well-formedness (unclosed section tags)
+    open_sections = len(re.findall(r'<section\b', skeleton_html, re.IGNORECASE))
+    close_sections = len(re.findall(r'</section>', skeleton_html, re.IGNORECASE))
+    if open_sections != close_sections:
+        errors.append(f"Unclosed section tags: {open_sections} open vs {close_sections} close")
+
+    # Check 5: Has <style> block
+    if '<style' not in skeleton_html.lower():
+        errors.append("Missing <style> block")
+
+    # Check 6: No .lp-mockup wrapper (added externally)
+    if 'class="lp-mockup"' in skeleton_html or "class='lp-mockup'" in skeleton_html:
+        errors.append("Skeleton contains .lp-mockup wrapper (should be added externally)")
+
+    return SkeletonValidationResult(
+        valid=len(errors) == 0,
+        errors=errors,
+        warnings=warnings,
+    )
+
+
+class MultiPassPipeline:
+    """Orchestrates the 5-phase multipass HTML generation pipeline."""
+
+    def __init__(
+        self,
+        gemini_service: GeminiService,
+        progress_callback: Optional[Callable] = None,
+    ):
+        self._gemini = gemini_service
+        self._progress = progress_callback
+        self._limiter = PipelineRateLimiter()
+        self._start_time = 0.0
+        self._cache: Dict[str, str] = {}
+        #: Phase snapshots for debugging: phase_name -> raw HTML at that stage.
+        #: Populated during generate() so callers can inspect intermediate output.
+        self.phase_snapshots: Dict[str, str] = {}
+        # Lazily resolve logfire at runtime, not import time,
+        # to ensure it's configured before we use it
+        self._lf = get_logfire()
+
+    def _report_progress(self, phase: int, message: str):
+        """Report progress via callback if available."""
+        if self._progress:
+            try:
+                self._progress(phase, message)
+            except Exception:
+                pass
+
+    def _time_remaining(self) -> float:
+        """Seconds remaining before wall-clock timeout."""
+        return MAX_WALL_CLOCK - (time.time() - self._start_time)
+
+    def _budget_exceeded(self, max_calls: int) -> bool:
+        """Check if API call budget or wall clock is exceeded."""
+        if self._limiter.call_count >= max_calls:
+            logger.warning(f"API call budget exhausted ({max_calls})")
+            return True
+        if self._time_remaining() <= 0:
+            logger.warning("Wall clock timeout exceeded")
+            return True
+        return False
+
+    async def generate(
+        self,
+        screenshot_b64: str,
+        page_markdown: str,
+        page_url: Optional[str] = None,
+        element_detection: Optional[Dict] = None,
+        page_html: Optional[str] = None,
+    ) -> str:
+        """Run the full 5-phase multipass pipeline.
+
+        Args:
+            screenshot_b64: Base64-encoded full-page screenshot.
+            page_markdown: Full page markdown text.
+            page_url: Optional page URL for image resolution.
+            element_detection: Optional element detection for section hints.
+            page_html: Optional full page HTML for image/CSS extraction (v4).
+
+        Returns:
+            Complete HTML string (raw, no post-processing).
+        """
+        self._start_time = time.time()
+
+        # ----- Surgery pipeline routing -----
+        # When mode is "surgery" and we have page_html with a <body>,
+        # route to the surgery pipeline instead of reconstruction.
+        if (MULTIPASS_PIPELINE_MODE == "surgery"
+                and page_html
+                and '<body' in (page_html[:200000].lower())):
+            from .surgery.pipeline import SurgeryPipeline
+            surgery = SurgeryPipeline(self._gemini, self._progress)
+            result = await surgery.generate(
+                screenshot_b64, page_markdown, page_url or "",
+                element_detection, page_html,
+            )
+            self.phase_snapshots.update(surgery.phase_snapshots)
+            if result:
+                return result
+            # Empty result = surgery fallback → continue with reconstruction
+            logger.info("Surgery pipeline returned empty — falling back to reconstruction")
+
+        # Pre-segmentation cleanup: classify nav/footer/artifact lines
+        clean_result = classify_markdown(page_markdown, mode="extract")
+        self.phase_snapshots["pre_segmentation_cleanup"] = _wrap_json_as_html({
+            "mode": "extract",
+            "stats": clean_result.stats,
+            "classified_lines_sample": [
+                {"text": cl.text[:120], "label": cl.label, "zone": cl.zone, "confidence": cl.confidence}
+                for cl in clean_result.classified_lines[:20]
+            ],
+        })
+        # Store cleaned markdown for fidelity rebasing (downstream diagnostics
+        # should measure fidelity against cleaned text, not raw nav/footer chrome)
+        self.phase_snapshots["_cleaned_markdown"] = clean_result.cleaned_markdown
+
+        # Segment markdown
+        sections = segment_markdown(clean_result.cleaned_markdown, element_detection)
+        # Filter SEO ghost text (meta descriptions, JSON-LD) from sections
+        sections = filter_seo_ghost_text(sections, page_html or "")
+        section_count = len(sections)
+
+        with self._lf.span(
+            "multipass_pipeline",
+            page_url=page_url or "unknown",
+            section_count=section_count,
+        ):
+            # Compute API call budget (Phase 2 is now deterministic — 0 API calls)
+            phase_budgets = {
+                0: 2,
+                1: 2,
+                2: 0,  # Deterministic assembly — no LLM call
+                3: section_count + 2,
+                4: 2,
+            }
+            max_api_calls = sum(phase_budgets.values())
+            self._lf.info(
+                "Pipeline started: {section_count} sections, budget={max_api_calls}",
+                section_count=section_count,
+                max_api_calls=max_api_calls,
+            )
+
+            # Decode screenshot for cropping
+            screenshot_bytes = base64.b64decode(screenshot_b64)
+
+            # Truncate markdown for prompts
+            truncated_md = _truncate_markdown(page_markdown)
+
+            # -----------------------------------------------------------
+            # Harvest: Extract images + CSS from original HTML (v4)
+            # -----------------------------------------------------------
+            image_registry = None
+            responsive_css = ResponsiveCSS()
+            extracted_css = None
+            layout_hints = {}
+
+            if page_html:
+                with self._lf.span("multipass_harvest", phase="html_extraction"):
+                    try:
+                        image_registry = ImageRegistry.build(
+                            page_html, sections, page_url or ""
+                        )
+                        self._lf.info(
+                            "Harvest: {img_count} images, {section_map_count} section mappings",
+                            img_count=len(image_registry.images),
+                            section_map_count=sum(
+                                len(v) for v in image_registry.section_map.values()
+                            ),
+                        )
+                    except Exception as e:
+                        self._lf.warning(
+                            "Image registry build failed: {error}", error=str(e)
+                        )
+                        image_registry = None
+
+                    try:
+                        responsive_css = CSSExtractor.extract(
+                            page_html, page_url or ""
+                        )
+                        css_size = len(responsive_css.to_css_block())
+                        if css_size > 0:
+                            self._lf.info(
+                                "Harvest: {css_size} bytes of responsive CSS extracted",
+                                css_size=css_size,
+                            )
+                    except Exception as e:
+                        self._lf.warning(
+                            "CSS extraction failed: {error}", error=str(e)
+                        )
+                        responsive_css = ResponsiveCSS()
+
+                    # Template/v2 pipeline: enhanced CSS extraction + layout analysis
+                    if USE_TEMPLATE_PIPELINE or MULTIPASS_PHASE1_MODE == "v2":
+                        # Head-only guard: skip if HTML has no <body>
+                        has_body = '<body' in page_html.lower()[:50000]
+
+                        if has_body:
+                            try:
+                                from .css_rules_extractor import CSSRulesExtractor
+
+                                # Build extra_css from inline + external sheets
+                                inline_css_parts = []
+                                for m in re.finditer(
+                                    r'<style[^>]*>(.*?)</style>',
+                                    page_html, re.DOTALL | re.IGNORECASE
+                                ):
+                                    inline_css_parts.append(m.group(1))
+                                extra_css = "\n".join(inline_css_parts)
+
+                                extracted_css = CSSRulesExtractor.extract(
+                                    page_html,
+                                    extra_css=extra_css,
+                                    page_url=page_url or "",
+                                )
+                                if extracted_css.design_tokens and extracted_css.design_tokens.colors:
+                                    self._lf.info(
+                                        "Harvest: {color_count} design token colors, "
+                                        "{font_count} fonts extracted",
+                                        color_count=len(extracted_css.design_tokens.colors),
+                                        font_count=len(extracted_css.design_tokens.fonts),
+                                    )
+                                    self.phase_snapshots["harvest_design_tokens"] = _wrap_json_as_html({
+                                        "colors": extracted_css.design_tokens.colors,
+                                        "fonts": extracted_css.design_tokens.fonts,
+                                        "font_sizes": extracted_css.design_tokens.font_sizes,
+                                    })
+                            except Exception as e:
+                                self._lf.warning(
+                                    "Enhanced CSS extraction failed: {error}", error=str(e)
+                                )
+                                extracted_css = None
+
+                            try:
+                                from .layout_analyzer import analyze_html_layout
+
+                                inlined_html = ""
+                                if extracted_css and extracted_css.inlined_html:
+                                    inlined_html = extracted_css.inlined_html
+
+                                layout_hints = analyze_html_layout(
+                                    inlined_html=inlined_html,
+                                    original_html=page_html,
+                                    sections=sections,
+                                    css_rules=extracted_css,
+                                    page_url=page_url or "",
+                                )
+                                if layout_hints:
+                                    self._lf.info(
+                                        "Harvest: layout hints for {count} sections",
+                                        count=len(layout_hints),
+                                    )
+                                    self.phase_snapshots["harvest_layout_hints"] = _wrap_json_as_html({
+                                        sec_id: {
+                                            "layout_type": h.layout_type,
+                                            "confidence": h.confidence,
+                                            "signals": h.detection_signals,
+                                            "column_count": h.column_count,
+                                        }
+                                        for sec_id, h in layout_hints.items()
+                                    })
+                            except Exception as e:
+                                self._lf.warning(
+                                    "Layout analysis failed: {error}", error=str(e)
+                                )
+                                layout_hints = {}
+
+                            # Free inlined_html after layout analysis
+                            if extracted_css:
+                                extracted_css.inlined_html = ""
+
+            # -----------------------------------------------------------
+            # Pipeline mode selection
+            # -----------------------------------------------------------
+            phase1_mode = MULTIPASS_PHASE1_MODE
+            use_templates_this_run = USE_TEMPLATE_PIPELINE or phase1_mode == "v2"
+            if use_templates_this_run and not page_html:
+                self._lf.warning(
+                    "Template/v2 pipeline enabled but no page_html — "
+                    "falling back to original pipeline path"
+                )
+                use_templates_this_run = False
+                phase1_mode = "original"
+
+            # -----------------------------------------------------------
+            # Phase 0: Design System Extraction
+            # -----------------------------------------------------------
+            self._report_progress(0, "Extracting design system...")
+            design_system = await self._run_phase_0(screenshot_b64, truncated_md)
+
+            # Snapshot: Phase 0 design system (unconditional — before augmentation)
+            self.phase_snapshots["phase_0_design_system"] = _wrap_json_as_html(design_system)
+
+            # Phase 0 augmentation: merge deterministic CSS tokens
+            if use_templates_this_run and extracted_css and extracted_css.design_tokens:
+                design_system = _augment_design_system(design_system, extracted_css.design_tokens)
+                self.phase_snapshots["phase_0_augmented"] = _wrap_json_as_html(design_system)
+
+            if self._budget_exceeded(max_api_calls):
+                self._lf.warning("Budget exceeded after Phase 0, returning fallback skeleton")
+                return _build_fallback_skeleton(sections)
+
+            # -----------------------------------------------------------
+            # Phase 1: Layout Skeleton + Bounding Boxes
+            # -----------------------------------------------------------
+            layout_map = {}  # Populated by template/v2 pipeline path
+
+            if phase1_mode == "v2":
+                # v2 pipeline: Gemini sees, Claude builds
+                self._report_progress(1, "Phase 1 v2: visual audit + skeleton codegen...")
+                skeleton_html, section_map, layout_map = await self._run_phase_1_v2(
+                    screenshot_b64, design_system, sections,
+                    layout_hints=layout_hints,
+                    extracted_css=extracted_css,
+                    page_html=page_html,
+                )
+            elif use_templates_this_run:
+                # Template pipeline: classification + deterministic skeleton
+                self._report_progress(1, "Classifying layouts...")
+                skeleton_html, section_map, layout_map = await self._run_phase_1_classify(
+                    screenshot_b64, design_system, sections,
+                    layout_hints=layout_hints,
+                    extracted_css=extracted_css,
+                )
+            else:
+                # Original path: LLM-generated skeleton
+                self._report_progress(1, "Building layout skeleton...")
+                skeleton_html, section_map = await self._run_phase_1(
+                    screenshot_b64, design_system, sections
+                )
+            if self._budget_exceeded(max_api_calls):
+                self._lf.warning("Budget exceeded after Phase 1, returning skeleton")
+                self.phase_snapshots["phase_1_skeleton"] = skeleton_html
+                return skeleton_html
+
+            # -----------------------------------------------------------
+            # Inject scoped responsive CSS after Phase 1 skeleton
+            # -----------------------------------------------------------
+            css_block_str = responsive_css.to_css_block()
+            if css_block_str:
+                scoped_css = _scope_css_under_class(css_block_str, ".lp-mockup")
+                css_tag = f'<style class="responsive-css">\n{scoped_css}\n</style>'
+
+                # Deterministic insertion with fallback chain
+                if '</style>' in skeleton_html:
+                    skeleton_html = skeleton_html.replace(
+                        "</style>", f"</style>\n{css_tag}", 1
+                    )
+                elif '</head>' in skeleton_html.lower():
+                    skeleton_html = re.sub(
+                        r'(</head>)',
+                        f'{css_tag}\n\\1',
+                        skeleton_html,
+                        count=1,
+                        flags=re.IGNORECASE,
+                    )
+                else:
+                    skeleton_html = f'{css_tag}\n{skeleton_html}'
+
+            # Wrap skeleton in .lp-mockup div for CSS scoping
+            skeleton_html = f'<div class="lp-mockup">\n{skeleton_html}\n</div>'
+
+            # Snapshot: Phase 1 skeleton (with CSS + .lp-mockup wrapping)
+            self.phase_snapshots["phase_1_skeleton"] = skeleton_html
+
+            # -----------------------------------------------------------
+            # Phase 2: Deterministic Content Assembly (v4)
+            # -----------------------------------------------------------
+            self._report_progress(2, "Assembling content (deterministic)...")
+            with self._lf.span("multipass_phase_2", phase="deterministic_assembly"):
+                try:
+                    content_html = assemble_content(
+                        skeleton_html,
+                        sections,
+                        section_map,
+                        image_registry,
+                        layout_map=layout_map if use_templates_this_run else None,
+                        extracted_css=extracted_css if use_templates_this_run else None,
+                    )
+                    from .invariants import _extract_slots
+                    slot_count = len(_extract_slots(content_html))
+                    self._lf.info(
+                        "Phase 2 OK (deterministic): {output_chars} chars, {slot_count} slots",
+                        output_chars=len(content_html),
+                        slot_count=slot_count,
+                    )
+                except Exception as e:
+                    self._lf.warning(
+                        "Deterministic Phase 2 failed: {error}, using fallback",
+                        error=str(e),
+                    )
+                    content_html = phase_2_fallback(skeleton_html, sections)
+
+            # Re-inject data-section attributes if needed
+            content_html = _ensure_section_attributes(
+                content_html, section_map, self._lf
+            )
+
+            # Ensure minimum slots
+            content_html = _ensure_minimum_slots(content_html)
+
+            # Strip any unresolved placeholders (e.g., from duplicate
+            # placeholders in Claude's skeleton or layout_map mismatches)
+            content_html, stripped = _strip_unresolved_placeholders(content_html)
+            if stripped:
+                self._lf.info(
+                    "Phase 2 cleanup: stripped {n} unresolved placeholders",
+                    n=stripped,
+                )
+
+            # Snapshot: Phase 2 content (after assembly + section attr fix + slots)
+            self.phase_snapshots["phase_2_content"] = content_html
+
+            # -----------------------------------------------------------
+            # Pre-Phase-3 gate: verify sections are parseable
+            # -----------------------------------------------------------
+            gate_sections = _parse_sections(content_html)
+            expected_ids = set(section_map.keys())
+            parsed_ids = set(gate_sections.keys())
+            missing_ids = expected_ids - parsed_ids
+
+            if missing_ids:
+                self._lf.warning(
+                    "Pre-Phase-3 gate: {missing}/{expected} sections not parseable, "
+                    "rebuilding from fallback skeleton",
+                    missing=len(missing_ids),
+                    expected=len(expected_ids),
+                )
+                # Rebuild: use fallback skeleton + re-run content assembly
+                fallback_skeleton = _build_fallback_skeleton(sections)
+                fallback_skeleton = f'<div class="lp-mockup">\n{fallback_skeleton}\n</div>'
+                content_html = assemble_content(
+                    fallback_skeleton, sections, section_map, image_registry,
+                    layout_map=layout_map if use_templates_this_run else None,
+                    extracted_css=extracted_css if use_templates_this_run else None,
+                )
+                content_html = _ensure_section_attributes(
+                    content_html, section_map, self._lf
+                )
+                content_html = _ensure_minimum_slots(content_html)
+
+                # Re-validate after rebuild
+                gate_sections2 = _parse_sections(content_html)
+                still_missing = expected_ids - set(gate_sections2.keys())
+                if still_missing:
+                    self._lf.warning(
+                        "Pre-Phase-3 gate: rebuild still missing {count} sections, "
+                        "short-circuiting to deterministic output (skip Phase 3/4)",
+                        count=len(still_missing),
+                    )
+                    content_html, removals = _strip_unresolved_placeholders(
+                        content_html
+                    )
+                    if removals:
+                        self._lf.warning(
+                            "Short-circuit cleanup: stripped {n} placeholders",
+                            n=removals,
+                        )
+                    return content_html
+
+            # Capture invariant baselines
+            baseline = capture_pipeline_invariants(content_html)
+
+            if self._budget_exceeded(max_api_calls):
+                self._lf.warning("Budget exceeded after Phase 2, returning content HTML")
+                return content_html
+
+            # -----------------------------------------------------------
+            # Phase 3: Visual Refinement
+            # -----------------------------------------------------------
+            if use_templates_this_run and MULTIPASS_PHASE3_MODE == "disabled":
+                # Template pipeline with Phase 3 disabled — skip entirely
+                self._report_progress(3, "Phase 3 disabled (template mode)...")
+                refined_html = content_html
+                self.phase_snapshots["phase_3_refined"] = content_html
+            elif use_templates_this_run and MULTIPASS_PHASE3_MODE in ("fullpage", "per_section"):
+                # Template pipeline: CSS-only Phase 3
+                self._report_progress(3, "Applying CSS refinements...")
+                refined_html = await self._run_phase_3_css(
+                    content_html,
+                    screenshot_bytes,
+                    screenshot_b64,
+                    section_map,
+                    sections,
+                    design_system,
+                    baseline,
+                )
+                self.phase_snapshots["phase_3_refined"] = refined_html
+            else:
+                # Original path: per-section HTML refinement
+                self._report_progress(3, "Refining sections visually...")
+                refined_html, stats = await self._run_phase_3(
+                    content_html,
+                    screenshot_bytes,
+                    screenshot_b64,
+                    section_map,
+                    sections,
+                    design_system,
+                    baseline,
+                    page_url,
+                    page_markdown,
+                    image_registry=image_registry,
+                    responsive_css=responsive_css,
+                )
+                self.phase_snapshots["phase_3_refined"] = refined_html
+
+            if self._budget_exceeded(max_api_calls):
+                self._lf.warning("Budget exceeded after Phase 3, returning refined HTML")
+                return refined_html
+
+            # -----------------------------------------------------------
+            # Phase 4: Targeted Patch Pass
+            # -----------------------------------------------------------
+            self._report_progress(4, "Applying visual patches...")
+            patched_html = await self._run_phase_4(
+                refined_html,
+                screenshot_b64,
+                section_map,
+                baseline,
+            )
+
+            # -----------------------------------------------------------
+            # Scoped placeholder cleanup
+            # -----------------------------------------------------------
+            cleaned, removals = _strip_unresolved_placeholders(patched_html)
+            if removals:
+                logger.warning(
+                    f"Stripped {removals} unresolved section placeholders"
+                )
+                cleanup_report = check_global_invariants(cleaned, baseline)
+                if not cleanup_report.passed:
+                    logger.warning(
+                        f"Post-cleanup invariant FAILED: "
+                        f"{cleanup_report.issues}, keeping original"
+                    )
+                    cleaned = patched_html
+            patched_html = cleaned
+
+            # -----------------------------------------------------------
+            # Popup Filter
+            # -----------------------------------------------------------
+            popup_filter = PopupFilter()
+            final_html = popup_filter.filter(
+                patched_html,
+                detected_overlays=design_system.get("overlays", []),
+            )
+
+            # -----------------------------------------------------------
+            # Post-popup-filter invariant check (Fix 7)
+            # -----------------------------------------------------------
+            final_report = check_global_invariants(final_html, baseline)
+            if not final_report.passed:
+                self._lf.warning(
+                    "Post-popup-filter invariant FAILED: {issues}, "
+                    "reverting to pre-filter HTML",
+                    issues=str(final_report.issues),
+                )
+                final_html = patched_html
+
+            # Snapshot: Phase 4 final (after patches + popup filter)
+            self.phase_snapshots["phase_4_final"] = final_html
+
+            elapsed = time.time() - self._start_time
+            self._lf.info(
+                "MultiPass pipeline complete: phases=0-4, "
+                "api_calls={api_calls}, wall_clock={elapsed:.1f}s, "
+                "output_chars={output_chars}",
+                api_calls=self._limiter.call_count,
+                elapsed=elapsed,
+                output_chars=len(final_html),
+            )
+            logger.info(
+                f"MultiPass pipeline complete: "
+                f"phases=0-4, api_calls={self._limiter.call_count}, "
+                f"wall_clock={elapsed:.1f}s"
+            )
+            self._report_progress(5, "Complete!")
+
+            return final_html
+
+    # -------------------------------------------------------------------
+    # Phase implementations
+    # -------------------------------------------------------------------
+
+    async def _run_phase_0(
+        self,
+        screenshot_b64: str,
+        markdown_preview: str,
+    ) -> Dict:
+        """Phase 0: Design System Extraction."""
+        prompt = build_phase_0_prompt(markdown_preview)
+
+        with self._lf.span("multipass_phase_0", phase="design_system_extraction"):
+            try:
+                response = await self._call_gemini_vision(
+                    PHASE_MODELS[0], screenshot_b64, prompt
+                )
+                design_system = _parse_json_response(response)
+                colors_found = len(design_system.get("colors", {}))
+                overlays_found = len(design_system.get("overlays", []))
+                self._lf.info(
+                    "Phase 0 OK: {colors_found} colors, {overlays_found} overlays detected",
+                    colors_found=colors_found,
+                    overlays_found=overlays_found,
+                )
+                return design_system
+            except RateLimitError:
+                self._lf.warning("Phase 0: rate limited, retrying with 3s backoff")
+                try:
+                    await asyncio.sleep(3)
+                    response = await self._call_gemini_vision(
+                        PHASE_MODELS[0], screenshot_b64, prompt
+                    )
+                    return _parse_json_response(response)
+                except Exception as e:
+                    self._lf.warning("Phase 0 retry failed: {error}, using defaults", error=str(e))
+                    return dict(DEFAULT_DESIGN_SYSTEM)
+            except Exception as e:
+                self._lf.warning("Phase 0 failed: {error}, using defaults", error=str(e))
+                return dict(DEFAULT_DESIGN_SYSTEM)
+
+    async def _run_phase_1(
+        self,
+        screenshot_b64: str,
+        design_system: Dict,
+        sections: List[SegmenterSection],
+    ) -> Tuple[str, Dict[str, NormalizedBox]]:
+        """Phase 1: Layout Skeleton + Bounding Boxes.
+
+        Returns:
+            (skeleton_html, section_map)
+        """
+        section_names = [s.name for s in sections]
+        prompt = build_phase_1_prompt(
+            json.dumps(design_system, indent=2),
+            section_names,
+            len(sections),
+        )
+
+        with self._lf.span(
+            "multipass_phase_1",
+            phase="layout_skeleton",
+            segmenter_section_count=len(sections),
+        ):
+            try:
+                response = await self._call_gemini_vision(
+                    PHASE_MODELS[1], screenshot_b64, prompt
+                )
+                result = _parse_json_response(response)
+
+                phase1_sections = result.get("sections", [])
+                raw_skeleton = result.get("skeleton_html", "")
+
+                if not raw_skeleton:
+                    raise ValueError("No skeleton_html in Phase 1 response")
+
+                raw_skeleton = _strip_code_fences(raw_skeleton)
+
+                section_map, rewritten_skeleton = _reconcile_sections(
+                    sections, phase1_sections, raw_skeleton
+                )
+
+                self._lf.info(
+                    "Phase 1 OK: {section_count} sections, "
+                    "skeleton_chars={skeleton_chars}, "
+                    "model_sections={model_sections}, reconciled={reconciled}",
+                    section_count=len(section_map),
+                    skeleton_chars=len(rewritten_skeleton),
+                    model_sections=len(phase1_sections),
+                    reconciled=len(phase1_sections) != len(sections),
+                )
+                return rewritten_skeleton, section_map
+
+            except RateLimitError:
+                self._lf.warning("Phase 1: rate limited, retrying with 3s backoff")
+                try:
+                    await asyncio.sleep(3)
+                    response = await self._call_gemini_vision(
+                        PHASE_MODELS[1], screenshot_b64, prompt
+                    )
+                    result = _parse_json_response(response)
+                    phase1_sections = result.get("sections", [])
+                    raw_skeleton = _strip_code_fences(result.get("skeleton_html", ""))
+                    if raw_skeleton:
+                        section_map, rewritten = _reconcile_sections(
+                            sections, phase1_sections, raw_skeleton
+                        )
+                        return rewritten, section_map
+                except Exception as e:
+                    logger.warning(f"Phase 1 retry failed: {e}")
+
+                self._lf.warning("Phase 1 using fallback skeleton (char-ratio)")
+                return self._phase_1_fallback(sections)
+            except Exception as e:
+                self._lf.warning("Phase 1 failed: {error}, using fallback", error=str(e))
+                return self._phase_1_fallback(sections)
+
+    def _phase_1_fallback(
+        self, sections: List[SegmenterSection]
+    ) -> Tuple[str, Dict[str, NormalizedBox]]:
+        """Fallback: build skeleton from segmenter sections with char-ratio boxes."""
+        skeleton = _build_fallback_skeleton(sections)
+        boxes = boxes_from_char_ratios(sections)
+        section_map = {box.section_id: box for box in boxes}
+        return skeleton, section_map
+
+    def _phase_1_fallback_classify(
+        self,
+        sections: List[SegmenterSection],
+        layout_hints: Optional[Dict] = None,
+    ) -> Tuple[str, Dict[str, NormalizedBox], Dict]:
+        """Fallback for template pipeline: uses layout_hints if available."""
+        skeleton = _build_fallback_skeleton(sections)
+        boxes = boxes_from_char_ratios(sections)
+        section_map = {box.section_id: box for box in boxes}
+        # Preserve layout hints — filter to sections that actually exist
+        section_ids = {s.section_id for s in sections}
+        layout_map = {
+            sid: hint for sid, hint in (layout_hints or {}).items()
+            if sid in section_ids
+        }
+        return skeleton, section_map, layout_map
+
+    async def _run_phase_1_v2(
+        self,
+        screenshot_b64: str,
+        design_system: Dict,
+        sections: List[SegmenterSection],
+        layout_hints: Optional[Dict] = None,
+        extracted_css: Optional[object] = None,
+        page_html: Optional[str] = None,
+    ) -> Tuple[str, Dict[str, NormalizedBox], Dict]:
+        """Phase 1 v2: Gemini Sees, Claude Builds.
+
+        4-step sub-pipeline:
+          1A: Gemini Visual Audit (1 API call)
+          1B: Deterministic Layout Fusion (0 API calls)
+          1C: Claude Skeleton Codegen (1 API call)
+          1D: Deterministic Validation (0 API calls)
+
+        Fallback cascade:
+          Level 0: Claude skeleton passes validation
+          Level 1: Claude retry with error feedback
+          Level 2: Template skeleton with fused layout_map
+          Level 3: Template skeleton with layout_hints only
+          Level 4: Bare fallback skeleton
+
+        Returns:
+            (skeleton_html, section_map, layout_map)
+        """
+        from .layout_analyzer import fuse_layout_signals, build_section_contexts
+        from .section_templates import build_skeleton_from_templates, _build_shared_css
+
+        with self._lf.span(
+            "multipass_phase_1_v2",
+            phase="gemini_sees_claude_builds",
+            segmenter_section_count=len(sections),
+        ):
+            step_timings: Dict[str, float] = {}
+
+            # -----------------------------------------------------------
+            # Step 1A: Gemini Visual Audit
+            # -----------------------------------------------------------
+            gemini_audit = None
+            t0 = time.time()
+            try:
+                # Build layout hints summary for the prompt
+                hints_summary = ""
+                if layout_hints:
+                    hint_lines = []
+                    for sec_id, hint in layout_hints.items():
+                        if hasattr(hint, 'layout_type'):
+                            hint_lines.append(
+                                f"  - {sec_id}: {hint.layout_type} "
+                                f"(confidence={hint.confidence:.2f})"
+                            )
+                    hints_summary = "\n".join(hint_lines)
+
+                section_names = [s.name for s in sections]
+                audit_prompt = build_phase_1a_visual_audit_prompt(
+                    section_names, len(sections), hints_summary or None
+                )
+                response = await self._call_gemini_vision(
+                    PHASE_MODELS[1], screenshot_b64, audit_prompt
+                )
+                audit_result = _parse_json_response(response)
+                gemini_audit = audit_result.get("sections", [])
+                self.phase_snapshots["phase_1a_visual_audit"] = _wrap_json_as_html(audit_result)
+                self._lf.info(
+                    "Step 1A OK: {section_count} sections described",
+                    section_count=len(gemini_audit),
+                )
+            except Exception as e:
+                self._lf.warning(
+                    "Step 1A failed: {error}, proceeding with HTML hints only",
+                    error=str(e),
+                )
+                gemini_audit = None
+            step_timings["1a_visual_audit"] = time.time() - t0
+
+            # -----------------------------------------------------------
+            # Step 1B: Deterministic Layout Fusion
+            # -----------------------------------------------------------
+            t0 = time.time()
+            layout_map = fuse_layout_signals(
+                html_hints=layout_hints or {},
+                gemini_audit=gemini_audit,
+                sections=sections,
+            )
+            self.phase_snapshots["phase_1b_layout_fusion"] = _wrap_json_as_html({
+                sec_id: {
+                    "layout_type": h.layout_type,
+                    "column_count": h.column_count,
+                    "has_image": h.has_image,
+                    "confidence": h.confidence,
+                    "signals": h.detection_signals,
+                }
+                for sec_id, h in layout_map.items()
+            })
+
+            # Build section_map from char ratios (deterministic)
+            boxes = boxes_from_char_ratios(sections)
+            section_map = {box.section_id: box for box in boxes}
+
+            # Build rich section contexts for Claude
+            section_contexts = build_section_contexts(
+                sections, layout_map, gemini_audit, page_html
+            )
+            step_timings["1b_layout_fusion"] = time.time() - t0
+            self._lf.info(
+                "Step 1B OK: {layout_count} layouts fused in {ms:.0f}ms",
+                layout_count=len(layout_map),
+                ms=step_timings["1b_layout_fusion"] * 1000,
+            )
+
+            # -----------------------------------------------------------
+            # Step 1C: Claude Skeleton Codegen
+            # -----------------------------------------------------------
+            t0 = time.time()
+            skeleton_html = None
+            fallback_level = 0
+
+            # Extract CSS snippet for Claude
+            css_snippet = None
+            if extracted_css and hasattr(extracted_css, 'design_tokens'):
+                try:
+                    dt = extracted_css.design_tokens
+                    css_parts = []
+                    if dt.colors:
+                        top_colors = sorted(dt.colors.items(), key=lambda x: x[1], reverse=True)[:5]
+                        css_parts.append("/* Top colors: " + ", ".join(f"{c[0]}({c[1]})" for c in top_colors) + " */")
+                    if dt.fonts:
+                        css_parts.append("/* Fonts: " + ", ".join(dt.fonts.keys()) + " */")
+                    css_snippet = "\n".join(css_parts) if css_parts else None
+                except Exception:
+                    pass
+
+            try:
+                codegen_prompt = build_phase_1c_skeleton_codegen_prompt(
+                    json.dumps(design_system, indent=2),
+                    section_contexts,
+                    css_snippet,
+                )
+                raw_skeleton = await self._call_claude_text(codegen_prompt)
+                raw_skeleton = _strip_code_fences(raw_skeleton)
+
+                # -----------------------------------------------------------
+                # Step 1D: Deterministic Validation
+                # -----------------------------------------------------------
+                validation = _validate_skeleton(raw_skeleton, layout_map, len(sections))
+
+                if validation.valid:
+                    skeleton_html = raw_skeleton
+                    fallback_level = 0
+                    self._lf.info("Step 1C+1D OK: Claude skeleton passed validation")
+                else:
+                    # Level 1: Retry with error feedback
+                    self._lf.warning(
+                        "Step 1D validation failed: {errors}, retrying with feedback",
+                        errors=str(validation.errors[:3]),
+                    )
+                    retry_prompt = (
+                        codegen_prompt
+                        + "\n\n## VALIDATION ERRORS FROM PREVIOUS ATTEMPT\n"
+                        + "Fix these issues:\n"
+                        + "\n".join(f"- {e}" for e in validation.errors)
+                        + "\n\nReturn the corrected HTML."
+                    )
+                    try:
+                        retry_skeleton = await self._call_claude_text(retry_prompt)
+                        retry_skeleton = _strip_code_fences(retry_skeleton)
+                        retry_validation = _validate_skeleton(
+                            retry_skeleton, layout_map, len(sections)
+                        )
+                        if retry_validation.valid:
+                            skeleton_html = retry_skeleton
+                            fallback_level = 1
+                            self._lf.info("Step 1D retry OK: Claude skeleton passed on retry")
+                        else:
+                            self._lf.warning(
+                                "Step 1D retry also failed: {errors}",
+                                errors=str(retry_validation.errors[:3]),
+                            )
+                    except Exception as e:
+                        self._lf.warning(
+                            "Step 1C retry failed: {error}", error=str(e)
+                        )
+
+            except Exception as e:
+                self._lf.warning(
+                    "Step 1C failed: {error}", error=str(e)
+                )
+
+            step_timings["1c_skeleton_codegen"] = time.time() - t0
+
+            # -----------------------------------------------------------
+            # Fallback cascade
+            # -----------------------------------------------------------
+            if skeleton_html is None:
+                # Level 2: Template skeleton with fused layout_map
+                try:
+                    skeleton_html = build_skeleton_from_templates(
+                        sections, layout_map, design_system, extracted_css
+                    )
+                    fallback_level = 2
+                    self._lf.info("Fallback level 2: template skeleton with fused layout_map")
+                except Exception as e:
+                    self._lf.warning(
+                        "Fallback level 2 failed: {error}", error=str(e)
+                    )
+
+            if skeleton_html is None:
+                # Level 3: Template skeleton with layout_hints only
+                try:
+                    skeleton_html = build_skeleton_from_templates(
+                        sections, layout_hints or {}, design_system, extracted_css
+                    )
+                    fallback_level = 3
+                    self._lf.info("Fallback level 3: template skeleton with layout_hints")
+                except Exception as e:
+                    self._lf.warning(
+                        "Fallback level 3 failed: {error}", error=str(e)
+                    )
+
+            if skeleton_html is None:
+                # Level 4: Bare fallback skeleton
+                skeleton_html = _build_fallback_skeleton(sections)
+                fallback_level = 4
+                self._lf.info("Fallback level 4: bare fallback skeleton")
+
+            # -----------------------------------------------------------
+            # CSS fix: replace Claude's <style> with shared CSS +
+            # fix invalid CSS range values in inline styles
+            # -----------------------------------------------------------
+            if fallback_level <= 1:
+                skeleton_html = _fix_v2_skeleton_css(
+                    skeleton_html, design_system
+                )
+
+            # Store telemetry
+            self.phase_snapshots["phase_1_v2_telemetry"] = _wrap_json_as_html({
+                "fallback_level": fallback_level,
+                "step_timings": step_timings,
+                "gemini_audit_available": gemini_audit is not None,
+                "layout_map_count": len(layout_map),
+                "skeleton_chars": len(skeleton_html),
+            })
+
+            self._lf.info(
+                "Phase 1 v2 complete: fallback_level={fallback_level}, "
+                "skeleton_chars={skeleton_chars}",
+                fallback_level=fallback_level,
+                skeleton_chars=len(skeleton_html),
+            )
+            return skeleton_html, section_map, layout_map
+
+    async def _run_phase_1_classify(
+        self,
+        screenshot_b64: str,
+        design_system: Dict,
+        sections: List[SegmenterSection],
+        layout_hints: Optional[Dict] = None,
+        extracted_css: Optional[object] = None,
+    ) -> Tuple[str, Dict[str, NormalizedBox], Dict]:
+        """Phase 1 (Template Pipeline): Layout Classification + Bounding Boxes.
+
+        Returns:
+            (skeleton_html, section_map, layout_map)
+        """
+        from .section_templates import build_skeleton_from_templates
+
+        section_names = [s.name for s in sections]
+        prompt = build_phase_1_classify_prompt(
+            json.dumps(design_system, indent=2),
+            section_names,
+            len(sections),
+            layout_hints=layout_hints,
+        )
+
+        with self._lf.span(
+            "multipass_phase_1_classify",
+            phase="layout_classification",
+            segmenter_section_count=len(sections),
+        ):
+            try:
+                response = await self._call_gemini_vision(
+                    PHASE_MODELS[1], screenshot_b64, prompt
+                )
+                result = _parse_json_response(response)
+
+                # Store raw classifications for debugging
+                self.phase_snapshots["phase_1_raw_classifications"] = _wrap_json_as_html(result)
+
+                phase1_sections = result.get("sections", [])
+
+                # Step 1: Reconcile bounding boxes (no skeleton rewriting)
+                section_map, reconcile_mapping = _reconcile_bounding_boxes(
+                    sections, phase1_sections
+                )
+
+                # Step 2: Parse layout classifications via shared helper
+                layout_map = _parse_phase1_classifications(
+                    result, reconcile_mapping, layout_hints
+                )
+
+                # Store layout map for debugging
+                self.phase_snapshots["phase_1_layout_map"] = _wrap_json_as_html({
+                    sec_id: {
+                        "layout_type": h.layout_type,
+                        "column_count": h.column_count,
+                        "has_image": h.has_image,
+                    }
+                    for sec_id, h in layout_map.items()
+                })
+
+                # Step 3: Build skeleton from templates (NO _rewrite_skeleton)
+                skeleton_html = build_skeleton_from_templates(
+                    sections, layout_map, design_system, extracted_css
+                )
+
+                self._lf.info(
+                    "Phase 1 classify OK: {section_count} sections, "
+                    "{layout_count} layouts classified",
+                    section_count=len(section_map),
+                    layout_count=len(layout_map),
+                )
+                return skeleton_html, section_map, layout_map
+
+            except RateLimitError:
+                self._lf.warning("Phase 1 classify: rate limited, retrying")
+                try:
+                    await asyncio.sleep(3)
+                    response = await self._call_gemini_vision(
+                        PHASE_MODELS[1], screenshot_b64, prompt
+                    )
+                    result = _parse_json_response(response)
+                    phase1_sections = result.get("sections", [])
+                    section_map, reconcile_mapping = _reconcile_bounding_boxes(
+                        sections, phase1_sections
+                    )
+                    layout_map = _parse_phase1_classifications(
+                        result, reconcile_mapping, layout_hints
+                    )
+                    skeleton_html = build_skeleton_from_templates(
+                        sections, layout_map, design_system, extracted_css
+                    )
+                    return skeleton_html, section_map, layout_map
+                except Exception as e:
+                    logger.warning(f"Phase 1 classify retry failed: {e}")
+
+                self._lf.warning("Phase 1 classify using fallback")
+                return self._phase_1_fallback_classify(sections, layout_hints=layout_hints)
+            except Exception as e:
+                self._lf.warning(
+                    "Phase 1 classify failed: {error}, using fallback", error=str(e)
+                )
+                return self._phase_1_fallback_classify(sections, layout_hints=layout_hints)
+
+    async def _run_phase_3_css(
+        self,
+        content_html: str,
+        screenshot_bytes: bytes,
+        screenshot_b64: str,
+        section_map: Dict[str, NormalizedBox],
+        sections: List[SegmenterSection],
+        design_system: Dict,
+        baseline: PipelineInvariants,
+    ) -> str:
+        """Phase 3 (Template Pipeline): CSS-Only Refinement.
+
+        Returns CSS patches (not HTML fragments). Text cannot be changed.
+        """
+        with self._lf.span(
+            "multipass_phase_3_css",
+            phase="css_refinement",
+            mode=MULTIPASS_PHASE3_MODE,
+        ):
+            all_patches = []
+
+            if MULTIPASS_PHASE3_MODE == "fullpage":
+                # Single LLM call with full screenshot
+                section_ids = sorted(
+                    section_map.keys(), key=lambda x: int(x.split("_")[1])
+                )
+                prompt = build_phase_3_css_prompt_fullpage(content_html, section_ids)
+
+                try:
+                    response = await self._call_gemini_vision(
+                        PHASE_MODELS[3], screenshot_b64, prompt
+                    )
+                    raw_patches = _parse_json_response(response)
+                    if isinstance(raw_patches, list):
+                        all_patches = raw_patches
+                except Exception as e:
+                    self._lf.warning(
+                        "Phase 3 CSS fullpage failed: {error}", error=str(e)
+                    )
+
+            elif MULTIPASS_PHASE3_MODE == "per_section":
+                # Per-section LLM calls with cropped screenshots
+                compact_ds = json.dumps({
+                    "colors": design_system.get("colors", {}),
+                    "typography": design_system.get("typography", {}),
+                })
+
+                section_ids = sorted(
+                    section_map.keys(), key=lambda x: int(x.split("_")[1])
+                )
+                from .invariants import _SectionParser
+                parser = _SectionParser()
+                parser.feed(content_html)
+                section_htmls = parser.sections
+
+                for sec_id in section_ids:
+                    if sec_id not in section_htmls:
+                        continue
+                    box = section_map[sec_id]
+                    try:
+                        cropped_bytes = crop_section(screenshot_bytes, box)
+                        cropped_b64 = base64.b64encode(cropped_bytes).decode('utf-8')
+                    except Exception:
+                        continue
+
+                    section_html_frag = (
+                        f'<section data-section="{sec_id}">'
+                        f'{section_htmls[sec_id]}'
+                        f'</section>'
+                    )
+                    prompt = build_phase_3_css_prompt_section(
+                        sec_id, section_html_frag, compact_ds
+                    )
+
+                    try:
+                        response = await self._call_gemini_vision(
+                            PHASE_MODELS[3], cropped_b64, prompt
+                        )
+                        raw_patches = _parse_json_response(response)
+                        if isinstance(raw_patches, list):
+                            all_patches.extend(raw_patches)
+                    except Exception as e:
+                        self._lf.warning(
+                            "Phase 3 CSS section {sec_id} failed: {error}",
+                            sec_id=sec_id, error=str(e),
+                        )
+
+            # Store raw patches
+            if all_patches:
+                self.phase_snapshots["phase_3_css_patches"] = _wrap_json_as_html(all_patches)
+
+            if not all_patches:
+                self._lf.info("Phase 3 CSS: no patches to apply")
+                return content_html
+
+            # Map to PatchApplier format: {selector, css} → {type, selector, value}
+            mapped_patches = [
+                {
+                    "type": "css_fix",
+                    "selector": p.get("selector", ""),
+                    "value": p.get("css", ""),
+                }
+                for p in all_patches
+                if p.get("selector") and p.get("css")
+            ]
+
+            if not mapped_patches:
+                return content_html
+
+            # Apply patches
+            applier = PatchApplier()
+            patched = applier.apply_patches(content_html, mapped_patches[:20])
+
+            # Invariant check (simplified — CSS patches can't change text)
+            report = check_global_invariants(patched, baseline)
+            if not report.passed:
+                self._lf.warning(
+                    "Phase 3 CSS patches failed invariant check: {issues}, reverting",
+                    issues=str(report.issues),
+                )
+                return content_html
+
+            self._lf.info(
+                "Phase 3 CSS: {count} patches applied",
+                count=len(mapped_patches),
+            )
+            return patched
+
+    async def _run_phase_2(
+        self,
+        skeleton_html: str,
+        page_markdown: str,
+    ) -> str:
+        """Phase 2: Content Injection + Slot Creation."""
+        prompt = build_phase_2_prompt(skeleton_html, page_markdown)
+
+        with self._lf.span("multipass_phase_2", phase="content_injection"):
+            try:
+                response = await self._call_gemini_text(PHASE_MODELS[2], prompt)
+                html = _strip_code_fences(response)
+                from .invariants import _extract_slots
+                slot_count = len(_extract_slots(html))
+                self._lf.info(
+                    "Phase 2 OK: {output_chars} chars, {slot_count} slots",
+                    output_chars=len(html),
+                    slot_count=slot_count,
+                )
+                return html
+            except RateLimitError:
+                self._lf.warning("Phase 2: rate limited, retrying with 3s backoff")
+                try:
+                    await asyncio.sleep(3)
+                    response = await self._call_gemini_text(PHASE_MODELS[2], prompt)
+                    return _strip_code_fences(response)
+                except Exception as e:
+                    self._lf.warning("Phase 2 retry failed: {error}, using markdown fallback", error=str(e))
+                    return self._phase_2_fallback(skeleton_html, page_markdown)
+            except Exception as e:
+                self._lf.warning("Phase 2 failed: {error}, using markdown fallback", error=str(e))
+                return self._phase_2_fallback(skeleton_html, page_markdown)
+
+    def _phase_2_fallback(self, skeleton_html: str, page_markdown: str) -> str:
+        """Fallback: inject markdown as HTML into skeleton placeholders."""
+        from markdown_it import MarkdownIt
+        md = MarkdownIt().disable("html_block").disable("html_inline")
+
+        html = skeleton_html
+        # Find all {{sec_N}} placeholders and replace with markdown content
+        placeholder_re = re.compile(r'\{\{(sec_\d+)\}\}')
+
+        for match in placeholder_re.finditer(skeleton_html):
+            placeholder = match.group(0)
+            # Use the full markdown as fallback (no per-section split available)
+            md_html = md.render(page_markdown)
+            html = html.replace(placeholder, md_html, 1)
+            break  # Only replace once for fallback
+
+        return html
+
+    async def _run_phase_3(
+        self,
+        content_html: str,
+        screenshot_bytes: bytes,
+        screenshot_b64: str,
+        section_map: Dict[str, NormalizedBox],
+        sections: List[SegmenterSection],
+        design_system: Dict,
+        baseline: PipelineInvariants,
+        page_url: Optional[str],
+        page_markdown: str,
+        image_registry: Optional["ImageRegistry"] = None,
+        responsive_css: Optional["ResponsiveCSS"] = None,
+    ) -> Tuple[str, Dict]:
+        """Phase 3: Per-Section Visual Refinement.
+
+        Returns:
+            (refined_html, stats_dict)
+        """
+        with self._lf.span(
+            "multipass_phase_3",
+            phase="section_refinement",
+            total_sections=len(section_map),
+        ):
+            # Extract per-section HTML from content_html
+            from .invariants import _SectionParser
+            parser = _SectionParser()
+            parser.feed(content_html)
+            section_htmls = parser.sections
+
+            # Compact design system for per-section prompts
+            compact_ds = json.dumps({
+                "colors": design_system.get("colors", {}),
+                "typography": design_system.get("typography", {}),
+            })
+
+            # Fallback: extract image URLs from markdown (old path)
+            image_urls = None
+            if not image_registry and page_url and page_markdown:
+                try:
+                    from ..mockup_service import MockupService
+                    svc = MockupService()
+                    image_urls = svc._extract_image_urls(page_markdown, page_url)
+                except Exception as e:
+                    logger.debug(f"Image URL extraction failed (non-fatal): {e}")
+
+            # Extract skeleton CSS for v2 awareness (mp-* class definitions)
+            skeleton_css = None
+            style_match = re.search(r'<style[^>]*>(.*?)</style>', content_html, re.DOTALL)
+            if style_match:
+                skeleton_css = style_match.group(1).strip()[:4096]  # 4KB cap
+
+            # Prepare CSS snippet for per-section prompts
+            css_snippet = None
+            if responsive_css:
+                css_block = responsive_css.to_css_block()
+                if css_block:
+                    css_snippet = css_block[:2048]  # Cap at 2KB per plan
+
+            # Build tasks for parallel execution
+            tasks = []
+            section_ids = sorted(section_map.keys(), key=lambda x: int(x.split("_")[1]))
+
+            for sec_id in section_ids:
+                if sec_id not in section_htmls:
+                    self._lf.info("Phase 3: section {sec_id} not in parsed HTML, skipping", sec_id=sec_id)
+                    continue
+
+                box = section_map[sec_id]
+
+                # Crop screenshot for this section
+                try:
+                    cropped_bytes = crop_section(screenshot_bytes, box)
+                    cropped_b64 = base64.b64encode(cropped_bytes).decode('utf-8')
+                except Exception as e:
+                    self._lf.warning("Phase 3: failed to crop {sec_id}: {error}", sec_id=sec_id, error=str(e))
+                    continue
+
+                section_html = (
+                    f'<section data-section="{sec_id}">'
+                    f'{section_htmls[sec_id]}'
+                    f'</section>'
+                )
+
+                # Per-section images (v4) or fallback to global image list
+                section_images = None
+                if image_registry:
+                    section_images = image_registry.get_section_images(sec_id)
+                    self._lf.info(
+                        "Phase 3: {sec_id} has {img_count} section-specific images",
+                        sec_id=sec_id,
+                        img_count=len(section_images),
+                    )
+
+                prompt = build_phase_3_prompt(
+                    sec_id,
+                    section_html,
+                    compact_ds,
+                    image_urls,
+                    section_images=section_images,
+                    original_css_snippet=css_snippet,
+                    skeleton_css=skeleton_css,
+                )
+
+                tasks.append({
+                    "section_id": sec_id,
+                    "cropped_b64": cropped_b64,
+                    "prompt": prompt,
+                    "original_html": section_html,
+                })
+
+            self._lf.info(
+                "Phase 3: dispatching {task_count} section refinement calls",
+                task_count=len(tasks),
+            )
+
+            # Execute all sections in parallel with rate limiting
+            refined_sections = {}
+            rejected = 0
+
+            # Capture self._lf for use in nested function
+            _lf = self._lf
+
+            async def refine_section(task: Dict) -> Tuple[str, str]:
+                """Refine a single section. Returns (section_id, refined_html)."""
+                sec_id = task["section_id"]
+                with _lf.span("multipass_phase_3_section", section_id=sec_id):
+                    try:
+                        response = await self._call_gemini_vision(
+                            PHASE_MODELS[3], task["cropped_b64"], task["prompt"]
+                        )
+                        refined = _strip_code_fences(response)
+
+                        # Per-section invariant check
+                        report = check_section_invariant(refined, sec_id, baseline)
+                        if not report.passed:
+                            _lf.warning(
+                                "Phase 3 section {sec_id} REJECTED: {issues}",
+                                sec_id=sec_id,
+                                issues=str(report.issues),
+                            )
+                            return sec_id, task["original_html"]
+
+                        _lf.info(
+                            "Phase 3 section {sec_id} refined OK ({chars} chars)",
+                            sec_id=sec_id,
+                            chars=len(refined),
+                        )
+                        return sec_id, refined
+                    except Exception as e:
+                        _lf.warning(
+                            "Phase 3 section {sec_id} FAILED: {error}",
+                            sec_id=sec_id,
+                            error=str(e),
+                        )
+                        return sec_id, task["original_html"]
+
+            # Gather all section refinements
+            if tasks:
+                results = await asyncio.gather(
+                    *[refine_section(t) for t in tasks],
+                    return_exceptions=True,
+                )
+
+                # Shared retry pool: 2 retries for any failed sections
+                retry_pool = 2
+                failed_tasks = []
+
+                for result in results:
+                    if isinstance(result, Exception):
+                        logger.warning(f"Phase 3 task exception: {result}")
+                        continue
+                    sec_id, html = result
+                    refined_sections[sec_id] = html
+                    if html == next(
+                        (t["original_html"] for t in tasks if t["section_id"] == sec_id),
+                        None,
+                    ):
+                        failed_tasks.append(sec_id)
+
+                # Retry failed sections from shared pool
+                for sec_id in failed_tasks:
+                    if retry_pool <= 0:
+                        break
+                    task = next((t for t in tasks if t["section_id"] == sec_id), None)
+                    if task:
+                        retry_pool -= 1
+                        self._lf.info("Phase 3: retrying {sec_id} from shared pool", sec_id=sec_id)
+                        sec_id_result, html = await refine_section(task)
+                        if html != task["original_html"]:
+                            refined_sections[sec_id_result] = html
+                            rejected -= 1  # Un-reject
+
+            # Reassemble HTML
+            assembled = content_html
+            for sec_id, refined in refined_sections.items():
+                # Replace the entire section in the assembled HTML
+                section_re = re.compile(
+                    rf'<section\s+data-section="{re.escape(sec_id)}"[^>]*>.*?</section>',
+                    re.DOTALL,
+                )
+                assembled = section_re.sub(refined, assembled, count=1)
+
+            # Clean up any inline style conflicts from Phase 3
+            assembled = _clean_phase3_inline_conflicts(assembled)
+
+            stats = {
+                "sections_refined": len(refined_sections),
+                "sections_rejected": rejected,
+            }
+            self._lf.info(
+                "Phase 3 complete: {refined} refined, {rejected} rejected, {failed} failed",
+                refined=stats["sections_refined"],
+                rejected=stats["sections_rejected"],
+                failed=len(failed_tasks) if tasks else 0,
+            )
+            return assembled, stats
+
+    async def _run_phase_4(
+        self,
+        assembled_html: str,
+        screenshot_b64: str,
+        section_map: Dict[str, NormalizedBox],
+        baseline: PipelineInvariants,
+    ) -> str:
+        """Phase 4: Targeted Patch Pass."""
+        section_ids = sorted(section_map.keys(), key=lambda x: int(x.split("_")[1]))
+        prompt = build_phase_4_prompt(assembled_html, section_ids)
+
+        with self._lf.span("multipass_phase_4", phase="patch_pass"):
+            try:
+                response = await self._call_gemini_vision(
+                    PHASE_MODELS[4], screenshot_b64, prompt
+                )
+                patches = _parse_json_response(response)
+
+                if not isinstance(patches, list):
+                    self._lf.warning("Phase 4: response is not a list, skipping patches")
+                    return assembled_html
+
+                # Cap at 15 patches
+                patches = patches[:15]
+                self._lf.info("Phase 4: applying {patch_count} patches", patch_count=len(patches))
+
+                # Apply patches
+                applier = PatchApplier()
+                patched = applier.apply_patches(assembled_html, patches)
+
+                # Global invariant check
+                report = check_global_invariants(patched, baseline)
+                if not report.passed:
+                    self._lf.warning(
+                        "Phase 4 global invariant FAILED, reverting all patches: {issues}",
+                        issues=str(report.issues),
+                    )
+                    return assembled_html
+
+                self._lf.info("Phase 4 OK: {patch_count} patches applied", patch_count=len(patches))
+                return patched
+
+            except RateLimitError:
+                self._lf.warning("Phase 4: rate limited, retrying with 3s backoff")
+                try:
+                    await asyncio.sleep(3)
+                    response = await self._call_gemini_vision(
+                        PHASE_MODELS[4], screenshot_b64, prompt
+                    )
+                    patches = _parse_json_response(response)
+                    if isinstance(patches, list):
+                        patches = patches[:15]
+                        applier = PatchApplier()
+                        patched = applier.apply_patches(assembled_html, patches)
+                        report = check_global_invariants(patched, baseline)
+                        if report.passed:
+                            return patched
+                    return assembled_html
+                except Exception as e:
+                    self._lf.warning("Phase 4 retry failed: {error}, skipping patches", error=str(e))
+                    return assembled_html
+            except Exception as e:
+                self._lf.warning("Phase 4 failed: {error}, skipping patches", error=str(e))
+                return assembled_html
+
+    # -------------------------------------------------------------------
+    # Gemini call helpers
+    # -------------------------------------------------------------------
+
+    async def _call_gemini_vision(
+        self, model: str, image_b64: str, prompt: str
+    ) -> str:
+        """Call Gemini vision API with rate limiting."""
+        await self._limiter.acquire()
+        with self._lf.span(
+            "multipass_gemini_call",
+            call_type="vision",
+            model=model,
+            call_number=self._limiter.call_count,
+        ):
+            try:
+                result = await self._gemini.analyze_image_async(
+                    image_b64, prompt,
+                    model=model,
+                    skip_internal_rate_limit=True,
+                )
+                self._limiter.release(success=True)
+                self._lf.info(
+                    "Gemini vision call #{call_number} OK: {response_chars} chars",
+                    call_number=self._limiter.call_count,
+                    response_chars=len(result),
+                )
+                return result
+            except RateLimitError:
+                self._limiter.release(rate_limited=True)
+                self._lf.warning(
+                    "Gemini vision call #{call_number} RATE LIMITED (RPM now {rpm})",
+                    call_number=self._limiter.call_count,
+                    rpm=self._limiter._current_rpm,
+                )
+                raise
+            except Exception as e:
+                self._limiter.release(success=False)
+                self._lf.error(
+                    "Gemini vision call #{call_number} FAILED: {error}",
+                    call_number=self._limiter.call_count,
+                    error=str(e),
+                )
+                raise
+
+    async def _call_gemini_text(self, model: str, prompt: str) -> str:
+        """Call Gemini text API with rate limiting."""
+        await self._limiter.acquire()
+        with self._lf.span(
+            "multipass_gemini_call",
+            call_type="text",
+            model=model,
+            call_number=self._limiter.call_count,
+        ):
+            try:
+                result = await self._gemini.analyze_text_async(
+                    "", prompt,
+                    model=model,
+                    skip_internal_rate_limit=True,
+                )
+                self._limiter.release(success=True)
+                self._lf.info(
+                    "Gemini text call #{call_number} OK: {response_chars} chars",
+                    call_number=self._limiter.call_count,
+                    response_chars=len(result),
+                )
+                return result
+            except RateLimitError:
+                self._limiter.release(rate_limited=True)
+                self._lf.warning(
+                    "Gemini text call #{call_number} RATE LIMITED (RPM now {rpm})",
+                    call_number=self._limiter.call_count,
+                    rpm=self._limiter._current_rpm,
+                )
+                raise
+            except Exception as e:
+                self._limiter.release(success=False)
+                self._lf.error(
+                    "Gemini text call #{call_number} FAILED: {error}",
+                    call_number=self._limiter.call_count,
+                    error=str(e),
+                )
+                raise
+
+    async def _call_claude_text(
+        self, prompt: str, system_prompt: str = "", model: Optional[str] = None
+    ) -> str:
+        """Call Claude API for text generation with rate limiting.
+
+        Uses PydanticAI Agent with lazy import (avoids import-time side effects).
+
+        Args:
+            prompt: User prompt text.
+            system_prompt: Optional system prompt.
+            model: Model ID override (default: MULTIPASS_SKELETON_MODEL).
+
+        Returns:
+            Model response text.
+        """
+        from pydantic_ai import Agent
+
+        model_id = model or MULTIPASS_SKELETON_MODEL
+
+        await self._limiter.acquire(provider="anthropic")
+        with self._lf.span(
+            "multipass_claude_call",
+            call_type="text",
+            model=model_id,
+            call_number=self._limiter.call_count,
+        ):
+            try:
+                agent = Agent(
+                    f"anthropic:{model_id}",
+                    system_prompt=system_prompt or "You are a precise HTML/CSS code generator.",
+                )
+                result = await agent.run(prompt)
+                response_text = result.output if hasattr(result, 'output') else str(result.data)
+                self._limiter.release(success=True, provider="anthropic")
+                self._lf.info(
+                    "Claude text call #{call_number} OK: {response_chars} chars",
+                    call_number=self._limiter.call_count,
+                    response_chars=len(response_text),
+                )
+                return response_text
+            except Exception as e:
+                self._limiter.release(success=False, provider="anthropic")
+                self._lf.error(
+                    "Claude text call #{call_number} FAILED: {error}",
+                    call_number=self._limiter.call_count,
+                    error=str(e),
+                )
+                raise

@@ -1,0 +1,802 @@
+"""Pass S0: Sanitize & Resolve CSS (Deterministic).
+
+Cleans raw FireCrawl HTML into a self-contained, renderable document.
+Strips scripts, tracking, event handlers; resolves lazy images;
+absolutizes relative URLs; strips dangerous SVG elements.
+
+Zero LLM calls.
+"""
+
+import logging
+import re
+from html.parser import HTMLParser
+from typing import List, Optional, Set, Tuple
+from urllib.parse import urljoin, urlparse
+
+logger = logging.getLogger(__name__)
+
+# Max output size (10MB)
+_MAX_SANITIZED_SIZE = 10 * 1024 * 1024
+
+# Minimum visible text length to consider surgery viable
+_MIN_VISIBLE_TEXT = 500
+
+# Tags to strip entirely (including contents)
+_STRIP_TAGS_WITH_CONTENT = frozenset([
+    "script", "noscript", "template", "audio",
+])
+
+# Regex to convert <video> elements to poster/placeholder images.
+# Shopify/Replo themes often use autoplay muted loop videos as hero visuals.
+# Stripping them leaves empty containers; convert to <img> instead.
+_VIDEO_RE = re.compile(
+    r'<video\b([^>]*)>.*?</video\s*>|<video\b([^>]*)/\s*>',
+    re.DOTALL | re.IGNORECASE,
+)
+
+# Regex to convert <iframe> elements to placeholder images.
+# YouTube/Vimeo embeds are common on landing pages; stripping them entirely
+# loses semantic information. Convert to thumbnail/placeholder instead.
+_IFRAME_RE = re.compile(
+    r'<iframe\b([^>]*)>.*?</iframe\s*>|<iframe\b([^>]*)/\s*>',
+    re.DOTALL | re.IGNORECASE,
+)
+
+# Extract YouTube video ID from embed URL
+_YOUTUBE_ID_RE = re.compile(
+    r'youtube\.com/embed/([a-zA-Z0-9_-]{11})',
+    re.IGNORECASE,
+)
+
+# Link rel values to keep (stylesheets only)
+_KEEP_LINK_RELS = frozenset(["stylesheet"])
+
+# Popup/overlay class and id patterns
+_POPUP_PATTERNS = re.compile(
+    r'\b(popup|modal|overlay|cookie[-_]?banner|cookie[-_]?consent|'
+    r'gdpr|newsletter[-_]?popup|exit[-_]?intent|lightbox|'
+    r'shopify-pc__banner|consent[-_]?tracking|privacy[-_]?banner)\b',
+    re.IGNORECASE,
+)
+
+# Navigation chrome: Shopify section IDs containing header/footer/mega-menu.
+# Safety net for elements that survive Playwright DOM removal (e.g. Firecrawl
+# fallback path, or JS-injected elements after capture).
+_SHOPIFY_CHROME_ID_PATTERN = re.compile(
+    r'shopify-section[-_].*?(header|footer|mega[-_]?menu|announcement)',
+    re.IGNORECASE,
+)
+
+# Anti-scraping overlay signature: extreme z-index + transparent text color
+_ANTI_SCRAPE_STYLE_RE = re.compile(
+    r'z-index:\s*\d{8,}.*?color:\s*transparent',
+    re.IGNORECASE | re.DOTALL,
+)
+
+# Inline event handler attributes
+_EVENT_HANDLER_RE = re.compile(
+    r'\s+on[a-z]+\s*=\s*(?:"[^"]*"|\'[^\']*\'|[^\s>]+)',
+    re.IGNORECASE,
+)
+
+# Lazy-load attribute mappings
+_LAZY_ATTRS = {
+    "data-src": "src",
+    "data-srcset": "srcset",
+    "data-lazy-src": "src",
+    "data-original": "src",
+}
+
+# Known tracker domains (1x1 pixel images)
+_TRACKER_DOMAINS = frozenset([
+    "www.facebook.com", "connect.facebook.net",
+    "www.google-analytics.com", "google-analytics.com",
+    "googleads.g.doubleclick.net", "px.ads.linkedin.com",
+    "bat.bing.com", "ct.pinterest.com",
+    "analytics.twitter.com", "t.co",
+    "snap.licdn.com", "tr.snapchat.com",
+])
+
+# Dangerous SVG elements to strip from within <svg> subtrees
+_DANGEROUS_SVG_ELEMENTS = frozenset([
+    "script", "foreignObject", "foreignobject", "use",
+    "animate", "animateMotion", "animatemotion",
+    "animateTransform", "animatetransform", "set",
+])
+
+# Shopify custom element wrapper
+_SHOPIFY_SECTION_RE = re.compile(
+    r'<shopify-section[^>]*>(.*?)</shopify-section>',
+    re.DOTALL | re.IGNORECASE,
+)
+
+# Form action attribute
+_FORM_ACTION_RE = re.compile(
+    r'(<form\b[^>]*?)\s+action\s*=\s*(?:"[^"]*"|\'[^\']*\'|[^\s>]+)',
+    re.IGNORECASE,
+)
+
+# Submit input to button conversion
+_SUBMIT_INPUT_RE = re.compile(
+    r'<input\s+([^>]*?)type\s*=\s*["\']submit["\']([^>]*?)/?\s*>',
+    re.IGNORECASE,
+)
+
+
+class HTMLSanitizer:
+    """Pass S0: Clean raw HTML into a self-contained, renderable document."""
+
+    def sanitize(
+        self,
+        raw_html: str,
+        page_url: str = "",
+        detected_overlays: Optional[list] = None,
+    ) -> Tuple[str, dict]:
+        """Sanitize raw HTML for the surgery pipeline.
+
+        Args:
+            raw_html: Full page HTML from FireCrawl.
+            page_url: Base URL for resolving relative URLs.
+            detected_overlays: Optional overlay dicts from Phase 0.
+
+        Returns:
+            (sanitized_html, stats_dict) where stats contains counts
+            of removed elements and visible text length.
+        """
+        if not raw_html or not raw_html.strip():
+            return "", {"visible_text_len": 0, "viable": False}
+
+        html = raw_html
+        stats = {
+            "input_size": len(html),
+            "scripts_removed": 0,
+            "trackers_removed": 0,
+            "popups_removed": 0,
+            "event_handlers_removed": 0,
+            "lazy_images_resolved": 0,
+            "urls_absolutized": 0,
+            "svg_elements_stripped": 0,
+        }
+
+        # 1. Strip tags with content (script, noscript, template, audio)
+        html, count = self._strip_tags_with_content(html)
+        stats["scripts_removed"] = count
+
+        # 1b. Convert <video> elements to poster/placeholder images
+        html, vid_count = self._convert_videos_to_posters(html)
+        stats["videos_converted"] = vid_count
+
+        # 1c. Convert <iframe> embeds to thumbnail/placeholder images
+        html, iframe_count = self._convert_iframes_to_placeholders(html)
+        stats["iframes_converted"] = iframe_count
+
+        # 2. Strip non-stylesheet <link> tags
+        html = self._strip_non_stylesheet_links(html)
+
+        # 3. Remove tracking pixels (1x1 images, known tracker domains)
+        html, count = self._strip_tracking_pixels(html)
+        stats["trackers_removed"] = count
+
+        # 4. Remove popup/overlay elements
+        html, count = self._strip_popup_elements(html)
+        stats["popups_removed"] = count
+
+        # 4b. Also use PopupFilter for detected overlays
+        if detected_overlays:
+            from ..popup_filter import PopupFilter
+            html = PopupFilter().filter(html, detected_overlays)
+
+        # 4c. Strip navigation chrome (header, footer, mega-menu, anti-scraping overlays).
+        # Safety net for elements that survived Playwright capture removal.
+        html, count = self._strip_chrome_elements(html)
+        stats["chrome_removed"] = count
+
+        # 5. Resolve lazy-loaded images
+        html, count = self._resolve_lazy_images(html)
+        stats["lazy_images_resolved"] = count
+
+        # 6. Remove inline event handlers
+        html, count = self._strip_event_handlers(html)
+        stats["event_handlers_removed"] = count
+
+        # 7. Neuter forms
+        html = self._neuter_forms(html)
+
+        # 8. Unwrap Shopify custom elements
+        html = self._unwrap_shopify_sections(html)
+
+        # 9. Strip dangerous SVG elements
+        html, count = self._strip_dangerous_svg(html)
+        stats["svg_elements_stripped"] = count
+
+        # 10. Absolutize all relative URLs
+        if page_url:
+            html, count = self._absolutize_urls(html, page_url)
+            stats["urls_absolutized"] = count
+
+        # 11. Size guard
+        if len(html) > _MAX_SANITIZED_SIZE:
+            logger.warning(
+                f"Sanitized HTML exceeds {_MAX_SANITIZED_SIZE} bytes "
+                f"({len(html)}), truncating from bottom"
+            )
+            html = html[:_MAX_SANITIZED_SIZE]
+
+        # Check viability
+        visible_text = self._extract_visible_text(html)
+        stats["visible_text_len"] = len(visible_text)
+        stats["viable"] = len(visible_text) >= _MIN_VISIBLE_TEXT
+        stats["output_size"] = len(html)
+
+        return html, stats
+
+    # ------------------------------------------------------------------
+    # Stripping helpers
+    # ------------------------------------------------------------------
+
+    def _strip_tags_with_content(self, html: str) -> Tuple[str, int]:
+        """Strip tags and their content for script, noscript, etc."""
+        count = 0
+        for tag in _STRIP_TAGS_WITH_CONTENT:
+            pattern = re.compile(
+                rf'<{tag}\b[^>]*>.*?</{tag}\s*>',
+                re.DOTALL | re.IGNORECASE,
+            )
+            matches = pattern.findall(html)
+            count += len(matches)
+            html = pattern.sub("", html)
+        return html, count
+
+    def _convert_videos_to_posters(self, html: str) -> Tuple[str, int]:
+        """Convert <video> elements to poster/placeholder images.
+
+        Shopify/Replo themes use autoplay muted loop videos as hero visuals.
+        Stripping them entirely leaves empty containers and hurts visual fidelity.
+        Instead, convert to <img> using the poster attribute when available, or
+        a styled placeholder div for videos without poster.
+        """
+        count = 0
+
+        def _replace_video(match: re.Match) -> str:
+            nonlocal count
+            attrs = match.group(1) or match.group(2) or ""
+
+            # Extract poster attribute
+            poster_match = re.search(
+                r'poster\s*=\s*["\']([^"\']+)["\']', attrs, re.IGNORECASE
+            )
+
+            # Extract style for dimensions
+            style_match = re.search(
+                r'style\s*=\s*["\']([^"\']+)["\']', attrs, re.IGNORECASE
+            )
+            style = style_match.group(1) if style_match else ""
+
+            # Extract explicit width/height
+            w_match = re.search(
+                r'width\s*=\s*["\']?(\d+)', attrs, re.IGNORECASE
+            )
+            h_match = re.search(
+                r'height\s*=\s*["\']?(\d+)', attrs, re.IGNORECASE
+            )
+
+            count += 1
+
+            if poster_match:
+                poster_url = poster_match.group(1)
+                img_style = style if style else "width:100%;height:auto"
+                w_attr = f' width="{w_match.group(1)}"' if w_match else ""
+                h_attr = f' height="{h_match.group(1)}"' if h_match else ""
+                return (
+                    f'<img src="{poster_url}" style="{img_style}" '
+                    f'data-was-video="true"{w_attr}{h_attr} loading="eager">'
+                )
+
+            # No poster — check for src to create a placeholder
+            src_match = re.search(
+                r'(?<!\w)src\s*=\s*["\']([^"\']+)["\']', attrs, re.IGNORECASE
+            )
+            # Use a placeholder div that preserves layout
+            placeholder_style = style if style else "width:100%;aspect-ratio:16/9"
+            if "background" not in placeholder_style:
+                placeholder_style += ";background:#e5e7eb"
+            src_note = ""
+            if src_match:
+                src_note = f' data-video-src="{src_match.group(1)}"'
+            return (
+                f'<div data-was-video="true"{src_note} '
+                f'style="{placeholder_style}"></div>'
+            )
+
+        html = _VIDEO_RE.sub(_replace_video, html)
+        return html, count
+
+    def _convert_iframes_to_placeholders(self, html: str) -> Tuple[str, int]:
+        """Convert <iframe> embeds to thumbnail/placeholder images.
+
+        YouTube/Vimeo embeds are common on landing pages. Stripping them
+        entirely loses semantic info about embedded content. Convert to
+        a thumbnail <img> (for YouTube) or labeled placeholder.
+        """
+        count = 0
+
+        def _replace_iframe(match: re.Match) -> str:
+            nonlocal count
+            attrs = match.group(1) or match.group(2) or ""
+
+            # Extract src
+            src_match = re.search(
+                r'(?<!\w)src\s*=\s*["\']([^"\']+)["\']', attrs, re.IGNORECASE
+            )
+            src_url = src_match.group(1) if src_match else ""
+
+            # Extract title
+            title_match = re.search(
+                r'title\s*=\s*["\']([^"\']+)["\']', attrs, re.IGNORECASE
+            )
+            title = title_match.group(1) if title_match else ""
+
+            count += 1
+
+            # YouTube embed — fill parent with thumbnail image.
+            # The iframe's parent container already defines the space
+            # (aspect-ratio via CSS), so we inherit sizing, not force our own.
+            yt_match = _YOUTUBE_ID_RE.search(src_url)
+            if yt_match:
+                video_id = yt_match.group(1)
+                thumb_url = f"https://img.youtube.com/vi/{video_id}/hqdefault.jpg"
+                alt = title if title else f"YouTube video {video_id}"
+                return (
+                    f'<img src="{thumb_url}" alt="{alt}" '
+                    f'data-was-iframe="youtube" data-video-id="{video_id}" '
+                    f'style="width:100%;height:100%;object-fit:cover" '
+                    f'loading="eager">'
+                )
+
+            # Other iframes — labeled placeholder filling parent
+            label = title if title else "Embedded content"
+            data_src = f' data-iframe-src="{src_url}"' if src_url else ""
+            return (
+                f'<div data-was-iframe="true"{data_src} '
+                f'style="width:100%;height:100%;background:#1a1a1a;'
+                f'display:flex;align-items:center;justify-content:center;'
+                f'color:#888;font-size:14px">{label}</div>'
+            )
+
+        html = _IFRAME_RE.sub(_replace_iframe, html)
+        return html, count
+
+    def _strip_non_stylesheet_links(self, html: str) -> str:
+        """Strip <link> tags that aren't stylesheets."""
+        def _filter_link(match: re.Match) -> str:
+            tag = match.group(0)
+            rel_match = re.search(r'rel\s*=\s*["\']([^"\']*)["\']', tag, re.IGNORECASE)
+            if rel_match:
+                rel = rel_match.group(1).lower().strip()
+                if rel in _KEEP_LINK_RELS:
+                    return tag
+            return ""
+
+        return re.sub(
+            r'<link\b[^>]*/?\s*>',
+            _filter_link,
+            html,
+            flags=re.IGNORECASE,
+        )
+
+    def _strip_tracking_pixels(self, html: str) -> Tuple[str, int]:
+        """Remove 1x1 tracking pixels and known tracker domain images."""
+        count = 0
+
+        def _check_img(match: re.Match) -> str:
+            nonlocal count
+            tag = match.group(0)
+            # Check for 1x1 dimensions
+            w_match = re.search(r'width\s*=\s*["\']?1["\']?', tag, re.IGNORECASE)
+            h_match = re.search(r'height\s*=\s*["\']?1["\']?', tag, re.IGNORECASE)
+            if w_match and h_match:
+                count += 1
+                return ""
+            # Check for tracker domain
+            src_match = re.search(r'src\s*=\s*["\']([^"\']*)["\']', tag, re.IGNORECASE)
+            if src_match:
+                try:
+                    domain = urlparse(src_match.group(1)).hostname or ""
+                    if domain in _TRACKER_DOMAINS:
+                        count += 1
+                        return ""
+                except Exception:
+                    pass
+            return tag
+
+        html = re.sub(r'<img\b[^>]*/?\s*>', _check_img, html, flags=re.IGNORECASE)
+        return html, count
+
+    def _strip_popup_elements(self, html: str) -> Tuple[str, int]:
+        """Strip elements whose class or id matches popup/overlay patterns."""
+        count = 0
+
+        def _check_element(match: re.Match) -> str:
+            nonlocal count
+            tag_content = match.group(0)
+            # Extract class and id values
+            class_match = re.search(
+                r'class\s*=\s*["\']([^"\']*)["\']', tag_content, re.IGNORECASE
+            )
+            id_match = re.search(
+                r'id\s*=\s*["\']([^"\']*)["\']', tag_content, re.IGNORECASE
+            )
+            class_val = class_match.group(1) if class_match else ""
+            id_val = id_match.group(1) if id_match else ""
+
+            if _POPUP_PATTERNS.search(class_val) or _POPUP_PATTERNS.search(id_val):
+                # Find the closing tag
+                tag_name = match.group(1)
+                # For self-closing or simple match, just remove the opening tag
+                # We need to find the full element including closing tag
+                count += 1
+                return ""
+            return tag_content
+
+        # Match div/section/aside with popup class/id patterns
+        # This is a simplified approach — find opening tags and mark for removal
+        result = html
+        for tag in ("div", "section", "aside", "span"):
+            pattern = re.compile(
+                rf'<{tag}\b([^>]*)>',
+                re.IGNORECASE,
+            )
+            removals: List[Tuple[int, int]] = []
+            for m in pattern.finditer(result):
+                attrs = m.group(1)
+                class_match = re.search(
+                    r'class\s*=\s*["\']([^"\']*)["\']', attrs, re.IGNORECASE
+                )
+                id_match = re.search(
+                    r'id\s*=\s*["\']([^"\']*)["\']', attrs, re.IGNORECASE
+                )
+                class_val = class_match.group(1) if class_match else ""
+                id_val = id_match.group(1) if id_match else ""
+
+                if _POPUP_PATTERNS.search(class_val) or _POPUP_PATTERNS.search(id_val):
+                    end = self._find_matching_close(result, tag, m.end())
+                    if end > m.start():
+                        removals.append((m.start(), end))
+
+            # Apply removals in reverse to preserve offsets
+            for start, end in reversed(removals):
+                result = result[:start] + result[end:]
+                count += 1
+
+        return result, count
+
+    def _find_matching_close(self, html: str, tag: str, start: int) -> int:
+        """Find the position after the matching closing tag."""
+        depth = 1
+        pos = start
+        open_pattern = re.compile(
+            rf'<{tag}\b[^>]*>', re.IGNORECASE
+        )
+        close_pattern = re.compile(
+            rf'</{tag}\s*>', re.IGNORECASE
+        )
+        while pos < len(html) and depth > 0:
+            next_open = open_pattern.search(html, pos)
+            next_close = close_pattern.search(html, pos)
+
+            if next_close is None:
+                return len(html)
+
+            if next_open and next_open.start() < next_close.start():
+                depth += 1
+                pos = next_open.end()
+            else:
+                depth -= 1
+                pos = next_close.end()
+
+        return pos
+
+    def _strip_chrome_elements(self, html: str) -> Tuple[str, int]:
+        """Strip navigation chrome and anti-scraping overlays from HTML.
+
+        Catches Shopify theme elements that survived Playwright DOM removal:
+        - Sections with IDs matching header/footer/mega-menu/announcement
+        - Anti-scraping overlay divs (extreme z-index + transparent text)
+        - Bare <header>, <nav>, <footer> semantic tags
+
+        Uses the same _find_matching_close() pattern as _strip_popup_elements().
+        """
+        count = 0
+        result = html
+
+        # Pass 1: Remove elements by Shopify section ID pattern
+        for tag in ("div", "section"):
+            pattern = re.compile(
+                rf'<{tag}\b([^>]*)>',
+                re.IGNORECASE,
+            )
+            removals: List[Tuple[int, int]] = []
+            for m in pattern.finditer(result):
+                attrs = m.group(1)
+                id_match = re.search(
+                    r'id\s*=\s*["\']([^"\']*)["\']', attrs, re.IGNORECASE
+                )
+                id_val = id_match.group(1) if id_match else ""
+
+                # Shopify chrome section IDs
+                if id_val and _SHOPIFY_CHROME_ID_PATTERN.search(id_val):
+                    end = self._find_matching_close(result, tag, m.end())
+                    if end > m.start():
+                        removals.append((m.start(), end))
+                    continue
+
+                # Anti-scraping overlay (inline style with huge z-index + transparent)
+                style_match = re.search(
+                    r'style\s*=\s*["\']([^"\']*)["\']', attrs, re.IGNORECASE
+                )
+                if style_match and _ANTI_SCRAPE_STYLE_RE.search(style_match.group(1)):
+                    end = self._find_matching_close(result, tag, m.end())
+                    if end > m.start():
+                        removals.append((m.start(), end))
+
+            for start, end in reversed(removals):
+                result = result[:start] + result[end:]
+                count += 1
+
+        # Pass 2: Remove bare semantic chrome tags (<header>, <nav>, <footer>)
+        # These should have been removed by Playwright but may survive via
+        # Firecrawl fallback or dynamic injection.
+        for tag in ("header", "nav", "footer"):
+            pattern = re.compile(rf'<{tag}\b[^>]*>', re.IGNORECASE)
+            removals = []
+            for m in pattern.finditer(result):
+                end = self._find_matching_close(result, tag, m.end())
+                if end > m.start():
+                    removals.append((m.start(), end))
+            for start, end in reversed(removals):
+                result = result[:start] + result[end:]
+                count += 1
+
+        if count:
+            logger.info(f"S0: stripped {count} navigation chrome element(s)")
+
+        return result, count
+
+    def _resolve_lazy_images(self, html: str) -> Tuple[str, int]:
+        """Resolve lazy-loaded images: data-src → src, etc."""
+        count = 0
+
+        def _fix_img(match: re.Match) -> str:
+            nonlocal count
+            tag = match.group(0)
+            modified = False
+            for data_attr, real_attr in _LAZY_ATTRS.items():
+                data_pattern = re.compile(
+                    rf'{data_attr}\s*=\s*["\']([^"\']+)["\']',
+                    re.IGNORECASE,
+                )
+                data_match = data_pattern.search(tag)
+                if data_match:
+                    value = data_match.group(1)
+                    # Check if real attr is empty or placeholder
+                    # Use negative lookbehind to avoid matching data-src when looking for src
+                    real_pattern = re.compile(
+                        rf'(?<![a-zA-Z-]){real_attr}\s*=\s*["\']([^"\']*)["\']',
+                        re.IGNORECASE,
+                    )
+                    real_match = real_pattern.search(tag)
+                    if real_match:
+                        existing = real_match.group(1)
+                        # Replace if empty, data URI placeholder, or transparent pixel
+                        if (not existing or
+                            existing.startswith("data:") or
+                            "blank" in existing.lower() or
+                            "placeholder" in existing.lower()):
+                            tag = real_pattern.sub(
+                                f'{real_attr}="{value}"', tag
+                            )
+                            modified = True
+                    else:
+                        # No real attr exists, add it
+                        tag = tag.replace(
+                            data_match.group(0),
+                            f'{data_match.group(0)} {real_attr}="{value}"',
+                        )
+                        modified = True
+
+            if modified:
+                count += 1
+            return tag
+
+        html = re.sub(
+            r'<img\b[^>]*/?\s*>',
+            _fix_img,
+            html,
+            flags=re.IGNORECASE,
+        )
+        return html, count
+
+    def _strip_event_handlers(self, html: str) -> Tuple[str, int]:
+        """Remove inline event handlers (onclick, onload, etc.)."""
+        count = len(_EVENT_HANDLER_RE.findall(html))
+        html = _EVENT_HANDLER_RE.sub("", html)
+        return html, count
+
+    def _neuter_forms(self, html: str) -> str:
+        """Strip form action attributes and convert submit inputs to buttons."""
+        html = _FORM_ACTION_RE.sub(r'\1', html)
+
+        def _convert_submit(match: re.Match) -> str:
+            attrs_before = match.group(1)
+            attrs_after = match.group(2)
+            # Extract value for button text
+            value_match = re.search(
+                r'value\s*=\s*["\']([^"\']*)["\']',
+                attrs_before + attrs_after,
+                re.IGNORECASE,
+            )
+            text = value_match.group(1) if value_match else "Submit"
+            # Preserve class and style attrs
+            preserved = []
+            for attr in ("class", "style", "id"):
+                attr_match = re.search(
+                    rf'{attr}\s*=\s*["\']([^"\']*)["\']',
+                    attrs_before + attrs_after,
+                    re.IGNORECASE,
+                )
+                if attr_match:
+                    preserved.append(f'{attr}="{attr_match.group(1)}"')
+            attrs_str = " ".join(preserved)
+            if attrs_str:
+                attrs_str = " " + attrs_str
+            return f'<button{attrs_str}>{text}</button>'
+
+        html = _SUBMIT_INPUT_RE.sub(_convert_submit, html)
+        return html
+
+    def _unwrap_shopify_sections(self, html: str) -> str:
+        """Unwrap <shopify-section> custom elements, keeping children."""
+        return _SHOPIFY_SECTION_RE.sub(r'\1', html)
+
+    def _strip_dangerous_svg(self, html: str) -> Tuple[str, int]:
+        """Strip dangerous elements from within <svg> subtrees."""
+        count = 0
+        for elem in _DANGEROUS_SVG_ELEMENTS:
+            # Self-closing
+            pattern_sc = re.compile(
+                rf'<{elem}\b[^>]*/\s*>',
+                re.IGNORECASE,
+            )
+            matches = pattern_sc.findall(html)
+            count += len(matches)
+            html = pattern_sc.sub("", html)
+
+            # With content
+            pattern_full = re.compile(
+                rf'<{elem}\b[^>]*>.*?</{elem}\s*>',
+                re.DOTALL | re.IGNORECASE,
+            )
+            matches = pattern_full.findall(html)
+            count += len(matches)
+            html = pattern_full.sub("", html)
+
+        return html, count
+
+    def _absolutize_urls(self, html: str, page_url: str) -> Tuple[str, int]:
+        """Absolutize all relative URLs against page_url."""
+        count = 0
+
+        def _resolve_attr(match: re.Match) -> str:
+            nonlocal count
+            attr_name = match.group(1)
+            quote = match.group(2)
+            value = match.group(3)
+
+            if not value or value.startswith(("#", "javascript:", "data:", "mailto:", "tel:")):
+                return match.group(0)
+            if value.startswith(("http://", "https://", "//")):
+                return match.group(0)
+
+            resolved = urljoin(page_url, value)
+            count += 1
+            return f'{attr_name}={quote}{resolved}{quote}'
+
+        # Handle src, href, poster attributes
+        for attr in ("src", "href", "poster", "data-src", "data-srcset", "data-lazy-src"):
+            html = re.sub(
+                rf'({attr})\s*=\s*(["\'])([^"\']*)\2',
+                _resolve_attr,
+                html,
+                flags=re.IGNORECASE,
+            )
+
+        # Handle srcset (comma-separated values)
+        def _resolve_srcset(match: re.Match) -> str:
+            nonlocal count
+            quote = match.group(1)
+            value = match.group(2)
+
+            parts = []
+            for entry in value.split(","):
+                entry = entry.strip()
+                if not entry:
+                    continue
+                tokens = entry.split()
+                if tokens and not tokens[0].startswith(("http://", "https://", "//", "data:")):
+                    tokens[0] = urljoin(page_url, tokens[0])
+                    count += 1
+                parts.append(" ".join(tokens))
+
+            return f'srcset={quote}{", ".join(parts)}{quote}'
+
+        html = re.sub(
+            r'srcset\s*=\s*(["\'])([^"\']*)\1',
+            _resolve_srcset,
+            html,
+            flags=re.IGNORECASE,
+        )
+
+        # Handle CSS url() values in <style> blocks and inline styles
+        def _resolve_css_url(match: re.Match) -> str:
+            nonlocal count
+            url_val = match.group(1).strip().strip("'\"")
+            if not url_val or url_val.startswith(
+                ("#", "data:", "http://", "https://", "//")
+            ):
+                return match.group(0)
+            resolved = urljoin(page_url, url_val)
+            count += 1
+            return f'url("{resolved}")'
+
+        html = re.sub(
+            r'url\s*\(\s*([^)]+)\s*\)',
+            _resolve_css_url,
+            html,
+        )
+
+        return html, count
+
+    def _extract_visible_text(self, html: str) -> str:
+        """Extract visible text from HTML for viability check."""
+        parser = _VisibleTextExtractor()
+        try:
+            parser.feed(html)
+        except Exception:
+            pass
+        return parser.get_text()
+
+
+class _VisibleTextExtractor(HTMLParser):
+    """Extract visible text from HTML."""
+
+    # Container tags whose content should be skipped (have closing tags)
+    _INVISIBLE_CONTAINER_TAGS = frozenset([
+        "style", "script", "head", "title",
+    ])
+
+    # Void/self-closing tags — no closing tag, so must NOT affect _skip_depth
+    _INVISIBLE_VOID_TAGS = frozenset([
+        "meta", "link",
+    ])
+
+    def __init__(self):
+        super().__init__()
+        self._parts: List[str] = []
+        self._skip_depth = 0
+
+    def handle_starttag(self, tag: str, attrs):
+        if tag.lower() in self._INVISIBLE_CONTAINER_TAGS:
+            self._skip_depth += 1
+
+    def handle_endtag(self, tag: str):
+        if tag.lower() in self._INVISIBLE_CONTAINER_TAGS:
+            self._skip_depth = max(0, self._skip_depth - 1)
+
+    def handle_data(self, data: str):
+        if self._skip_depth == 0:
+            text = data.strip()
+            if text:
+                self._parts.append(text)
+
+    def get_text(self) -> str:
+        return " ".join(self._parts)

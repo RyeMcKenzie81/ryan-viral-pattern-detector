@@ -1,0 +1,7 @@
+# Development/CI-only dependencies for multipass eval harness
+# Not required at runtime
+
+pytest>=7.0
+pytest-asyncio>=0.21
+playwright>=1.40       # Visual fidelity benchmarking (headless Chromium)
+scikit-image>=0.21     # SSIM scoring for visual fidelity

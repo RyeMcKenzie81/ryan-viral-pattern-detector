@@ -199,6 +199,47 @@ async def health_check():
 
 
 # ============================================================================
+# Public Blueprint Preview Endpoint (No Auth)
+# ============================================================================
+
+@app.get(
+    "/api/public/blueprint/{share_token}",
+    tags=["Public"],
+    summary="Public blueprint preview",
+)
+@limiter.limit("100/hour")
+async def public_blueprint_preview(share_token: str, request: Request):
+    """Serve blueprint preview HTML — no authentication required."""
+    from fastapi.responses import HTMLResponse
+    from ..services.landing_page_analysis import ReconstructionBlueprintService
+
+    bp_service = ReconstructionBlueprintService()
+    result = bp_service.get_blueprint_by_share_token(share_token)
+    if not result:
+        raise HTTPException(status_code=404, detail="Blueprint not found or sharing disabled")
+
+    html = result["html"]
+
+    # If HTML is already a complete document (from _wrap_mockup or surgery
+    # pipeline), serve it as-is to avoid double-wrapping.
+    if "<!DOCTYPE" in html[:100].upper() or "<html" in html[:100].lower():
+        return HTMLResponse(content=html)
+
+    # Legacy fragments: wrap in a minimal document shell
+    wrapped = (
+        "<!DOCTYPE html>\n<html>\n<head>\n"
+        '  <meta charset="utf-8">\n'
+        '  <meta name="viewport" content="width=device-width, initial-scale=1.0">\n'
+        "  <title>Blueprint Preview</title>\n"
+        "  <style>body { margin: 0; padding: 0; }</style>\n"
+        "</head>\n<body>\n"
+        f"{html}\n"
+        "</body>\n</html>"
+    )
+    return HTMLResponse(content=wrapped)
+
+
+# ============================================================================
 # Agent Execution Endpoint
 # ============================================================================
 

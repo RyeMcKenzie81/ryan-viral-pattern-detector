@@ -1,0 +1,55 @@
+name: Multipass Benchmark
+
+on:
+  pull_request:
+    paths:
+      - 'viraltracker/services/landing_page_analysis/multipass/**'
+      - 'viraltracker/services/landing_page_analysis/mockup_service.py'
+      - 'viraltracker/services/gemini_service.py'
+      - 'tests/test_multipass_pipeline.py'
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Run multipass unit tests
+        run: |
+          python -m pytest tests/test_multipass_pipeline.py -v --tb=short
+
+  benchmark:
+    runs-on: ubuntu-latest
+    needs: unit-tests
+    if: github.event.pull_request.draft == false
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+          playwright install chromium
+
+      - name: Run benchmark
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: |
+          python scripts/eval_multipass.py --verbose --skip-visual

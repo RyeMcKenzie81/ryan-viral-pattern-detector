@@ -1,0 +1,340 @@
+"""Capture post-JS rendered DOM via Playwright headless Chromium.
+
+Sync Playwright pattern matching html_renderer.py — function-local import
+for dev-only graceful degradation. Returns None on any failure (caller
+falls back to Firecrawl).
+
+Used by analysis_service.py Stage 2 to get hydrated DOM instead of
+Firecrawl's pre-JS HTML (which contains template placeholders on
+Shopify pages).
+"""
+
+import logging
+import re
+import time
+from dataclasses import dataclass
+from typing import Optional
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class CaptureResult:
+    """Result of a Playwright DOM capture."""
+
+    dom_html: str  # page.content() — post-JS DOM, scripts stripped
+    screenshot_bytes: Optional[bytes]  # full-page PNG (optional)
+    final_url: str  # after redirects
+    capture_time_ms: int
+    visible_text_len: int  # body.innerText length (quality check)
+
+
+class PlaywrightNotInstalledError(Exception):
+    """Raised when Playwright is not installed."""
+
+
+class CaptureTimeoutError(Exception):
+    """Raised when page capture times out."""
+
+
+# Selectors for overlay/popup elements to remove before capture
+_OVERLAY_SELECTORS = (
+    '[class*="popup"], [class*="modal"], [class*="overlay"], '
+    '[id*="cookie"], [class*="consent"], [class*="newsletter-popup"], '
+    '[class*="exit-intent"]'
+)
+
+# Selectors for navigation chrome to remove (nav bars, headers, footers, cart drawers).
+# These match what Firecrawl's only_main_content=True strips from markdown,
+# and what Shopify/Replo themes hide via display:none on landing pages.
+# IMPORTANT: Keep selectors conservative — Replo content can live inside
+# Shopify section wrappers, so avoid broad class-based selectors like
+# [class*='primary-logo'] which can catch visible content.
+_CHROME_SELECTORS = (
+    "header, nav, footer, "
+    "[id*='shopify-section-header'], [id*='shopify-section-footer'], "
+    "[class*='cart-drawer'], [class*='cart-sidebar'], [class*='CartDrawer'], "
+    "[class*='drawer'][class*='cart'], [class*='ajax-cart'], [class*='theme-ajax-cart'], "
+    "[class*='site-header'], [class*='site-footer'], "
+    "[class*='main-nav'], [class*='main_nav'], "
+    "[class*='announcement-bar'], [class*='promo-bar'], "
+    # Mega menus (Shopify theme dropdown navigation panels)
+    "[id*='mega-menu'], [id*='mega_menu'], [class*='mega-menu'], [class*='megamenu'], "
+    "[id*='shopify-section-mega'], "
+    # Mobile menu drawers and icon sprite containers
+    "[class*='mobile-menu'], [class*='mobile-nav'], [class*='menu-drawer'], "
+    "[class*='icon-reference'], svg[aria-hidden='true'][class*='icon'], "
+    "[class*='mobile-logo'], "
+    # Accessibility skip-nav links (visually hidden, becomes visible when CSS stripped)
+    "[class*='skip-to-content'], [class*='visually-hidden'], "
+    # Shopify app custom elements and third-party widgets
+    "inbox-online-store-chat, shopify-chat, shop-cart-sync, "
+    "[id='ShopifyChat'], "
+    # Monster Upsells cart drawer (mu-* classes)
+    "[id='monster-cart-wrapper'], [id='monster-upsell-cart'], [class*='monster_upsell'], "
+    # Shopify app blocks (third-party app containers: social widgets, loyalty,
+    # popups, etc.). Replo content uses data-rid attributes, not shopify-app-block.
+    "[class~='shopify-app-block'], "
+    # Third-party app widgets (Alia popups, free shipping bars, etc.)
+    "[id^='alia-root'], [id^='fsb_'], "
+    # Shopify infrastructure elements (analytics, CSS lockdown, pixel sandbox)
+    "[id='web-pixels-manager-sandbox-container'], [id*='polaris-css'], "
+    # Modal dialogs (catches generic popups/overlays including Alia)
+    "[aria-modal='true']"
+)
+
+# JS snippet to remove hidden elements, SVG sprites, fixed widgets, and
+# zero-size elements that render as junk when CSS is stripped by the
+# surgery pipeline.
+_REMOVE_HIDDEN_AND_SPRITES_JS = """(() => {
+    let removed = 0;
+
+    // 1. Remove SVG containers that only hold <symbol> definitions (icon sprites)
+    document.querySelectorAll('svg').forEach(svg => {
+        if (svg.querySelector('symbol') && !svg.querySelector('text, image, foreignObject')) {
+            svg.remove();
+            removed++;
+        }
+    });
+
+    // 2. Remove aria-hidden SVGs that are decorative icon references
+    document.querySelectorAll('svg[aria-hidden="true"]').forEach(svg => {
+        const rect = svg.getBoundingClientRect();
+        if (rect.width <= 30 && rect.height <= 30) {
+            svg.remove();
+            removed++;
+        }
+    });
+
+    // 3. Remove unconstrained Shopify theme icon SVGs (viewBox but no width/height).
+    //    These are icon defs (cart, email, avatar, etc.) that expand to full
+    //    container width when their parent's display:none CSS is stripped.
+    document.querySelectorAll('svg[viewBox]').forEach(svg => {
+        if (!svg.hasAttribute('width') && !svg.hasAttribute('height')) {
+            const g = svg.querySelector('g[id]');
+            if (g) {
+                svg.remove();
+                removed++;
+            }
+        }
+    });
+
+    // 4. Remove top-level body children that are hidden (display:none only).
+    //    These are Shopify theme sections hidden by page builders like Replo.
+    //    Only check direct body children to avoid removing animation targets.
+    document.querySelectorAll('body > *').forEach(el => {
+        const style = window.getComputedStyle(el);
+        if (style.display === 'none') {
+            el.remove();
+            removed++;
+        }
+    });
+
+    return removed;
+})()"""
+
+# JS snippet to remove anti-scraping overlay divs.
+# These are full-page overlays with extreme z-index and transparent text,
+# injected by Shopify themes to block content scrapers. They render as
+# invisible text junk when the page is captured as static HTML.
+_REMOVE_ANTI_SCRAPE_OVERLAYS_JS = """(() => {
+    let removed = 0;
+    document.querySelectorAll('div').forEach(el => {
+        const style = window.getComputedStyle(el);
+        const zIndex = parseInt(style.zIndex, 10);
+        // Anti-scraping overlays use z-index > 10^8 with transparent/invisible text
+        if (zIndex > 99999999 && (
+            style.color === 'transparent' ||
+            style.color === 'rgba(0, 0, 0, 0)' ||
+            style.opacity === '0'
+        )) {
+            el.remove();
+            removed++;
+        }
+    });
+    return removed;
+})()"""
+
+# Regex to strip <script> tag contents while preserving the tags
+_SCRIPT_CONTENT_RE = re.compile(
+    r"(<script\b[^>]*>)(.*?)(</script>)",
+    re.DOTALL | re.IGNORECASE,
+)
+
+# Regex to convert loading="lazy" to loading="eager" on images.
+# Ensures all images load immediately when surgery output HTML is rendered,
+# rather than requiring scroll-into-view (which the screenshot renderer
+# may not trigger for below-the-fold images).
+_LAZY_TO_EAGER_RE = re.compile(
+    r'loading\s*=\s*["\']lazy["\']',
+    re.IGNORECASE,
+)
+
+
+def _strip_script_content(html: str) -> str:
+    """Strip content from <script> tags, keeping the tags for structure."""
+    return _SCRIPT_CONTENT_RE.sub(r"\1\3", html)
+
+
+def _convert_lazy_to_eager(html: str) -> str:
+    """Convert loading='lazy' to loading='eager' on all elements."""
+    return _LAZY_TO_EAGER_RE.sub('loading="eager"', html)
+
+
+def capture_rendered_page(
+    url: str,
+    viewport_width: int = 1280,
+    viewport_height: int = 800,
+    capture_screenshot: bool = False,
+    scroll_to_load: bool = True,
+    timeout_ms: int = 30000,
+) -> Optional[CaptureResult]:
+    """Capture post-JS DOM via sync Playwright.
+
+    Navigates to the URL, waits for JS hydration, scrolls to trigger lazy
+    loading, removes overlays, and returns the rendered DOM HTML with
+    script content stripped.
+
+    Returns None on any failure (caller falls back to Firecrawl).
+
+    Args:
+        url: Page URL to capture.
+        viewport_width: Browser viewport width (default 1280, matches html_renderer).
+        viewport_height: Browser viewport height (default 800, matches html_renderer).
+        capture_screenshot: Whether to capture a full-page PNG screenshot.
+        scroll_to_load: Whether to auto-scroll to trigger lazy loading.
+        timeout_ms: Navigation timeout in milliseconds.
+    """
+    start = time.time()
+
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        raise PlaywrightNotInstalledError(
+            "Playwright is not installed. Install with: pip install playwright && playwright install chromium"
+        )
+
+    pw = None
+    browser = None
+    try:
+        pw = sync_playwright().start()
+        browser = pw.chromium.launch()
+        page = browser.new_page(
+            viewport={"width": viewport_width, "height": viewport_height}
+        )
+
+        # Freeze animations before navigation for deterministic rendering
+        page.add_style_tag(
+            content="* { animation: none !important; transition: none !important; }"
+        )
+
+        # Navigate — use domcontentloaded then wait, since networkidle
+        # can hang on pages with persistent connections (analytics, etc.)
+        page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+        page.wait_for_timeout(2000)  # allow JS hydration
+
+        # Remove overlay/popup elements via DOM removal (deterministic)
+        page.evaluate(
+            "(sels) => document.querySelectorAll(sels).forEach(el => el.remove())",
+            _OVERLAY_SELECTORS,
+        )
+
+        # Remove navigation chrome (header, nav, footer, cart drawers)
+        # Mirrors Firecrawl's only_main_content=True behavior
+        chrome_removed = page.evaluate(
+            "(sels) => { const els = document.querySelectorAll(sels); els.forEach(el => el.remove()); return els.length; }",
+            _CHROME_SELECTORS,
+        )
+        if chrome_removed:
+            logger.info(f"Removed {chrome_removed} navigation chrome elements")
+
+        # Remove SVG sprites and elements hidden via computed style
+        hidden_removed = page.evaluate(_REMOVE_HIDDEN_AND_SPRITES_JS)
+        if hidden_removed:
+            logger.info(f"Removed {hidden_removed} hidden/sprite elements")
+
+        # Remove anti-scraping overlay divs (huge z-index + transparent text)
+        anti_scrape_removed = page.evaluate(_REMOVE_ANTI_SCRAPE_OVERLAYS_JS)
+        if anti_scrape_removed:
+            logger.info(f"Removed {anti_scrape_removed} anti-scraping overlay(s)")
+
+        # Auto-scroll to trigger lazy loading
+        if scroll_to_load:
+            for _ in range(15):
+                page.evaluate("window.scrollBy(0, 400)")
+                page.wait_for_timeout(300)
+            # Scroll back to top
+            page.evaluate("window.scrollTo(0, 0)")
+            page.wait_for_timeout(500)
+
+        # Second cleanup pass — catch elements injected by scripts triggered
+        # during scrolling (e.g. Alia popups, late-loaded cart widgets)
+        late_chrome = page.evaluate(
+            "(sels) => { const els = document.querySelectorAll(sels); els.forEach(el => el.remove()); return els.length; }",
+            _CHROME_SELECTORS,
+        )
+        late_overlays = page.evaluate(
+            "(sels) => { const els = document.querySelectorAll(sels); els.forEach(el => el.remove()); return els.length; }",
+            _OVERLAY_SELECTORS,
+        )
+        late_hidden = page.evaluate(_REMOVE_HIDDEN_AND_SPRITES_JS)
+        late_anti_scrape = page.evaluate(_REMOVE_ANTI_SCRAPE_OVERLAYS_JS)
+        if late_chrome or late_overlays or late_hidden or late_anti_scrape:
+            logger.info(
+                f"Second pass removed {late_chrome} chrome, "
+                f"{late_overlays} overlays, {late_hidden} hidden, "
+                f"{late_anti_scrape} anti-scrape"
+            )
+
+        # Quality check: visible text length
+        visible_text_len = page.evaluate("document.body.innerText.length")
+        if visible_text_len < 200:
+            logger.warning(
+                f"Playwright capture quality check failed: only {visible_text_len} "
+                f"visible chars (CAPTCHA, blank page, or bot detection)"
+            )
+            return None
+
+        # Capture DOM
+        dom_html = page.content()
+
+        # Strip <script> content to reduce size and noise
+        dom_html = _strip_script_content(dom_html)
+
+        # Convert lazy-loaded images to eager so they render in static HTML
+        dom_html = _convert_lazy_to_eager(dom_html)
+
+        # Capture final URL (after redirects)
+        final_url = page.url
+
+        # Optional screenshot
+        screenshot_bytes = None
+        if capture_screenshot:
+            screenshot_bytes = page.screenshot(full_page=True, timeout=15000)
+
+        elapsed_ms = int((time.time() - start) * 1000)
+
+        return CaptureResult(
+            dom_html=dom_html,
+            screenshot_bytes=screenshot_bytes,
+            final_url=final_url,
+            capture_time_ms=elapsed_ms,
+            visible_text_len=visible_text_len,
+        )
+
+    except PlaywrightNotInstalledError:
+        raise
+    except Exception as e:
+        logger.warning(f"Playwright capture failed for {url}: {e}")
+        return None
+    finally:
+        if browser:
+            try:
+                browser.close()
+            except Exception:
+                pass
+        if pw:
+            try:
+                pw.stop()
+            except Exception:
+                pass

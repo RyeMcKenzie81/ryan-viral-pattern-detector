@@ -456,7 +456,8 @@ class AdCreationService:
         product_id: UUID,
         reference_ad_storage_path: str,
         project_id: Optional[UUID] = None,
-        parameters: Optional[Dict] = None
+        parameters: Optional[Dict] = None,
+        generation_config: Optional[Dict] = None,
     ) -> UUID:
         """
         Create new ad run record.
@@ -466,6 +467,7 @@ class AdCreationService:
             reference_ad_storage_path: Storage path to reference ad
             project_id: Optional project UUID
             parameters: Optional generation parameters (num_variations, content_source, etc.)
+            generation_config: Optional reproducibility snapshot (prompt_version, pipeline_version, etc.)
 
         Returns:
             UUID of created ad run
@@ -481,6 +483,9 @@ class AdCreationService:
 
         if parameters:
             data["parameters"] = parameters
+
+        if generation_config:
+            data["generation_config"] = generation_config
 
         result = self.supabase.table("ad_runs").insert(data).execute()
         ad_run_id = UUID(result.data[0]["id"])
@@ -573,7 +578,20 @@ class AdCreationService:
         meta_primary_text: Optional[str] = None,
         template_name: Optional[str] = None,
         # Regeneration lineage
-        regenerate_parent_id: Optional[UUID] = None
+        regenerate_parent_id: Optional[UUID] = None,
+        # V2: Multi-size variant identity
+        canvas_size: Optional[str] = None,
+        # V2 Phase 2: Multi-color variant identity
+        color_mode: Optional[str] = None,
+        # V2 Phase 4: Review overhaul columns
+        defect_scan_result: Optional[Dict] = None,
+        review_check_scores: Optional[Dict] = None,
+        congruence_score: Optional[float] = None,
+        # V2 Phase 5: Prompt versioning
+        prompt_version: Optional[str] = None,
+        # V2 Phase 6: Creative Genome
+        element_tags: Optional[Dict] = None,
+        pre_gen_score: Optional[float] = None,
     ) -> UUID:
         """
         Save generated ad metadata to database.
@@ -601,6 +619,9 @@ class AdCreationService:
             meta_primary_text: Primary text for Meta ad placement (above image)
             template_name: Name of template for display
             regenerate_parent_id: Source ad UUID when regenerated from rejected ad
+            canvas_size: Canvas dimensions string (e.g. '1080x1080', '1080x1350')
+            color_mode: Color mode used (e.g. 'original', 'complementary', 'brand')
+            prompt_version: Pydantic prompt schema version (e.g. 'v2.1.0')
 
         Returns:
             UUID of generated ad record
@@ -658,6 +679,28 @@ class AdCreationService:
             data["template_name"] = template_name
         if regenerate_parent_id is not None:
             data["regenerate_parent_id"] = str(regenerate_parent_id)
+        if canvas_size is not None:
+            data["canvas_size"] = canvas_size
+        if color_mode is not None:
+            data["color_mode"] = color_mode
+
+        # Phase 4: Review overhaul columns
+        if defect_scan_result is not None:
+            data["defect_scan_result"] = defect_scan_result
+        if review_check_scores is not None:
+            data["review_check_scores"] = review_check_scores
+        if congruence_score is not None:
+            data["congruence_score"] = congruence_score
+
+        # Phase 5: Prompt versioning
+        if prompt_version is not None:
+            data["prompt_version"] = prompt_version
+
+        # Phase 6: Creative Genome
+        if element_tags is not None:
+            data["element_tags"] = element_tags
+        if pre_gen_score is not None:
+            data["pre_gen_score"] = float(pre_gen_score)
 
         result = self.supabase.table("generated_ads").insert(data).execute()
         generated_ad_id = UUID(result.data[0]["id"])

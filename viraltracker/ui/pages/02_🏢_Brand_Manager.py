@@ -1466,6 +1466,30 @@ with st.container():
             except Exception as e:
                 st.error(f"Failed to save: {e}")
 
+    # Phase 8B: Cross-Brand Sharing Toggle
+    st.markdown("")
+    st.markdown("**Cross-Brand Knowledge Sharing**")
+    st.caption("Opt in to share statistical performance data (element scores, interactions) with other brands in your organization for faster learning.")
+
+    current_sharing = selected_brand.get('cross_brand_sharing', False)
+    new_sharing = st.toggle(
+        "Enable cross-brand transfer learning",
+        value=current_sharing,
+        key="cross_brand_sharing_toggle",
+    )
+
+    if new_sharing != current_sharing:
+        if st.button("Save Sharing Setting", key="save_cross_brand_sharing", type="secondary"):
+            try:
+                db = get_supabase_client()
+                db.table("brands").update({
+                    "cross_brand_sharing": new_sharing
+                }).eq("id", selected_brand_id).execute()
+                st.success(f"Cross-brand sharing {'enabled' if new_sharing else 'disabled'}!")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Failed to save: {e}")
+
     # Brand Voice & Colors Section
     st.markdown("")
     st.markdown("**Brand Voice & Colors**")

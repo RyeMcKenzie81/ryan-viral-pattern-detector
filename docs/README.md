@@ -34,6 +34,18 @@ Welcome to the ViralTracker documentation! Choose your path:
 ### Specialized Guides
 - [Hook Analysis Guide](HOOK_ANALYSIS_GUIDE.md) - Statistical analysis methods
 - [Facebook Ads Ingestion](workflows/facebook_ads_ingestion.md) - FB Ad Library scraping
+- [Video Buckets](VIDEO_BUCKETS.md) - Bulk video categorization, upload tracking, download-per-bucket
+
+### Video Generation & Avatars
+- **Kling AI Integration**: Omni Video, avatar talking-head, lip-sync, multi-shot, custom elements
+  - Service: `viraltracker/services/kling_video_service.py`
+  - Models: `viraltracker/services/kling_models.py`
+- **Brand Avatars**: 4-angle reference images, video elements with voice binding
+  - Service: `viraltracker/services/avatar_service.py`
+  - Models: `viraltracker/services/veo_models.py` (BrandAvatar)
+  - UI: `viraltracker/ui/pages/47_🎭_Avatars.py`
+- **Video Tools Suite Plan**: [docs/plans/video-tools-suite/](plans/video-tools-suite/)
+  - [Checkpoint 11: Video Avatar with Voice](plans/video-tools-suite/CHECKPOINT_11_VIDEO_AVATAR_WITH_VOICE.md)
 
 ### Product Setup & Onboarding
 - [Onboarding Checklist](../product_setup/ONBOARDING_CHECKLIST.md) - Brand/product onboarding process

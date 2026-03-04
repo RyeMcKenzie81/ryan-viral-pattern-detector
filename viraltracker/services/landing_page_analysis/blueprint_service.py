@@ -625,6 +625,19 @@ class ReconstructionBlueprintService:
     # Query methods
     # ------------------------------------------------------------------
 
+    def save_blueprint_mockup_html(self, blueprint_id: str, html: str) -> None:
+        """Persist blueprint mockup HTML to the database record."""
+        self.supabase.table("landing_page_blueprints").update(
+            {"blueprint_mockup_html": html}
+        ).eq("id", blueprint_id).execute()
+        logger.info(f"Saved blueprint_mockup_html ({len(html)} chars) for {blueprint_id}")
+
+    def clear_blueprint_mockup_html(self, blueprint_id: str) -> None:
+        """Clear persisted blueprint mockup HTML (e.g. on regeneration)."""
+        self.supabase.table("landing_page_blueprints").update(
+            {"blueprint_mockup_html": None}
+        ).eq("id", blueprint_id).execute()
+
     def get_blueprint(self, blueprint_id: str) -> Optional[Dict[str, Any]]:
         """Get a single blueprint by ID."""
         try:
@@ -646,6 +659,7 @@ class ReconstructionBlueprintService:
         analysis_id: Optional[str] = None,
         brand_id: Optional[str] = None,
         limit: int = 50,
+        qa_status_filter: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """List blueprints for an organization, most recent first."""
         query = (
@@ -653,7 +667,8 @@ class ReconstructionBlueprintService:
             .select(
                 "id, analysis_id, brand_id, product_id, source_url, "
                 "sections_count, elements_mapped, content_needed_count, "
-                "status, processing_time_ms, created_at"
+                "status, processing_time_ms, created_at, "
+                "qa_status, public_share_enabled"
             )
         )
         if org_id and org_id != "all":
@@ -662,6 +677,115 @@ class ReconstructionBlueprintService:
             query = query.eq("analysis_id", analysis_id)
         if brand_id:
             query = query.eq("brand_id", brand_id)
+        if qa_status_filter:
+            query = query.eq("qa_status", qa_status_filter)
 
         result = query.order("created_at", desc=True).limit(limit).execute()
         return result.data or []
+
+    def update_qa_status(
+        self,
+        blueprint_id: str,
+        qa_status: str,
+        qa_notes: Optional[str] = None,
+        reviewed_by: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Update QA approval status on a blueprint.
+
+        Args:
+            blueprint_id: The blueprint UUID.
+            qa_status: One of 'pending', 'approved', 'rejected', 'needs_revision'.
+            qa_notes: Optional reviewer notes.
+            reviewed_by: UUID of the reviewer (user).
+        """
+        valid_statuses = ("pending", "approved", "rejected", "needs_revision")
+        if qa_status not in valid_statuses:
+            raise ValueError(f"qa_status must be one of {valid_statuses}, got '{qa_status}'")
+
+        update = {"qa_status": qa_status}
+        if qa_notes is not None:
+            update["qa_notes"] = qa_notes
+        if reviewed_by:
+            update["qa_reviewed_by"] = reviewed_by
+        if qa_status != "pending":
+            from datetime import datetime, timezone
+            update["qa_reviewed_at"] = datetime.now(timezone.utc).isoformat()
+
+        result = (
+            self.supabase.table("landing_page_blueprints")
+            .update(update)
+            .eq("id", blueprint_id)
+            .execute()
+        )
+        logger.info(f"Updated QA status for blueprint {blueprint_id}: {qa_status}")
+        return result.data[0] if result.data else {}
+
+    # ------------------------------------------------------------------
+    # Public share link management
+    # ------------------------------------------------------------------
+
+    def generate_share_link(self, blueprint_id: str) -> str:
+        """Generate or return existing share token. Returns the token string."""
+        import secrets
+
+        # Check if token already exists
+        existing = (
+            self.supabase.table("landing_page_blueprints")
+            .select("public_share_token, public_share_enabled")
+            .eq("id", blueprint_id)
+            .single()
+            .execute()
+        )
+        if existing.data and existing.data.get("public_share_token"):
+            # Re-enable if disabled
+            if not existing.data.get("public_share_enabled"):
+                self.supabase.table("landing_page_blueprints").update(
+                    {"public_share_enabled": True}
+                ).eq("id", blueprint_id).execute()
+            return existing.data["public_share_token"]
+
+        # Generate new token
+        token = secrets.token_urlsafe(9)  # 12 chars base64
+        from datetime import datetime, timezone
+        self.supabase.table("landing_page_blueprints").update({
+            "public_share_token": token,
+            "public_share_enabled": True,
+            "public_share_created_at": datetime.now(timezone.utc).isoformat(),
+        }).eq("id", blueprint_id).execute()
+
+        logger.info(f"Generated share token for blueprint {blueprint_id}: {token}")
+        return token
+
+    def disable_share_link(self, blueprint_id: str) -> None:
+        """Disable sharing (keeps token for re-enabling)."""
+        self.supabase.table("landing_page_blueprints").update(
+            {"public_share_enabled": False}
+        ).eq("id", blueprint_id).execute()
+        logger.info(f"Disabled share link for blueprint {blueprint_id}")
+
+    def get_blueprint_by_share_token(self, token: str) -> Optional[Dict]:
+        """Fetch blueprint by share token. Returns None if not found or disabled.
+
+        Uses the service-role Supabase client (self.supabase) which bypasses RLS,
+        since this is called from the unauthenticated public share endpoint.
+        """
+        result = (
+            self.supabase.table("landing_page_blueprints")
+            .select("id, blueprint_mockup_html_with_images, blueprint_mockup_html, source_url")
+            .eq("public_share_token", token)
+            .eq("public_share_enabled", True)
+            .limit(1)
+            .execute()
+        )
+        if not result.data:
+            return None
+        row = result.data[0]
+        # Prefer HTML with images, fall back to plain HTML
+        html = row.get("blueprint_mockup_html_with_images") or row.get("blueprint_mockup_html")
+        if not html:
+            return None
+        return {
+            "id": row["id"],
+            "html": html,
+            "source_url": row.get("source_url", ""),
+        }

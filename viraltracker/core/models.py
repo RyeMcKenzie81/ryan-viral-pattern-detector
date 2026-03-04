@@ -131,6 +131,11 @@ class Post(BaseModel):
     length_sec: Optional[int] = None
     import_source: Optional[ImportSource] = None
     is_own_content: bool = False
+    # Outlier detection (Video Tools Suite Phase 1)
+    is_outlier: Optional[bool] = False
+    outlier_score: Optional[float] = None
+    outlier_method: Optional[str] = None
+    outlier_calculated_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
 

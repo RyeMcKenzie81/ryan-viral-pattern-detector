@@ -48,9 +48,12 @@ def handle_shutdown(signum, frame):
     shutdown_requested = True
 
 
-# Register signal handlers
-signal.signal(signal.SIGTERM, handle_shutdown)
-signal.signal(signal.SIGINT, handle_shutdown)
+# Register signal handlers (only when running as main entry point,
+# not when imported by Streamlit or other non-main threads)
+import threading
+if threading.current_thread() is threading.main_thread():
+    signal.signal(signal.SIGTERM, handle_shutdown)
+    signal.signal(signal.SIGINT, handle_shutdown)
 
 
 # ============================================================================
@@ -170,11 +173,19 @@ def update_job(job_id: str, updates: Dict):
         logger.error(f"Failed to update job {job_id}: {e}")
 
 
+    # Job types that legitimately run longer than 30 minutes (e.g., full
+    # 4-layer analysis for large ad accounts). Use 120-minute threshold instead.
+LONG_RUNNING_JOB_TYPES = {"ad_intelligence_analysis"}
+
+
 def recover_stuck_runs(stuck_threshold_minutes: int = 30):
     """Find runs stuck in 'running' state for too long and mark them failed.
 
     Called at the start of each poll cycle. Marks stuck runs as failed and
     reschedules their parent jobs via _reschedule_after_failure.
+
+    Long-running job types (e.g. ad_intelligence_analysis) use a 120-minute
+    threshold instead of the default 30.
 
     Args:
         stuck_threshold_minutes: How long a run can be 'running' before recovery.
@@ -182,12 +193,27 @@ def recover_stuck_runs(stuck_threshold_minutes: int = 30):
     try:
         db = get_supabase_client()
         cutoff = (datetime.now(PST) - timedelta(minutes=stuck_threshold_minutes)).isoformat()
+        long_cutoff = (datetime.now(PST) - timedelta(minutes=120)).isoformat()
 
         stuck = db.table("scheduled_job_runs").select(
             "id, scheduled_job_id, started_at, attempt_number"
         ).eq("status", "running").lt("started_at", cutoff).execute()
 
         for run in (stuck.data or []):
+            # Check if this is a long-running job type
+            try:
+                job_result = db.table("scheduled_jobs").select("job_type").eq(
+                    "id", run["scheduled_job_id"]
+                ).limit(1).execute()
+                job_type = job_result.data[0]["job_type"] if job_result.data else None
+
+                if job_type in LONG_RUNNING_JOB_TYPES:
+                    # Use longer threshold for these jobs
+                    if run["started_at"] > long_cutoff:
+                        continue  # Not yet stuck, skip
+            except Exception:
+                pass  # If lookup fails, use default threshold
+
             logger.warning(f"Recovering stuck run {run['id']} (started {run['started_at']})")
 
             # Mark run as failed
@@ -574,9 +600,464 @@ async def execute_job(job: Dict) -> Dict[str, Any]:
         return await execute_reddit_scrape_job(job)
     elif job_type == 'amazon_review_scrape':
         return await execute_amazon_review_scrape_job(job)
-    else:
-        # Default to ad_creation for backward compatibility
+    elif job_type == 'ad_creation_v2':
+        return await execute_ad_creation_v2_job(job)
+    elif job_type == 'ad_creation':
         return await execute_ad_creation_job(job)
+    elif job_type == 'creative_genome_update':
+        return await execute_creative_genome_update_job(job)
+    elif job_type == 'genome_validation':
+        return await execute_genome_validation_job(job)
+    elif job_type == 'winner_evolution':
+        return await execute_winner_evolution_job(job)
+    elif job_type == 'experiment_analysis':
+        return await execute_experiment_analysis_job(job)
+    elif job_type == 'quality_calibration':
+        return await execute_quality_calibration_job(job)
+    elif job_type == 'ad_intelligence_analysis':
+        return await execute_ad_intelligence_analysis_job(job)
+    else:
+        # Hard-fail on unknown job types — never silently fall through to V1
+        logger.error(f"Unknown job_type '{job_type}' for job {job_id} ({job_name}). "
+                     f"No handler registered. Refusing to execute.")
+        raise ValueError(f"Unknown job_type: {job_type}")
+
+
+async def execute_ad_creation_v2_job(job: Dict) -> Dict[str, Any]:
+    """Execute a V2 ad creation job with template scoring and Pydantic prompts.
+
+    V2 differences from V1:
+    - Template selection via 3 modes: manual, roll_the_dice, smart_select
+    - Calls run_ad_creation_v2() (parallel V2 pipeline, V1 untouched)
+    - Cap metric: ads_attempted counts attempts, not approvals
+    - Progress metadata updated during template loop
+
+    Args:
+        job: Scheduled job dict with parameters JSONB containing:
+            template_selection_mode: "manual" | "roll_the_dice" | "smart_select"
+            template_count: Number of templates to select (for scored modes)
+            template_category: Optional category filter
+            content_source: "hooks" | "recreate_template" | "belief_first" | "plan" | "angles"
+            color_mode: "original" | "complementary" | "brand"
+            num_variations: Number of ad variations per template (1-15)
+            canvas_size: Canvas dimensions (default: "1080x1080px")
+            image_resolution: "1K" | "2K" | "4K"
+            persona_id: Optional persona UUID
+            additional_instructions: Optional extra instructions
+    """
+    job_id = job['id']
+    job_name = job['name']
+    product_id = job['product_id']
+    product_info = job.get('products', {}) or {}
+    brand_info = product_info.get('brands', {}) or {}
+    params = job.get('parameters', {}) or {}
+
+    logger.info(f"Starting V2 job: {job_name} (ID: {job_id})")
+
+    # Immediately clear next_run_at to prevent re-pickup
+    update_job(job_id, {"next_run_at": None})
+
+    # Create job run record
+    run_id = create_job_run(job_id)
+    if not run_id:
+        logger.error(f"Failed to create run record for V2 job {job_id}")
+        return {"success": False, "error": "Failed to create run record"}
+
+    logs = []
+    ad_run_ids = []
+    templates_used = []
+    ads_attempted = 0
+    ads_approved = 0
+
+    # Dataset freshness tracking
+    from viraltracker.services.dataset_freshness_service import DatasetFreshnessService
+    freshness = DatasetFreshnessService()
+    brand_id = brand_info.get('id')
+
+    try:
+        if brand_id:
+            freshness.record_start(brand_id, "ad_creations", run_id=run_id)
+
+        # Parse V2-specific params
+        template_selection_mode = params.get('template_selection_mode', 'manual')
+        template_count = params.get('template_count', 3)
+        template_category = params.get('template_category')
+        content_source = params.get('content_source', 'hooks')
+        num_variations = params.get('num_variations', 5)
+
+        # Phase 2: multi-size/color — type-normalize, validate, dedupe
+        VALID_CANVAS_SIZES = {"1080x1080px", "1080x1350px", "1080x1920px", "1200x628px"}
+        VALID_COLOR_MODES = {"original", "complementary", "brand"}
+
+        raw_sizes = params.get('canvas_sizes') or params.get('canvas_size') or '1080x1080px'
+        canvas_sizes = raw_sizes if isinstance(raw_sizes, list) else [raw_sizes]
+
+        raw_colors = params.get('color_modes') or params.get('color_mode') or 'original'
+        color_modes = raw_colors if isinstance(raw_colors, list) else [raw_colors]
+
+        # Validate + dedupe (preserve order)
+        canvas_sizes = list(dict.fromkeys(s for s in canvas_sizes if s in VALID_CANVAS_SIZES))
+        color_modes = list(dict.fromkeys(m for m in color_modes if m in VALID_COLOR_MODES))
+
+        # Fallback if validation stripped everything
+        if not canvas_sizes:
+            canvas_sizes = ["1080x1080px"]
+            logs.append("WARNING: No valid canvas sizes in params, defaulting to 1080x1080px")
+        if not color_modes:
+            color_modes = ["original"]
+            logs.append("WARNING: No valid color modes in params, defaulting to original")
+
+        # Pre-compute per-template fanout and check cap
+        per_template_ads = num_variations * len(canvas_sizes) * len(color_modes)
+        if per_template_ads > MAX_ADS_PER_SCHEDULED_RUN:
+            logs.append(f"WARNING: per-template fanout ({per_template_ads}) exceeds cap "
+                        f"({MAX_ADS_PER_SCHEDULED_RUN}). Clamping variations.")
+            num_variations = max(1, MAX_ADS_PER_SCHEDULED_RUN // (len(canvas_sizes) * len(color_modes)))
+            per_template_ads = num_variations * len(canvas_sizes) * len(color_modes)
+
+        logs.append(f"V2 Pipeline | Mode: {template_selection_mode} | "
+                    f"Content: {content_source} | Variations: {num_variations} | "
+                    f"Sizes: {canvas_sizes} | Colors: {color_modes} | "
+                    f"Per-template: {per_template_ads}")
+
+        # ── Template Selection ──────────────────────────────────────────
+        if template_selection_mode == 'manual':
+            # Manual: use scraped_template_ids from job
+            scraped_template_ids = job.get('scraped_template_ids') or []
+            templates = get_scraped_templates_for_job(scraped_template_ids)
+            logs.append(f"Manual selection: {len(templates)} templates")
+
+        elif template_selection_mode in ('roll_the_dice', 'smart_select'):
+            # Scored selection via template scoring service
+            from viraltracker.services.template_scoring_service import (
+                fetch_template_candidates, prefetch_product_asset_tags,
+                select_templates_with_fallback, SelectionContext,
+                fetch_brand_min_asset_score,
+                ROLL_THE_DICE_WEIGHTS, SMART_SELECT_WEIGHTS,
+                PHASE_8_SCORERS,
+            )
+            from uuid import UUID as _UUID
+
+            # Prefetch asset tags once (N+1 prevention)
+            asset_tags = await prefetch_product_asset_tags(product_id)
+            logs.append(f"Product asset tags: {len(asset_tags)} tags")
+
+            # Fetch all candidates (no category filter — scorer handles it)
+            candidates = await fetch_template_candidates(product_id)
+            logs.append(f"Template candidates: {len(candidates)} active templates")
+
+            # Extract persona demographics for scoring context
+            persona_target_sex = None
+            persona_id = params.get('persona_id')
+            if persona_id:
+                try:
+                    from viraltracker.services.persona_service import PersonaService
+                    persona_service = PersonaService()
+                    persona_data = persona_service.export_for_ad_generation(_UUID(persona_id))
+                    if persona_data:
+                        demographics = persona_data.get("demographics") or {}
+                        gender = (demographics.get("gender") or "").lower().strip()
+                        if gender in ("male", "female"):
+                            persona_target_sex = gender
+                        elif gender in ("any", "all", "both"):
+                            persona_target_sex = "unisex"
+                        # else: stays None → scorer returns 0.7 neutral
+                except Exception as e:
+                    logger.warning(f"Failed to load persona for scoring: {e}")
+                    # Non-fatal — scoring proceeds with neutral scores
+
+            # Build selection context
+            context = SelectionContext(
+                product_id=_UUID(product_id),
+                brand_id=_UUID(brand_id) if brand_id else _UUID(product_id),
+                product_asset_tags=asset_tags,
+                requested_category=template_category,
+                target_sex=persona_target_sex,
+            )
+
+            # Choose weight preset (Phase 8B: use learned weights for smart_select)
+            if template_selection_mode == 'roll_the_dice':
+                weights = ROLL_THE_DICE_WEIGHTS
+            else:
+                try:
+                    from viraltracker.services.scorer_weight_learning_service import ScorerWeightLearningService
+                    from uuid import UUID as _LUUID
+                    learning_service = ScorerWeightLearningService()
+                    weights = learning_service.get_learned_weights(
+                        _LUUID(brand_id) if brand_id else _LUUID(product_id),
+                        mode="smart_select",
+                    )
+                except Exception as e:
+                    logger.debug(f"Learned weights unavailable, using static: {e}")
+                    weights = SMART_SELECT_WEIGHTS
+
+            # Determine asset gate threshold
+            min_asset_score = 0.0
+            asset_strictness = params.get('asset_strictness', 'default')
+            if asset_strictness == 'growth':
+                min_asset_score = 0.3
+            elif asset_strictness == 'premium':
+                min_asset_score = 0.8
+            elif asset_strictness == 'default' and brand_id:
+                min_asset_score = fetch_brand_min_asset_score(brand_id)
+
+            # Select templates with fallback (Phase 8B: use PHASE_8_SCORERS)
+            selection = select_templates_with_fallback(
+                candidates=candidates,
+                context=context,
+                weights=weights,
+                count=template_count,
+                min_asset_score=min_asset_score,
+                scorers=PHASE_8_SCORERS,
+            )
+
+            if selection.empty:
+                raise Exception(
+                    f"No eligible templates: {selection.reason}"
+                )
+
+            # Log scoring results
+            logs.append(f"Selected {len(selection.templates)} templates "
+                        f"({selection.candidates_after_gate}/{selection.candidates_before_gate} "
+                        f"passed gate)")
+            for i, (tmpl, score_dict) in enumerate(zip(selection.templates, selection.scores)):
+                logs.append(f"  #{i+1} {tmpl.get('name', tmpl['id'])}: "
+                            f"composite={score_dict.get('composite', 0):.3f} "
+                            f"[asset={score_dict.get('asset_match', 0):.2f}, "
+                            f"unused={score_dict.get('unused_bonus', 0):.2f}, "
+                            f"category={score_dict.get('category_match', 0):.2f}, "
+                            f"awareness={score_dict.get('awareness_align', 0):.2f}, "
+                            f"audience={score_dict.get('audience_match', 0):.2f}]")
+
+            # Convert to standard template format for the loop
+            # Phase 8B: attach selection-time scores for weight learning transport
+            templates = []
+            for i, tmpl in enumerate(selection.templates):
+                storage_path = tmpl.get('storage_path', '')
+                parts = storage_path.split('/', 1) if storage_path else ['scraped-assets', '']
+                bucket = parts[0] if len(parts) == 2 else 'scraped-assets'
+                path = parts[1] if len(parts) == 2 else storage_path
+                score_dict = selection.scores[i] if i < len(selection.scores) else {}
+                templates.append({
+                    'id': tmpl['id'],
+                    'name': tmpl.get('name', 'Template'),
+                    'storage_path': path,
+                    'bucket': bucket,
+                    'full_storage_path': storage_path,
+                    '_selection_weights': dict(weights),
+                    '_selection_scores': dict(score_dict),
+                    '_selection_mode': template_selection_mode,
+                })
+        else:
+            raise ValueError(f"Unknown template_selection_mode: {template_selection_mode}")
+
+        if not templates:
+            raise Exception("No templates available for this V2 job")
+
+        # ── Import V2 pipeline and dependencies ─────────────────────────
+        from viraltracker.pipelines.ad_creation_v2.orchestrator import run_ad_creation_v2
+        from viraltracker.agent.dependencies import AgentDependencies
+
+        deps = AgentDependencies.create(project_name="scheduler_v2")
+
+        # Get brand colors if using brand color mode
+        brand_colors_data = None
+        if 'brand' in color_modes:
+            brand_colors_data = brand_info.get('brand_colors')
+
+        # ── Template Loop ───────────────────────────────────────────────
+        for idx, template in enumerate(templates):
+            if shutdown_requested:
+                logs.append("Shutdown requested, stopping V2 job execution")
+                break
+
+            if ads_attempted >= MAX_ADS_PER_SCHEDULED_RUN:
+                logs.append(f"Reached max ads limit ({MAX_ADS_PER_SCHEDULED_RUN}), stopping")
+                break
+
+            # Check remaining budget before starting a template
+            remaining_budget = MAX_ADS_PER_SCHEDULED_RUN - ads_attempted
+            if remaining_budget < per_template_ads:
+                logs.append(f"Remaining budget ({remaining_budget}) < per-template fanout "
+                            f"({per_template_ads}), stopping")
+                break
+
+            template_ref = template.get('name', template.get('id', 'Unknown'))
+            template_id = template.get('id')
+
+            logs.append(f"\nTemplate {idx + 1}/{len(templates)}: {template_ref}")
+            logger.info(f"V2 Job {job_name}: Template {idx + 1}/{len(templates)}")
+
+            # Update progress metadata
+            update_job_run(run_id, {
+                "metadata": {
+                    "pipeline_version": "v2",
+                    "ads_attempted": ads_attempted,
+                    "ads_approved": ads_approved,
+                    "current_template": template_ref,
+                    "template_progress": f"{idx + 1}/{len(templates)}",
+                }
+            })
+
+            # Download template
+            template_base64 = get_template_base64(template)
+            if not template_base64:
+                logs.append(f"  Failed to download template: {template_ref}")
+                continue
+
+            # Build additional instructions
+            combined_instructions = params.get('additional_instructions') or None
+
+            # Run V2 ad creation pipeline
+            try:
+                # Phase 8B: extract selection-time data for weight learning
+                _sel_weights = template.get('_selection_weights')
+                _sel_scores = template.get('_selection_scores', {})
+                _sel_mode = template.get('_selection_mode')
+
+                result = await run_ad_creation_v2(
+                    product_id=product_id,
+                    reference_ad_base64=template_base64,
+                    reference_ad_filename=template_ref,
+                    template_id=template_id,
+                    canvas_sizes=canvas_sizes,
+                    color_modes=color_modes,
+                    num_variations=num_variations,
+                    content_source=content_source,
+                    brand_colors=brand_colors_data,
+                    image_selection_mode=params.get('image_selection_mode', 'auto'),
+                    persona_id=params.get('persona_id'),
+                    variant_id=params.get('variant_id'),
+                    offer_variant_id=params.get('offer_variant_id'),
+                    current_offer_override=params.get('current_offer_override'),
+                    additional_instructions=combined_instructions,
+                    image_resolution=params.get('image_resolution', '2K'),
+                    # Phase 8B: selection transport
+                    selection_weights_used=_sel_weights,
+                    selection_scorer_breakdown=_sel_scores,
+                    selection_composite_score=_sel_scores.get('composite') if _sel_scores else None,
+                    selection_mode=_sel_mode,
+                    deps=deps,
+                )
+
+                if result and result.get('ad_run_id'):
+                    ad_run_id = result['ad_run_id']
+                    ad_run_ids.append(ad_run_id)
+                    templates_used.append(template_ref)
+
+                    # Record template usage
+                    if template_id:
+                        mark_recommendation_as_used(product_id, template_id)
+                        record_template_usage(product_id, template_ref, ad_run_id)
+
+                    approved = result.get('approved_count', 0)
+                    rejected = result.get('rejected_count', 0)
+                    flagged = result.get('flagged_count', 0)
+
+                    # V2 cap metric: count attempts (hook x size x color fanout)
+                    ads_attempted += per_template_ads
+                    ads_approved += approved
+
+                    logs.append(f"  Completed: {approved} approved, "
+                                f"{rejected} rejected, {flagged} flagged "
+                                f"(pipeline={result.get('pipeline_version', 'v2')}, "
+                                f"fanout={per_template_ads})")
+
+                    # Handle export
+                    export_dest = params.get('export_destination', 'none')
+                    if export_dest != 'none':
+                        await handle_export(
+                            result=result,
+                            params=params,
+                            product_name=product_info.get('name', 'Product'),
+                            brand_name=brand_info.get('name', 'Brand'),
+                            deps=deps
+                        )
+                        logs.append(f"  Exported to: {export_dest}")
+                else:
+                    ads_attempted += per_template_ads
+                    logs.append(f"  No ad_run_id returned")
+
+            except Exception as e:
+                ads_attempted += per_template_ads
+                logs.append(f"  Error: {str(e)}")
+                logger.error(f"V2 error processing template {template_ref}: {e}")
+
+        logs.append(f"\n=== V2 Summary: {ads_approved} approved / "
+                    f"{ads_attempted} attempted, {len(ad_run_ids)} runs ===")
+
+        if brand_id:
+            freshness.record_success(brand_id, "ad_creations", records_affected=ads_approved, run_id=run_id)
+
+        # Job completed successfully
+        update_job_run(run_id, {
+            "status": "completed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "ad_run_ids": ad_run_ids,
+            "templates_used": templates_used,
+            "metadata": {
+                "pipeline_version": "v2",
+                "ads_attempted": ads_attempted,
+                "ads_approved": ads_approved,
+                "template_selection_mode": template_selection_mode,
+            },
+            "logs": "\n".join(logs),
+        })
+
+        # Update parent job: increment runs_completed, schedule next run
+        runs_completed = job.get('runs_completed', 0) + 1
+        max_runs = job.get('max_runs')
+        job_updates = {"runs_completed": runs_completed}
+
+        if max_runs and runs_completed >= max_runs:
+            job_updates["status"] = "completed"
+            job_updates["next_run_at"] = None
+        elif job.get('schedule_type') == 'recurring':
+            next_run = calculate_next_run(job.get('cron_expression'))
+            if next_run:
+                job_updates["next_run_at"] = next_run.isoformat()
+        else:
+            job_updates["status"] = "completed"
+            job_updates["next_run_at"] = None
+
+        update_job(job_id, job_updates)
+
+        logger.info(f"V2 job completed: {job_name} ({ads_approved} approved / {ads_attempted} attempted)")
+        return {
+            "success": True,
+            "ad_run_ids": ad_run_ids,
+            "templates_used": templates_used,
+            "ads_attempted": ads_attempted,
+            "ads_approved": ads_approved,
+            "pipeline_version": "v2",
+        }
+
+    except Exception as e:
+        error_msg = str(e)
+        logs.append(f"V2 job failed: {error_msg}")
+        logger.error(f"V2 Job {job_name} failed: {error_msg}")
+
+        if brand_id:
+            freshness.record_failure(brand_id, "ad_creations", error_msg, run_id=run_id)
+
+        update_job_run(run_id, {
+            "status": "failed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "error_message": error_msg,
+            "ad_run_ids": ad_run_ids,
+            "templates_used": templates_used,
+            "metadata": {
+                "pipeline_version": "v2",
+                "ads_attempted": ads_attempted,
+                "ads_approved": ads_approved,
+                "error": "no_eligible_templates" if "No eligible templates" in error_msg else "pipeline_error",
+            },
+            "logs": "\n".join(logs),
+        })
+
+        _reschedule_after_failure(job, job_id, get_run_attempt_number(run_id))
+
+        return {"success": False, "error": error_msg}
 
 
 async def execute_ad_creation_job(job: Dict) -> Dict[str, Any]:
@@ -1821,7 +2302,8 @@ def _reschedule_after_failure(job: Dict, job_id: str, run_attempt_number: int = 
             else:
                 logger.error(f"Job {job_id}: retries exhausted, could not calculate next run")
         else:
-            logger.warning(f"Job {job_id}: one-time job retries exhausted, staying dead")
+            logger.warning(f"Job {job_id}: one-time job retries exhausted, marking completed")
+            job_updates["status"] = "completed"  # Release dedup index
         update_job(job_id, job_updates)
 
 
@@ -2454,6 +2936,102 @@ async def execute_ad_classification_job(job: Dict) -> Dict[str, Any]:
         return {"success": False, "error": error_msg}
 
 
+async def execute_ad_intelligence_analysis_job(job: Dict) -> Dict[str, Any]:
+    """Execute full 4-layer ad intelligence analysis in background.
+
+    Runs classify -> baselines -> diagnose -> recommend with full production
+    limits. Results stored in ad_intelligence_runs with rendered markdown.
+
+    One retry on failure (max_retries=2). On exhaustion, one-time jobs get
+    status='completed' to release dedup index. User re-triggers via agent chat.
+
+    Parameters (from job['parameters']):
+        max_new: int (default 200)
+        max_video: int (default 15)
+        days_back: int (default 30)
+        goal: str (default None)
+    """
+    job_id = job['id']
+    brand_id = job.get('brand_id')
+    brand_info = job.get('brands') or {}
+    brand_name = brand_info.get('name', 'Unknown')
+    params = job.get('parameters') or {}
+
+    logger.info(f"Starting ad intelligence analysis job for brand {brand_name}")
+
+    update_job(job_id, {"next_run_at": None})
+    run_id = create_job_run(job_id)
+    if not run_id:
+        return {"success": False, "error": "Failed to create run record"}
+
+    logs = []
+    try:
+        from uuid import UUID as _AnalysisUUID
+        from viraltracker.services.gemini_service import GeminiService
+        from viraltracker.services.ad_intelligence.ad_intelligence_service import AdIntelligenceService
+        from viraltracker.services.ad_intelligence.models import RunConfig
+
+        db = get_supabase_client()
+        brand_result = db.table("brands").select("organization_id").eq(
+            "id", str(brand_id)
+        ).limit(1).execute()
+        if not brand_result.data:
+            raise ValueError(f"Brand {brand_id} not found")
+        org_id = _AnalysisUUID(brand_result.data[0]["organization_id"])
+
+        gemini_service = GeminiService()
+        intel_service = AdIntelligenceService(db, gemini_service=gemini_service)
+
+        config = RunConfig(
+            days_back=params.get('days_back', 30),
+            max_classifications_per_run=params.get('max_new', 200),
+            max_video_classifications_per_run=params.get('max_video', 15),
+        )
+
+        logs.append(f"Running full analysis for: {brand_name}")
+        logs.append(f"Config: days_back={config.days_back}, max_new={config.max_classifications_per_run}, max_video={config.max_video_classifications_per_run}")
+
+        result = await intel_service.full_analysis(
+            brand_id=_AnalysisUUID(brand_id), org_id=org_id,
+            config=config, goal=params.get('goal'),
+        )
+
+        logs.append(f"Active ads: {result.active_ads}, Recs: {len(result.recommendations)}")
+        logs.append(f"Run ID: {result.run_id}")
+
+        update_job_run(run_id, {
+            "status": "completed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "logs": "\n".join(logs),
+            "metadata": {
+                "analysis_run_id": str(result.run_id),
+                "active_ads": result.active_ads,
+                "recommendations": len(result.recommendations),
+            },
+        })
+        _update_job_next_run(job, job_id)
+        return {"success": True, "run_id": str(result.run_id)}
+
+    except Exception as e:
+        logs.append(f"Failed: {e}")
+        logger.error(f"Ad intelligence analysis job {job.get('name', job_id)} failed: {e}")
+
+        update_job_run(run_id, {
+            "status": "failed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "error_message": str(e),
+            "logs": "\n".join(logs),
+        })
+
+        # Both one-time and recurring: use _reschedule_after_failure().
+        # One-time (max_retries=2): gets 1 retry, then exhaustion sets status='completed'
+        #   (releases dedup index so user can re-queue via agent chat).
+        # Recurring: exponential backoff, survives transient failures.
+        _reschedule_after_failure(job, job_id, get_run_attempt_number(run_id))
+
+        return {"success": False, "error": str(e)}
+
+
 async def execute_asset_download_job(job: Dict) -> Dict[str, Any]:
     """Execute a standalone asset download job.
 
@@ -2975,8 +3553,529 @@ async def run_scheduler():
     logger.info("Scheduler worker stopped")
 
 
+# ============================================================================
+# Creative Genome Jobs (Phase 6)
+# ============================================================================
+
+
+async def execute_creative_genome_update_job(job: Dict) -> Dict[str, Any]:
+    """Execute a Creative Genome update job — compute rewards and update element scores.
+
+    Runs weekly (or on-demand) to:
+    1. Find matured ads with performance data
+    2. Compute composite reward scores
+    3. Update Beta(a,b) distributions via Thompson Sampling
+    """
+    job_id = job['id']
+    job_name = job['name']
+    brand_id = job.get('brand_id')
+
+    logger.info(f"Starting Creative Genome update: {job_name}")
+
+    update_job(job_id, {"next_run_at": None})
+
+    run_id = create_job_run(job_id)
+    if not run_id:
+        logger.error(f"Failed to create run record for genome update job {job_id}")
+        return {"success": False, "error": "Failed to create run record"}
+
+    logs = []
+
+    try:
+        from viraltracker.services.creative_genome_service import CreativeGenomeService
+        from uuid import UUID
+        genome_service = CreativeGenomeService()
+
+        brand_uuid = UUID(brand_id) if brand_id else None
+        if not brand_uuid:
+            raise ValueError("brand_id is required for creative_genome_update")
+
+        # Step 1: Compute rewards for matured ads
+        logs.append("Computing rewards for matured ads...")
+        reward_result = await genome_service.compute_rewards(brand_uuid)
+        logs.append(f"New rewards computed: {reward_result.get('new_rewards', 0)}")
+
+        # Step 2: Update element scores (Thompson Sampling)
+        logs.append("Updating element scores...")
+        score_result = await genome_service.update_element_scores(brand_uuid)
+        logs.append(f"Elements updated: {score_result.get('elements_updated', 0)}")
+
+        summary = {
+            "new_rewards": reward_result.get("new_rewards", 0),
+            "elements_updated": score_result.get("elements_updated", 0),
+        }
+        logs.append(f"Genome update complete: {summary}")
+
+        update_job_run(run_id, {
+            "status": "completed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "logs": "\n".join(logs),
+            "metadata": summary,
+        })
+
+        # Reschedule for next run
+        if job.get('schedule_type') == 'recurring' and job.get('cron_expression'):
+            next_run = calculate_next_run(job['cron_expression'])
+            if next_run:
+                update_job(job_id, {"next_run_at": next_run.isoformat()})
+
+        return {"success": True, **summary}
+
+    except Exception as e:
+        logger.error(f"Creative Genome update failed: {e}")
+        logs.append(f"ERROR: {e}")
+        update_job_run(run_id, {
+            "status": "failed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "error_message": str(e),
+            "logs": "\n".join(logs),
+        })
+        _reschedule_after_failure(job, job_id, get_run_attempt_number(run_id))
+        return {"success": False, "error": str(e)}
+
+
+async def execute_genome_validation_job(job: Dict) -> Dict[str, Any]:
+    """Execute a Genome validation job — check health metrics and create alerts.
+
+    Runs weekly to validate:
+    - Approval rate, generation success rate, data freshness, winner rate
+    - Creates system_alerts when thresholds are exceeded
+    """
+    job_id = job['id']
+    job_name = job['name']
+    brand_id = job.get('brand_id')
+
+    logger.info(f"Starting Genome validation: {job_name}")
+
+    update_job(job_id, {"next_run_at": None})
+
+    run_id = create_job_run(job_id)
+    if not run_id:
+        logger.error(f"Failed to create run record for genome validation job {job_id}")
+        return {"success": False, "error": "Failed to create run record"}
+
+    logs = []
+
+    try:
+        from viraltracker.services.creative_genome_service import CreativeGenomeService
+        from uuid import UUID
+        genome_service = CreativeGenomeService()
+
+        brand_uuid = UUID(brand_id) if brand_id else None
+        if not brand_uuid:
+            raise ValueError("brand_id is required for genome_validation")
+
+        # Run validation
+        logs.append("Running genome health validation...")
+        validation_result = await genome_service.run_validation(brand_uuid)
+
+        metrics = validation_result.get("metrics", {})
+        alerts_created = validation_result.get("alerts_created", 0)
+
+        logs.append(f"Metrics: {metrics}")
+        logs.append(f"Alerts created: {alerts_created}")
+
+        # Phase 8A: Piggyback interaction detection on genome validation
+        interaction_result = None
+        try:
+            from viraltracker.services.interaction_detector_service import InteractionDetectorService
+            detector = InteractionDetectorService()
+            interaction_result = await detector.detect_interactions(brand_uuid)
+            interactions_found = len(interaction_result.get("interactions", []))
+            logs.append(f"Interaction detection: {interactions_found} interactions found "
+                        f"({interaction_result.get('total_pairs_tested', 0)} pairs tested)")
+        except Exception as ie:
+            logger.warning(f"Interaction detection failed (non-fatal): {ie}")
+            logs.append(f"Interaction detection skipped: {ie}")
+
+        # Phase 8B: Piggyback scorer weight learning on genome validation
+        weight_learning_result = None
+        try:
+            from viraltracker.services.scorer_weight_learning_service import ScorerWeightLearningService
+            learning_service = ScorerWeightLearningService()
+            learning_service.initialize_posteriors(brand_uuid)
+            weight_learning_result = await learning_service.update_scorer_posteriors(brand_uuid)
+            logs.append(f"Scorer weight learning: {weight_learning_result.get('ads_processed', 0)} ads processed, "
+                        f"{weight_learning_result.get('updates_applied', 0)} scorers updated")
+        except Exception as wle:
+            logger.warning(f"Scorer weight learning failed (non-fatal): {wle}")
+            logs.append(f"Scorer weight learning skipped: {wle}")
+
+        # Phase 8B: Piggyback whitespace identification on genome validation
+        whitespace_result = None
+        try:
+            from viraltracker.services.whitespace_identification_service import WhitespaceIdentificationService
+            ws_service = WhitespaceIdentificationService()
+            whitespace_result = await ws_service.identify_whitespace(brand_uuid)
+            logs.append(f"Whitespace identification: {whitespace_result.get('candidates_found', 0)} candidates")
+        except Exception as wse:
+            logger.warning(f"Whitespace identification failed (non-fatal): {wse}")
+            logs.append(f"Whitespace identification skipped: {wse}")
+
+        # Phase 8B: Piggyback visual clustering on genome validation
+        clustering_result = None
+        try:
+            from viraltracker.pipelines.ad_creation_v2.services.visual_clustering_service import VisualClusteringService
+            vc_service = VisualClusteringService()
+            clustering_result = await vc_service.cluster_brand_styles(brand_uuid)
+            if clustering_result.get("clusters_found", 0) > 0:
+                await vc_service.correlate_with_performance(brand_uuid)
+            logs.append(f"Visual clustering: {clustering_result.get('clusters_found', 0)} clusters, "
+                        f"{clustering_result.get('noise_count', 0)} noise")
+        except Exception as vce:
+            logger.warning(f"Visual clustering failed (non-fatal): {vce}")
+            logs.append(f"Visual clustering skipped: {vce}")
+
+        summary = {
+            "metrics": metrics,
+            "alerts_created": alerts_created,
+            "interactions_found": len(interaction_result.get("interactions", [])) if interaction_result else 0,
+            "weight_learning": weight_learning_result,
+            "whitespace": whitespace_result,
+            "clustering": clustering_result,
+        }
+
+        update_job_run(run_id, {
+            "status": "completed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "logs": "\n".join(logs),
+            "metadata": summary,
+        })
+
+        # Reschedule for next run
+        if job.get('schedule_type') == 'recurring' and job.get('cron_expression'):
+            next_run = calculate_next_run(job['cron_expression'])
+            if next_run:
+                update_job(job_id, {"next_run_at": next_run.isoformat()})
+
+        return {"success": True, **summary}
+
+    except Exception as e:
+        logger.error(f"Genome validation failed: {e}")
+        logs.append(f"ERROR: {e}")
+        update_job_run(run_id, {
+            "status": "failed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "error_message": str(e),
+            "logs": "\n".join(logs),
+        })
+        _reschedule_after_failure(job, job_id, get_run_attempt_number(run_id))
+        return {"success": False, "error": str(e)}
+
+
+async def execute_winner_evolution_job(job: Dict) -> Dict[str, Any]:
+    """Execute a Winner Evolution job — evolve winning ads into improved variants.
+
+    Phase 7A: Supports three evolution modes:
+    - winner_iteration: Change ONE element, regenerate
+    - anti_fatigue_refresh: Same psychology, fresh visual
+    - cross_size_expansion: Generate winner in untested sizes
+
+    Job parameters (in job['parameters'] JSONB):
+        parent_ad_id: UUID of the winning ad to evolve (REQUIRED)
+        evolution_mode: winner_iteration | anti_fatigue_refresh | cross_size_expansion (REQUIRED)
+        variable_override: Optional element name to force-change (winner_iteration only)
+    """
+    job_id = job['id']
+    job_name = job['name']
+    brand_id = job.get('brand_id')
+    params = job.get('parameters', {}) or {}
+
+    logger.info(f"Starting Winner Evolution job: {job_name} (ID: {job_id})")
+
+    update_job(job_id, {"next_run_at": None})
+
+    run_id = create_job_run(job_id)
+    if not run_id:
+        logger.error(f"Failed to create run record for evolution job {job_id}")
+        return {"success": False, "error": "Failed to create run record"}
+
+    logs = []
+
+    try:
+        from viraltracker.services.winner_evolution_service import WinnerEvolutionService
+        from uuid import UUID
+
+        parent_ad_id = params.get("parent_ad_id")
+        evolution_mode = params.get("evolution_mode")
+        variable_override = params.get("variable_override")
+
+        if not parent_ad_id:
+            raise ValueError("parent_ad_id is required for winner_evolution")
+        if not evolution_mode:
+            raise ValueError("evolution_mode is required for winner_evolution")
+
+        logs.append(f"Evolving ad {parent_ad_id} | mode={evolution_mode}")
+        if variable_override:
+            logs.append(f"Variable override: {variable_override}")
+
+        evolution_service = WinnerEvolutionService()
+
+        result = await evolution_service.evolve_winner(
+            parent_ad_id=UUID(parent_ad_id),
+            mode=evolution_mode,
+            variable_override=variable_override,
+            job_id=UUID(job_id),
+        )
+
+        child_count = len(result.get("child_ad_ids", []))
+        lineage_count = result.get("lineage_entries", 0)
+        logs.append(f"Generated {child_count} evolved ads")
+        logs.append(f"Recorded {lineage_count} lineage entries")
+        logs.append(f"Variable changed: {result.get('variable_changed')} "
+                     f"({result.get('old_value')} → {result.get('new_value')})")
+        logs.append(f"Iteration round: {result.get('iteration_round')}")
+
+        summary = {
+            "child_ad_ids": result.get("child_ad_ids", []),
+            "ad_run_ids": result.get("ad_run_ids", []),
+            "lineage_entries": lineage_count,
+            "mode": evolution_mode,
+            "variable_changed": result.get("variable_changed"),
+        }
+
+        update_job_run(run_id, {
+            "status": "completed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "logs": "\n".join(logs),
+            "metadata": summary,
+        })
+
+        # Reschedule if recurring
+        if job.get('schedule_type') == 'recurring' and job.get('cron_expression'):
+            next_run = calculate_next_run(job['cron_expression'])
+            if next_run:
+                update_job(job_id, {"next_run_at": next_run.isoformat()})
+
+        return {"success": True, **summary}
+
+    except Exception as e:
+        logger.error(f"Winner evolution failed: {e}")
+        logs.append(f"ERROR: {e}")
+        update_job_run(run_id, {
+            "status": "failed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "error_message": str(e),
+            "logs": "\n".join(logs),
+        })
+        _reschedule_after_failure(job, job_id, get_run_attempt_number(run_id))
+        return {"success": False, "error": str(e)}
+
+
+async def execute_experiment_analysis_job(job: Dict) -> Dict[str, Any]:
+    """Execute Bayesian analysis for running experiments.
+
+    Phase 7B: Runs daily analysis for all running/analyzing experiments for a brand.
+    Non-Meta brands are skipped with reason. One experiment failure doesn't block others.
+
+    Job parameters (in job['parameters'] JSONB):
+        experiment_id: Optional UUID — analyze specific experiment (else all running for brand)
+    """
+    job_id = job['id']
+    job_name = job['name']
+    brand_id = job.get('brand_id')
+    params = job.get('parameters', {}) or {}
+
+    logger.info(f"Starting Experiment Analysis job: {job_name} (ID: {job_id})")
+
+    update_job(job_id, {"next_run_at": None})
+
+    run_id = create_job_run(job_id)
+    if not run_id:
+        logger.error(f"Failed to create run record for experiment analysis job {job_id}")
+        return {"success": False, "error": "Failed to create run record"}
+
+    logs = []
+
+    try:
+        from viraltracker.services.experiment_service import ExperimentService
+        from uuid import UUID
+
+        svc = ExperimentService()
+
+        # Check Meta account
+        if not brand_id or not await svc.has_meta_account(UUID(brand_id)):
+            logs.append("Skipped: no_ad_account_linked")
+            update_job_run(run_id, {
+                "status": "completed",
+                "completed_at": datetime.now(PST).isoformat(),
+                "logs": "\n".join(logs),
+                "metadata": {"skipped": True, "reason": "no_ad_account_linked"},
+            })
+            if job.get('schedule_type') == 'recurring' and job.get('cron_expression'):
+                next_run = calculate_next_run(job['cron_expression'])
+                if next_run:
+                    update_job(job_id, {"next_run_at": next_run.isoformat()})
+            return {"success": True, "skipped": True, "reason": "no_ad_account_linked"}
+
+        # Get experiments to analyze
+        specific_id = params.get("experiment_id")
+        if specific_id:
+            experiments = [await svc.get_experiment(UUID(specific_id))]
+            logs.append(f"Analyzing specific experiment: {specific_id}")
+        else:
+            running = await svc.list_experiments(UUID(brand_id), status="running")
+            analyzing = await svc.list_experiments(UUID(brand_id), status="analyzing")
+            experiments = running + analyzing
+            logs.append(f"Found {len(experiments)} running/analyzing experiments")
+
+        results = []
+        for exp in experiments:
+            exp_id = exp["id"]
+            exp_name = exp.get("name", "unknown")
+            try:
+                analysis = await svc.run_analysis(UUID(exp_id))
+                decision = analysis.get("decision", "unknown")
+                logs.append(f"  {exp_name}: decision={decision}")
+                results.append({
+                    "experiment_id": exp_id,
+                    "name": exp_name,
+                    "decision": decision,
+                    "success": True,
+                })
+            except Exception as e:
+                logger.warning(f"Experiment {exp_id} analysis failed: {e}")
+                logs.append(f"  {exp_name}: ERROR - {e}")
+                results.append({
+                    "experiment_id": exp_id,
+                    "name": exp_name,
+                    "error": str(e),
+                    "success": False,
+                })
+
+        summary = {
+            "experiments_analyzed": len(results),
+            "successes": sum(1 for r in results if r.get("success")),
+            "failures": sum(1 for r in results if not r.get("success")),
+            "results": results,
+        }
+
+        update_job_run(run_id, {
+            "status": "completed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "logs": "\n".join(logs),
+            "metadata": summary,
+        })
+
+        # Reschedule if recurring
+        if job.get('schedule_type') == 'recurring' and job.get('cron_expression'):
+            next_run = calculate_next_run(job['cron_expression'])
+            if next_run:
+                update_job(job_id, {"next_run_at": next_run.isoformat()})
+
+        return {"success": True, **summary}
+
+    except Exception as e:
+        logger.error(f"Experiment analysis failed: {e}")
+        logs.append(f"ERROR: {e}")
+        update_job_run(run_id, {
+            "status": "failed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "error_message": str(e),
+            "logs": "\n".join(logs),
+        })
+        _reschedule_after_failure(job, job_id, get_run_attempt_number(run_id))
+        return {"success": False, "error": str(e)}
+
+
+async def execute_quality_calibration_job(job: Dict) -> Dict[str, Any]:
+    """Execute a Quality Calibration job — analyze overrides and propose threshold changes.
+
+    Phase 8A: Runs weekly to analyze false positive/negative rates from
+    ad_review_overrides and propose new quality_scoring_config settings.
+    Proposals require operator approval in Settings before activation.
+
+    Job parameters (in job['parameters'] JSONB):
+        window_days: Number of days to analyze (default: 30)
+    """
+    job_id = job['id']
+    job_name = job['name']
+
+    logger.info(f"Starting Quality Calibration: {job_name}")
+
+    update_job(job_id, {"next_run_at": None})
+
+    run_id = create_job_run(job_id)
+    if not run_id:
+        logger.error(f"Failed to create run record for quality calibration job {job_id}")
+        return {"success": False, "error": "Failed to create run record"}
+
+    logs = []
+
+    try:
+        from viraltracker.services.quality_calibration_service import QualityCalibrationService
+        from uuid import UUID
+
+        calibration_service = QualityCalibrationService()
+        params = job.get('parameters', {}) or {}
+        window_days = params.get('window_days', 30)
+
+        logs.append(f"Analyzing overrides (window: {window_days} days)...")
+
+        # Run calibration proposal (global — no specific org)
+        result = await calibration_service.propose_calibration(
+            organization_id=None,
+            window_days=window_days,
+            job_run_id=UUID(run_id) if run_id else None,
+        )
+
+        status = result.get("status", "unknown")
+        proposal_id = result.get("proposal_id")
+        metrics = result.get("metrics", {})
+
+        logs.append(f"Result: status={status}, proposal_id={proposal_id}")
+        logs.append(f"Metrics: overrides={metrics.get('total_overrides', 0)}, "
+                     f"fp_rate={metrics.get('false_positive_rate')}, "
+                     f"fn_rate={metrics.get('false_negative_rate')}")
+
+        if status == "proposed":
+            logs.append("Proposal created — awaiting operator review in Settings.")
+        elif status == "insufficient_evidence":
+            reason = result.get("reason", "")
+            logs.append(f"Insufficient evidence: {reason}")
+
+        summary = {
+            "status": status,
+            "proposal_id": proposal_id,
+            "total_overrides": metrics.get("total_overrides", 0),
+            "false_positive_rate": metrics.get("false_positive_rate"),
+            "false_negative_rate": metrics.get("false_negative_rate"),
+        }
+
+        update_job_run(run_id, {
+            "status": "completed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "logs": "\n".join(logs),
+            "metadata": summary,
+        })
+
+        # Reschedule for next run
+        if job.get('schedule_type') == 'recurring' and job.get('cron_expression'):
+            next_run = calculate_next_run(job['cron_expression'])
+            if next_run:
+                update_job(job_id, {"next_run_at": next_run.isoformat()})
+
+        return {"success": True, **summary}
+
+    except Exception as e:
+        logger.error(f"Quality calibration failed: {e}")
+        logs.append(f"ERROR: {e}")
+        update_job_run(run_id, {
+            "status": "failed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "error_message": str(e),
+            "logs": "\n".join(logs),
+        })
+        _reschedule_after_failure(job, job_id, get_run_attempt_number(run_id))
+        return {"success": False, "error": str(e)}
+
+
 def main():
     """Entry point for the scheduler worker."""
+    # Initialize Logfire observability (no-op if LOGFIRE_TOKEN not set)
+    from viraltracker.core.observability import setup_logfire
+    setup_logfire(service_name="viraltracker-scheduler-worker")
+
     logger.info("=" * 60)
     logger.info("Scheduler Worker")
     logger.info("=" * 60)

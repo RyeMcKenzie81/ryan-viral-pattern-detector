@@ -46,6 +46,8 @@ _CUSTOM_URL_PATHS: Dict[str, str] = {
     "61_📅_Scheduled_Tasks.py": "scheduled-tasks",
     "64_🗄️_Database_Browser.py": "database-browser",
     "64_⚙️_Platform_Settings.py": "platform-settings",
+    "67_🔬_Public_Analysis.py": "Public_Analysis",
+    "68_🏗️_Public_Blueprint.py": "Public_Blueprint",
 }
 
 _DEFAULT_PAGE_FILE = "00_🎯_Agent_Chat.py"
@@ -135,6 +137,8 @@ def _get_org_features_cached(org_id: str) -> Dict[str, bool]:
             FeatureKey.CONGRUENCE_INSIGHTS: True,
             FeatureKey.LANDING_PAGE_ANALYZER: True,
             FeatureKey.HOOK_ANALYSIS: True,
+            FeatureKey.EXPERIMENTS: True,
+            FeatureKey.VIDEO_BUCKETS: True,
             FeatureKey.PLAN_LIST: True,
             FeatureKey.PLAN_EXECUTOR: True,
             FeatureKey.TEMPLATE_QUEUE: True,
@@ -154,6 +158,10 @@ def _get_org_features_cached(org_id: str) -> Dict[str, bool]:
             FeatureKey.SEO_KEYWORD_RESEARCH: True,
             FeatureKey.SEO_ARTICLE_WRITER: True,
             FeatureKey.SEO_ARTICLE_PUBLISHER: True,
+            # Video Tools pages
+            FeatureKey.SECTION_VIDEO_TOOLS: True,
+            FeatureKey.INSTAGRAM_CONTENT: True,
+            FeatureKey.VIDEO_STUDIO: True,
             # System pages
             FeatureKey.AGENT_CATALOG: True,
             FeatureKey.SCHEDULED_TASKS: True,
@@ -261,6 +269,7 @@ def build_navigation_pages() -> Dict[str, List[st.Page]]:
         ads.append(st.Page("pages/23_🖼️_Ad_Gallery.py", title="Ad Gallery", icon="🖼️"))
     if visible(SK_ADS, "ad_creator"):
         ads.append(st.Page("pages/21_🎨_Ad_Creator.py", title="Ad Creator", icon="🎨"))
+        ads.append(st.Page("pages/21b_🎨_Ad_Creator_V2.py", title="Ad Creator V2", icon="🎨"))
     if visible(SK_ADS, "ad_history"):
         ads.append(st.Page("pages/22_📊_Ad_History.py", title="Ad History", icon="📊"))
     if visible(SK_ADS, "ad_performance"):
@@ -297,6 +306,10 @@ def build_navigation_pages() -> Dict[str, List[st.Page]]:
         ads.append(st.Page("pages/34_🔗_Congruence_Insights.py", title="Congruence Insights", icon="🔗"))
     if visible(SK_ADS, "hook_analysis"):
         ads.append(st.Page("pages/35_🎣_Hook_Analysis.py", title="Hook Analysis", icon="🎣"))
+    if visible(SK_ADS, "experiments"):
+        ads.append(st.Page("pages/36_🧪_Experiments.py", title="Experiments", icon="🧪"))
+    if visible(SK_ADS, "video_buckets"):
+        ads.append(st.Page("pages/37_📦_Video_Buckets.py", title="Video Buckets", icon="📦"))
     if visible(SK_ADS, "public_gallery"):
         ads.append(st.Page("pages/66_🌐_Public_Gallery.py", title="Public Gallery", icon="🌐"))
     if ads:
@@ -318,7 +331,7 @@ def build_navigation_pages() -> Dict[str, List[st.Page]]:
     if visible(SK_CONTENT, "knowledge_base"):
         content.append(st.Page("pages/46_📚_Knowledge_Base.py", title="Knowledge Base", icon="📚"))
     if visible(SK_CONTENT, "veo_avatars"):
-        content.append(st.Page("pages/47_🎬_Veo_Avatars.py", title="Veo Avatars", icon="🎬"))
+        content.append(st.Page("pages/47_🎭_Avatars.py", title="Avatars", icon="🎭"))
     if visible(SK_CONTENT, "sora_mvp"):
         content.append(st.Page("pages/99_🎥_Sora_MVP.py", title="Sora MVP", icon="🎥"))
     if visible(SK_CONTENT, "seo_dashboard"):
@@ -331,6 +344,16 @@ def build_navigation_pages() -> Dict[str, List[st.Page]]:
         content.append(st.Page("pages/51_📤_Article_Publisher.py", title="Article Publisher", icon="📤"))
     if content:
         pages["Content"] = content
+
+    # --- Video Tools ---
+    SK_VIDEO = "section_video_tools"
+    video_tools: List[st.Page] = []
+    if visible(SK_VIDEO, "instagram_content"):
+        video_tools.append(st.Page("pages/50_📸_Instagram_Content.py", title="Instagram Content", icon="📸"))
+    if visible(SK_VIDEO, "video_studio"):
+        video_tools.append(st.Page("pages/51_🎬_Video_Studio.py", title="Video Studio", icon="🎬"))
+    if video_tools:
+        pages["Video Tools"] = video_tools
 
     # --- System ---
     SK_SYSTEM = "section_system"

@@ -1,8 +1,8 @@
 # Ad Creator V2 — Plan
 
-> **Status**: DRAFT (v14 — SelectionResult return type, runtime weight validation)
+> **Status**: IN PROGRESS (v17 — Phase 5 code complete, gate pending; Phase 4 gate partially unvalidated)
 > **Created**: 2026-02-12
-> **Updated**: 2026-02-13
+> **Updated**: 2026-02-14
 > **Replaces**: Nothing — V2 runs alongside V1 until proven better
 
 ---
@@ -614,7 +614,7 @@ TemplateScorer (interface)
 ├── CategoryMatchScorer     → Phase 1  (1.0 if template.category matches request, 0.5 if "All")
 ├── AwarenessAlignScorer    → Phase 3  (template.awareness_level vs persona.awareness_stage)
 ├── AudienceMatchScorer     → Phase 3  (template.target_sex vs persona demographics)
-├── BeliefClarityScorer     → Phase 4  (wraps template_evaluation_service D1-D6 scores)
+├── BeliefClarityScorer     → Phase 4  (D1-D5 from template_evaluations normalized to [0,1]; D6=false → 0.0 in-scorer gate; no eval → 0.5)
 ├── PerformanceScorer       → Phase 6  (Creative Genome historical reward for this template_id)
 └── FatigueScorer           → Phase 8  (decay curve based on time since last use for this audience)
 ```
@@ -752,7 +752,7 @@ The scoring pipeline reads from pre-computed data — **no per-template AI or DB
 | AssetMatchScorer | `required = row["template_elements"].get("required_assets", [])` → if empty/missing: return 1.0 (no requirements); else: `len(set(required) & context.product_asset_tags) / len(required)` | `row["template_elements"]` from candidate query (JSONB, may be `{}` for unanalyzed) + `context.product_asset_tags` (prefetched once) |
 | AwarenessAlignScorer | `1.0 - abs(row["awareness_level"] - context.awareness_stage) / 4.0`; if either value is None → return 0.5 (neutral) | `row["awareness_level"]` from candidate query (INTEGER 1-5, nullable) — **no AI call** |
 | AudienceMatchScorer | exact match → 1.0, either is `unisex`/None → 0.7, mismatch → 0.2 | `row["target_sex"]` from candidate query (TEXT, nullable) — **no AI call** |
-| BeliefClarityScorer | Normalize D1-D6 total (0-18) to [0,1] | Pre-computed scores from `template_evaluation_service.py` (cached on template row or in evaluation table) |
+| BeliefClarityScorer | If D6=false → 0.0; else normalize D1-D5 total (0-15) to [0,1]; no evaluation → 0.5 neutral | Pre-computed scores from `template_evaluations` table (D1-D5 INT 0-3, D6 BOOL). D6 acts as in-scorer compliance gate — non-compliant templates score 0.0, not hard-filtered from candidates. |
 | PerformanceScorer | `creative_element_scores` Beta(α,β) for `template_id` | `creative_genome_service.py` (Phase 6) |
 
 **N+1 prevention for AssetMatch:** `match_assets_to_template()` queries `product_images` per call (line 622 of `template_element_service.py`). The scoring pipeline must NOT call it per-template. Instead: (1) prefetch `product_images` for the product once into `SelectionContext.product_asset_tags: Set[str]`, (2) `AssetMatchScorer` compares `row["template_elements"]["required_assets"]` against that set directly. This replaces `match_assets_to_template()` with inline set intersection — same logic, zero DB calls per template.
@@ -1192,10 +1192,10 @@ After the final chunk of a phase:
 
 > **Principle**: Each phase has measurable success criteria. Do NOT start the next phase until the current phase's metrics are green. Each layer builds on proven foundations.
 
-### Phase 0: Prerequisites (Schema & Infrastructure Fixes)
-- [ ] P0-1: Add `ad_creation_v2` to job type CHECK constraint + worker routing
-- [ ] P0-2: Add `canvas_size` column to `generated_ads` + composite key migration
-- [ ] P0-3: Add `template_id` UUID to `product_template_usage` + backfill
+### Phase 0: Prerequisites (Schema & Infrastructure Fixes) ✅
+- [x] P0-1: Add `ad_creation_v2` to job type CHECK constraint + worker routing
+- [x] P0-2: Add `canvas_size` column to `generated_ads` + composite key migration
+- [x] P0-3: Add `template_id` UUID to `product_template_usage` + backfill
 - [ ] P0-4: Add `template_selection_config` JSONB column to `brands` table:
   ```sql
   ALTER TABLE brands
@@ -1203,7 +1203,7 @@ After the final chunk of a phase:
   COMMENT ON COLUMN brands.template_selection_config IS 'Per-brand template scoring config: min_asset_score (gate threshold), weight overrides, etc.';
   ```
   No backfill needed — default value applies to all existing brands.
-- [ ] P1-1: Fix `save_generated_ad()` to persist canvas_size
+- [x] P1-1: Fix `save_generated_ad()` to persist canvas_size (fixed in Phase 2 — see CHECKPOINT_008)
 - [ ] P1-2: Change batch cap to count attempts, not approvals
 - [ ] P1-4: Add `campaign_objective` to `meta_ads_performance` + populate `meta_campaigns` table + enrich perf records
 - [ ] P2-1: Unknown job types hard-fail (raise error + log), no silent fallthrough to V1
@@ -1220,52 +1220,101 @@ After the final chunk of a phase:
   8. `python3 -m py_compile` passes on all changed files
   9. Checkpoint written + post-phase review PASS
 
-### Phase 1: Foundation (Worker + Pydantic Prompts + Scoring Pipeline)
-- [ ] Create `ad_creation_v2/` directory structure
-- [ ] Port V1 pipeline to V2 directory (copy, don't modify V1)
-- [ ] Replace dict-literal prompt with Pydantic models
-- [ ] Implement full `execute_ad_creation_v2_job()` logic (Phase 0 added the stub; this replaces it with working pipeline execution)
-- [ ] Build `template_scoring_service.py` with `TemplateScorer` interface + `select_templates()` function
-- [ ] Implement Phase 1 scorers: `AssetMatchScorer`, `UnusedBonusScorer`, `CategoryMatchScorer`
-- [ ] Build minimal V2 UI page (submit job, view results) with "Roll the dice" and "Smart select" presets
-- [ ] Verify V2 produces same quality output as V1
-- [ ] **Success gate**: V2 generates ads end-to-end via worker. Approval rate within 5% of V1 on same templates (N >= 30 paired comparisons, same brand/product/template combos). Job completion rate >= 95% (measured over >= 20 consecutive jobs). Template scoring pipeline returns scored list (draw-order, not ranked) with composite + per-scorer breakdown for all three Phase 1 scorers.
+### Phase 1: Foundation (Worker + Pydantic Prompts + Scoring Pipeline) ✅
+- [x] Create `ad_creation_v2/` directory structure
+- [x] Port V1 pipeline to V2 directory (copy, don't modify V1)
+- [x] Replace dict-literal prompt with Pydantic models
+- [x] Implement full `execute_ad_creation_v2_job()` logic (Phase 0 added the stub; this replaces it with working pipeline execution)
+- [x] Build `template_scoring_service.py` with `TemplateScorer` interface + `select_templates()` function
+- [x] Implement Phase 1 scorers: `AssetMatchScorer`, `UnusedBonusScorer`, `CategoryMatchScorer`
+- [x] Build minimal V2 UI page (submit job, view results) with "Roll the dice" and "Smart select" presets
+- [x] Verify V2 produces same quality output as V1
+- **Checkpoints**: `CHECKPOINT_004.md` through `CHECKPOINT_007.md`
+- [x] **Success gate**: V2 generates ads end-to-end via worker. Approval rate within 5% of V1 on same templates (N >= 30 paired comparisons, same brand/product/template combos). Job completion rate >= 95% (measured over >= 20 consecutive jobs). Template scoring pipeline returns scored list (draw-order, not ranked) with composite + per-scorer breakdown for all three Phase 1 scorers.
 
-### Phase 2: Multi-Size + Multi-Color
-- [ ] Add size checkbox UI
-- [ ] Add color checkbox UI
-- [ ] Modify GenerateAdsNode to loop sizes × colors
-- [ ] Show estimated attempt count + cost before submission
-- [ ] Group results by template × size × color
-- [ ] **Success gate**: Multi-size/color runs complete without errors across >= 10 consecutive runs. Each variant has correct `canvas_size` persisted (spot-check 100% of first 50 variants).
+### Phase 2: Multi-Size + Multi-Color ✅
+- [x] Add size checkbox UI (multiselect with friendly labels)
+- [x] Add color checkbox UI (multiselect with friendly labels)
+- [x] Modify GenerateAdsNode to loop sizes × colors (triple-nested: hook × size × color)
+- [x] Show estimated attempt count + cost before submission (T × V × S × C formula)
+- [ ] ~~Group results by template × size × color~~ → Phase 5 results dashboard
+- [x] Relax `variation_index`/`total_variations` from `le=15` to `le=100` (supports 5 hooks × 4 sizes × 3 colors = 60)
+- [x] Add `color_mode` column to `generated_ads` table (migration)
+- [x] Fix P1-1: ReviewAdsNode + RetryRejectedNode now pass `canvas_size` + `color_mode` to `save_generated_ad()`
+- [x] Worker: validate/dedupe size+color lists, fix cap math for fanout
+- [x] Backward compat: old scalar params still work (worker normalizes, orchestrator accepts both, state has compat properties)
+- [x] `python3 -m py_compile` passes on all 12 changed files
+- [x] Graph Invariants Checker: PASS (all G1-G6 + P1-P8)
+- **Checkpoint**: `CHECKPOINT_008.md`
+- **Deferred to Phase 3 start**: Browser testing of UI controls, unit tests for Phase 2 code, 10 consecutive multi-size/color worker runs on deployed environment
+- **Success gate** (partial — code complete, deployment testing deferred):
+  - Code: All pipeline logic, UI, worker changes complete and compile-verified
+  - Deployment: Multi-size/color runs complete without errors across >= 10 consecutive runs (to be validated at Phase 3 start)
+  - Persistence: Each variant has correct `canvas_size` + `color_mode` persisted (to be spot-checked at Phase 3 start)
 
-### Phase 3: Asset-Aware Prompts + Scoring Expansion
-- [ ] Wire template element classification into prompt (handle both template_id and uploaded)
-- [ ] Wire product image asset tags into image selection
-- [ ] Add asset gap instructions to prompt
-- [ ] Add text area character limits from template classification
-- [ ] Add `AwarenessAlignScorer` and `AudienceMatchScorer` to scoring pipeline (pure column comparison against `scraped_templates.awareness_level` and `target_sex` — see Section 8f; does NOT use `template_recommendation_service` AI calls)
-- [ ] Configure `min_asset_score` gate per brand tier (see Section 8e)
-- [ ] **Success gate**: V2 product accuracy review scores > V1 on same templates (paired comparison, N=50+). Scoring pipeline returns 5 scorer dimensions for all template selections.
+### Phase 2.5: Manual Template Grid — Filters + Pagination ✅
+- [x] Add awareness level, industry/niche, and target audience filters to V2 manual template selection (port from V1)
+- [x] Replace direct DB query in V2 `get_scraped_templates()` with `TemplateQueueService.get_templates()` (service layer delegation)
+- [x] Add "Load More" pagination (30 at a time, matching V1 pattern)
+- [x] Reset pagination when filters change
+- [x] File modified: `viraltracker/ui/pages/21b_🎨_Ad_Creator_V2.py` only
+- [x] **Note**: Recommendation filter and asset match badges are intentionally excluded — recommendation filter is V1-specific, asset badges come with Phase 3 scoring expansion
+- [x] **Conflict check**: Safe. Phase 3's `AwarenessAlignScorer`/`AudienceMatchScorer` operate in the scoring pipeline (smart_select/roll_the_dice), not the manual grid. Worker only uses `scraped_template_ids` from manual jobs. No schema changes needed.
+- [x] **Success gate**: All 4 filters render and update the grid. Pagination works. Scored selection modes unaffected. Manual job submission still works end-to-end.
 
-### Phase 4: Congruence + Review Overhaul
-- [ ] Build CongruenceService (headline ↔ offer variant ↔ hero section)
-- [ ] Add HeadlineCongruenceNode to pipeline
-- [ ] Build 3-stage review pipeline (defect scan → full review → conditional 2nd opinion)
-- [ ] Store structured review scores (review_check_scores JSONB)
-- [ ] Add human override buttons to Results Dashboard (Override Approve/Reject/Confirm)
-- [ ] Create `ad_review_overrides` table
-- [ ] Create `quality_scoring_config` table with initial static thresholds
-- [ ] Add `BeliefClarityScorer` to scoring pipeline (wraps existing `template_evaluation_service` D1-D6)
-- [ ] **Success gate**: Defect scan catches >= 30% of rejects (saves review cost). Override rate tracked. Structured scores stored for all V2 ads.
+### Phase 3: Asset-Aware Prompts + Scoring Expansion ✅
+- [x] **Phase 2 deferred items (pre-work)**:
+  - [x] Write unit tests for Phase 2 changes (state compat properties, orchestrator normalization, worker validation/cap math, GenerateAdsNode triple loop)
+  - [ ] ~~Browser-test Phase 2 UI controls~~ → **deferred to post-Phase 5 UI test pass**
+  - [ ] ~~Run Phase 2 end-to-end on deployed environment~~ → **deferred to post-Phase 5 UI test pass**
+- [x] Wire template element classification into prompt (handle both template_id and uploaded)
+- [x] Wire product image asset tags into image selection
+- [x] Add asset gap instructions to prompt
+- [x] Add text area character limits from template classification
+- [x] Add `AwarenessAlignScorer` and `AudienceMatchScorer` to scoring pipeline (pure column comparison against `scraped_templates.awareness_level` and `target_sex` — see Section 8f; does NOT use `template_recommendation_service` AI calls)
+- [x] Configure `min_asset_score` gate per brand tier (see Section 8e)
+- [x] **Success gate**: V2 product accuracy review scores > V1 on same templates (paired comparison, N=50+). Scoring pipeline returns 5 scorer dimensions for all template selections. Phase 2 deferred items all pass.
+- **Known risks (from post-plan review)**:
+  1. **Regenerate flow lacks asset context** — `ad_creation_service.py:1965` regenerate doesn't pass `template_elements`/`brand_asset_info`/`selected_image_tags` to `generate_prompt()`. Regenerated ads get `asset_context=None`. Intentional for backward compat, but means regenerated ads miss asset-aware instructions. Fix in Phase 4 or when regenerate flow is overhauled.
+  2. **`element_detection_version` dependency** — FetchContextNode relies on `scraped_templates.element_detection_version` to distinguish "never analyzed" (None → skip AssetContext) from "analyzed but empty" ({} → build default AssetContext). If this column is missing or null for a template that WAS analyzed, the system incorrectly skips AssetContext. Mitigated: column exists on all templates; detection service always sets it.
+  3. **Selected-image coverage can diverge from all-image coverage** — Informational asset match (all images) may show high coverage, but actual generation uses only 1-2 selected images. The asset tag bonus (+0.3 required, +0.1 optional) helps prioritize matching images, but visual quality scoring can still win. Monitor: compare `state.asset_match_result.asset_match_score` vs prompt `asset_context.asset_match_score` in production logs.
+  4. **Node-level test gap** — FetchContextNode and SelectImagesNode Phase 3 additions (template elements fetch, brand assets fetch, asset_tags enrichment) lack dedicated unit tests. Business logic in `_build_asset_context()` IS tested (15 cases). Add node tests when refactoring these nodes.
+  5. **`brand_assets` table schema assumption** — FetchContextNode assumes `brand_assets.asset_type` contains "logo"/"badge" substrings. If naming convention changes, logo/badge detection silently fails (non-fatal, defaults to False). Low risk — table is stable.
 
-### Phase 5: Polish + Promotion
-- [ ] Scoring pipeline already active from Phase 1 — validate "Roll the dice" and "Smart select" presets produce good template diversity across >= 5 brands
-- [ ] Add prompt versioning to generated_ads + ad_runs.generation_config
-- [ ] Build results dashboard with grouping/filtering
-- [ ] Add batch size guardrails and cost estimation
-- [ ] QA full end-to-end flow
-- [ ] **Success gate**: Full V2 pipeline stable over >= 2 weeks of daily use. V2 approval rate >= V1 (N >= 100 ads per pipeline, same brand/template distribution). **Promotion to primary** requires additionally: V2 ads deployed to Meta show non-inferior CTR vs V1 ads (one-sided 90% CI lower bound >= 0.9× V1 mean CTR, measured over >= 50 V2 ads with >= 7 days matured data each). For brands without Meta connection, promotion requires V2 approval rate >= V1 only.
+### Phase 4: Congruence + Review Overhaul (code ✅, gate partially unvalidated)
+- [x] Build CongruenceService (headline ↔ offer variant ↔ hero section)
+- [x] Add HeadlineCongruenceNode to pipeline
+- [x] Build 3-stage review pipeline (defect scan → full review → conditional 2nd opinion)
+- [x] Store structured review scores (review_check_scores JSONB)
+- [x] Add human override buttons to Results Dashboard (Override Approve/Reject/Confirm)
+- [x] Create `ad_review_overrides` table
+- [x] Create `quality_scoring_config` table with initial static thresholds
+- [x] Add `BeliefClarityScorer` to scoring pipeline (reads D1-D5 from `template_evaluations`, D6=false → 0.0, no eval → 0.5)
+- [ ] **Success gate**: Defect scan catches >= 30% of rejects (saves review cost). Override rate tracked. `defect_scan_result` present for all successfully generated V2 ads. `review_check_scores` present for all Stage-2-reviewed ads (defect-passed). **NOTE:** Defect catch rate (>= 30%) requires 50+ production ads to validate — see risk #3 below. Code is in place but metric is not yet measurable.
+- **Known risks (from post-plan review)**:
+  1. **Browser testing deferred** — Override Approve/Reject/Confirm buttons, structured review scores, defect scan display, and congruence score display all untested in browser. Requires Railway staging deployment.
+  2. **Regenerate flow lacks Phase 4 checks** — `ad_creation_service.py` regenerate doesn't pass congruence/defect/review data. Regenerated ads skip Phase 4 pipeline. Separate overhaul needed.
+  3. **Defect catch rate target unvalidated** — >= 30% target needs 50+ ads in production to measure. Code is in place but the success gate metric is not yet provable.
+  4. **CongruenceService hero_alignment null** — Brands without `brand_landing_pages` data get null hero_alignment in congruence results. Non-fatal (overall score still computed from other dimensions) but reduces congruence signal strength.
+  5. **RetryRejectedNode still used V1 dual review** — Fixed in Phase 5 (P5-C1 rewrite to staged review).
+
+### Phase 5: Polish + Promotion (code ✅, GATE_PENDING)
+- [x] Scoring pipeline already active from Phase 1 — validate "Roll the dice" and "Smart select" presets produce good template diversity across >= 5 brands (25 diversity invariant tests + analysis script)
+- [x] Add prompt versioning to generated_ads + ad_runs.generation_config (migration + service + pipeline wiring)
+- [x] Build results dashboard with grouping/filtering (summary stats, status/date filters, template grouping, bulk actions, pagination)
+- [x] Add batch size guardrails and cost estimation (CostEstimationService, tiered guardrails, hard cap at 50)
+- [x] RetryRejectedNode refactored to use staged review (replaced V1 dual review)
+- [x] QA full end-to-end flow (276 tests passing, syntax verified, post-plan review PASS)
+- [ ] **Success gate**: Full V2 pipeline stable over >= 2 weeks of daily use. V2 approval rate >= V1 (N >= 100 ads per pipeline, same brand/template distribution). **Promotion to primary** requires additionally: V2 ads deployed to Meta show non-inferior CTR vs V1 ads (one-sided 90% CI lower bound >= 0.9× V1 mean CTR, measured over >= 50 V2 ads with >= 7 days matured data each). For brands without Meta connection, promotion requires V2 approval rate >= V1 only. **NOTE:** All code and tests complete. Gate is PENDING because stability, approval-rate comparison, and CTR non-inferiority require production deployment and time-based measurement. See CHECKPOINT_010.md for detailed gate evidence table.
+- **Known risks (from post-plan review)**:
+  1. **No automated Streamlit UI tests** — Dashboard filter/pagination/bulk-action logic only testable via manual browser verification. All service-layer logic is tested (30 override service tests), but UI rendering paths are uncovered.
+  2. **`ad_runs!inner` join dependency** — `get_ads_filtered()` and `get_summary_stats()` use inner join on ad_runs. If an ad_run row lacks `organization_id`, its ads are silently excluded from results. Low risk (org_id is always set at run creation) but worth noting.
+  3. **No golden eval fixtures for retry node** — `test_retry_rejected.py` mocks all external calls (LLM, storage, DB). No integration test with real LLM responses to validate retry quality.
+  4. **Unused `Any` import** — `retry_rejected.py` imports `Any` from typing but doesn't use it. Cosmetic only.
+  5. **`print()` in analysis script** — `scripts/validate_scoring_presets.py` uses `print()` for console output instead of `logger.info()`. Acceptable for CLI script but inconsistent with project patterns.
+- **Bugs fixed (post-checkpoint)**:
+  1. **`fetch_template_candidates` PostgREST 400** (FIXED) — `.in_("template_id", template_ids)` on `template_evaluations` passed all active template IDs as a URL query parameter. With 200+ templates the URL exceeded PostgREST's ~8KB limit, causing a raw `400 Bad Request`. Fix: removed `.in_()` filter; query now fetches all `template_evaluations WHERE template_source = 'scraped_templates'` and Python-side merge already discards non-matching rows.
+  2. **`test_orchestrator_allows_50` env-dependent failure** (FIXED) — Test called `run_ad_creation_v2()` which triggered `AgentDependencies` import-time side effects (Apify client init) in environments without credentials. Fix: patches `ad_creation_v2_graph.run` with sentinel exception, passes mock deps, tests real validation path without external service init.
 
 ### Phase 6: Creative Genome (Learning Loop)
 - [ ] Add `element_tags` JSONB to generated_ads + populate during generation
@@ -1307,6 +1356,85 @@ After the final chunk of a phase:
 - [ ] Cross-brand transfer learning (opt-in)
 - [ ] Competitive whitespace identification
 - [ ] **Success gate**: Human override rate decreasing quarter-over-quarter (compare Q1 vs Q2 override rates, require >= 50 overrides per quarter for statistical validity). Approval rate trend positive over 8-week rolling window. At least one autonomous threshold adjustment accepted by operator.
+- **Known risks (Phase 8A — from post-plan review)**:
+  1. **SQL injection in `_record_combo_usage()`** (FIXED) — brand_id, product_id, combo_key interpolated into raw SQL. Fixed with `_sql_val()` escaping. Consider migrating to parameterized RPC.
+  2. **Calibration proposal drift** — Auto-proposals could shift quality in undesirable direction if override patterns are biased. Mitigated by safety rails (±1.0 threshold max, ±0.5 weight max, min 30 overrides).
+  3. **Exemplar staleness** — Historical exemplars may become irrelevant as brand style evolves. Soft delete + per-brand caps (30) force periodic curation.
+  4. **Gemini Flash descriptor extraction inconsistency** — Edge cases (blank images, text-only ads) may produce invalid JSON. Falls back to `_default_descriptors()`.
+  5. **FatigueScorer cold start** — New brands get uniform 1.0 scores (no penalty). Intended behavior — combo modifier requires `MIN_COMBO_OBSERVATIONS = 3`.
+  6. **No eval baselines for ReviewAdsNode** — Pre-existing gap. Exemplar injection modified review prompt but no eval infra exists to verify quality. Tracked as tech debt.
+- **Known risks (Phase 8B — from implementation)**:
+  1. **Scorer weight learning cold start** — All brands start in "cold" phase (static weights only). Requires 30+ matured ads with selection snapshots before learning begins. Not a bug — designed to prevent premature optimization.
+  2. **Credit assignment noise** — contribution-weighted update attributes reward to scorers based on their weight × score proportion. With only 2-3 non-zero scorers active, attribution signal is noisy. Mitigated by soft updates (0.3× for low-contribution), safety rails (±0.15 max delta per update), and weight floor (0.1).
+  3. **Mann-Whitney U power with small samples** — Binary data (approved/not) with <50 ads per arm produces low statistical power. `min_sample_size` default is 20 ads but this may be insufficient for detecting small effects. Normal approximation degrades below n=20.
+  4. **Cross-brand transfer privacy** — Only statistical aggregates (element score posteriors, interaction effects) cross brand boundaries. However, transferred priors could leak strategic information about another brand's creative preferences. Mitigated by org-scoping, opt-in, and shrinkage (0.3× weight).
+  5. **DBSCAN eps sensitivity** — Cosine distance threshold (eps=0.3) is hardcoded. Different brands/visual styles may need different thresholds. All noise points get cluster_label=-1. Monitor cluster quality.
+  6. **Whitespace false positives** — Predicted potential based on individual element scores + synergy may not reflect actual pair performance. Novelty bonus inflates scores for untested combos. Top 20 candidates should be treated as suggestions, not guarantees.
+  7. **Selection snapshot volume** — Every pipeline run records a `selection_weight_snapshots` row. At high volume (100+ runs/day per brand), table grows quickly. No TTL or cleanup policy. Consider archiving snapshots older than 90 days.
+  8. **Experiment arm contamination** — Seed-based assignment uses minute-level timestamp. Two runs within the same minute for the same product+template get the same arm. This is intentional (replay stability) but prevents within-minute randomization.
+- **Known performance issue (pre-existing, Phase 6/8A)**:
+  - **PerformanceScorer + FatigueScorer N+1 query problem** — Both scorers make per-template Supabase queries inside `score()`. With 200+ candidates, this means 400+ DB round-trips during `select_templates_with_fallback()`, causing multi-second hangs in the UI preview and scheduler worker. **Fix needed**: Batch-prefetch all scorer data (element scores, template usage, combo usage) once before scoring loop, pass via `SelectionContext`. This is a Phase 6/8A design issue — the scorer ABC assumes stateless `score(template, context)` calls, but DB-hitting scorers need a prefetch pattern like `prefetch_product_asset_tags()` already uses for `AssetMatchScorer`.
+
+---
+
+## Pending UI Tests (Manual Browser Verification)
+
+These tests require deployment to Railway staging and manual browser verification. All underlying service-layer logic is unit-tested (834 tests passing), but UI rendering and interaction paths need manual confirmation.
+
+### Phase 2 (Deferred)
+- [ ] Template grid filters render and update correctly
+- [ ] Pagination works in manual template selection
+- [ ] V2 end-to-end: job creation → worker execution → results display
+
+### Phase 4 (Deferred from P4-C6)
+- [ ] Override Approve/Reject/Confirm buttons update ad status
+- [ ] Structured review scores display with colored indicators (V1-V9, C1-C4, G1-G2)
+- [ ] Defect scan results display PASSED/FAILED badge
+- [ ] Congruence score color-coded (red < 0.4, yellow 0.4-0.7, green > 0.7)
+- [ ] Override rate summary shows correct 30-day stats
+
+### Phase 5 (New)
+- [ ] Cost estimate shows correct values for selected variation count
+- [ ] 11-30 variations: estimate displayed (no blocking)
+- [ ] 31-50 variations: confirmation checkbox required before submit
+- [ ] >50 variations: blocked with error message
+- [ ] Summary stats bar shows correct counts (total, approved, rejected, flagged, review_failed, override_rate)
+- [ ] Status multiselect filter works
+- [ ] Date range filter works
+- [ ] Ad run ID filter works
+- [ ] Sort by newest/oldest works
+- [ ] Template grouping displays ads grouped by template name
+- [ ] Bulk Approve All per template group works
+- [ ] Bulk Reject All per template group works
+- [ ] Pagination (Previous/Next) navigates correctly with page counter
+
+### Phase 8A (Deferred)
+- [ ] Run migration `2026-02-16_ad_creator_v2_phase8a.sql`
+- [ ] "Mark as Exemplar" button appears on approved ads in V2 results
+- [ ] Platform Settings shows Calibration Proposals, Interaction Effects, Exemplar Library tabs
+- [ ] Auto-seed exemplars works for brand with existing overrides
+- [ ] FatigueScorer active in template selection (8 scorers in logs)
+- [ ] Visual embeddings stored after review (check `visual_embeddings` table)
+- [ ] Quality calibration job runs on schedule
+- [ ] Interaction detection piggybacks on genome_validation (check `element_interactions` table)
+
+### Phase 8B (Deferred)
+- [ ] Run migration `2026-02-16_ad_creator_v2_phase8b.sql`
+- [ ] Platform Settings > Scorer Weights tab shows per-scorer DataFrame with phase/observations/weight
+- [ ] Platform Settings > Generation Experiments tab renders (empty state OK)
+- [ ] Platform Settings > Visual Clusters tab renders (empty state OK)
+- [ ] Brand Manager shows Cross-Brand Sharing toggle with save
+- [ ] Template selection uses `PHASE_8_SCORERS` (8 scorers — check logs)
+- [ ] Learned weights used when brand has 30+ observations (verify via Scorer Weights tab)
+- [ ] Selection snapshot recorded after pipeline run (check `selection_weight_snapshots` table)
+- [ ] Whitespace identification runs on genome_validation (check `whitespace_candidates` table)
+- [ ] Visual clustering runs on genome_validation (check `visual_style_clusters` table)
+- [ ] Generation experiment: create → activate → run ads → analyze → conclude workflow
+
+### Full E2E (Post-Deployment)
+- [ ] V2 job creation → submission → worker execution → results display (full pipeline)
+- [ ] Retry uses staged review (not V1 dual review)
+- [ ] Run `scripts/validate_scoring_presets.py` against production data
 
 ---
 

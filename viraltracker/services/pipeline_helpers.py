@@ -119,6 +119,7 @@ def queue_one_time_job(
     parameters: Optional[Dict[str, Any]] = None,
     trigger_source: str = "manual",
     name: Optional[str] = None,
+    max_retries: int = 3,
 ) -> Optional[str]:
     """Queue a one-time job for immediate execution.
 
@@ -132,6 +133,7 @@ def queue_one_time_job(
         parameters: Optional job-specific parameters
         trigger_source: 'manual' or 'api' (default: 'manual')
         name: Optional display name
+        max_retries: Max retry attempts on failure (default: 3)
 
     Returns:
         Job ID string, or None on failure.
@@ -151,6 +153,7 @@ def queue_one_time_job(
             "schedule_type": "one_time",
             "next_run_at": now,
             "max_runs": 1,
+            "max_retries": max_retries,
             "status": "active",
             "parameters": parameters or {},
             "trigger_source": trigger_source,

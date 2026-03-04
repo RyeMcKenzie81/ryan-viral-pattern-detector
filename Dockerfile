@@ -2,6 +2,8 @@ FROM python:3.11-slim
 
 # Prevent Python from writing bytecode (.pyc files)
 ENV PYTHONDONTWRITEBYTECODE=1
+# Playwright browser cache location
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
 WORKDIR /app
 
@@ -17,6 +19,10 @@ ARG CACHE_BUST=2024121801
 # Install Python dependencies
 COPY requirements.txt .
 RUN echo "Cache bust: $CACHE_BUST" && pip install --no-cache-dir -r requirements.txt
+
+# Install Playwright Chromium + system dependencies
+# --with-deps installs libnss3, libatk, libgbm, etc. automatically
+RUN playwright install --with-deps chromium
 
 # Copy application code
 COPY . .

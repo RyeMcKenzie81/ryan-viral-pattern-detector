@@ -49,6 +49,11 @@ class Config:
     META_GRAPH_API_TOKEN: str = os.getenv('META_GRAPH_API_TOKEN', '')
     META_AD_ACCOUNT_ID: str = os.getenv('META_AD_ACCOUNT_ID', '')  # e.g., "act_123456789"
 
+    # Kling AI (native API at api-singapore.klingai.com)
+    KLING_ACCESS_KEY: str = os.getenv('KLING_ACCESS_KEY', '')
+    KLING_SECRET_KEY: str = os.getenv('KLING_SECRET_KEY', '')
+    KLING_MAX_CONCURRENT: int = int(os.getenv('KLING_MAX_CONCURRENT', '3'))
+
     # Scraping defaults
     DEFAULT_DAYS_BACK: int = int(os.getenv('DAYS_BACK', '120'))
     DEFAULT_CONCURRENCY: int = int(os.getenv('CONCURRENCY', '5'))
@@ -119,6 +124,18 @@ class Config:
         "sora_video_seconds": 0.10,
         # Audio/TTS (per character)
         "elevenlabs_characters": 0.00003,
+        # Kling AI video generation
+        "kling_avatar_std_seconds": 0.052,     # per second
+        "kling_avatar_pro_seconds": 0.104,     # per second
+        "kling_video_std_5s": 0.20,            # per 5s clip
+        "kling_video_pro_5s": 0.33,            # per 5s clip
+        "kling_lip_sync": 0.10,               # per task (estimate)
+        "kling_multi_shot": 0.05,             # per task (estimate)
+        # Kling Omni Video (3.0) — per second, official pricing
+        "kling_omni_std_seconds": 0.084,        # 720p, no audio
+        "kling_omni_std_audio_seconds": 0.112,  # 720p, with audio
+        "kling_omni_pro_seconds": 0.112,        # 1080p, no audio
+        "kling_omni_pro_audio_seconds": 0.14,   # 1080p, with audio
     }
 
     @classmethod
