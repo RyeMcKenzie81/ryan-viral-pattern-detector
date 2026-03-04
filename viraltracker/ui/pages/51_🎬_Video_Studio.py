@@ -72,6 +72,19 @@ def _run_async(coro):
         return asyncio.run(coro)
 
 
+def _sync_scene_from_selected_generation(scene):
+    """Sync top-level scene fields from the selected generation entry."""
+    idx = scene.get("selected_generation_idx")
+    gens = scene.get("generations", [])
+    if idx is not None and 0 <= idx < len(gens):
+        gen = gens[idx]
+        scene["status"] = gen["status"]
+        scene["generation_id"] = gen["generation_id"]
+        scene["kling_task_id"] = gen["kling_task_id"]
+        scene["video_storage_path"] = gen["video_storage_path"]
+        scene["error"] = gen.get("error")
+
+
 def format_number(n) -> str:
     """Format large numbers."""
     if n is None:
@@ -760,17 +773,85 @@ with tab_manual:
             key="vs_manual_frame_prompt",
             height=120,
         )
+
+        # Collapsible reference image section
+        ref_bytes_for_frame = None
+        with st.expander("Add reference image"):
+            _gallery_for_ref = st.session_state.vs_manual_frame_gallery
+            ref_source_options = ["Upload"]
+            if _gallery_for_ref:
+                ref_source_options.append("From Gallery")
+            ref_source = st.radio(
+                "Source",
+                ref_source_options,
+                horizontal=True,
+                key="vs_frame_ref_source",
+            )
+
+            if ref_source == "Upload":
+                uploaded = st.file_uploader(
+                    "Reference image",
+                    type=["png", "jpg", "jpeg", "webp"],
+                    key="vs_frame_ref_upload",
+                    help="Max 10 MB",
+                )
+                if uploaded is not None:
+                    if uploaded.size > 10 * 1024 * 1024:
+                        st.warning("File exceeds 10 MB limit.")
+                    else:
+                        ref_bytes_for_frame = uploaded.getvalue()
+                        st.session_state.vs_manual_ref_bytes = ref_bytes_for_frame
+                elif "vs_manual_ref_bytes" in st.session_state:
+                    ref_bytes_for_frame = st.session_state.vs_manual_ref_bytes
+
+            elif ref_source == "From Gallery" and _gallery_for_ref:
+                ref_gallery_options = [
+                    f"#{i+1}: {f.get('prompt', '')[:30]}..."
+                    for i, f in enumerate(_gallery_for_ref)
+                ]
+                ref_gallery_idx = st.selectbox(
+                    "Gallery frame",
+                    range(len(ref_gallery_options)),
+                    format_func=lambda i: ref_gallery_options[i],
+                    key="vs_frame_ref_gallery_idx",
+                )
+                ref_frame = _gallery_for_ref[ref_gallery_idx]
+                ref_url = ref_frame.get("signed_url", "")
+                if ref_url:
+                    st.image(ref_url, width=120)
+                # Download bytes on generate (deferred to button handler below)
+
+            st.caption(
+                "Reference guides visual consistency — style, composition, "
+                "and background elements."
+            )
+
         if st.button("Generate Frame", disabled=not frame_prompt.strip()):
             with st.spinner("Generating keyframe image via Gemini..."):
                 try:
+                    # If gallery ref selected, download bytes now
+                    actual_ref_bytes = ref_bytes_for_frame
+                    if (
+                        st.session_state.get("vs_frame_ref_source") == "From Gallery"
+                        and _gallery_for_ref
+                        and actual_ref_bytes is None
+                    ):
+                        ref_idx = st.session_state.get("vs_frame_ref_gallery_idx", 0)
+                        ref_frame = _gallery_for_ref[ref_idx]
+                        svc = get_manual_video_service()
+                        actual_ref_bytes = _run_async(svc.download_frame_image(ref_frame))
+
                     svc = get_manual_video_service()
                     result = _run_async(svc.generate_frame(
                         brand_id=brand_id,
                         prompt=frame_prompt.strip(),
                         avatar_id=manual_avatar_id,
                         aspect_ratio=manual_aspect,
+                        reference_image_bytes=actual_ref_bytes,
                     ))
                     st.session_state.vs_manual_frame_gallery.append(result)
+                    # Clear stored ref bytes
+                    st.session_state.pop("vs_manual_ref_bytes", None)
                     st.success("Frame generated!")
                     st.rerun()
                 except Exception as e:
@@ -891,15 +972,36 @@ with tab_manual:
                     key=f"vs_scene_quick_{scene['id']}",
                     placeholder="Generate a frame...",
                 )
+                # "Use start frame as reference" checkbox
+                use_start_as_ref = False
+                if scene.get("start_frame_id"):
+                    start_frame_obj = next(
+                        (f for f in gallery if f["id"] == scene["start_frame_id"]), None
+                    )
+                    if start_frame_obj:
+                        ref_url = start_frame_obj.get("signed_url", "")
+                        if ref_url:
+                            st.image(ref_url, width=80)
+                        use_start_as_ref = st.checkbox(
+                            "Use start frame as reference",
+                            key=f"vs_scene_qf_ref_{scene['id']}",
+                        )
+
                 if st.button("Add Frame", key=f"vs_scene_qf_{scene['id']}", disabled=not quick_prompt.strip()):
                     with st.spinner("Generating..."):
                         try:
                             svc = get_manual_video_service()
+                            qf_ref_bytes = None
+                            if use_start_as_ref and start_frame_obj:
+                                qf_ref_bytes = _run_async(svc.download_frame_image(start_frame_obj))
+                                if qf_ref_bytes is None:
+                                    st.warning("Could not download start frame for reference. Generating without it.")
                             result = _run_async(svc.generate_frame(
                                 brand_id=brand_id,
                                 prompt=quick_prompt.strip(),
                                 avatar_id=manual_avatar_id,
                                 aspect_ratio=manual_aspect,
+                                reference_image_bytes=qf_ref_bytes,
                             ))
                             st.session_state.vs_manual_frame_gallery.append(result)
                             st.success("Frame added to gallery!")
@@ -909,6 +1011,53 @@ with tab_manual:
 
                 if scene.get("error"):
                     st.error(scene["error"])
+
+            # ---- Version Selector (shown when > 1 generation) ----
+            gens = scene.get("generations", [])
+            if len(gens) > 1:
+                is_any_generating = any(g["status"] == "generating" for g in gens)
+                version_labels = []
+                for vi, g in enumerate(gens):
+                    ts = ""
+                    if g.get("created_at"):
+                        try:
+                            ts = datetime.fromisoformat(g["created_at"]).strftime("%H:%M")
+                        except Exception:
+                            ts = ""
+                    suffix = ""
+                    if g["status"] == "failed":
+                        suffix = " [failed]"
+                    elif g["status"] == "generating":
+                        suffix = " [generating...]"
+                    version_labels.append(f"v{vi+1} {ts}{suffix}")
+
+                radio_key = f"vs_scene_gen_select_{scene['id']}"
+                current_idx = scene.get("selected_generation_idx", len(gens) - 1) or 0
+                # Pre-seed session state key to prevent stale state
+                if radio_key not in st.session_state:
+                    st.session_state[radio_key] = version_labels[current_idx] if current_idx < len(version_labels) else version_labels[-1]
+
+                chosen_label = st.radio(
+                    "Versions",
+                    version_labels,
+                    index=current_idx if current_idx < len(version_labels) else len(version_labels) - 1,
+                    horizontal=True,
+                    key=radio_key,
+                    disabled=is_any_generating,
+                )
+                chosen_idx = version_labels.index(chosen_label) if chosen_label in version_labels else current_idx
+                if chosen_idx != scene.get("selected_generation_idx"):
+                    scene["selected_generation_idx"] = chosen_idx
+                    _sync_scene_from_selected_generation(scene)
+                    status = scene.get("status", "draft")  # Refresh for preview/buttons below
+
+                # Show prompt diff if selected version used different prompt
+                sel_gen = gens[chosen_idx] if chosen_idx < len(gens) else None
+                if sel_gen and sel_gen.get("prompt_used") and sel_gen["prompt_used"] != scene.get("prompt", ""):
+                    with st.expander("Prompt used for this version"):
+                        st.text(sel_gen["prompt_used"])
+
+                st.caption(f"{len(gens)} version(s) generated")
 
             # Video preview for completed scenes
             if status == "succeed" and scene.get("video_storage_path"):
@@ -921,7 +1070,9 @@ with tab_manual:
                     )
                     preview_url = signed.get("signedURL", "") if isinstance(signed, dict) else ""
                     if preview_url:
-                        st.video(preview_url)
+                        vid_col, _ = st.columns([1, 2])
+                        with vid_col:
+                            st.video(preview_url)
                     else:
                         st.caption(f"Video at: {storage_path[:50]}...")
 
@@ -938,14 +1089,16 @@ with tab_manual:
                         st.rerun()
 
             with col_regen:
+                # Guard: disable if a generation is already in progress for this scene
+                has_generating = any(
+                    g["status"] == "generating"
+                    for g in scene.get("generations", [])
+                )
                 if status in ("succeed", "failed") and st.button(
-                    "Regenerate", key=f"vs_regen_scene_{scene['id']}"
+                    "New Version", key=f"vs_regen_scene_{scene['id']}",
+                    disabled=has_generating,
                 ):
                     scene["status"] = "generating"
-                    scene["generation_id"] = None
-                    scene["kling_task_id"] = None
-                    scene["video_storage_path"] = None
-                    scene["error"] = None
                     st.rerun()
 
             with col_rm:
@@ -958,6 +1111,29 @@ with tab_manual:
     # Handle scene generation (runs after rerun with status=generating)
     for scene in st.session_state.vs_manual_scenes:
         if scene.get("status") == "generating":
+            # Ensure generations list exists
+            if "generations" not in scene:
+                scene["generations"] = []
+
+            # Guard: don't create duplicate entry if one is already "generating"
+            gens = scene["generations"]
+            already_generating = any(g["status"] == "generating" for g in gens)
+            if not already_generating:
+                entry = {
+                    "generation_id": None,
+                    "kling_task_id": None,
+                    "video_storage_path": None,
+                    "status": "generating",
+                    "error": None,
+                    "created_at": datetime.now().isoformat(),
+                    "prompt_used": scene.get("prompt", ""),
+                    "dialogue_used": scene.get("dialogue", ""),
+                }
+                gens.append(entry)
+                scene["selected_generation_idx"] = len(gens) - 1
+            else:
+                entry = next(g for g in gens if g["status"] == "generating")
+
             scene_avatar = scene.get("avatar_override_id") or manual_avatar_id
             with st.spinner(f"Generating scene video (this may take 5-10 minutes)..."):
                 try:
@@ -971,14 +1147,17 @@ with tab_manual:
                         mode=manual_mode,
                         aspect_ratio=manual_aspect,
                     ))
-                    scene["status"] = result.get("status", "failed")
-                    scene["generation_id"] = result.get("generation_id")
-                    scene["kling_task_id"] = result.get("kling_task_id")
-                    scene["video_storage_path"] = result.get("video_storage_path")
-                    scene["error"] = result.get("error_message")
+                    # Update entry in-place
+                    entry["status"] = result.get("status", "failed")
+                    entry["generation_id"] = result.get("generation_id")
+                    entry["kling_task_id"] = result.get("kling_task_id")
+                    entry["video_storage_path"] = result.get("video_storage_path")
+                    entry["error"] = result.get("error_message")
                 except Exception as e:
-                    scene["status"] = "failed"
-                    scene["error"] = str(e)
+                    entry["status"] = "failed"
+                    entry["error"] = str(e)
+            # Sync top-level fields from selected generation
+            _sync_scene_from_selected_generation(scene)
             st.rerun()
 
     # Add Scene controls
@@ -1006,6 +1185,8 @@ with tab_manual:
             "kling_task_id": None,
             "video_storage_path": None,
             "error": None,
+            "generations": [],
+            "selected_generation_idx": None,
         }
 
         if inherit_prev and scenes:
@@ -1015,6 +1196,7 @@ with tab_manual:
             new_scene["end_frame_id"] = prev.get("end_frame_id")
             new_scene["avatar_override_id"] = prev.get("avatar_override_id")
             new_scene["duration"] = prev.get("duration", 5)
+            # NOTE: generations and selected_generation_idx are intentionally NOT inherited
 
         st.session_state.vs_manual_scenes.append(new_scene)
         st.rerun()
@@ -1043,6 +1225,23 @@ with tab_manual:
             if st.button(f"Generate All ({len(draft_scenes)} draft)"):
                 progress = st.progress(0)
                 for i, scene in enumerate(draft_scenes):
+                    # Ensure generations list exists
+                    if "generations" not in scene:
+                        scene["generations"] = []
+
+                    entry = {
+                        "generation_id": None,
+                        "kling_task_id": None,
+                        "video_storage_path": None,
+                        "status": "generating",
+                        "error": None,
+                        "created_at": datetime.now().isoformat(),
+                        "prompt_used": scene.get("prompt", ""),
+                        "dialogue_used": scene.get("dialogue", ""),
+                    }
+                    scene["generations"].append(entry)
+                    scene["selected_generation_idx"] = len(scene["generations"]) - 1
+
                     scene_avatar = scene.get("avatar_override_id") or manual_avatar_id
                     st.caption(f"Generating scene {i+1}/{len(draft_scenes)}...")
                     try:
@@ -1056,14 +1255,15 @@ with tab_manual:
                             mode=manual_mode,
                             aspect_ratio=manual_aspect,
                         ))
-                        scene["status"] = result.get("status", "failed")
-                        scene["generation_id"] = result.get("generation_id")
-                        scene["kling_task_id"] = result.get("kling_task_id")
-                        scene["video_storage_path"] = result.get("video_storage_path")
-                        scene["error"] = result.get("error_message")
+                        entry["status"] = result.get("status", "failed")
+                        entry["generation_id"] = result.get("generation_id")
+                        entry["kling_task_id"] = result.get("kling_task_id")
+                        entry["video_storage_path"] = result.get("video_storage_path")
+                        entry["error"] = result.get("error_message")
                     except Exception as e:
-                        scene["status"] = "failed"
-                        scene["error"] = str(e)
+                        entry["status"] = "failed"
+                        entry["error"] = str(e)
+                    _sync_scene_from_selected_generation(scene)
                     progress.progress((i + 1) / len(draft_scenes))
                 st.rerun()
         else:
@@ -1100,7 +1300,9 @@ with tab_manual:
     if final and final.get("signed_url"):
         st.markdown("---")
         st.markdown("#### Final Video")
-        st.video(final["signed_url"])
+        vid_col, _ = st.columns([1, 1])
+        with vid_col:
+            st.video(final["signed_url"])
         st.caption(
             f"Duration: {final.get('duration_sec', '?')}s | "
             f"Path: {final.get('final_video_path', '')}"
