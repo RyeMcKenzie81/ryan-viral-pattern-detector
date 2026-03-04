@@ -49,6 +49,7 @@ class ManualVideoService:
         prompt: str,
         avatar_id: Optional[str] = None,
         aspect_ratio: str = "9:16",
+        reference_image_bytes: Optional[bytes] = None,
     ) -> Dict[str, Any]:
         """
         Generate a keyframe image using Gemini with optional avatar reference.
@@ -61,24 +62,30 @@ class ManualVideoService:
             prompt: Image generation prompt
             avatar_id: Optional avatar UUID for reference consistency
             aspect_ratio: Target aspect ratio ("9:16", "16:9", "1:1")
+            reference_image_bytes: Optional raw image bytes to use as visual reference
 
         Returns:
             Dict with id, storage_path, signed_url, prompt, created_at
         """
+        import base64
         from .avatar_service import AvatarService
         from .gemini_service import GeminiService
 
         avatar_svc = AvatarService()
         gemini_svc = GeminiService()
 
-        # Collect avatar reference images for consistency
-        ref_images_b64 = None
+        # Collect reference images (avatar + user-provided)
+        ref_images_b64 = []
         if avatar_id:
-            import base64
             from uuid import UUID
             ref_bytes = await avatar_svc.get_reference_image_bytes(UUID(avatar_id), slot=1)
             if ref_bytes:
-                ref_images_b64 = [base64.b64encode(ref_bytes).decode("utf-8")]
+                ref_images_b64.append(base64.b64encode(ref_bytes).decode("utf-8"))
+        if reference_image_bytes:
+            ref_images_b64.append(base64.b64encode(reference_image_bytes).decode("utf-8"))
+
+        # Pass None if empty
+        final_refs = ref_images_b64 if ref_images_b64 else None
 
         # Add aspect ratio instruction to prompt so Gemini generates the right shape
         w, h = self.ASPECT_RATIO_DIMENSIONS.get(aspect_ratio, (1080, 1920))
@@ -91,13 +98,12 @@ class ManualVideoService:
         # Generate via Gemini
         result_b64 = await gemini_svc.generate_image(
             prompt=ratio_prompt,
-            reference_images=ref_images_b64,
+            reference_images=final_refs,
             temperature=0.4,
             image_size="2K",
         )
 
         # Decode to bytes
-        import base64
         if isinstance(result_b64, dict):
             image_bytes = base64.b64decode(result_b64["image_base64"])
         else:
@@ -428,6 +434,34 @@ class ManualVideoService:
             "total_estimated_cost": round(total_cost, 4),
             "total_duration_sec": total_duration,
         }
+
+    async def download_frame_image(self, frame: Dict[str, Any]) -> Optional[bytes]:
+        """
+        Download a frame image's raw bytes from Supabase storage.
+
+        Args:
+            frame: Frame dict from generate_frame() with storage_path
+
+        Returns:
+            Image bytes, or None if download fails
+        """
+        storage_path = frame.get("storage_path", "")
+        if not storage_path:
+            return None
+
+        parts = storage_path.split("/", 1)
+        if len(parts) != 2:
+            return None
+        bucket, path = parts
+
+        try:
+            data = await asyncio.to_thread(
+                lambda: self.supabase.storage.from_(bucket).download(path)
+            )
+            return data
+        except Exception as e:
+            logger.warning(f"Failed to download frame image {storage_path}: {e}")
+            return None
 
     # =========================================================================
     # Private helpers
