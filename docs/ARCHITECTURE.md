@@ -1,7 +1,7 @@
 # ViralTracker Architecture
 
-**Version**: 4.0.0 (Multi-Tenant Auth Complete)
-**Last Updated**: 2026-01-28
+**Version**: 5.0.0 (SEO Content Pipeline)
+**Last Updated**: 2026-03-03
 
 ## Table of Contents
 1. [System Overview](#system-overview)
@@ -226,6 +226,60 @@ Step 3: Export to CSV (<1 min, $0)
 - **Scalability**: Add new platforms without changing orchestrator
 - **Tool Organization**: Tools grouped by platform/domain
 - **Performance**: Smaller system prompts per agent
+
+## SEO Content Pipeline
+
+The SEO pipeline is a 7-phase content workflow built on Pydantic-Graph with human checkpoint pauses.
+
+### Architecture
+```
+viraltracker/services/seo_pipeline/
+├── models.py              # Pydantic models (SEOKeyword, CompetitorMetrics, etc.)
+├── state.py               # Pipeline state dataclass with serialization
+├── orchestrator.py        # Pydantic-Graph definition (12 nodes)
+├── prompts/               # Phase A/B/C prompt templates
+├── nodes/                 # 12 thin graph nodes (delegate to services)
+│   ├── keyword_discovery.py, keyword_selection.py
+│   ├── competitor_analysis.py
+│   ├── content_generation.py (phases A/B/C)
+│   ├── article_review.py, qa_publish.py
+│   └── interlinking.py
+└── services/              # 9 business logic services
+    ├── seo_project_service.py       # Project + author CRUD
+    ├── keyword_discovery_service.py # Google Autocomplete keyword discovery
+    ├── competitor_analysis_service.py # SERP page scraping + analysis (Firecrawl)
+    ├── content_generation_service.py  # 3-phase AI article generation (Anthropic)
+    ├── qa_validation_service.py       # 10+ automated QA checks
+    ├── cms_publisher_service.py       # Shopify publishing + auto token refresh
+    ├── interlinking_service.py        # Jaccard similarity link suggestions
+    ├── article_tracking_service.py    # Article lifecycle state machine
+    └── seo_analytics_service.py       # Ranking tracking + dashboards
+```
+
+### Pipeline Phases
+1. **Keyword Discovery** — Google Autocomplete variations, cross-seed frequency
+2. **Keyword Selection** — Human checkpoint: approve/reject/rediscover
+3. **Competitor Analysis** — Scrape top SERP results, extract 20+ metrics, compute winning formula
+4. **Content Generation** — 3-phase AI writing (A: Research/Outline, B: Write, C: SEO Optimize)
+5. **QA + Publish** — Automated validation (word count, readability, schema, etc.) + Shopify CMS
+6. **Interlinking** — Jaccard similarity link suggestions between project articles
+7. **Analytics** — Keyword ranking tracking, project dashboards
+
+### Human Checkpoints
+The pipeline pauses at 4 points for human review:
+- Keyword selection (approve discovered keywords)
+- Outline review (approve Phase A output)
+- Article review (approve final article)
+- QA approval (approve/override QA results)
+
+### Database Tables (9 tables)
+`seo_projects`, `seo_authors`, `seo_clusters`, `seo_keywords`, `seo_articles`, `seo_competitor_analyses`, `seo_article_rankings`, `seo_internal_links`, `brand_integrations`
+
+### UI Pages
+- `48_🔍_SEO_Dashboard.py` — Project overview and status
+- `49_🔑_Keyword_Research.py` — Keyword discovery and selection
+- `50_✍️_Article_Writer.py` — Content generation workflow
+- `51_📤_Article_Publisher.py` — Publishing and analytics
 
 ### Migration from Registry Pattern
 - **Before**: Centralized `tools_registered.py` + `@tool_registry.register()`
