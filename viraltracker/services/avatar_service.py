@@ -781,10 +781,13 @@ Requirements:
     async def generate_calibration_video(
         self, avatar_id: UUID, organization_id: str, brand_id: str
     ) -> dict:
-        """Generate an 8-second calibration video from the avatar's frontal image.
+        """Generate an 8-second calibration video from the avatar's image element.
 
         Uses Kling Omni-Video to create a comprehensive all-angle showcase
         with natural speech, suitable for creating a video element with voice.
+        If the avatar has a Kling image element (created from all reference images),
+        it is used via element_list for better angle consistency. Otherwise falls
+        back to using the frontal image as first_frame.
 
         Args:
             avatar_id: Avatar UUID.
@@ -795,13 +798,11 @@ Requirements:
             Dict with calibration_video_path and signed_url.
 
         Raises:
-            ValueError: If avatar has no frontal image.
+            ValueError: If avatar has no element and no frontal image.
         """
         avatar = await self.get_avatar(avatar_id)
         if not avatar:
             raise ValueError(f"Avatar {avatar_id} not found")
-        if not avatar.reference_image_1:
-            raise ValueError(f"Avatar {avatar_id} has no frontal image (slot 1)")
 
         # Resolve org_id for superuser mode
         if organization_id == "all":
@@ -817,21 +818,38 @@ Requirements:
             except Exception as e:
                 raise ValueError(f"Failed to resolve org_id from brand {brand_id}: {e}")
 
-        # Get signed URL for frontal image
-        frontal_url = await self.get_reference_image_url(avatar_id, 1)
-        if not frontal_url:
-            raise ValueError(f"Failed to get frontal image URL for avatar {avatar_id}")
-
-        calibration_prompt = (
-            "Close-up of the person's face, looking directly at camera, speaking naturally. "
-            "They slowly turn their head to the left, then to the right, then back to center. "
-            "Camera smoothly pulls back to reveal their full body from head to toe. "
-            "They slowly turn around 360 degrees to show all angles, then face the camera again. "
-            "Neutral background, steady camera, warm professional lighting throughout."
-        )
-
         from .kling_video_service import KlingVideoService
         from .kling_models import KlingEndpoint
+
+        # Prefer using the image element (built from all reference angles)
+        if avatar.kling_element_id:
+            calibration_prompt = (
+                "<<<element_1>>> Close-up of the person's face, looking directly at camera, speaking naturally. "
+                "They slowly turn their head to the left, then to the right, then back to center. "
+                "Camera smoothly pulls back to reveal their full body from head to toe. "
+                "They slowly turn around 360 degrees to show all angles, then face the camera again. "
+                "Neutral background, steady camera, warm professional lighting throughout."
+            )
+            element_list = [{"element_id": avatar.kling_element_id}]
+            image_list = None
+            logger.info(f"Using image element {avatar.kling_element_id} for calibration video")
+        else:
+            # Fallback: use frontal image as first_frame
+            if not avatar.reference_image_1:
+                raise ValueError(f"Avatar {avatar_id} has no element or frontal image (slot 1)")
+            frontal_url = await self.get_reference_image_url(avatar_id, 1)
+            if not frontal_url:
+                raise ValueError(f"Failed to get frontal image URL for avatar {avatar_id}")
+            calibration_prompt = (
+                "Close-up of the person's face, looking directly at camera, speaking naturally. "
+                "They slowly turn their head to the left, then to the right, then back to center. "
+                "Camera smoothly pulls back to reveal their full body from head to toe. "
+                "They slowly turn around 360 degrees to show all angles, then face the camera again. "
+                "Neutral background, steady camera, warm professional lighting throughout."
+            )
+            element_list = None
+            image_list = [{"image_url": frontal_url, "type": "first_frame"}]
+            logger.info(f"No image element found, using frontal image for calibration video")
 
         kling = KlingVideoService()
         try:
@@ -842,7 +860,8 @@ Requirements:
                 duration="8",
                 mode="pro",
                 sound="on",
-                image_list=[{"image_url": frontal_url, "type": "first_frame"}],
+                image_list=image_list,
+                element_list=element_list,
                 aspect_ratio="9:16",
             )
 
