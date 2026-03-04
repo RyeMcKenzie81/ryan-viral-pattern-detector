@@ -444,11 +444,27 @@ def render_video_avatar_section(avatar, brand_id: str):
         "voice across multi-scene videos."
     )
 
-    # Status display
+    # Status display — if video element already exists, show success and offer to recreate
     if avatar.avatar_setup_mode == "video_element" and avatar.kling_element_id:
-        st.success(f"Video element active: `{avatar.kling_element_id}`")
+        st.success(
+            f"Video avatar ready! Element ID: `{avatar.kling_element_id}`\n\n"
+            "Ready to use in Video Studio."
+        )
+        with st.expander("Recreate video avatar"):
+            st.warning("Creating a new one will replace the current element.")
+            path_choice = st.radio(
+                "How do you want to create the video avatar?",
+                ["From reference images + voice sample", "Upload my own video"],
+                key=f"video_avatar_path_{avatar.id}",
+                horizontal=True,
+            )
+            if path_choice == "From reference images + voice sample":
+                _render_voice_embedded_path(avatar, brand_id)
+            else:
+                _render_upload_video_path(avatar, brand_id)
+        return
 
-    # ---- Path Selector ----
+    # ---- Path Selector (no existing video element) ----
     path_choice = st.radio(
         "How do you want to create the video avatar?",
         ["From reference images + voice sample", "Upload my own video"],
@@ -460,11 +476,6 @@ def render_video_avatar_section(avatar, brand_id: str):
         _render_voice_embedded_path(avatar, brand_id)
     else:
         _render_upload_video_path(avatar, brand_id)
-
-    if avatar.avatar_setup_mode == "video_element":
-        st.warning(
-            "This avatar uses a video element. Creating a new one will replace the current element."
-        )
 
 
 def _render_voice_embedded_path(avatar, brand_id: str):
