@@ -426,10 +426,12 @@ def render_avatar_card(avatar, brand_id: str):
 def render_video_avatar_section(avatar, brand_id: str):
     """Render Video Avatar (with Voice) section inside an avatar card.
 
-    Provides three options:
-    1. Extract voice from uploaded video sample
-    2. Generate video avatar from reference images (calibration video)
-    3. Upload video for both visual + voice
+    Two paths:
+    A) From reference images + voice sample (3-phase flow):
+       1. Upload voice sample -> extract audio -> preview with st.audio()
+       2. Generate calibration video + combine with voice -> preview
+       3. Create video avatar from combined video
+    B) Upload my own video (existing flow)
     """
     has_frontal = avatar.reference_image_1 is not None
     if not has_frontal:
@@ -438,100 +440,265 @@ def render_video_avatar_section(avatar, brand_id: str):
     st.divider()
     st.markdown("**Video Avatar (with Voice)**")
     st.caption(
-        "Create a video-based Kling element with voice binding for consistent "
-        "voice across multi-scene videos. This replaces the image-based element."
+        "Create a video-based Kling element with your voice embedded for consistent "
+        "voice across multi-scene videos."
     )
 
     # Status display
-    col_status1, col_status2 = st.columns(2)
-    with col_status1:
-        mode_label = "Video Element" if avatar.avatar_setup_mode == "video_element" else "Image Element"
-        st.markdown(f"**Current mode:** {mode_label}")
-    with col_status2:
-        voice_label = f"`{avatar.kling_voice_id}`" if avatar.kling_voice_id else "Not set"
-        st.markdown(f"**Voice ID:** {voice_label}")
-
     if avatar.avatar_setup_mode == "video_element" and avatar.kling_element_id:
-        st.success(
-            f"Video element active: `{avatar.kling_element_id}` "
-            f"(voice: {avatar.kling_voice_id or 'auto-generated'})"
-        )
+        st.success(f"Video element active: `{avatar.kling_element_id}`")
 
-    # ---- Step 1: Voice Source (Optional) ----
-    st.markdown("---")
-    st.markdown("**Step 1 (Optional): Upload Voice Sample**")
-    st.caption(
-        "Upload a 5-30 second video of the person speaking clearly (one speaker). "
-        "If skipped, voice will be auto-created from the calibration video."
+    # ---- Path Selector ----
+    path_choice = st.radio(
+        "How do you want to create the video avatar?",
+        ["From reference images + voice sample", "Upload my own video"],
+        key=f"video_avatar_path_{avatar.id}",
+        horizontal=True,
     )
 
+    if path_choice == "From reference images + voice sample":
+        _render_voice_embedded_path(avatar, brand_id)
+    else:
+        _render_upload_video_path(avatar, brand_id)
+
+    if avatar.avatar_setup_mode == "video_element":
+        st.warning(
+            "This avatar uses a video element. Creating a new one will replace the current element."
+        )
+
+
+def _render_voice_embedded_path(avatar, brand_id: str):
+    """Path A: 3-phase flow — upload voice, preview combined video, create avatar."""
+    from viraltracker.ui.utils import get_current_organization_id
+
+    avatar_id_str = str(avatar.id)
+    voice_audio_key = f"avatar_voice_audio_{avatar_id_str}"
+    combined_video_key = f"avatar_combined_video_{avatar_id_str}"
+
+    # ---- Step 1: Upload Voice Sample ----
+    st.markdown("---")
+    st.markdown("**Step 1: Upload Voice Sample**")
+
+    # Check if voice sample already stored in DB
+    has_stored_voice = bool(avatar.voice_sample_path)
+    has_audio_in_session = voice_audio_key in st.session_state
+
+    if has_stored_voice and not has_audio_in_session:
+        st.success("Voice sample ready (previously uploaded).")
+        with st.expander("Re-upload voice sample"):
+            _render_voice_upload_widget(avatar, brand_id, voice_audio_key)
+    else:
+        _render_voice_upload_widget(avatar, brand_id, voice_audio_key)
+
+    # Show audio preview if available
+    if has_audio_in_session:
+        st.audio(st.session_state[voice_audio_key], format="audio/mp4")
+        st.caption("Preview of extracted audio from your voice sample.")
+
+    # ---- Step 2: Preview with My Voice ----
+    st.markdown("---")
+    st.markdown("**Step 2: Preview with My Voice**")
+
+    voice_available = has_audio_in_session or has_stored_voice
+
+    if not voice_available:
+        st.button(
+            "Preview with My Voice",
+            key=f"preview_combined_{avatar.id}",
+            disabled=True,
+            use_container_width=True,
+        )
+        st.caption("Upload a voice sample first (Step 1)")
+    else:
+        if st.button(
+            "Preview with My Voice",
+            key=f"preview_combined_{avatar.id}",
+            type="primary",
+            use_container_width=True,
+        ):
+            org_id = get_current_organization_id()
+
+            with st.status("Generating preview...", expanded=True) as status:
+                try:
+                    # Get voice audio bytes
+                    if has_audio_in_session:
+                        voice_audio = st.session_state[voice_audio_key]
+                    else:
+                        # Re-extract from stored voice sample
+                        st.write("Downloading stored voice sample...")
+                        voice_audio = _extract_audio_from_stored_sample(avatar)
+                        if voice_audio:
+                            st.session_state[voice_audio_key] = voice_audio
+                        else:
+                            st.error("Failed to extract audio from stored voice sample. Please re-upload.")
+                            return
+
+                    # Step 1/3: Generate calibration video
+                    st.write("Step 1/3: Generating calibration video...")
+                    st.caption("This typically takes 2-5 minutes. Do not refresh the page.")
+
+                    async def gen_calibration():
+                        service = get_avatar_service()
+                        av = await service.get_avatar(avatar.id)
+                        if av.calibration_video_path:
+                            return {"calibration_video_path": av.calibration_video_path}
+                        return await service.generate_calibration_video(
+                            avatar.id, org_id, brand_id
+                        )
+
+                    cal_result = run_async(gen_calibration())
+                    cal_path = cal_result["calibration_video_path"]
+
+                    # Step 2/3: Combine with voice
+                    st.write("Step 2/3: Combining with your voice...")
+
+                    async def combine():
+                        service = get_avatar_service()
+                        return await service.combine_video_with_voice(cal_path, voice_audio)
+
+                    combined_bytes = run_async(combine())
+
+                    # Step 3/3: Prepare preview
+                    st.write("Step 3/3: Preparing preview...")
+                    st.session_state[combined_video_key] = combined_bytes
+
+                    status.update(label="Preview ready!", state="complete")
+
+                except Exception as e:
+                    status.update(label="Preview failed", state="error")
+                    st.error(f"Failed to generate preview: {e}")
+
+            if combined_video_key in st.session_state:
+                st.rerun()
+
+    # Show combined video preview if available
+    if combined_video_key in st.session_state:
+        st.video(st.session_state[combined_video_key])
+        st.caption(
+            "Play the video. Check that you can hear your voice clearly and the "
+            "accent/tone is correct. If the audio is silent or wrong, re-upload in Step 1."
+        )
+
+    # ---- Step 3: Create Video Avatar ----
+    st.markdown("---")
+    st.markdown("**Step 3: Create Video Avatar**")
+
+    has_combined = combined_video_key in st.session_state
+
+    if not has_combined:
+        st.button(
+            "Create Video Avatar",
+            key=f"create_video_avatar_{avatar.id}",
+            disabled=True,
+            use_container_width=True,
+        )
+        st.caption("Preview your video first (Step 2)")
+    else:
+        if st.button(
+            "Create Video Avatar",
+            key=f"create_video_avatar_{avatar.id}",
+            type="primary",
+            use_container_width=True,
+        ):
+            org_id = get_current_organization_id()
+            combined_bytes = st.session_state[combined_video_key]
+
+            with st.spinner("Creating video avatar (5-10 minutes)..."):
+                try:
+                    async def create_el():
+                        service = get_avatar_service()
+                        return await service.create_kling_video_element(
+                            avatar_id=avatar.id,
+                            organization_id=org_id,
+                            brand_id=brand_id,
+                            voice_embedded_video_bytes=combined_bytes,
+                        )
+
+                    result = run_async(create_el())
+                    st.success(
+                        f"Video avatar created! Element ID: `{result['element_id']}`\n\n"
+                        "Ready to use in Video Studio."
+                    )
+                    # Clean up session state
+                    st.session_state.pop(combined_video_key, None)
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Video avatar creation failed: {e}")
+
+
+def _render_voice_upload_widget(avatar, brand_id: str, voice_audio_key: str):
+    """Render the voice sample file uploader and extraction logic."""
     voice_file = st.file_uploader(
         "Voice sample video (.mp4/.mov, 5-30s with clear speech)",
         type=["mp4", "mov"],
         key=f"voice_upload_{avatar.id}",
     )
 
-    if voice_file and st.button("Extract Voice", key=f"extract_voice_{avatar.id}"):
-        from viraltracker.ui.utils import get_current_organization_id
-        org_id = get_current_organization_id()
+    # Cache file bytes immediately to survive st.rerun()
+    upload_cache_key = f"avatar_voice_file_bytes_{avatar.id}"
+    if voice_file:
+        st.session_state[upload_cache_key] = voice_file.read()
 
-        with st.spinner("Extracting voice from video (~5-7 min, includes voice processing)..."):
+    cached_bytes = st.session_state.get(upload_cache_key)
+
+    if cached_bytes and st.button("Extract Audio", key=f"extract_audio_{avatar.id}"):
+        with st.spinner("Extracting audio from video..."):
             try:
-                async def extract():
+                from viraltracker.services.ffmpeg_service import FFmpegService
+                import asyncio as _asyncio
+
+                ffmpeg_svc = FFmpegService()
+                audio_bytes = ffmpeg_svc.extract_audio(cached_bytes)
+                st.session_state[voice_audio_key] = audio_bytes
+
+                # Upload voice video to Supabase for persistence
+                async def upload_voice_sample():
                     service = get_avatar_service()
-                    return await service.extract_voice_from_video(
-                        avatar_id=avatar.id,
-                        organization_id=org_id,
-                        brand_id=brand_id,
-                        video_bytes=voice_file.read(),
+                    path = await service._upload_video(
+                        str(avatar.brand_id), str(avatar.id),
+                        cached_bytes, "voice_sample.mp4"
                     )
-                voice_id = run_async(extract())
-                st.success(f"Voice extracted! Voice ID: `{voice_id}`")
-                st.rerun()
-            except Exception as e:
-                st.error(f"Voice extraction failed: {e}")
-
-    # ---- Step 2: Create Video Avatar ----
-    st.markdown("---")
-    st.markdown("**Step 2: Create Video Avatar**")
-
-    st.caption(
-        "Generates an 8-second calibration video from the frontal image, then "
-        "creates a video element with voice binding. Cost: ~$1.57"
-    )
-
-    if st.button(
-        "Generate Video Avatar",
-        key=f"gen_video_avatar_{avatar.id}",
-        type="primary",
-        use_container_width=True,
-    ):
-        from viraltracker.ui.utils import get_current_organization_id
-        org_id = get_current_organization_id()
-
-        with st.spinner("Generating calibration video + creating video element (~10-15 min)..."):
-            try:
-                async def create_video_el():
-                    service = get_avatar_service()
-                    return await service.create_kling_video_element(
-                        avatar_id=avatar.id,
-                        organization_id=org_id,
-                        brand_id=brand_id,
-                        video_bytes=None,  # Generate from reference images
+                    await _asyncio.to_thread(
+                        lambda: service.supabase.table("brand_avatars")
+                            .update({"voice_sample_path": path})
+                            .eq("id", str(avatar.id))
+                            .execute()
                     )
-                result = run_async(create_video_el())
-                st.success(
-                    f"Video element created!\n"
-                    f"- Element ID: `{result['element_id']}`\n"
-                    f"- Voice ID: `{result.get('voice_id', 'none')}`"
-                )
-                st.rerun()
-            except Exception as e:
-                st.error(f"Video avatar creation failed: {e}")
+                    return path
 
-    # ---- Alternative: Upload Video for Both ----
+                run_async(upload_voice_sample())
+                # Clear cached upload bytes
+                st.session_state.pop(upload_cache_key, None)
+                st.success("Audio extracted and voice sample saved!")
+                st.rerun()
+            except ValueError as e:
+                st.error(str(e))
+            except Exception as e:
+                st.error(f"Audio extraction failed: {e}")
+
+
+def _extract_audio_from_stored_sample(avatar) -> bytes:
+    """Download stored voice sample from Supabase and extract audio."""
+    try:
+        from viraltracker.services.ffmpeg_service import FFmpegService
+
+        async def download():
+            service = get_avatar_service()
+            return await service._download_image(avatar.voice_sample_path)
+
+        video_bytes = run_async(download())
+        ffmpeg_svc = FFmpegService()
+        return ffmpeg_svc.extract_audio(video_bytes)
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Failed to extract audio from stored sample: {e}")
+        return None
+
+
+def _render_upload_video_path(avatar, brand_id: str):
+    """Path B: Upload own video for both visual + voice."""
     st.markdown("---")
-    st.markdown("**Alternative: Upload Video (Visual + Voice)**")
+    st.markdown("**Upload Video (Visual + Voice)**")
     st.caption(
         "Upload a 5-30 second video of the person speaking clearly. Both appearance "
         "and voice will come from this video."
@@ -544,13 +711,13 @@ def render_video_avatar_section(avatar, brand_id: str):
     )
 
     if upload_video and st.button(
-        "Create Video Element from Upload",
+        "Create Video Avatar from Upload",
         key=f"upload_video_el_{avatar.id}",
     ):
         from viraltracker.ui.utils import get_current_organization_id
         org_id = get_current_organization_id()
 
-        with st.spinner("Creating video element from upload (~5-7 min, includes voice processing)..."):
+        with st.spinner("Creating video element from upload (~5-7 min)..."):
             try:
                 async def create_from_upload():
                     service = get_avatar_service()
@@ -562,18 +729,13 @@ def render_video_avatar_section(avatar, brand_id: str):
                     )
                 result = run_async(create_from_upload())
                 st.success(
-                    f"Video element created from upload!\n"
+                    f"Video avatar created!\n"
                     f"- Element ID: `{result['element_id']}`\n"
                     f"- Voice ID: `{result.get('voice_id', 'none')}`"
                 )
                 st.rerun()
             except Exception as e:
                 st.error(f"Video element creation failed: {e}")
-
-    if avatar.avatar_setup_mode == "video_element":
-        st.warning(
-            "This avatar uses a video element. Creating a new one will replace the current element."
-        )
 
 
 # ============================================================================

@@ -1168,25 +1168,58 @@ Requirements:
         finally:
             await kling.close()
 
+    async def combine_video_with_voice(
+        self, calibration_video_path: str, voice_audio_bytes: bytes
+    ) -> bytes:
+        """Download calibration video and replace its audio with voice sample audio.
+
+        Args:
+            calibration_video_path: Supabase storage path for the calibration video.
+            voice_audio_bytes: Audio bytes extracted from the user's voice sample.
+
+        Returns:
+            Combined video bytes (calibration visuals + voice audio).
+
+        Raises:
+            ValueError: If download or FFmpeg processing fails.
+        """
+        # Download calibration video (reuse _download_image — it's content-agnostic)
+        video_bytes = await self._download_image(calibration_video_path)
+
+        from .ffmpeg_service import FFmpegService
+        ffmpeg_svc = FFmpegService()
+        combined = await asyncio.to_thread(
+            ffmpeg_svc.replace_audio, video_bytes, voice_audio_bytes
+        )
+        logger.info(
+            f"Combined calibration video ({len(video_bytes)} bytes) with voice audio "
+            f"({len(voice_audio_bytes)} bytes) -> {len(combined)} bytes"
+        )
+        return combined
+
     async def create_kling_video_element(
         self,
         avatar_id: UUID,
         organization_id: str,
         brand_id: str,
         video_bytes: Optional[bytes] = None,
+        voice_embedded_video_bytes: Optional[bytes] = None,
     ) -> dict:
-        """Create a video-based Kling element with voice binding.
+        """Create a video-based Kling element with voice.
 
-        New workflow (using dedicated voice creation endpoint):
-        1. Prepare video (upload or generate calibration video)
-        2. If no existing voice_id, create custom voice from the video first
-        3. Create video element with element_voice_id binding the voice
+        Two modes:
+        1. voice_embedded_video_bytes provided: Upload directly, skip normalization
+           and skip separate voice creation (voice is already in the video).
+        2. video_bytes provided: Normalize, upload, create voice separately.
+        3. Neither: Generate calibration video, create voice separately.
 
         Args:
             avatar_id: Avatar UUID.
             organization_id: Organization UUID.
             brand_id: Brand UUID.
-            video_bytes: Optional video file bytes. If None, generates calibration video.
+            video_bytes: Optional raw video file bytes (will be normalized).
+            voice_embedded_video_bytes: Optional pre-combined video with voice
+                embedded. Skips normalization and voice creation.
 
         Returns:
             Dict with element_id, voice_id, calibration_video_path.
@@ -1212,7 +1245,18 @@ Requirements:
             except Exception as e:
                 raise ValueError(f"Failed to resolve org_id from brand {brand_id}: {e}")
 
-        if video_bytes:
+        if voice_embedded_video_bytes:
+            # Mode: Voice already embedded — skip normalization to preserve audio quality
+            video_path = await self._upload_video(
+                str(avatar.brand_id), str(avatar_id),
+                voice_embedded_video_bytes, "video_element_source.mp4"
+            )
+            video_url = await self._get_video_signed_url(video_path)
+            calibration_path = video_path
+            skip_voice_creation = True
+            logger.info(f"Using voice-embedded video for avatar {avatar_id} (skipping normalization)")
+
+        elif video_bytes:
             # Normalize video to exact Kling specs (resolution, codec, audio)
             from .ffmpeg_service import FFmpegService
             ffmpeg_svc = FFmpegService()
@@ -1224,6 +1268,7 @@ Requirements:
             )
             video_url = await self._get_video_signed_url(video_path)
             calibration_path = video_path
+            skip_voice_creation = False
         else:
             # Mode: Generate calibration video from frontal image
             if not avatar.reference_image_1:
@@ -1240,6 +1285,7 @@ Requirements:
                 )
                 calibration_path = cal_result["calibration_video_path"]
                 video_url = cal_result["signed_url"]
+            skip_voice_creation = False
 
         # Verify the video URL is fetchable by Kling's workers
         await self._verify_video_url(video_url)
@@ -1249,45 +1295,51 @@ Requirements:
 
         kling = KlingVideoService()
         try:
-            # Step 1: Create custom voice from the video if we don't already have one
-            voice_id = avatar.kling_voice_id
-            if not voice_id:
-                logger.info(
-                    f"No existing voice_id for avatar {avatar_id}, "
-                    f"creating custom voice from video..."
-                )
-                voice_result = await kling.create_custom_voice(
-                    organization_id=organization_id,
-                    brand_id=brand_id,
-                    voice_name=f"{avatar.name[:14]}_voice",
-                    voice_url=video_url,
-                )
-                voice_task_id = voice_result.get("kling_task_id")
-                if not voice_task_id:
-                    logger.warning("No task_id returned for voice creation, proceeding without voice")
-                else:
-                    try:
-                        voice_id = await self._poll_for_voice_completion(
-                            kling, voice_task_id, max_attempts=40, interval_seconds=15
-                        )
-                        logger.info(f"Custom voice created: voice_id={voice_id}")
-                    except ValueError as e:
-                        logger.warning(
-                            f"Voice creation failed ({e}), proceeding without voice. "
-                            f"Element will be created for visual only."
-                        )
-                        voice_id = None
+            # Step 1: Create custom voice from the video if needed
+            voice_id = None
+            if skip_voice_creation:
+                # Voice is embedded in the video — Kling will auto-extract it
+                logger.info(f"Skipping voice creation for avatar {avatar_id} (voice embedded in video)")
             else:
-                logger.info(f"Reusing existing voice_id={voice_id} for avatar {avatar_id}")
+                voice_id = avatar.kling_voice_id
+                if not voice_id:
+                    logger.info(
+                        f"No existing voice_id for avatar {avatar_id}, "
+                        f"creating custom voice from video..."
+                    )
+                    voice_result = await kling.create_custom_voice(
+                        organization_id=organization_id,
+                        brand_id=brand_id,
+                        voice_name=f"{avatar.name[:14]}_voice",
+                        voice_url=video_url,
+                    )
+                    voice_task_id = voice_result.get("kling_task_id")
+                    if not voice_task_id:
+                        logger.warning("No task_id returned for voice creation, proceeding without voice")
+                    else:
+                        try:
+                            voice_id = await self._poll_for_voice_completion(
+                                kling, voice_task_id, max_attempts=40, interval_seconds=15
+                            )
+                            logger.info(f"Custom voice created: voice_id={voice_id}")
+                        except ValueError as e:
+                            logger.warning(
+                                f"Voice creation failed ({e}), proceeding without voice. "
+                                f"Element will be created for visual only."
+                            )
+                            voice_id = None
+                else:
+                    logger.info(f"Reusing existing voice_id={voice_id} for avatar {avatar_id}")
 
-            # Step 2: Create video element with voice binding
+            # Step 2: Create video element
+            # When voice is embedded, don't pass element_voice_id (Kling auto-extracts)
             gen_result = await kling.create_video_element(
                 organization_id=organization_id,
                 brand_id=brand_id,
                 element_name=avatar.name[:20],
                 element_description=f"Video avatar: {avatar.name}"[:100],
                 video_url=video_url,
-                element_voice_id=voice_id,
+                element_voice_id=voice_id if not skip_voice_creation else None,
             )
 
             task_id = gen_result.get("kling_task_id")
@@ -1333,7 +1385,7 @@ Requirements:
 
             logger.info(
                 f"Created video element {element_id} for avatar {avatar_id} "
-                f"(voice_id: {voice_id or 'none'})"
+                f"(voice_id: {voice_id or 'embedded'})"
             )
 
             return {
@@ -1424,6 +1476,7 @@ Requirements:
             kling_element_id=row.get("kling_element_id"),
             kling_voice_id=row.get("kling_voice_id"),
             calibration_video_path=row.get("calibration_video_path"),
+            voice_sample_path=row.get("voice_sample_path"),
             avatar_setup_mode=row.get("avatar_setup_mode", "multi_image"),
             generation_prompt=row.get("generation_prompt"),
             default_negative_prompt=row.get(

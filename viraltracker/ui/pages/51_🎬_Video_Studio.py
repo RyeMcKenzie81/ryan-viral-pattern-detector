@@ -718,12 +718,9 @@ with tab_manual:
         avatar_display = {}
         for a in manual_avatar_list:
             has_element = bool(a.get("kling_element_id"))
-            has_voice = bool(a.get("kling_voice_id"))
             status = ""
-            if has_element and has_voice:
-                status = " (Element + Voice ready)"
-            elif has_element:
-                status = " (Element only)"
+            if has_element:
+                status = " (Element ready)"
             else:
                 status = " (No element)"
             avatar_display[f"{a['name']}{status}"] = a["id"]
