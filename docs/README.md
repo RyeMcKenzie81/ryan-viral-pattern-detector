@@ -71,11 +71,27 @@ Build 4D customer personas from ad analysis:
 **Planning Docs:**
 - [4D Persona Implementation Plan](plans/4D_PERSONA_IMPLEMENTATION_PLAN.md) - Full persona & competitor framework
 
+### SEO Content Pipeline
+Full 7-phase content workflow: keyword discovery, competitor analysis, AI content generation, QA, Shopify publishing, interlinking, analytics.
+
+| Phase | Document | Status |
+|-------|----------|--------|
+| Plan & Implementation | [PLAN_INTEGRATION_TESTS.md](plans/seo-pipeline-port/PLAN_INTEGRATION_TESTS.md) | Complete |
+| Phase 4 Checkpoint | [CHECKPOINT_PHASE_4.md](plans/seo-pipeline-port/CHECKPOINT_PHASE_4.md) | Complete |
+| Phase 5 Checkpoint | [CHECKPOINT_PHASE_5.md](plans/seo-pipeline-port/CHECKPOINT_PHASE_5.md) | Complete |
+| Phase 6 Checkpoint | [CHECKPOINT_PHASE_6.md](plans/seo-pipeline-port/CHECKPOINT_PHASE_6.md) | Complete |
+| Phase 7 Checkpoint | [CHECKPOINT_PHASE_7.md](plans/seo-pipeline-port/CHECKPOINT_PHASE_7.md) | Complete |
+| Post-Review | [CHECKPOINT_POST_REVIEW.md](plans/seo-pipeline-port/CHECKPOINT_POST_REVIEW.md) | Complete |
+| Integration Tests | [CHECKPOINT_INTEGRATION_TESTS.md](plans/seo-pipeline-port/CHECKPOINT_INTEGRATION_TESTS.md) | Complete |
+| Live Testing & Deploy | [CHECKPOINT_LIVE_DEPLOY.md](plans/seo-pipeline-port/CHECKPOINT_LIVE_DEPLOY.md) | Complete |
+
+**Architecture**: See [architecture.md](architecture.md#seo-content-pipeline) for full details.
+
 ### Historical/Archive
 - [Pydantic AI Refactor](archive/pydantic-ai-refactor/) - Migration history
 - [Legacy Docs](archive/) - Session summaries and old checkpoints
 
 ---
 
-**Version**: 3.3.0 (Video Avatar with Voice)
-**Last Updated**: 2026-02-27
+**Version**: 5.0.0 (SEO Content Pipeline)
+**Last Updated**: 2026-03-03

@@ -88,6 +88,10 @@ class FeatureKey:
     KNOWLEDGE_BASE = "knowledge_base"
     VEO_AVATARS = "veo_avatars"
     SORA_MVP = "sora_mvp"
+    SEO_DASHBOARD = "seo_dashboard"
+    SEO_KEYWORD_RESEARCH = "seo_keyword_research"
+    SEO_ARTICLE_WRITER = "seo_article_writer"
+    SEO_ARTICLE_PUBLISHER = "seo_article_publisher"
     # Video Tools
     SECTION_VIDEO_TOOLS = "section_video_tools"
     INSTAGRAM_CONTENT = "instagram_content"

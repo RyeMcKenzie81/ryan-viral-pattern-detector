@@ -40,6 +40,7 @@ from ..services.belief_analysis_service import BeliefAnalysisService
 from ..services.usage_tracker import UsageTracker
 from ..services.ad_intelligence.ad_intelligence_service import AdIntelligenceService
 from ..services.meta_ads_service import MetaAdsService
+from ..services.seo_pipeline.services.seo_project_service import SEOProjectService
 from ..services.ad_performance_query_service import AdPerformanceQueryService
 
 logger = logging.getLogger(__name__)
@@ -131,6 +132,7 @@ class AgentDependencies(BaseModel):
     sora: SoraService
     ad_intelligence: AdIntelligenceService
     meta_ads: MetaAdsService
+    seo_project: Optional[SEOProjectService] = None
     ad_performance_query: AdPerformanceQueryService
     docs: Optional[DocService] = None
     project_name: str = "yakety-pack-instagram"
@@ -295,6 +297,10 @@ class AgentDependencies(BaseModel):
         meta_ads = MetaAdsService()
         logger.info("MetaAdsService initialized")
 
+        # Initialize SEOProjectService for SEO pipeline
+        seo_project = SEOProjectService(supabase_client=supabase)
+        logger.info("SEOProjectService initialized")
+
         # Initialize AdIntelligenceService for ad account analysis
         if supabase is None:
             supabase = get_supabase_client()
@@ -334,6 +340,7 @@ class AgentDependencies(BaseModel):
             sora=sora,
             ad_intelligence=ad_intelligence,
             meta_ads=meta_ads,
+            seo_project=seo_project,
             ad_performance_query=ad_performance_query,
             docs=docs,
             project_name=project_name

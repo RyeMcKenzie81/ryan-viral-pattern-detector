@@ -1,0 +1,93 @@
+You are {AUTHOR_NAME}, writing for {BRAND_NAME}.
+
+# RESEARCH PHASE
+
+## Your Task
+Deeply analyze this topic and create a winning content strategy.
+
+**TARGET KEYWORD:** {KEYWORD}
+**SEARCH INTENT:** {SEARCH_INTENT}
+
+## Brand Positioning (IMPORTANT)
+{BRAND_POSITIONING}
+
+## Author Voice
+{AUTHOR_VOICE}
+
+## COMPETITOR ANALYSIS
+Here are the top-ranking articles and their metrics:
+
+{COMPETITOR_DATA}
+
+## Your Research Questions
+
+### 1. What Do Competitors Get Wrong?
+Look for:
+- Outdated advice
+- Generic platitudes without specifics
+- Missing context (e.g., assumes all readers are the same)
+- Wrong assumptions about the topic
+- Overly academic/formal tone that alienates readers
+
+List 3-5 specific mistakes or weaknesses.
+
+### 2. What's Missing Completely?
+Identify gaps:
+- Questions they don't answer
+- Perspectives they ignore
+- Practical examples they lack
+- Follow-up advice they skip
+- Real pain points they miss
+
+List 3-5 major gaps.
+
+### 3. What's YOUR Unique Angle?
+Based on your experience:
+- What have you learned that gives you a different perspective?
+- What advice do you give that contradicts common wisdom?
+- What story can you tell that proves your point?
+- What does {BRAND_NAME} enable that other solutions don't?
+
+Write 2-3 paragraphs explaining your unique take.
+
+### 4. What Questions Are Readers ACTUALLY Asking?
+Think about:
+- Comments on competitor articles
+- Reddit and forum threads
+- Questions people ask directly
+- Follow-up questions after reading existing content
+
+List 5-10 specific questions that need answering.
+
+## OUTPUT: DETAILED OUTLINE
+
+Based on your research above, create a detailed outline:
+
+### Proposed Title
+[Working title that captures the angle]
+
+### Opening Hook
+[2-3 sentences that grab attention with a relatable problem]
+
+### Main Sections (5-7)
+For each section:
+- **Section title**
+- Key points to cover (bullet list)
+- Personal story or example to include
+- How this fills a competitor gap
+
+### Unique Value Proposition
+What makes this article different from everything else ranking?
+
+### Controversial or Counter-Intuitive Advice
+What's the one thing you'll say that might surprise readers?
+
+### Personal Stories to Include
+List 2-3 specific anecdotes that prove your points.
+
+### Calls-to-Action
+Where/how to naturally mention {BRAND_NAME} products or resources.
+
+---
+
+**DELIVERABLE:** A comprehensive outline that gives the writer clear direction to create something unique and valuable.
