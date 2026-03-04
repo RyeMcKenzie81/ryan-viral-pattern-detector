@@ -132,3 +132,30 @@ class TestStateSerialization:
         assert "num_variations" in data
         assert "pipeline_version" in data
         assert data["pipeline_version"] == "v2"
+        # New creative reference fields
+        assert "creative_direction" in data
+        assert "logo_image_base64" in data
+        assert "user_selected_image_ids" in data
+
+    def test_round_trip_creative_reference_fields(self):
+        """New fields from creative direction, logo injection, and image selector."""
+        state = AdCreationPipelineState(
+            product_id="p1", reference_ad_base64="img",
+            creative_direction="Clean & minimal, Urgent / FOMO\nUse warm tones",
+            logo_image_base64="bG9nb2RhdGE=",
+            user_selected_image_ids=["img-001", "img-002", "img-003"],
+        )
+        data = state.to_dict()
+        restored = AdCreationPipelineState.from_dict(data)
+        assert restored.creative_direction == "Clean & minimal, Urgent / FOMO\nUse warm tones"
+        assert restored.logo_image_base64 == "bG9nb2RhdGE="
+        assert restored.user_selected_image_ids == ["img-001", "img-002", "img-003"]
+
+    def test_creative_reference_fields_default_none(self):
+        """New fields default to None when not provided."""
+        state = AdCreationPipelineState(
+            product_id="p1", reference_ad_base64="img"
+        )
+        assert state.creative_direction is None
+        assert state.logo_image_base64 is None
+        assert state.user_selected_image_ids is None

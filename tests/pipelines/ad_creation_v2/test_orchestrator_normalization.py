@@ -191,3 +191,60 @@ class TestNumVariationsValidation:
                 content_source="invalid_source",
                 deps=MagicMock(),
             )
+
+
+class TestCreativeReferenceParams:
+    """New parameters: creative_direction, user_selected_image_ids."""
+
+    @pytest.mark.asyncio
+    async def test_creative_direction_passed_to_state(self):
+        with patch(
+            "viraltracker.pipelines.ad_creation_v2.orchestrator.ad_creation_v2_graph"
+        ) as mock_graph:
+            mock_graph.run = AsyncMock(return_value=MagicMock(output={"ok": True}))
+
+            await run_ad_creation_v2(
+                product_id="p1",
+                reference_ad_base64="img",
+                creative_direction="Bold & vibrant, Problem-agitate-solve",
+                deps=MagicMock(),
+            )
+
+            call_kwargs = mock_graph.run.call_args
+            state = call_kwargs.kwargs.get("state") or call_kwargs[1].get("state")
+            assert state.creative_direction == "Bold & vibrant, Problem-agitate-solve"
+
+    @pytest.mark.asyncio
+    async def test_creative_direction_defaults_none(self):
+        with patch(
+            "viraltracker.pipelines.ad_creation_v2.orchestrator.ad_creation_v2_graph"
+        ) as mock_graph:
+            mock_graph.run = AsyncMock(return_value=MagicMock(output={"ok": True}))
+
+            await run_ad_creation_v2(
+                product_id="p1",
+                reference_ad_base64="img",
+                deps=MagicMock(),
+            )
+
+            call_kwargs = mock_graph.run.call_args
+            state = call_kwargs.kwargs.get("state") or call_kwargs[1].get("state")
+            assert state.creative_direction is None
+
+    @pytest.mark.asyncio
+    async def test_user_selected_image_ids_passed_to_state(self):
+        with patch(
+            "viraltracker.pipelines.ad_creation_v2.orchestrator.ad_creation_v2_graph"
+        ) as mock_graph:
+            mock_graph.run = AsyncMock(return_value=MagicMock(output={"ok": True}))
+
+            await run_ad_creation_v2(
+                product_id="p1",
+                reference_ad_base64="img",
+                user_selected_image_ids=["img-1", "img-2"],
+                deps=MagicMock(),
+            )
+
+            call_kwargs = mock_graph.run.call_args
+            state = call_kwargs.kwargs.get("state") or call_kwargs[1].get("state")
+            assert state.user_selected_image_ids == ["img-1", "img-2"]
