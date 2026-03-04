@@ -46,6 +46,37 @@ class SelectImagesNode(BaseNode[AdCreationPipelineState]):
         ctx.state.current_step = "select_images"
 
         try:
+            # Short-circuit: user explicitly selected images by ID
+            if ctx.state.user_selected_image_ids:
+                db = ctx.deps.ad_creation.supabase
+                ids = ctx.state.user_selected_image_ids
+                user_images_result = db.table("product_images").select(
+                    "id, storage_path, is_main, asset_tags"
+                ).eq("product_id", ctx.state.product_id).in_("id", ids).execute()
+
+                if user_images_result.data:
+                    selected = []
+                    for img in user_images_result.data:
+                        tags = img.get('asset_tags') or []
+                        selected.append({
+                            "storage_path": img["storage_path"],
+                            "match_score": 1.0,
+                            "match_reasons": ["user_selected"],
+                            "asset_tags": [str(t) for t in tags] if isinstance(tags, list) else [],
+                        })
+                    ctx.state.selected_images = selected
+                    selected_paths = [img["storage_path"] for img in selected]
+                    await ctx.deps.ad_creation.update_ad_run(
+                        ad_run_id=UUID(ctx.state.ad_run_id),
+                        status="generating",
+                        selected_product_images=selected_paths,
+                    )
+                    ctx.state.mark_step_complete("select_images")
+                    logger.info(f"Using {len(selected)} user-selected images")
+                    return GenerateAdsNode()
+                else:
+                    logger.warning("User-selected image IDs did not resolve — falling through to auto-select")
+
             # Fetch product images from database (Phase 3: include asset_tags)
             image_extensions = ('.jpg', '.jpeg', '.png', '.webp', '.gif')
             product_image_paths = []

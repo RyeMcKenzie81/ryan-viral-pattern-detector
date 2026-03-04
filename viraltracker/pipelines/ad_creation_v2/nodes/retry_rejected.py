@@ -153,6 +153,7 @@ class RetryRejectedNode(BaseNode[AdCreationPipelineState]):
                 "template_id": ctx.state.template_id,
                 "prompt_version": ctx.state.prompt_version,
                 "content_source": ctx.state.content_source,
+                "creative_direction": ctx.state.creative_direction,
             }
 
             try:
@@ -175,6 +176,7 @@ class RetryRejectedNode(BaseNode[AdCreationPipelineState]):
                     brand_asset_info=ctx.state.brand_asset_info,
                     selected_image_tags=selected_image_tags,
                     performance_context=ctx.state.performance_context,
+                    logo_image_base64=ctx.state.logo_image_base64,
                 )
 
                 # Execute generation
@@ -184,6 +186,9 @@ class RetryRejectedNode(BaseNode[AdCreationPipelineState]):
                     gemini_service=ctx.deps.gemini,
                     image_resolution=ctx.state.image_resolution,
                 )
+
+                # Pop logo blob to prevent memory bloat
+                prompt.pop('logo_image_base64', None)
 
                 # Upload image
                 ad_uuid = uuid_module.uuid4()

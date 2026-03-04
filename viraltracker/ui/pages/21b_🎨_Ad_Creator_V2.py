@@ -51,6 +51,14 @@ if 'v2_offer_variant_id' not in st.session_state:
     st.session_state.v2_offer_variant_id = None
 if 'v2_current_offer_override' not in st.session_state:
     st.session_state.v2_current_offer_override = ""
+if 'v2_creative_direction' not in st.session_state:
+    st.session_state.v2_creative_direction = ""
+if 'v2_creative_direction_tags' not in st.session_state:
+    st.session_state.v2_creative_direction_tags = []
+if 'v2_ref_image_mode' not in st.session_state:
+    st.session_state.v2_ref_image_mode = "Auto-select (recommended)"
+if 'v2_user_selected_image_ids' not in st.session_state:
+    st.session_state.v2_user_selected_image_ids = []
 
 
 # ============================================================================
@@ -678,12 +686,206 @@ def render_offer_context(product: dict, product_id: str):
 
 
 # ============================================================================
+# Creative Direction Section
+# ============================================================================
+
+_STYLE_TAGS = ["Clean & minimal", "Bold & vibrant", "Organic / natural", "Premium / luxe", "UGC-style"]
+_TONE_TAGS = ["Urgent / FOMO", "Educational", "Emotional storytelling", "Playful / fun", "Clinical / authority"]
+_TECHNIQUE_TAGS = ["Before & after focus", "Social proof heavy", "Problem-agitate-solve", "Curiosity gap"]
+
+
+def render_creative_direction():
+    """Render creative direction controls: quick-tag chips + freeform text."""
+    with st.expander("Creative Direction (optional)", expanded=False):
+        st.caption("Style")
+        style_tags = st.pills(
+            "Style tags",
+            options=_STYLE_TAGS,
+            selection_mode="multi",
+            label_visibility="collapsed",
+            key="v2_cd_style_tags",
+        )
+
+        st.caption("Tone")
+        tone_tags = st.pills(
+            "Tone tags",
+            options=_TONE_TAGS,
+            selection_mode="multi",
+            label_visibility="collapsed",
+            key="v2_cd_tone_tags",
+        )
+
+        st.caption("Technique")
+        technique_tags = st.pills(
+            "Technique tags",
+            options=_TECHNIQUE_TAGS,
+            selection_mode="multi",
+            label_visibility="collapsed",
+            key="v2_cd_technique_tags",
+        )
+
+        freeform = st.text_area(
+            "Custom direction",
+            placeholder="Add specific instructions combined with tags above...",
+            key="v2_cd_freeform",
+            label_visibility="collapsed",
+        )
+
+        # Combine tags + freeform into creative_direction string
+        all_tags = list(style_tags or []) + list(tone_tags or []) + list(technique_tags or [])
+        parts = []
+        if all_tags:
+            parts.append("Creative direction: " + ", ".join(all_tags) + ".")
+        if freeform and freeform.strip():
+            parts.append(freeform.strip())
+        st.session_state.v2_creative_direction = "\n".join(parts) if parts else ""
+
+    # Live preview outside expander
+    direction = st.session_state.get('v2_creative_direction', '')
+    if direction:
+        # Truncate for display
+        summary = direction[:120] + "..." if len(direction) > 120 else direction
+        st.caption(f"Direction: {summary}")
+
+
+# ============================================================================
+# Reference Image Selector Section
+# ============================================================================
+
+_MAX_SELECTED_IMAGES = 12
+_IMAGES_PER_PAGE = 12
+
+
+def render_reference_images(product_id: str):
+    """Render reference image selector: auto vs manual mode with image grid."""
+    st.markdown("**Reference Images**")
+
+    mode = st.radio(
+        "Image selection",
+        options=["Auto-select (recommended)", "Choose specific images"],
+        horizontal=True,
+        key="v2_ref_image_mode",
+        label_visibility="collapsed",
+    )
+
+    if mode == "Auto-select (recommended)":
+        st.caption("The pipeline will automatically score and select the best 1-2 product images.")
+        st.session_state.v2_user_selected_image_ids = []
+        return
+
+    # Manual mode: fetch product images
+    cache_key = f"v2_ref_images_{product_id}"
+    if cache_key not in st.session_state:
+        try:
+            db = get_supabase_client()
+            result = db.table("product_images").select(
+                "id, storage_path, is_main, asset_tags"
+            ).eq("product_id", product_id).order("is_main", desc=True).execute()
+            st.session_state[cache_key] = result.data or []
+        except Exception:
+            st.session_state[cache_key] = []
+
+    images = st.session_state[cache_key]
+    if not images:
+        st.caption("No product images found — add images in Brand Manager first.")
+        st.session_state.v2_user_selected_image_ids = []
+        return
+
+    # Cache signed URLs to avoid repeated API calls
+    url_cache_key = f"v2_ref_image_urls_{product_id}"
+    if url_cache_key not in st.session_state:
+        urls = {}
+        for img in images:
+            path = img.get("storage_path", "")
+            if path:
+                try:
+                    db = get_supabase_client()
+                    parts = path.split("/", 1)
+                    bucket = parts[0]
+                    file_path = parts[1] if len(parts) > 1 else path
+                    signed = db.storage.from_(bucket).create_signed_url(file_path, 3600)
+                    urls[img["id"]] = signed.get("signedURL", "")
+                except Exception:
+                    urls[img["id"]] = ""
+        st.session_state[url_cache_key] = urls
+
+    signed_urls = st.session_state[url_cache_key]
+    selected_ids = st.session_state.v2_user_selected_image_ids
+
+    # Pagination
+    total_images = len(images)
+    page_key = "v2_ref_image_page"
+    if page_key not in st.session_state:
+        st.session_state[page_key] = 0
+    total_pages = max(1, -(-total_images // _IMAGES_PER_PAGE))
+    current_page = st.session_state[page_key]
+    start_idx = current_page * _IMAGES_PER_PAGE
+    page_images = images[start_idx:start_idx + _IMAGES_PER_PAGE]
+
+    st.caption(f"{len(selected_ids)} of {_MAX_SELECTED_IMAGES} max selected")
+
+    # Image grid using @st.fragment for partial reruns
+    @st.fragment
+    def _image_grid():
+        cols = st.columns(3)
+        for idx, img in enumerate(page_images):
+            with cols[idx % 3]:
+                url = signed_urls.get(img["id"], "")
+                if url:
+                    st.image(url, use_container_width=True)
+
+                # Badge + tag labels
+                badges = []
+                if img.get("is_main"):
+                    badges.append("Main")
+                tags = img.get("asset_tags") or []
+                if isinstance(tags, list):
+                    for tag in tags[:2]:
+                        badges.append(str(tag))
+                if badges:
+                    st.caption(" | ".join(badges))
+
+                # Checkbox
+                is_selected = img["id"] in selected_ids
+                at_max = len(selected_ids) >= _MAX_SELECTED_IMAGES
+                disabled = (not is_selected) and at_max
+                checked = st.checkbox(
+                    "Select",
+                    value=is_selected,
+                    key=f"v2_ref_img_{img['id']}",
+                    disabled=disabled,
+                )
+                if checked and img["id"] not in selected_ids:
+                    selected_ids.append(img["id"])
+                elif not checked and img["id"] in selected_ids:
+                    selected_ids.remove(img["id"])
+
+        st.session_state.v2_user_selected_image_ids = selected_ids
+
+    _image_grid()
+
+    # Pagination controls
+    if total_pages > 1:
+        p_cols = st.columns(3)
+        with p_cols[0]:
+            if st.button("Previous", disabled=current_page == 0, key="v2_ref_img_prev"):
+                st.session_state[page_key] = current_page - 1
+                st.rerun()
+        with p_cols[1]:
+            st.caption(f"Page {current_page + 1} of {total_pages}")
+        with p_cols[2]:
+            if st.button("Next", disabled=current_page >= total_pages - 1, key="v2_ref_img_next"):
+                st.session_state[page_key] = current_page + 1
+                st.rerun()
+
+
+# ============================================================================
 # Generation Config Section
 # ============================================================================
 
 def render_generation_config():
     """Render generation configuration controls."""
-    st.subheader("2. Generation Config")
+    st.subheader("3. Generation Config")
 
     col1, col2 = st.columns(2)
 
@@ -782,7 +984,7 @@ def render_batch_estimate():
         estimate_run_cost, MAX_VARIATIONS_PER_RUN,
     )
 
-    st.subheader("3. Batch Estimate")
+    st.subheader("4. Batch Estimate")
 
     mode = st.session_state.v2_template_mode
     num_variations = st.session_state.get('v2_num_variations', 5)
@@ -854,6 +1056,24 @@ def render_batch_estimate():
             f"{MAX_VARIATIONS_PER_RUN}. The worker will process templates sequentially."
         )
 
+    # Logo injection status
+    brand_id = st.session_state.get('v2_brand_id')
+    if brand_id:
+        cache_key = f"_v2_brand_has_logo_{brand_id}"
+        if cache_key not in st.session_state:
+            try:
+                db = get_supabase_client()
+                logo_result = db.table("brand_assets").select("id").eq(
+                    "brand_id", brand_id
+                ).ilike("asset_type", "%logo%").limit(1).execute()
+                st.session_state[cache_key] = bool(logo_result.data)
+            except Exception:
+                st.session_state[cache_key] = False
+        if st.session_state[cache_key]:
+            st.caption("Brand logo will be auto-injected as reference when template requires it")
+        else:
+            st.caption("No brand logo found — upload in Brand Manager for better logo reproduction")
+
 
 # ============================================================================
 # Submit Section
@@ -908,6 +1128,8 @@ def _handle_submit():
         'image_resolution': st.session_state.get('v2_image_resolution', '2K'),
         'persona_id': st.session_state.get('v2_persona_id'),
         'additional_instructions': st.session_state.get('v2_additional_instructions') or None,
+        'creative_direction': st.session_state.get('v2_creative_direction') or None,
+        'user_selected_image_ids': st.session_state.get('v2_user_selected_image_ids') or None,
         'offer_variant_id': st.session_state.get('v2_offer_variant_id'),
     }
 
@@ -1562,16 +1784,27 @@ else:
     if st.session_state.get('_v2_last_product_id') != product_id:
         st.session_state.v2_offer_variant_id = None
         st.session_state.v2_current_offer_override = ""
+        st.session_state.v2_creative_direction = ""
+        st.session_state.v2_creative_direction_tags = []
+        st.session_state.v2_user_selected_image_ids = []
+        st.session_state.v2_ref_image_mode = "Auto-select (recommended)"
+        # Clear cached image data for previous product
+        for key in list(st.session_state.keys()):
+            if key.startswith("v2_ref_images_") or key.startswith("v2_ref_image_urls_"):
+                del st.session_state[key]
         st.session_state._v2_last_product_id = product_id
-
-    # Offer context (conditional — only shows when product has variants or current_offer)
-    if product:
-        render_offer_context(product, product_id)
-
-    st.divider()
 
     # Render sections
     render_template_selection()
+    st.divider()
+
+    # 2. Creative Brief (offer context + creative direction + reference images)
+    st.subheader("2. Creative Brief")
+    if product:
+        render_offer_context(product, product_id)
+    render_creative_direction()
+    render_reference_images(product_id)
+
     st.divider()
     render_generation_config()
     st.divider()

@@ -1094,6 +1094,10 @@ class WinnerEvolutionService:
         if not element_tags.get("template_id") and element_tags.get("extraction_method") == "ai_import":
             params["content_source"] = "recreate_template"
 
+        # Inherit creative direction from parent (if it had one)
+        if element_tags.get("creative_direction"):
+            params["creative_direction"] = element_tags["creative_direction"]
+
         return params
 
     async def _run_v2_pipeline(

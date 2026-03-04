@@ -23,6 +23,38 @@ from ...metadata import NodeMetadata
 logger = logging.getLogger(__name__)
 
 
+def _is_dark_background(palette: list) -> bool:
+    """Check average luminance across all palette colors."""
+    if not palette:
+        return False
+    luminances = []
+    for hex_color in palette:
+        hex_color = str(hex_color).lstrip('#')
+        try:
+            r, g, b = int(hex_color[0:2], 16), int(hex_color[2:4], 16), int(hex_color[4:6], 16)
+            luminances.append(0.2126 * r + 0.7152 * g + 0.0722 * b)
+        except (ValueError, IndexError):
+            continue
+    return (sum(luminances) / len(luminances)) < 128 if luminances else False
+
+
+async def _download_and_resize_logo(deps, path: str) -> str:
+    """Download logo and resize to max 512x512."""
+    import base64 as b64_mod
+    from io import BytesIO
+    from PIL import Image
+    logo_b64 = await deps.ad_creation.get_image_as_base64(path)
+    logo_bytes = b64_mod.b64decode(logo_b64)
+    img = Image.open(BytesIO(logo_bytes))
+    if img.width > 512 or img.height > 512:
+        img.thumbnail((512, 512), Image.LANCZOS)
+        buf = BytesIO()
+        fmt = "PNG" if img.mode == "RGBA" else "JPEG"
+        img.save(buf, format=fmt)
+        logo_b64 = b64_mod.b64encode(buf.getvalue()).decode("utf-8")
+    return logo_b64
+
+
 @dataclass
 class GenerateAdsNode(BaseNode[AdCreationPipelineState]):
     """
@@ -86,6 +118,31 @@ class GenerateAdsNode(BaseNode[AdCreationPipelineState]):
                 if tag not in selected_image_tags:
                     selected_image_tags.append(tag)
 
+        # Smart logo variant selection based on template background brightness
+        logo_b64_override = ctx.state.logo_image_base64  # Default (primary)
+        logo_variant_used = "logo" if logo_b64_override else None
+        variants = (ctx.state.brand_asset_info or {}).get("logo_variants", {})
+        if len(variants) > 1 and ctx.state.ad_analysis:
+            palette = (ctx.state.ad_analysis or {}).get("color_palette", [])
+            if palette and _is_dark_background(palette):
+                white_path = variants.get("logo_white")
+                if white_path:
+                    try:
+                        logo_b64_override = await _download_and_resize_logo(ctx.deps, white_path)
+                        logo_variant_used = "logo_white"
+                        logger.info("Smart logo: selected logo_white for dark background")
+                    except Exception as e:
+                        logger.warning(f"Smart logo: failed to download logo_white, using default: {e}")
+            else:
+                dark_path = variants.get("logo_dark")
+                if dark_path:
+                    try:
+                        logo_b64_override = await _download_and_resize_logo(ctx.deps, dark_path)
+                        logo_variant_used = "logo_dark"
+                        logger.info("Smart logo: selected logo_dark for light background")
+                    except Exception as e:
+                        logger.warning(f"Smart logo: failed to download logo_dark, using default: {e}")
+
         for i, selected_hook in enumerate(ctx.state.selected_hooks, start=1):
             hook_list_index = i - 1  # 0-based index for congruence lookup
             for canvas_size in ctx.state.canvas_sizes:
@@ -114,6 +171,7 @@ class GenerateAdsNode(BaseNode[AdCreationPipelineState]):
                             brand_asset_info=ctx.state.brand_asset_info,
                             selected_image_tags=selected_image_tags,
                             performance_context=ctx.state.performance_context,
+                            logo_image_base64=logo_b64_override,
                         )
 
                         # Execute generation
@@ -123,6 +181,9 @@ class GenerateAdsNode(BaseNode[AdCreationPipelineState]):
                             gemini_service=ctx.deps.gemini,
                             image_resolution=ctx.state.image_resolution,
                         )
+
+                        # Pop logo blob to prevent ~400KB x N duplicate data in memory
+                        prompt.pop('logo_image_base64', None)
 
                         # Upload image with structured naming
                         ad_uuid = uuid_module.uuid4()
@@ -151,6 +212,8 @@ class GenerateAdsNode(BaseNode[AdCreationPipelineState]):
                             "template_id": ctx.state.template_id,
                             "prompt_version": ctx.state.prompt_version,
                             "content_source": ctx.state.content_source,
+                            "creative_direction": ctx.state.creative_direction,
+                            "logo_variant": logo_variant_used,
                         }
 
                         # Phase 6: Pre-gen score from genome posteriors (non-fatal)

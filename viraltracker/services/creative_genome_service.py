@@ -49,6 +49,7 @@ REWARD_WEIGHTS = {
 TRACKED_ELEMENTS = [
     "hook_type", "color_mode", "template_category",
     "awareness_stage", "canvas_size", "content_source",
+    "creative_direction",
 ]
 
 # Cold-start shrinkage factor for cross-brand priors

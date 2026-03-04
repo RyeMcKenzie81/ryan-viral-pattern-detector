@@ -72,6 +72,8 @@ class AdGenerationService:
         selected_image_tags: Optional[List[str]] = None,
         # Phase 6: Creative Genome performance context
         performance_context: Optional[Dict[str, Any]] = None,
+        # Logo injection
+        logo_image_base64: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Generate structured JSON prompt for Gemini image generation using Pydantic models.
@@ -211,6 +213,7 @@ class AdGenerationService:
                 template_elements=template_elements,
                 brand_asset_info=brand_asset_info,
                 selected_image_tags=selected_image_tags,
+                logo_image_provided=bool(logo_image_base64),
             )
 
         # Phase 6: Build PerformanceContext from genome data
@@ -331,6 +334,7 @@ class AdGenerationService:
             "template_reference_path": reference_ad_path,
             "product_image_paths": product_image_paths,
             "prompt_version": prompt_version,
+            "logo_image_base64": logo_image_base64,
         }
 
         logger.info(f"Generated Pydantic prompt for variation {prompt_index} ({len(full_prompt)} chars)")
@@ -371,11 +375,19 @@ class AdGenerationService:
             img_data = await ad_creation_service.download_image(path)
             product_images_data.append(img_data)
 
-        # Build reference images: template + product images
-        reference_images = [template_data] + product_images_data
+        # Build reference images: template + logo (if provided) + product images
+        logo_b64 = nano_banana_prompt.get('logo_image_base64')
+        logo_data = []
+        if logo_b64:
+            import base64
+            logo_data = [base64.b64decode(logo_b64)]
+
+        reference_images = [template_data] + logo_data + product_images_data
 
         logger.info(f"Reference images: {len(reference_images)} total "
-                    f"(1 template + {len(product_images_data)} product)")
+                    f"(1 template + {len(logo_data)} logo + {len(product_images_data)} product)")
+        if len(reference_images) > 12:
+            logger.warning(f"Reference image count ({len(reference_images)}) exceeds 12 — may hit API limits")
 
         if "SECONDARY" in nano_banana_prompt.get('full_prompt', ''):
             logger.info("Prompt includes SECONDARY image instructions")
@@ -409,6 +421,7 @@ class AdGenerationService:
         template_elements: Dict[str, Any],
         brand_asset_info: Optional[Dict[str, Any]],
         selected_image_tags: Optional[List[str]],
+        logo_image_provided: bool = False,
     ) -> AssetContext:
         """Build AssetContext from template elements, brand info, and selected image tags.
 
@@ -466,7 +479,12 @@ class AdGenerationService:
 
         # Generate asset_instructions
         instructions = []
-        if logo_gap:
+        if requires_logo and brand_has_logo and logo_image_provided:
+            instructions.append(
+                "Brand logo is included as a reference image. "
+                "Reproduce it EXACTLY — do not stylize or re-render."
+            )
+        elif logo_gap:
             instructions.append(
                 "Template has logo area but brand has no logo. "
                 "Leave logo area empty or use brand name text."
@@ -490,6 +508,7 @@ class AdGenerationService:
         return AssetContext(
             template_requires_logo=requires_logo,
             brand_has_logo=brand_has_logo,
+            logo_reference_provided=logo_image_provided,
             logo_placement=logo_placement,
             template_requires_badge=requires_badge,
             brand_has_badge=brand_has_badge,

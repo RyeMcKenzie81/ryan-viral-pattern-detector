@@ -149,6 +149,7 @@ class AssetContext(BaseModel):
     """
     template_requires_logo: bool = False
     brand_has_logo: bool = False
+    logo_reference_provided: bool = False
     logo_placement: Optional[str] = None
     template_requires_badge: bool = False
     brand_has_badge: bool = False

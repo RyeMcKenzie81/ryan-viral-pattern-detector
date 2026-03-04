@@ -45,11 +45,13 @@ class AdCreationPipelineState:
     brand_fonts: Optional[Dict[str, Any]] = None
     image_selection_mode: str = "auto"  # auto, manual
     selected_image_paths: Optional[List[str]] = None
+    user_selected_image_ids: Optional[List[str]] = None
     persona_id: Optional[str] = None
     variant_id: Optional[str] = None
     offer_variant_id: Optional[str] = None
     current_offer_override: Optional[str] = None
     additional_instructions: Optional[str] = None
+    creative_direction: Optional[str] = None
     angle_data: Optional[Dict[str, Any]] = None
     match_template_structure: bool = False
     image_resolution: str = "2K"  # "1K", "2K", or "4K" — passed to Gemini generate_image()
@@ -73,6 +75,7 @@ class AdCreationPipelineState:
     template_elements: Optional[Dict[str, Any]] = None     # None = no detection ran, {} = detection ran but empty
     asset_match_result: Optional[Dict[str, Any]] = None     # informational match against all images
     brand_asset_info: Optional[Dict[str, Any]] = None       # logo/badge detection from brand_assets
+    logo_image_base64: Optional[str] = None                  # logo image for Gemini reference injection
 
     # FetchContextNode (Phase 4 — congruence)
     lp_hero_data: Optional[Dict[str, Any]] = None           # LP hero headline/subheadline from brand_landing_pages

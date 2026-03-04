@@ -196,23 +196,50 @@ class FetchContextNode(BaseNode[AdCreationPipelineState]):
                             "asset_type, storage_path"
                         ).eq("brand_id", brand_id).execute()
 
+                        logo_variants = {}  # {asset_type: storage_path}
+                        primary_logo_path = None
                         has_logo = False
-                        logo_path = None
                         has_badge = False
                         for asset in (ba_result.data or []):
                             asset_type = (asset.get("asset_type") or "").lower()
                             if "logo" in asset_type:
                                 has_logo = True
-                                logo_path = asset.get("storage_path")
+                                logo_variants[asset_type] = asset.get("storage_path")
+                                if not primary_logo_path:
+                                    primary_logo_path = asset.get("storage_path")
                             if "badge" in asset_type:
                                 has_badge = True
 
                         ctx.state.brand_asset_info = {
                             "has_logo": has_logo,
-                            "logo_path": logo_path,
+                            "logo_path": primary_logo_path,
+                            "logo_variants": logo_variants,
                             "has_badge": has_badge,
                         }
-                        logger.info(f"Brand assets: logo={has_logo}, badge={has_badge}")
+                        logger.info(f"Brand assets: logo={has_logo} ({len(logo_variants)} variants), badge={has_badge}")
+
+                        # Download primary logo for reference image injection
+                        if has_logo and primary_logo_path:
+                            try:
+                                if primary_logo_path.lower().endswith('.svg'):
+                                    logger.info("Logo is SVG format — skipping reference image injection")
+                                else:
+                                    logo_b64 = await ctx.deps.ad_creation.get_image_as_base64(primary_logo_path)
+                                    import base64 as b64_mod
+                                    from io import BytesIO
+                                    from PIL import Image
+                                    logo_bytes = b64_mod.b64decode(logo_b64)
+                                    img = Image.open(BytesIO(logo_bytes))
+                                    if img.width > 512 or img.height > 512:
+                                        img.thumbnail((512, 512), Image.LANCZOS)
+                                        buf = BytesIO()
+                                        fmt = "PNG" if img.mode == "RGBA" else "JPEG"
+                                        img.save(buf, format=fmt)
+                                        logo_b64 = b64_mod.b64encode(buf.getvalue()).decode("utf-8")
+                                    ctx.state.logo_image_base64 = logo_b64
+                                    logger.info(f"Logo loaded for injection ({img.width}x{img.height})")
+                            except Exception as e:
+                                logger.warning(f"Failed to load logo image (non-fatal): {e}")
                     except Exception as e:
                         logger.warning(f"Failed to fetch brand assets (non-fatal): {e}")
 
@@ -266,11 +293,14 @@ class FetchContextNode(BaseNode[AdCreationPipelineState]):
                 except Exception as e:
                     logger.warning(f"Failed to fetch genome performance context (non-fatal): {e}")
 
-            # Build combined instructions
-            combined_instructions = ""
+            # Build combined instructions (creative direction + additional instructions)
+            parts = []
+            if ctx.state.creative_direction:
+                parts.append(ctx.state.creative_direction.strip())
             if ctx.state.additional_instructions:
-                combined_instructions = ctx.state.additional_instructions
-            product_dict['combined_instructions'] = combined_instructions if combined_instructions else None
+                parts.append(ctx.state.additional_instructions.strip())
+            combined = "\n\n".join(parts) if parts else ""
+            product_dict['combined_instructions'] = combined if combined else None
 
             # Fetch hooks (only if hooks mode)
             hooks_list = []
