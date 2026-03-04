@@ -1,10 +1,10 @@
 """
 QA Validation, QA Approval, and Publish Nodes.
 
-QAValidationNode → QAApprovalNode (HUMAN) → PublishNode → InterlinkingNode
+QAValidationNode → QAApprovalNode (HUMAN) → ImageGenerationNode → PublishNode → InterlinkingNode
 
 Reads: article_id, qa_result, human_input, brand_id, organization_id
-Writes: qa_result, published_url, cms_article_id
+Writes: qa_result, published_url, cms_article_id, hero_image_url
 """
 
 import logging
@@ -85,7 +85,8 @@ class QAApprovalNode(BaseNode[SEOPipelineState]):
     async def run(
         self,
         ctx: GraphRunContext[SEOPipelineState],
-    ) -> Union["PublishNode", End]:
+    ) -> Union["ImageGenerationNode", "ContentPhaseCNode", End]:
+        from .image_generation import ImageGenerationNode
         ctx.state.current_step = "qa_approval"
         ctx.state.current_checkpoint = SEOHumanCheckpoint.QA_APPROVAL
 
@@ -103,14 +104,14 @@ class QAApprovalNode(BaseNode[SEOPipelineState]):
                     })
                 ctx.state.awaiting_human = False
                 ctx.state.mark_step_complete("qa_approval")
-                logger.info("QA approved, proceeding to publish")
-                return PublishNode()
+                logger.info("QA approved, proceeding to image generation")
+                return ImageGenerationNode()
 
             elif action == "override":
                 ctx.state.awaiting_human = False
                 ctx.state.mark_step_complete("qa_approval")
-                logger.info("QA overridden, proceeding to publish")
-                return PublishNode()
+                logger.info("QA overridden, proceeding to image generation")
+                return ImageGenerationNode()
 
             elif action == "fix":
                 from .content_generation import ContentPhaseCNode

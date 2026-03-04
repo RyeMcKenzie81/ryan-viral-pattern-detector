@@ -28,6 +28,7 @@ from viraltracker.services.seo_pipeline.nodes import (
     ArticleReviewNode,
     QAValidationNode,
     QAApprovalNode,
+    ImageGenerationNode,
     PublishNode,
     InterlinkingNode,
 )
@@ -75,8 +76,8 @@ def mock_ctx(base_state):
 
 class TestGraphDefinition:
     def test_graph_has_all_nodes(self):
-        """Verify graph contains all 12 node types."""
-        assert len(seo_pipeline_graph.node_defs) == 12
+        """Verify graph contains all 13 node types."""
+        assert len(seo_pipeline_graph.node_defs) == 13
 
     def test_graph_name(self):
         assert seo_pipeline_graph.name == "seo_content_pipeline"
@@ -116,7 +117,7 @@ class TestGraphDefinition:
             "KeywordDiscoveryNode", "KeywordSelectionNode", "CompetitorAnalysisNode",
             "ContentPhaseANode", "OutlineReviewNode", "ContentPhaseBNode",
             "ContentPhaseCNode", "ArticleReviewNode", "QAValidationNode",
-            "QAApprovalNode", "PublishNode", "InterlinkingNode",
+            "QAApprovalNode", "ImageGenerationNode", "PublishNode", "InterlinkingNode",
         }
         actual = set(seo_pipeline_graph.node_defs.keys())
         assert actual == expected
@@ -569,7 +570,7 @@ class TestQAApprovalNode:
 
         result = await node.run(mock_ctx)
 
-        assert isinstance(result, PublishNode)
+        assert isinstance(result, ImageGenerationNode)
 
     @pytest.mark.asyncio
     async def test_approve_failed_qa_blocked(self, mock_ctx):
@@ -589,7 +590,7 @@ class TestQAApprovalNode:
 
         result = await node.run(mock_ctx)
 
-        assert isinstance(result, PublishNode)
+        assert isinstance(result, ImageGenerationNode)
 
     @pytest.mark.asyncio
     async def test_fix_action(self, mock_ctx):
@@ -735,3 +736,67 @@ class TestGetPipelineStatus:
             status = get_pipeline_status("proj-1", "org-1")
             assert status["error"] == "API timeout"
             assert status["error_step"] == "content_phase_b"
+
+
+# =============================================================================
+# IMAGE GENERATION NODE UNIT TESTS
+# =============================================================================
+
+IMAGE_SVC = "viraltracker.services.seo_pipeline.services.seo_image_service.SEOImageService"
+
+
+class TestImageGenerationNode:
+    """Dedicated unit tests for ImageGenerationNode."""
+
+    @pytest.mark.asyncio
+    async def test_happy_path_updates_state(self, base_state, mock_ctx):
+        """On success, node sets hero_image_url, image_results, updates markdown."""
+        base_state.phase_c_output = "# Article\n[IMAGE: hero]\nContent"
+        base_state.selected_keyword = "gaming pc"
+        base_state.article_id = uuid4()
+
+        mock_result = {
+            "hero_image_url": "https://cdn.example.com/hero.png",
+            "stats": {"total": 1, "success": 1, "failed": 0},
+            "updated_markdown": "# Article\n<img src='...' />\nContent",
+        }
+
+        with patch(IMAGE_SVC) as MockSvc:
+            MockSvc.return_value.generate_article_images = AsyncMock(return_value=mock_result)
+            node = ImageGenerationNode()
+            result = await node.run(mock_ctx)
+
+        assert isinstance(result, PublishNode)
+        assert base_state.hero_image_url == "https://cdn.example.com/hero.png"
+        assert base_state.image_results == {"total": 1, "success": 1, "failed": 0}
+        assert "image_generation" in base_state.steps_completed
+
+    @pytest.mark.asyncio
+    async def test_no_markdown_skips(self, base_state, mock_ctx):
+        """When no Phase C output, node skips and proceeds to PublishNode."""
+        base_state.phase_c_output = None
+
+        node = ImageGenerationNode()
+        result = await node.run(mock_ctx)
+
+        assert isinstance(result, PublishNode)
+        assert "image_generation" in base_state.steps_completed
+        assert base_state.hero_image_url is None
+
+    @pytest.mark.asyncio
+    async def test_exception_non_fatal(self, base_state, mock_ctx):
+        """On service exception, node logs warning and proceeds (non-fatal)."""
+        base_state.phase_c_output = "# Article with images"
+        base_state.selected_keyword = "test"
+        base_state.article_id = uuid4()
+
+        with patch(IMAGE_SVC) as MockSvc:
+            MockSvc.return_value.generate_article_images = AsyncMock(
+                side_effect=Exception("Gemini API down")
+            )
+            node = ImageGenerationNode()
+            result = await node.run(mock_ctx)
+
+        assert isinstance(result, PublishNode)
+        assert "image_generation" in base_state.steps_completed
+        assert base_state.hero_image_url is None

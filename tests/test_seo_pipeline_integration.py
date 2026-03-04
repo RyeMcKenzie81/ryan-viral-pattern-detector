@@ -1189,11 +1189,11 @@ class TestEndToEndPipeline:
             assert "interlinking" in state.steps_completed
             assert state.completed_at is not None
 
-            # Verify all 12 steps completed
+            # Verify all 13 steps completed
             expected_steps = {
                 "keyword_discovery", "keyword_selection", "competitor_analysis",
                 "content_phase_a", "outline_review", "content_phase_b",
                 "content_phase_c", "article_review", "qa_validation",
-                "qa_approval", "publishing", "interlinking",
+                "qa_approval", "image_generation", "publishing", "interlinking",
             }
             assert set(state.steps_completed) == expected_steps

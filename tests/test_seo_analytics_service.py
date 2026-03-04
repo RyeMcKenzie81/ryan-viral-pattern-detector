@@ -329,7 +329,8 @@ class TestGetProjectDashboard:
         assert result["keywords"]["total"] == 0
         assert result["links"]["total"] == 0
 
-    def test_dashboard_link_stats(self, service, sample_keywords):
+    def test_dashboard_link_stats_batch(self, service, sample_keywords):
+        """Link stats now use batch .in_() query instead of N+1 loop."""
         articles = [
             {
                 "id": "art-001",
@@ -340,9 +341,9 @@ class TestGetProjectDashboard:
             }
         ]
         links = [
-            {"id": "link-1", "status": "implemented", "link_type": "auto"},
-            {"id": "link-2", "status": "pending", "link_type": "suggested"},
-            {"id": "link-3", "status": "implemented", "link_type": "bidirectional"},
+            {"id": "link-1", "status": "implemented"},
+            {"id": "link-2", "status": "pending"},
+            {"id": "link-3", "status": "implemented"},
         ]
 
         def table_side_effect(table_name):
@@ -358,7 +359,8 @@ class TestGetProjectDashboard:
             elif table_name == "seo_internal_links":
                 mock_exec = MagicMock()
                 mock_exec.data = links
-                mock_table.select.return_value.eq.return_value.execute.return_value = mock_exec
+                # batch uses .in_() instead of .eq()
+                mock_table.select.return_value.in_.return_value.execute.return_value = mock_exec
             return mock_table
 
         service._supabase.table.side_effect = table_side_effect
@@ -368,3 +370,101 @@ class TestGetProjectDashboard:
         assert result["links"]["total"] == 3
         assert result["links"]["implemented"] == 2
         assert result["links"]["suggested"] == 1
+
+
+# =============================================================================
+# BRAND DASHBOARD
+# =============================================================================
+
+class TestGetBrandDashboard:
+    def test_zero_projects(self, service):
+        """No projects should return zero-state dict, never error."""
+        mock_exec = MagicMock()
+        mock_exec.data = []
+        service._supabase.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.return_value = mock_exec
+
+        result = service.get_brand_dashboard("brand-001", "org-001")
+
+        assert result["articles"]["total"] == 0
+        assert result["keywords"]["total"] == 0
+        assert result["projects"]["total"] == 0
+
+    def test_multiple_projects(self, service):
+        """Aggregates across multiple projects for a brand."""
+        projects = [
+            {"id": "proj-001", "status": "active"},
+            {"id": "proj-002", "status": "active"},
+        ]
+        articles = [
+            {"id": "art-001", "keyword": "kw1", "status": "published", "published_url": "https://x.com/1"},
+            {"id": "art-002", "keyword": "kw2", "status": "draft", "published_url": None},
+            {"id": "art-003", "keyword": "kw3", "status": "published", "published_url": "https://x.com/3"},
+        ]
+        keywords = [
+            {"id": "kw-001", "status": "selected"},
+            {"id": "kw-002", "status": "discovered"},
+        ]
+
+        def table_side_effect(table_name):
+            mock_table = MagicMock()
+            if table_name == "seo_projects":
+                mock_exec = MagicMock()
+                mock_exec.data = projects
+                mock_table.select.return_value.eq.return_value.eq.return_value.execute.return_value = mock_exec
+            elif table_name == "seo_articles":
+                mock_exec = MagicMock()
+                mock_exec.data = articles
+                mock_table.select.return_value.eq.return_value.eq.return_value.execute.return_value = mock_exec
+            elif table_name == "seo_keywords":
+                mock_exec = MagicMock()
+                mock_exec.data = keywords
+                mock_table.select.return_value.in_.return_value.execute.return_value = mock_exec
+            elif table_name == "seo_internal_links":
+                mock_exec = MagicMock()
+                mock_exec.data = []
+                mock_table.select.return_value.in_.return_value.execute.return_value = mock_exec
+            return mock_table
+
+        service._supabase.table.side_effect = table_side_effect
+
+        result = service.get_brand_dashboard("brand-001", "org-001")
+
+        assert result["projects"]["total"] == 2
+        assert result["projects"]["active"] == 2
+        assert result["articles"]["total"] == 3
+        assert result["articles"]["published"] == 2
+        assert result["keywords"]["total"] == 2
+
+    def test_brand_dashboard_with_archived_project(self, service):
+        """Archived projects count in total but not in active."""
+        projects = [
+            {"id": "proj-001", "status": "active"},
+            {"id": "proj-002", "status": "archived"},
+        ]
+
+        def table_side_effect(table_name):
+            mock_table = MagicMock()
+            if table_name == "seo_projects":
+                mock_exec = MagicMock()
+                mock_exec.data = projects
+                mock_table.select.return_value.eq.return_value.eq.return_value.execute.return_value = mock_exec
+            elif table_name == "seo_articles":
+                mock_exec = MagicMock()
+                mock_exec.data = []
+                mock_table.select.return_value.eq.return_value.eq.return_value.execute.return_value = mock_exec
+            elif table_name == "seo_keywords":
+                mock_exec = MagicMock()
+                mock_exec.data = []
+                mock_table.select.return_value.in_.return_value.execute.return_value = mock_exec
+            elif table_name == "seo_internal_links":
+                mock_exec = MagicMock()
+                mock_exec.data = []
+                mock_table.select.return_value.in_.return_value.execute.return_value = mock_exec
+            return mock_table
+
+        service._supabase.table.side_effect = table_side_effect
+
+        result = service.get_brand_dashboard("brand-001", "org-001")
+
+        assert result["projects"]["total"] == 2
+        assert result["projects"]["active"] == 1

@@ -10,7 +10,7 @@ Pipeline flow:
     KeywordDiscovery → KeywordSelection (H) → CompetitorAnalysis
     → PhaseA → OutlineReview (H) → PhaseB → PhaseC
     → ArticleReview (H) → QAValidation → QAApproval (H)
-    → Publish → Interlinking → End
+    → ImageGeneration → Publish → Interlinking → End
 
 (H) = Human checkpoint — pipeline pauses, state saved, UI prompts user.
 """
@@ -34,6 +34,7 @@ from viraltracker.services.seo_pipeline.nodes import (
     ArticleReviewNode,
     QAValidationNode,
     QAApprovalNode,
+    ImageGenerationNode,
     PublishNode,
     InterlinkingNode,
 )
@@ -57,6 +58,7 @@ seo_pipeline_graph = Graph(
         ArticleReviewNode,
         QAValidationNode,
         QAApprovalNode,
+        ImageGenerationNode,
         PublishNode,
         InterlinkingNode,
     ),

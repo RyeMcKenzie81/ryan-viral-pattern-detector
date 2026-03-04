@@ -604,11 +604,12 @@ class CMSPublisherService:
         brand_id: str,
         organization_id: str,
     ) -> Optional[Dict[str, Any]]:
-        """Get brand integration from DB."""
+        """Get Shopify brand integration from DB."""
         query = (
             self.supabase.table("brand_integrations")
             .select("*")
             .eq("brand_id", brand_id)
+            .eq("platform", "shopify")
         )
         if organization_id != "all":
             query = query.eq("organization_id", organization_id)
