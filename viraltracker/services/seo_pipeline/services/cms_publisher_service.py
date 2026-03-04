@@ -113,10 +113,15 @@ class ShopifyPublisher(CMSPublisher):
         {
             "store_domain": "mystore.myshopify.com",
             "access_token": "shpat_...",
+            "client_id": "...",
+            "client_secret": "shpss_...",
             "api_version": "2024-10",
             "blog_id": "99206135908",
             "blog_handle": "articles"
         }
+
+    If client_id and client_secret are provided, the publisher will
+    auto-refresh the access token on 401 errors and update the stored config.
     """
 
     def __init__(
@@ -126,12 +131,18 @@ class ShopifyPublisher(CMSPublisher):
         blog_id: str,
         api_version: str = "2024-10",
         blog_handle: str = "articles",
+        client_id: Optional[str] = None,
+        client_secret: Optional[str] = None,
+        on_token_refresh: Optional[Any] = None,
     ):
         self.store_domain = store_domain
         self.access_token = access_token
         self.blog_id = blog_id
         self.api_version = api_version
         self.blog_handle = blog_handle
+        self._client_id = client_id
+        self._client_secret = client_secret
+        self._on_token_refresh = on_token_refresh
         self._base_url = f"https://{store_domain}/admin/api/{api_version}"
 
     def publish(
@@ -358,9 +369,12 @@ class ShopifyPublisher(CMSPublisher):
         method: str,
         url: str,
         json_data: Optional[Dict[str, Any]] = None,
+        _retried: bool = False,
     ) -> Dict[str, Any]:
         """
         Make an authenticated request to the Shopify REST API.
+
+        On 401, attempts to refresh the token via client credentials and retry once.
 
         Args:
             method: HTTP method (GET, POST, PUT)
@@ -389,6 +403,12 @@ class ShopifyPublisher(CMSPublisher):
         if response.status_code in (200, 201):
             return response.json()
 
+        # Auto-refresh token on 401 and retry once
+        if response.status_code == 401 and not _retried:
+            new_token = self._refresh_token()
+            if new_token:
+                return self._api_request(method, url, json_data, _retried=True)
+
         error_body = response.text[:500]
         logger.error(
             f"Shopify API error: {response.status_code} {method} {url} — {error_body}"
@@ -396,6 +416,59 @@ class ShopifyPublisher(CMSPublisher):
         raise Exception(
             f"Shopify API error: {response.status_code} — {error_body}"
         )
+
+    def _refresh_token(self) -> Optional[str]:
+        """
+        Refresh the Shopify access token using client credentials grant.
+
+        Returns:
+            New access token, or None if refresh failed.
+        """
+        if not self._client_id or not self._client_secret:
+            logger.warning(
+                "Cannot refresh Shopify token: client_id/client_secret not configured. "
+                "Add them to brand_integrations config for auto-refresh."
+            )
+            return None
+
+        logger.info(f"Refreshing Shopify access token for {self.store_domain}")
+
+        try:
+            with httpx.Client(timeout=15.0) as client:
+                response = client.post(
+                    f"https://{self.store_domain}/admin/oauth/access_token",
+                    json={
+                        "client_id": self._client_id,
+                        "client_secret": self._client_secret,
+                        "grant_type": "client_credentials",
+                    },
+                )
+
+            if response.status_code != 200:
+                logger.error(f"Token refresh failed: {response.status_code} — {response.text[:200]}")
+                return None
+
+            data = response.json()
+            new_token = data.get("access_token")
+            if not new_token:
+                logger.error(f"Token refresh response missing access_token: {data}")
+                return None
+
+            self.access_token = new_token
+            logger.info("Shopify access token refreshed successfully")
+
+            # Notify the service layer to persist the new token
+            if self._on_token_refresh:
+                try:
+                    self._on_token_refresh(new_token)
+                except Exception as e:
+                    logger.warning(f"Failed to persist refreshed token: {e}")
+
+            return new_token
+
+        except Exception as e:
+            logger.error(f"Token refresh request failed: {e}")
+            return None
 
 
 # =============================================================================
@@ -448,7 +521,7 @@ class CMSPublisherService:
         config = integration.get("config", {})
 
         if platform == "shopify":
-            return self._create_shopify_publisher(config)
+            return self._create_shopify_publisher(config, brand_id, organization_id)
 
         logger.warning(f"Unsupported CMS platform: {platform}")
         return None
@@ -543,7 +616,12 @@ class CMSPublisherService:
         result = query.execute()
         return result.data[0] if result.data else None
 
-    def _create_shopify_publisher(self, config: Dict[str, Any]) -> ShopifyPublisher:
+    def _create_shopify_publisher(
+        self,
+        config: Dict[str, Any],
+        brand_id: Optional[str] = None,
+        organization_id: Optional[str] = None,
+    ) -> ShopifyPublisher:
         """Create a ShopifyPublisher from integration config."""
         required = ["store_domain", "access_token", "blog_id"]
         missing = [k for k in required if not config.get(k)]
@@ -553,13 +631,49 @@ class CMSPublisherService:
                 f"Required: store_domain, access_token, blog_id"
             )
 
+        # Build token persistence callback if we have brand context
+        on_token_refresh = None
+        if brand_id:
+            on_token_refresh = self._make_token_refresh_callback(brand_id, organization_id)
+
         return ShopifyPublisher(
             store_domain=config["store_domain"],
             access_token=config["access_token"],
             blog_id=config["blog_id"],
             api_version=config.get("api_version", "2024-10"),
             blog_handle=config.get("blog_handle", "articles"),
+            client_id=config.get("client_id"),
+            client_secret=config.get("client_secret"),
+            on_token_refresh=on_token_refresh,
         )
+
+    def _make_token_refresh_callback(
+        self,
+        brand_id: str,
+        organization_id: Optional[str],
+    ):
+        """Create a callback that persists a refreshed token to brand_integrations."""
+        def callback(new_token: str):
+            try:
+                # Read current config, update token, write back
+                result = (
+                    self.supabase.table("brand_integrations")
+                    .select("id, config")
+                    .eq("brand_id", brand_id)
+                    .eq("platform", "shopify")
+                    .execute()
+                )
+                if result.data:
+                    row = result.data[0]
+                    config = row.get("config", {})
+                    config["access_token"] = new_token
+                    self.supabase.table("brand_integrations").update(
+                        {"config": config}
+                    ).eq("id", row["id"]).execute()
+                    logger.info(f"Persisted refreshed Shopify token for brand {brand_id}")
+            except Exception as e:
+                logger.warning(f"Failed to persist refreshed token for brand {brand_id}: {e}")
+        return callback
 
     def _get_article(self, article_id: str) -> Optional[Dict[str, Any]]:
         """Get article from DB."""
