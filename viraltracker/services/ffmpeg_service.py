@@ -348,7 +348,10 @@ class FFmpegService:
 
     def extract_audio(self, video_bytes: bytes) -> bytes:
         """
-        Extract the audio track from a video file as AAC.
+        Extract the audio track from a video file as MP3.
+
+        Uses MP3 format for broad browser compatibility with st.audio().
+        The MP3 output is also accepted by replace_audio() for re-muxing.
 
         NOTE: This is a sync method. When calling from async code,
         wrap with: await asyncio.to_thread(ffmpeg.extract_audio, video_bytes)
@@ -357,7 +360,7 @@ class FFmpegService:
             video_bytes: Raw video file bytes.
 
         Returns:
-            Audio bytes (M4A/AAC format).
+            Audio bytes (MP3 format).
 
         Raises:
             ValueError: If FFmpeg not available or video has no audio track.
@@ -367,7 +370,7 @@ class FFmpegService:
 
         with tempfile.TemporaryDirectory() as tmpdir:
             input_path = Path(tmpdir) / "input.mp4"
-            output_path = Path(tmpdir) / "output.m4a"
+            output_path = Path(tmpdir) / "output.mp3"
 
             input_path.write_bytes(video_bytes)
 
@@ -391,7 +394,7 @@ class FFmpegService:
             except subprocess.TimeoutExpired:
                 raise ValueError("Timed out probing video for audio.")
 
-            # Extract audio
+            # Extract audio as MP3
             try:
                 subprocess.run(
                     [
@@ -399,8 +402,8 @@ class FFmpegService:
                         "-y",
                         "-i", str(input_path),
                         "-vn",
-                        "-acodec", "aac",
-                        "-b:a", "128k",
+                        "-acodec", "libmp3lame",
+                        "-q:a", "2",
                         str(output_path),
                     ],
                     capture_output=True,

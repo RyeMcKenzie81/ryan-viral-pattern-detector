@@ -492,7 +492,7 @@ def _render_voice_embedded_path(avatar, brand_id: str):
 
     # Show audio preview if available
     if has_audio_in_session:
-        st.audio(st.session_state[voice_audio_key], format="audio/mp4")
+        st.audio(st.session_state[voice_audio_key], format="audio/mp3")
         st.caption("Preview of extracted audio from your voice sample.")
 
     # ---- Step 2: Preview with My Voice ----
