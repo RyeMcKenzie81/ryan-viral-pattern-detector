@@ -252,3 +252,99 @@ class TestGenerationFailureResilience:
         succeeded = [ad for ad in state.generated_ads if ad.get("storage_path") is not None]
         assert len(failed) == 1
         assert len(succeeded) == 1
+
+
+# ============================================================================
+# Smart logo variant selection helpers
+# ============================================================================
+
+class TestIsDarkBackground:
+    """_is_dark_background helper for smart logo selection."""
+
+    def test_dark_palette(self):
+        from viraltracker.pipelines.ad_creation_v2.nodes.generate_ads import _is_dark_background
+        assert _is_dark_background(["#000000", "#1a1a1a", "#333333"]) is True
+
+    def test_light_palette(self):
+        from viraltracker.pipelines.ad_creation_v2.nodes.generate_ads import _is_dark_background
+        assert _is_dark_background(["#FFFFFF", "#F5F5F5", "#E8E8E8"]) is False
+
+    def test_empty_palette(self):
+        from viraltracker.pipelines.ad_creation_v2.nodes.generate_ads import _is_dark_background
+        assert _is_dark_background([]) is False
+
+    def test_mixed_palette_at_boundary(self):
+        from viraltracker.pipelines.ad_creation_v2.nodes.generate_ads import _is_dark_background
+        # Average of white (255) + black (0) = 127.5, which IS < 128
+        assert _is_dark_background(["#FFFFFF", "#000000"]) is True
+        # Slightly above threshold: two light colors + one dark
+        assert _is_dark_background(["#FFFFFF", "#FFFFFF", "#000000"]) is False
+
+    def test_invalid_hex_skipped(self):
+        from viraltracker.pipelines.ad_creation_v2.nodes.generate_ads import _is_dark_background
+        # Invalid hex values are skipped, only valid ones count
+        assert _is_dark_background(["#000000", "invalid", "#1a1a1a"]) is True
+
+    def test_hash_prefix_stripped(self):
+        from viraltracker.pipelines.ad_creation_v2.nodes.generate_ads import _is_dark_background
+        assert _is_dark_background(["#FFFFFF"]) is False
+        assert _is_dark_background(["FFFFFF"]) is False  # Works without hash too
+
+
+# ============================================================================
+# Element tags include new fields
+# ============================================================================
+
+class TestElementTagsNewFields:
+    """element_tags dict includes creative_direction and logo_variant."""
+
+    @pytest.mark.asyncio
+    async def test_element_tags_contain_creative_direction(self):
+        state = _make_state(
+            selected_hooks=[{"adapted_text": "H1", "id": "h1"}],
+            creative_direction="Clean & minimal, Educational",
+        )
+        ctx = _make_ctx(state)
+
+        with patch(
+            "viraltracker.pipelines.ad_creation_v2.services.generation_service.AdGenerationService"
+        ) as MockGenSvc:
+            svc = MockGenSvc.return_value
+            svc.generate_prompt.return_value = {
+                "prompt_index": 1, "full_prompt": "{}", "prompt_version": "v2.1.0",
+            }
+            svc.execute_generation = AsyncMock(return_value={
+                "image_base64": "img", "model_requested": "m", "model_used": "m",
+                "generation_time_ms": 100, "retries": 0,
+            })
+
+            node = GenerateAdsNode()
+            await node.run(ctx)
+
+        ad = state.generated_ads[0]
+        assert ad["element_tags"]["creative_direction"] == "Clean & minimal, Educational"
+
+    @pytest.mark.asyncio
+    async def test_element_tags_contain_logo_variant(self):
+        state = _make_state(
+            selected_hooks=[{"adapted_text": "H1", "id": "h1"}],
+        )
+        ctx = _make_ctx(state)
+
+        with patch(
+            "viraltracker.pipelines.ad_creation_v2.services.generation_service.AdGenerationService"
+        ) as MockGenSvc:
+            svc = MockGenSvc.return_value
+            svc.generate_prompt.return_value = {
+                "prompt_index": 1, "full_prompt": "{}", "prompt_version": "v2.1.0",
+            }
+            svc.execute_generation = AsyncMock(return_value={
+                "image_base64": "img", "model_requested": "m", "model_used": "m",
+                "generation_time_ms": 100, "retries": 0,
+            })
+
+            node = GenerateAdsNode()
+            await node.run(ctx)
+
+        ad = state.generated_ads[0]
+        assert "logo_variant" in ad["element_tags"]

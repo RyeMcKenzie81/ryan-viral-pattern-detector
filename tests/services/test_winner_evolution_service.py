@@ -656,6 +656,49 @@ class TestBuildBasePipelineParams:
         assert result["persona_id"] == element_tags["persona_id"]
         assert result["auto_retry_rejected"] is False
 
+    def test_inherits_creative_direction(self, evo_service):
+        """Evolved ads inherit creative_direction from parent element_tags."""
+        parent = {
+            "id": str(AD_ID),
+            "canvas_size": "1080x1080px",
+            "color_mode": "original",
+        }
+        element_tags = {
+            "template_id": str(uuid4()),
+            "canvas_size": "1080x1080px",
+            "color_mode": "original",
+            "content_source": "hooks",
+            "persona_id": None,
+            "creative_direction": "Bold & vibrant, UGC-style",
+        }
+
+        result = evo_service._build_base_pipeline_params(
+            parent, element_tags, "base64data", str(uuid4())
+        )
+
+        assert result["creative_direction"] == "Bold & vibrant, UGC-style"
+
+    def test_no_creative_direction_when_absent(self, evo_service):
+        """creative_direction not added to params when absent from parent."""
+        parent = {
+            "id": str(AD_ID),
+            "canvas_size": "1080x1080px",
+            "color_mode": "original",
+        }
+        element_tags = {
+            "template_id": str(uuid4()),
+            "canvas_size": "1080x1080px",
+            "color_mode": "original",
+            "content_source": "hooks",
+            "persona_id": None,
+        }
+
+        result = evo_service._build_base_pipeline_params(
+            parent, element_tags, "base64data", str(uuid4())
+        )
+
+        assert "creative_direction" not in result
+
 
 # ============================================================================
 # evolve_winner validation tests

@@ -357,6 +357,16 @@ class TestConstants:
         for elem in TRACKED_ELEMENTS:
             assert isinstance(elem, str)
 
+    def test_tracked_elements_includes_creative_direction(self):
+        """creative_direction must be tracked for performance learning."""
+        assert "creative_direction" in TRACKED_ELEMENTS
+
+    def test_tracked_elements_includes_core_elements(self):
+        """Core creative elements are always tracked."""
+        for elem in ["hook_type", "color_mode", "template_category",
+                      "awareness_stage", "canvas_size", "content_source"]:
+            assert elem in TRACKED_ELEMENTS
+
     def test_maturation_windows_have_required_keys(self):
         for key, (days, imp) in MATURATION_WINDOWS.items():
             assert days > 0
