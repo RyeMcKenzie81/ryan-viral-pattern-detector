@@ -266,3 +266,67 @@ class TestFromDictRollbackSafety:
         state = SEOPipelineState.from_dict(data)
         assert state.hero_image_url == "https://cdn.example.com/hero.png"
         assert state.image_results["total"] == 2
+
+
+# =============================================================================
+# REGENERATE IMAGE TESTS
+# =============================================================================
+
+class TestRegenerateImage:
+    """Test single image regeneration."""
+
+    @pytest.mark.asyncio
+    async def test_regenerate_happy_path(self, service):
+        """Regeneration replaces the entry at the given index."""
+        old_entry = {
+            "index": 0,
+            "type": "hero",
+            "description": "Original desc",
+            "status": "success",
+            "cdn_url": "https://cdn.example.com/old.png",
+            "storage_path": "seo-articles/brand/slug/old.png",
+            "alt_text": "old alt",
+        }
+        article = {
+            "id": "art-1",
+            "keyword": "test keyword",
+            "image_metadata": [old_entry],
+            "phase_c_output": '<img src="https://cdn.example.com/old.png" alt="old alt" loading="eager" style="max-width:100%;height:auto;display:block;margin:2rem auto;border-radius:8px;" />',
+            "hero_image_url": "https://cdn.example.com/old.png",
+        }
+        service._supabase.table.return_value.select.return_value.eq.return_value.execute.return_value.data = [article]
+
+        new_entry = {
+            "index": 0,
+            "type": "hero",
+            "description": "Original desc",
+            "status": "success",
+            "cdn_url": "https://cdn.example.com/new.png",
+            "storage_path": "seo-articles/brand/slug/new.png",
+            "alt_text": "test keyword – Original desc",
+        }
+        service._generate_and_upload_single = AsyncMock(return_value=new_entry)
+        service._save_image_data = MagicMock()
+
+        result = await service.regenerate_image("art-1", 0, "brand-1", "org-1")
+
+        assert result["cdn_url"] == "https://cdn.example.com/new.png"
+        assert result["status"] == "success"
+        service._save_image_data.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_regenerate_invalid_index(self, service):
+        """Out-of-range index raises ValueError."""
+        article = {"id": "art-1", "keyword": "test", "image_metadata": []}
+        service._supabase.table.return_value.select.return_value.eq.return_value.execute.return_value.data = [article]
+
+        with pytest.raises(ValueError, match="out of range"):
+            await service.regenerate_image("art-1", 5, "brand-1", "org-1")
+
+    @pytest.mark.asyncio
+    async def test_regenerate_article_not_found(self, service):
+        """Missing article raises ValueError."""
+        service._supabase.table.return_value.select.return_value.eq.return_value.execute.return_value.data = []
+
+        with pytest.raises(ValueError, match="not found"):
+            await service.regenerate_image("missing", 0, "brand-1", "org-1")

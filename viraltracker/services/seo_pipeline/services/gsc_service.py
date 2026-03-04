@@ -235,9 +235,12 @@ class GSCService(BaseAnalyticsService):
             "rowLimit": 25000,
         }
 
+        from urllib.parse import quote
+        encoded_site_url = quote(site_url, safe="")
+
         with httpx.Client(timeout=30.0) as client:
             response = client.post(
-                f"https://www.googleapis.com/webmasters/v3/sites/{site_url}/searchAnalytics/query",
+                f"https://www.googleapis.com/webmasters/v3/sites/{encoded_site_url}/searchAnalytics/query",
                 headers={"Authorization": f"Bearer {access_token}"},
                 json=request_body,
             )
@@ -288,11 +291,15 @@ class GSCService(BaseAnalyticsService):
                     "impressions": 0,
                     "ctr_sum": 0.0,
                     "ctr_count": 0,
+                    "position_sum": 0.0,
+                    "position_count": 0,
                 }
             page_date_data[key]["clicks"] += clicks
             page_date_data[key]["impressions"] += impressions
             page_date_data[key]["ctr_sum"] += ctr
             page_date_data[key]["ctr_count"] += 1
+            page_date_data[key]["position_sum"] += position
+            page_date_data[key]["position_count"] += 1
 
             # Individual ranking rows (per query)
             ranking_rows.append((page_url, {
@@ -308,12 +315,14 @@ class GSCService(BaseAnalyticsService):
         analytics_pairs = []
         for (page_url, date_str), agg in page_date_data.items():
             avg_ctr = agg["ctr_sum"] / agg["ctr_count"] if agg["ctr_count"] else 0.0
+            avg_position = agg["position_sum"] / agg["position_count"] if agg["position_count"] else None
             analytics_pairs.append((page_url, {
                 "organization_id": organization_id,
                 "date": date_str,
                 "impressions": agg["impressions"],
                 "clicks": agg["clicks"],
                 "ctr": round(avg_ctr, 4),
+                "average_position": round(avg_position, 1) if avg_position is not None else None,
             }))
 
         # Match URLs to articles

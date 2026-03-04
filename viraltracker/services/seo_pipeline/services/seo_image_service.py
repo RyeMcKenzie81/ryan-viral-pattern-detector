@@ -403,7 +403,9 @@ class SEOImageService:
                 'margin:1.5rem 0;">[Image unavailable]</div>'
             )
 
-        alt = entry.get("alt_text", "")
+        import html as html_mod
+
+        alt = html_mod.escape(entry.get("alt_text", ""))
         url = entry["cdn_url"]
         is_hero = entry.get("type") == "hero"
 

@@ -280,6 +280,8 @@ class TestGSCSyncToDb:
                         _, data = analytics_pairs[0]
                         assert data["clicks"] == 8  # 5 + 3
                         assert data["impressions"] == 150  # 100 + 50
+                        # average_position should be weighted avg: (3.5 + 7.0) / 2 = 5.25 → 5.2
+                        assert data["average_position"] == 5.2
 
                         # Check ranking pairs: should be 2 individual rows
                         ranking_call = mock_match.call_args_list[1]
