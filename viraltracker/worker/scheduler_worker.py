@@ -616,6 +616,8 @@ async def execute_job(job: Dict) -> Dict[str, Any]:
         return await execute_quality_calibration_job(job)
     elif job_type == 'ad_intelligence_analysis':
         return await execute_ad_intelligence_analysis_job(job)
+    elif job_type == 'analytics_sync':
+        return await execute_analytics_sync_job(job)
     else:
         # Hard-fail on unknown job types — never silently fall through to V1
         logger.error(f"Unknown job_type '{job_type}' for job {job_id} ({job_name}). "
@@ -3030,6 +3032,94 @@ async def execute_ad_intelligence_analysis_job(job: Dict) -> Dict[str, Any]:
         _reschedule_after_failure(job, job_id, get_run_attempt_number(run_id))
 
         return {"success": False, "error": str(e)}
+
+
+async def execute_analytics_sync_job(job: Dict) -> Dict[str, Any]:
+    """Execute SEO analytics sync across GSC, GA4, and Shopify.
+
+    Per-source error isolation: each sync wrapped in its own try/except.
+    A failure in one source doesn't block the others.
+
+    Parameters (from job['parameters']):
+        days_back: int (default 28)
+    """
+    job_id = job['id']
+    brand_id = job.get('brand_id')
+    params = job.get('parameters') or {}
+    days_back = params.get('days_back', 28)
+
+    logger.info(f"Starting analytics sync job for brand {brand_id}")
+
+    update_job(job_id, {"next_run_at": None})
+    run_id = create_job_run(job_id)
+    if not run_id:
+        return {"success": False, "error": "Failed to create run record"}
+
+    logs = []
+    results = {}
+
+    # Resolve org_id from brand
+    try:
+        db = get_supabase_client()
+        brand_result = db.table("brands").select("organization_id").eq(
+            "id", str(brand_id)
+        ).limit(1).execute()
+        if not brand_result.data:
+            raise ValueError(f"Brand {brand_id} not found")
+        org_id = brand_result.data[0]["organization_id"]
+    except Exception as e:
+        logs.append(f"Failed to resolve org: {e}")
+        update_job_run(run_id, {
+            "status": "failed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "error_message": str(e),
+            "logs": "\n".join(logs),
+        })
+        _reschedule_after_failure(job, job_id, get_run_attempt_number(run_id))
+        return {"success": False, "error": str(e)}
+
+    # GSC sync (non-fatal)
+    try:
+        from viraltracker.services.seo_pipeline.services.gsc_service import GSCService
+        gsc_result = GSCService().sync_to_db(str(brand_id), org_id, days_back)
+        results["gsc"] = gsc_result
+        logs.append(f"GSC: {gsc_result.get('analytics_rows', 0)} analytics, {gsc_result.get('ranking_rows', 0)} rankings")
+    except Exception as e:
+        results["gsc"] = {"error": str(e)}
+        logs.append(f"GSC failed: {e}")
+        logger.warning(f"GSC sync failed for brand {brand_id}: {e}")
+
+    # GA4 sync (non-fatal)
+    try:
+        from viraltracker.services.seo_pipeline.services.ga4_service import GA4Service
+        ga4_result = GA4Service().sync_to_db(str(brand_id), org_id, days_back)
+        results["ga4"] = ga4_result
+        logs.append(f"GA4: {ga4_result.get('analytics_rows', 0)} analytics")
+    except Exception as e:
+        results["ga4"] = {"error": str(e)}
+        logs.append(f"GA4 failed: {e}")
+        logger.warning(f"GA4 sync failed for brand {brand_id}: {e}")
+
+    # Shopify sync (non-fatal)
+    try:
+        from viraltracker.services.seo_pipeline.services.shopify_analytics_service import ShopifyAnalyticsService
+        shopify_result = ShopifyAnalyticsService().sync_to_db(str(brand_id), org_id, days_back)
+        results["shopify"] = shopify_result
+        logs.append(f"Shopify: {shopify_result.get('analytics_rows', 0)} analytics")
+    except Exception as e:
+        results["shopify"] = {"error": str(e)}
+        logs.append(f"Shopify failed: {e}")
+        logger.warning(f"Shopify sync failed for brand {brand_id}: {e}")
+
+    update_job_run(run_id, {
+        "status": "completed",
+        "completed_at": datetime.now(PST).isoformat(),
+        "logs": "\n".join(logs),
+        "metadata": results,
+    })
+    _update_job_next_run(job, job_id)
+
+    return {"success": True, "results": results}
 
 
 async def execute_asset_download_job(job: Dict) -> Dict[str, Any]:

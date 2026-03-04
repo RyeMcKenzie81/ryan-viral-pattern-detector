@@ -735,3 +735,30 @@ Implemented in commit `7d744cd` — 6-phase plan covering Brand Research "Create
 - `viraltracker/ui/pages/37_📦_Video_Buckets.py` — UI page
 - `viraltracker/services/content_bucket_service.py` — categorization service
 
+---
+
+### 31. Analytics Credentials in Plaintext JSONB
+
+**Priority**: Medium
+**Complexity**: Medium-High
+**Added**: 2026-03-04
+
+**Context**: SEO analytics integrations (GSC, GA4, Shopify) store OAuth tokens and service account credentials in `brand_integrations.config` JSONB column. This includes:
+- GSC: OAuth `refresh_token` and `access_token`
+- GA4: Full service account JSON (contains private key)
+- Shopify: `access_token`, `client_id`, `client_secret`
+
+The current permissive RLS policy (`FOR ALL TO authenticated USING (true)`) means any authenticated user can read any brand's credentials.
+
+**What's needed**:
+1. **Encrypt at rest** — Use Supabase Vault or application-level encryption (e.g., Fernet) for the `config` JSONB column, or at minimum for sensitive fields within it.
+2. **Restrict RLS** — Tighten the RLS policy on `brand_integrations` to filter by `organization_id` so users can only access their own organization's integrations.
+3. **Audit access** — Log reads of credential fields for security monitoring.
+
+**Mitigating factors**: App is currently single-tenant (one organization), and Supabase dashboard access is restricted. This becomes critical if multi-tenant usage grows.
+
+**Related files**:
+- `viraltracker/services/seo_pipeline/services/base_analytics_service.py` — `_load_integration_config()`
+- `viraltracker/services/seo_pipeline/services/gsc_service.py` — OAuth token storage
+- `viraltracker/services/seo_pipeline/services/ga4_service.py` — SA credentials
+- `viraltracker/services/seo_pipeline/services/cms_publisher_service.py` — Shopify tokens

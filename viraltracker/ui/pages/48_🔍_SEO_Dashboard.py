@@ -1,13 +1,16 @@
 """
-SEO Dashboard Page - Overview, KPIs, articles table, and link management.
+SEO Dashboard Page - Overview, KPIs, articles table, analytics, and link management.
 
 Provides UI for:
 - Brand-level overview (all projects aggregated)
 - Project-level KPIs (article counts, keyword counts, link stats)
 - Articles table with status and actions
+- Analytics settings (GSC, GA4, Shopify) with OAuth callback handling
+- External analytics display (search performance, traffic, conversions)
 - Internal link management (suggest, auto-link, bidirectional)
 """
 
+import json
 import logging
 
 import streamlit as st
@@ -18,6 +21,39 @@ st.set_page_config(page_title="SEO Dashboard", page_icon="🔍", layout="wide")
 require_auth()
 
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# OAUTH CALLBACK HANDLING (must be before UI renders)
+# =============================================================================
+
+if "code" in st.query_params and "state" in st.query_params:
+    try:
+        from viraltracker.services.seo_pipeline.services.gsc_service import GSCService
+        gsc = GSCService()
+        state_data = gsc.decode_oauth_state(st.query_params["state"])
+        # Build redirect URI (same page without query params)
+        redirect_uri = st.query_params.get("redirect_uri", "")
+        if not redirect_uri:
+            # Reconstruct from current URL
+            import urllib.parse
+            redirect_uri = urllib.parse.urljoin(
+                st.get_option("browser.serverAddress") or "http://localhost:8501",
+                "/SEO_Dashboard"
+            )
+        tokens = gsc.exchange_code_for_tokens(st.query_params["code"], redirect_uri)
+        gsc.save_integration(
+            brand_id=state_data["brand_id"],
+            organization_id=state_data["org_id"],
+            site_url=state_data.get("site_url", ""),
+            tokens=tokens,
+        )
+        st.query_params.clear()
+        st.rerun()
+    except Exception as e:
+        logger.error(f"OAuth callback failed: {e}")
+        st.error(f"OAuth callback failed: {e}")
+        st.query_params.clear()
 
 
 # =============================================================================
@@ -148,6 +184,172 @@ if articles_data["status_counts"]:
     for i, (status, count) in enumerate(sorted(articles_data["status_counts"].items())):
         with status_cols[i % len(status_cols)]:
             st.metric(status.replace("_", " ").title(), count)
+
+
+# =============================================================================
+# EXTERNAL ANALYTICS
+# =============================================================================
+
+st.divider()
+st.subheader("Analytics")
+
+
+def _load_analytics_data():
+    """Load external analytics data if any integrations exist."""
+    try:
+        from viraltracker.core.database import get_supabase_client
+        supabase = get_supabase_client()
+
+        # Check which integrations exist
+        integrations_query = (
+            supabase.table("brand_integrations")
+            .select("platform, config, status")
+            .eq("brand_id", brand_id)
+        )
+        if org_id != "all":
+            integrations_query = integrations_query.eq("organization_id", org_id)
+        integrations = integrations_query.execute().data or []
+
+        connected = {i["platform"]: i for i in integrations}
+
+        # Load analytics data if any exists
+        analytics_data = []
+        if connected:
+            query = (
+                supabase.table("seo_article_analytics")
+                .select("*")
+                .eq("organization_id", org_id)
+                .order("date", desc=True)
+                .limit(200)
+            )
+            analytics_data = query.execute().data or []
+
+        return connected, analytics_data
+    except Exception:
+        return {}, []
+
+
+connected_integrations, analytics_rows = _load_analytics_data()
+
+# GSC section
+if "gsc" in connected_integrations:
+    gsc_data = [r for r in analytics_rows if r.get("source") == "gsc"]
+    if gsc_data:
+        st.markdown("**Search Performance (Google Search Console)**")
+        gsc_totals = {"impressions": 0, "clicks": 0}
+        for row in gsc_data:
+            gsc_totals["impressions"] += row.get("impressions", 0)
+            gsc_totals["clicks"] += row.get("clicks", 0)
+        avg_ctr = (gsc_totals["clicks"] / gsc_totals["impressions"] * 100) if gsc_totals["impressions"] else 0
+
+        g1, g2, g3 = st.columns(3)
+        with g1:
+            st.metric("Impressions", f"{gsc_totals['impressions']:,}")
+        with g2:
+            st.metric("Clicks", f"{gsc_totals['clicks']:,}")
+        with g3:
+            st.metric("Avg CTR", f"{avg_ctr:.1f}%")
+    else:
+        st.info("GSC connected. No data yet — click Sync Now or wait for daily sync.")
+else:
+    with st.container(border=True):
+        st.markdown("**Connect Google Search Console** to see real ranking and click data.")
+        with st.expander("Connect GSC"):
+            st.markdown(
+                "Enter your Search Console site URL below. "
+                "You'll be redirected to Google to authorize access."
+            )
+            gsc_site_url = st.text_input("Site URL", placeholder="https://example.com", key="seo_dash_gsc_site")
+            if st.button("Connect GSC", key="seo_dash_gsc_connect"):
+                if gsc_site_url:
+                    try:
+                        import secrets
+                        from viraltracker.services.seo_pipeline.services.gsc_service import GSCService
+                        gsc = GSCService()
+                        nonce = secrets.token_urlsafe(16)
+                        state = gsc.encode_oauth_state(brand_id, org_id, nonce)
+                        # For now, use a placeholder redirect URI
+                        redirect_uri = "http://localhost:8501/SEO_Dashboard"
+                        auth_url = gsc.get_authorization_url(redirect_uri, state)
+                        st.markdown(f"[Authorize with Google]({auth_url})")
+                    except Exception as e:
+                        st.error(f"Failed: {e}")
+                else:
+                    st.warning("Enter your site URL first.")
+
+# GA4 section
+if "ga4" in connected_integrations:
+    ga4_data = [r for r in analytics_rows if r.get("source") == "ga4"]
+    if ga4_data:
+        st.markdown("**Traffic (Google Analytics 4)**")
+        ga4_totals = {"sessions": 0, "pageviews": 0}
+        for row in ga4_data:
+            ga4_totals["sessions"] += row.get("sessions", 0)
+            ga4_totals["pageviews"] += row.get("pageviews", 0)
+
+        t1, t2 = st.columns(2)
+        with t1:
+            st.metric("Sessions", f"{ga4_totals['sessions']:,}")
+        with t2:
+            st.metric("Pageviews", f"{ga4_totals['pageviews']:,}")
+    else:
+        st.info("GA4 connected. No data yet — click Sync Now or wait for daily sync.")
+
+# Shopify conversions section
+if "shopify" in connected_integrations:
+    shopify_data = [r for r in analytics_rows if r.get("source") == "shopify"]
+    if shopify_data:
+        st.markdown("**Conversions (Shopify)**")
+        shop_totals = {"conversions": 0, "revenue": 0.0}
+        for row in shopify_data:
+            shop_totals["conversions"] += row.get("conversions", 0)
+            shop_totals["revenue"] += float(row.get("revenue", 0))
+
+        s1, s2 = st.columns(2)
+        with s1:
+            st.metric("Conversions", shop_totals["conversions"])
+        with s2:
+            st.metric("Revenue", f"${shop_totals['revenue']:,.2f}")
+
+# Analytics settings expander
+if connected_integrations:
+    with st.expander("Analytics Settings"):
+        for platform, integration in connected_integrations.items():
+            status = integration.get("status", "unknown")
+            st.markdown(f"**{platform.upper()}**: {status}")
+
+        if st.button("Sync Now", key="seo_dash_sync_now"):
+            with st.spinner("Syncing analytics..."):
+                results = {}
+                # GSC
+                if "gsc" in connected_integrations:
+                    try:
+                        from viraltracker.services.seo_pipeline.services.gsc_service import GSCService
+                        results["gsc"] = GSCService().sync_to_db(brand_id, org_id)
+                    except Exception as e:
+                        results["gsc"] = {"error": str(e)}
+
+                # GA4
+                if "ga4" in connected_integrations:
+                    try:
+                        from viraltracker.services.seo_pipeline.services.ga4_service import GA4Service
+                        results["ga4"] = GA4Service().sync_to_db(brand_id, org_id)
+                    except Exception as e:
+                        results["ga4"] = {"error": str(e)}
+
+                # Shopify
+                if "shopify" in connected_integrations:
+                    try:
+                        from viraltracker.services.seo_pipeline.services.shopify_analytics_service import ShopifyAnalyticsService
+                        results["shopify"] = ShopifyAnalyticsService().sync_to_db(brand_id, org_id)
+                    except Exception as e:
+                        results["shopify"] = {"error": str(e)}
+
+                for source, result in results.items():
+                    if "error" in result:
+                        st.error(f"{source.upper()}: {result['error']}")
+                    else:
+                        st.success(f"{source.upper()}: synced {result.get('analytics_rows', 0)} rows")
 
 
 # =============================================================================
