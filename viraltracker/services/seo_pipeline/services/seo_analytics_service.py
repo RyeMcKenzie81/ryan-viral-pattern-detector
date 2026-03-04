@@ -143,6 +143,29 @@ class SEOAnalyticsService:
     # PROJECT DASHBOARD
     # =========================================================================
 
+    def _get_link_stats_batch(self, article_ids: List[str]) -> Dict[str, int]:
+        """Get internal link stats using batch .in_() query instead of N+1 loop."""
+        link_stats = {"suggested": 0, "implemented": 0, "total": 0}
+        if not article_ids:
+            return link_stats
+
+        # Batch query: up to 50 article IDs at once
+        batch_ids = article_ids[:50]
+        link_query = (
+            self.supabase.table("seo_internal_links")
+            .select("id, status")
+            .in_("source_article_id", batch_ids)
+        )
+        links = link_query.execute().data or []
+        for link in links:
+            link_stats["total"] += 1
+            if link.get("status") == "implemented":
+                link_stats["implemented"] += 1
+            elif link.get("status") == "pending":
+                link_stats["suggested"] += 1
+
+        return link_stats
+
     def get_project_dashboard(
         self,
         project_id: str,
@@ -156,7 +179,6 @@ class SEOAnalyticsService:
             - total_articles, status_counts, published_count
             - total_keywords, selected_keywords
             - internal_links (suggested, implemented)
-            - latest_rankings
         """
         # Article stats
         article_query = (
@@ -187,23 +209,9 @@ class SEOAnalyticsService:
             s = k.get("status", "unknown")
             keyword_status[s] = keyword_status.get(s, 0) + 1
 
-        # Internal link stats
+        # Internal link stats — batch query
         article_ids = [a["id"] for a in articles]
-        link_stats = {"suggested": 0, "implemented": 0, "total": 0}
-        if article_ids:
-            for aid in article_ids[:50]:  # Limit to avoid huge queries
-                link_query = (
-                    self.supabase.table("seo_internal_links")
-                    .select("id, status, link_type")
-                    .eq("source_article_id", aid)
-                )
-                links = link_query.execute().data or []
-                for link in links:
-                    link_stats["total"] += 1
-                    if link.get("status") == "implemented":
-                        link_stats["implemented"] += 1
-                    elif link.get("status") == "pending":
-                        link_stats["suggested"] += 1
+        link_stats = self._get_link_stats_batch(article_ids)
 
         return {
             "project_id": project_id,
@@ -217,4 +225,89 @@ class SEOAnalyticsService:
                 "status_counts": keyword_status,
             },
             "links": link_stats,
+        }
+
+    def get_brand_dashboard(
+        self,
+        brand_id: str,
+        organization_id: str,
+    ) -> Dict[str, Any]:
+        """
+        Get brand-level dashboard aggregated across all projects.
+
+        Returns zero-state dict when no projects exist (never errors).
+
+        Returns:
+            Dict with articles, keywords, links, projects counts
+        """
+        zero_state = {
+            "articles": {"total": 0, "published": 0, "status_counts": {}},
+            "keywords": {"total": 0, "status_counts": {}},
+            "links": {"suggested": 0, "implemented": 0, "total": 0},
+            "projects": {"total": 0, "active": 0},
+        }
+
+        # Get projects for brand
+        project_query = (
+            self.supabase.table("seo_projects")
+            .select("id, status")
+            .eq("brand_id", brand_id)
+        )
+        if organization_id != "all":
+            project_query = project_query.eq("organization_id", organization_id)
+        projects = project_query.execute().data or []
+
+        if not projects:
+            return zero_state
+
+        project_ids = [p["id"] for p in projects]
+        active_projects = [p for p in projects if p.get("status") != "archived"]
+
+        # Articles by brand_id (seo_articles has brand_id column)
+        article_query = (
+            self.supabase.table("seo_articles")
+            .select("id, keyword, status, published_url")
+            .eq("brand_id", brand_id)
+        )
+        if organization_id != "all":
+            article_query = article_query.eq("organization_id", organization_id)
+        articles = article_query.execute().data or []
+
+        status_counts = {}
+        for a in articles:
+            s = a.get("status", "unknown")
+            status_counts[s] = status_counts.get(s, 0) + 1
+        published = [a for a in articles if a.get("published_url")]
+
+        # Keywords — batch by project IDs
+        keyword_query = (
+            self.supabase.table("seo_keywords")
+            .select("id, status")
+            .in_("project_id", project_ids)
+        )
+        keywords = keyword_query.execute().data or []
+        keyword_status = {}
+        for k in keywords:
+            s = k.get("status", "unknown")
+            keyword_status[s] = keyword_status.get(s, 0) + 1
+
+        # Internal links — batch by article IDs
+        article_ids = [a["id"] for a in articles]
+        link_stats = self._get_link_stats_batch(article_ids)
+
+        return {
+            "articles": {
+                "total": len(articles),
+                "published": len(published),
+                "status_counts": status_counts,
+            },
+            "keywords": {
+                "total": len(keywords),
+                "status_counts": keyword_status,
+            },
+            "links": link_stats,
+            "projects": {
+                "total": len(projects),
+                "active": len(active_projects),
+            },
         }
