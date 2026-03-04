@@ -28,6 +28,7 @@ from viraltracker.services.seo_pipeline.nodes import (
     ArticleReviewNode,
     QAValidationNode,
     QAApprovalNode,
+    ImageGenerationNode,
     PublishNode,
     InterlinkingNode,
 )
@@ -75,8 +76,8 @@ def mock_ctx(base_state):
 
 class TestGraphDefinition:
     def test_graph_has_all_nodes(self):
-        """Verify graph contains all 12 node types."""
-        assert len(seo_pipeline_graph.node_defs) == 12
+        """Verify graph contains all 13 node types."""
+        assert len(seo_pipeline_graph.node_defs) == 13
 
     def test_graph_name(self):
         assert seo_pipeline_graph.name == "seo_content_pipeline"
@@ -116,7 +117,7 @@ class TestGraphDefinition:
             "KeywordDiscoveryNode", "KeywordSelectionNode", "CompetitorAnalysisNode",
             "ContentPhaseANode", "OutlineReviewNode", "ContentPhaseBNode",
             "ContentPhaseCNode", "ArticleReviewNode", "QAValidationNode",
-            "QAApprovalNode", "PublishNode", "InterlinkingNode",
+            "QAApprovalNode", "ImageGenerationNode", "PublishNode", "InterlinkingNode",
         }
         actual = set(seo_pipeline_graph.node_defs.keys())
         assert actual == expected
@@ -569,7 +570,7 @@ class TestQAApprovalNode:
 
         result = await node.run(mock_ctx)
 
-        assert isinstance(result, PublishNode)
+        assert isinstance(result, ImageGenerationNode)
 
     @pytest.mark.asyncio
     async def test_approve_failed_qa_blocked(self, mock_ctx):
@@ -589,7 +590,7 @@ class TestQAApprovalNode:
 
         result = await node.run(mock_ctx)
 
-        assert isinstance(result, PublishNode)
+        assert isinstance(result, ImageGenerationNode)
 
     @pytest.mark.asyncio
     async def test_fix_action(self, mock_ctx):

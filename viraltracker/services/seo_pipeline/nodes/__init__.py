@@ -15,6 +15,7 @@ Pipeline flow:
     → ArticleReviewNode (HUMAN)
     → QAValidationNode
     → QAApprovalNode (HUMAN)
+    → ImageGenerationNode
     → PublishNode
     → InterlinkingNode
     → End
@@ -31,6 +32,7 @@ from .content_generation import (
 )
 from .article_review import ArticleReviewNode
 from .qa_publish import QAValidationNode, QAApprovalNode, PublishNode
+from .image_generation import ImageGenerationNode
 from .interlinking import InterlinkingNode
 
 __all__ = [
@@ -44,6 +46,7 @@ __all__ = [
     "ArticleReviewNode",
     "QAValidationNode",
     "QAApprovalNode",
+    "ImageGenerationNode",
     "PublishNode",
     "InterlinkingNode",
 ]

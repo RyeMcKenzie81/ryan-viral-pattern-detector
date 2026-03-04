@@ -44,6 +44,11 @@ def get_publisher_service():
     return CMSPublisherService()
 
 
+def get_image_service():
+    from viraltracker.services.seo_pipeline.services.seo_image_service import SEOImageService
+    return SEOImageService()
+
+
 # =============================================================================
 # SESSION STATE
 # =============================================================================
@@ -174,6 +179,126 @@ elif article.get("qa_report"):
             st.info(f"Previous QA: PASSED ({saved_report.get('passed_checks', '?')}/{saved_report.get('total_checks', '?')} checks)")
         else:
             st.warning(f"Previous QA: FAILED ({saved_report.get('error_count', '?')} errors)")
+
+
+# =============================================================================
+# IMAGE REVIEW
+# =============================================================================
+
+st.divider()
+st.subheader("Article Images")
+
+image_metadata = article.get("image_metadata") or []
+if image_metadata:
+    success_imgs = [m for m in image_metadata if m.get("status") == "success"]
+    failed_imgs = [m for m in image_metadata if m.get("status") != "success"]
+
+    st.markdown(
+        f"**{len(success_imgs)}/{len(image_metadata)} images generated**"
+        + (f" ({len(failed_imgs)} failed)" if failed_imgs else "")
+    )
+
+    for meta in image_metadata:
+        idx = meta.get("index", 0)
+        img_type = meta.get("type", "inline")
+        desc = meta.get("description", "")
+        status = meta.get("status", "unknown")
+        label = f"{'Hero' if img_type == 'hero' else f'Image {idx + 1}'}"
+
+        with st.container(border=True):
+            col_img, col_ctrl = st.columns([2, 1])
+
+            with col_img:
+                if status == "success" and meta.get("cdn_url"):
+                    st.image(meta["cdn_url"], caption=label, width=300)
+                else:
+                    st.error(f"{label}: Generation failed — {meta.get('error', 'unknown error')}")
+
+            with col_ctrl:
+                st.caption(f"**Type:** {img_type} | **Status:** {status}")
+                st.caption(f"**Prompt:** {desc[:100]}{'...' if len(desc) > 100 else ''}")
+
+                # Regenerate with original prompt
+                if st.button("Regenerate", key=f"seo_pub_regen_{idx}"):
+                    import asyncio
+                    image_svc = get_image_service()
+                    with st.spinner(f"Regenerating {label}..."):
+                        try:
+                            result = asyncio.run(image_svc.regenerate_image(
+                                article_id=selected_article_id,
+                                image_index=idx,
+                                brand_id=brand_id,
+                                organization_id=org_id,
+                            ))
+                            if result.get("status") == "success":
+                                st.success("Image regenerated!")
+                            else:
+                                st.error(f"Failed: {result.get('error')}")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Error: {e}")
+
+                # Edit prompt & regenerate
+                with st.expander("Edit Prompt"):
+                    edited_prompt = st.text_area(
+                        "Image prompt",
+                        value=desc,
+                        key=f"seo_pub_prompt_{idx}",
+                        height=80,
+                    )
+                    if st.button("Regenerate with edited prompt", key=f"seo_pub_regen_edit_{idx}"):
+                        import asyncio
+                        image_svc = get_image_service()
+                        with st.spinner(f"Regenerating {label}..."):
+                            try:
+                                result = asyncio.run(image_svc.regenerate_image(
+                                    article_id=selected_article_id,
+                                    image_index=idx,
+                                    brand_id=brand_id,
+                                    organization_id=org_id,
+                                    custom_prompt=edited_prompt,
+                                ))
+                                if result.get("status") == "success":
+                                    st.success("Image regenerated!")
+                                else:
+                                    st.error(f"Failed: {result.get('error')}")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Error: {e}")
+else:
+    # Check if article has markers but no images generated yet
+    markdown = article.get("phase_c_output") or ""
+    if "[IMAGE:" in markdown or "[HERO IMAGE:" in markdown or "<!-- IMAGE:" in markdown:
+        st.info("Article has image markers but images haven't been generated yet.")
+        if st.button("Generate Images Now", key="seo_pub_gen_images", type="primary"):
+            import asyncio
+            image_svc = get_image_service()
+            keyword = article.get("keyword", "article")
+            progress_bar = st.progress(0, text="Starting image generation...")
+
+            def update_progress(current, total, desc):
+                if total > 0:
+                    progress_bar.progress(current / total, text=desc)
+
+            with st.spinner("Generating images..."):
+                try:
+                    result = asyncio.run(image_svc.generate_article_images(
+                        article_id=selected_article_id,
+                        markdown=markdown,
+                        brand_id=brand_id,
+                        organization_id=org_id,
+                        keyword=keyword,
+                        progress_callback=update_progress,
+                    ))
+                    stats = result.get("stats", {})
+                    st.success(
+                        f"Generated {stats.get('success', 0)}/{stats.get('total', 0)} images"
+                    )
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Image generation failed: {e}")
+    else:
+        st.info("No image markers found in article content.")
 
 
 # =============================================================================

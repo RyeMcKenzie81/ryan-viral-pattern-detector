@@ -11,6 +11,7 @@ at each step. It enables:
 Part of the SEO Content Pipeline.
 """
 
+import dataclasses
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Any
 from uuid import UUID
@@ -111,6 +112,13 @@ class SEOPipelineState:
     phase_c_output: Optional[str] = None
 
     # =========================================================================
+    # IMAGE GENERATION
+    # =========================================================================
+
+    hero_image_url: Optional[str] = None
+    image_results: Optional[Dict[str, Any]] = None
+
+    # =========================================================================
     # QA & PUBLISHING
     # =========================================================================
 
@@ -162,7 +170,15 @@ class SEOPipelineState:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "SEOPipelineState":
-        """Create state from dictionary (for loading from database)."""
+        """Create state from dictionary (for loading from database).
+
+        Strips unknown keys for rollback safety (e.g., fields removed in a
+        code rollback won't crash deserialization).
+        """
+        # Strip unknown keys
+        valid_fields = {f.name for f in dataclasses.fields(cls)}
+        data = {k: v for k, v in data.items() if k in valid_fields}
+
         uuid_fields = {
             'project_id', 'brand_id', 'organization_id',
             'selected_keyword_id', 'author_id', 'article_id'
