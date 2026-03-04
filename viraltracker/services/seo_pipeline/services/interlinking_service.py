@@ -597,7 +597,7 @@ class InterlinkingService:
             if similarity:
                 data["similarity_score"] = similarity
             if placement:
-                data["placement_position"] = placement
+                data["placement"] = placement
             if priority:
                 data["priority"] = priority
 
