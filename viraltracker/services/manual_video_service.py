@@ -206,11 +206,14 @@ class ManualVideoService:
         element_list = [{"element_id": avatar.kling_element_id}]
 
         # Build prompt with element reference and dialogue
-        prompt_parts = [f"<<<element_1>>> {scene.get('prompt', '')}"]
+        # The element has a bound voice — attribute dialogue directly to the
+        # element so Kling uses the bound voice instead of default TTS.
+        visual_prompt = scene.get("prompt", "")
         dialogue = scene.get("dialogue", "").strip()
         if dialogue:
-            prompt_parts.append(f"\n\n[Speaker]: '{dialogue}'")
-        full_prompt = "".join(prompt_parts)
+            full_prompt = f"<<<element_1>>> {visual_prompt}. <<<element_1>>> says: '{dialogue}'"
+        else:
+            full_prompt = f"<<<element_1>>> {visual_prompt}"
 
         # Duration as string
         duration = str(scene.get("duration", 5))
