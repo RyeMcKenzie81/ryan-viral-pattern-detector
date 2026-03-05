@@ -135,6 +135,58 @@ class ManualVideoService:
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
 
+    async def upload_frame(
+        self,
+        brand_id: str,
+        image_bytes: bytes,
+        filename: str,
+        content_type: str = "image/png",
+    ) -> Dict[str, Any]:
+        """
+        Upload a user-provided image as a frame to the gallery.
+
+        Args:
+            brand_id: Brand UUID string
+            image_bytes: Raw image file bytes
+            filename: Original filename (used for label)
+            content_type: MIME type of the image
+
+        Returns:
+            Dict with id, storage_path, signed_url, prompt, created_at
+            (same shape as generate_frame for gallery compatibility)
+        """
+        # Determine extension from content type
+        ext_map = {
+            "image/png": "png",
+            "image/jpeg": "jpg",
+            "image/webp": "webp",
+        }
+        ext = ext_map.get(content_type, "png")
+
+        frame_id = str(uuid.uuid4())
+        storage_path = f"{brand_id}/manual_frames/{frame_id}.{ext}"
+
+        await asyncio.to_thread(
+            lambda: self.supabase.storage.from_(self.FRAME_STORAGE_BUCKET).upload(
+                storage_path,
+                image_bytes,
+                {"content-type": content_type, "upsert": "true"},
+            )
+        )
+
+        signed = self.supabase.storage.from_(self.FRAME_STORAGE_BUCKET).create_signed_url(
+            storage_path, 3600
+        )
+        signed_url = signed.get("signedURL", "") if isinstance(signed, dict) else ""
+
+        return {
+            "id": frame_id,
+            "storage_path": f"{self.FRAME_STORAGE_BUCKET}/{storage_path}",
+            "signed_url": signed_url,
+            "prompt": f"[Uploaded] {filename}",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+
     async def generate_scene_video(
         self,
         organization_id: str,

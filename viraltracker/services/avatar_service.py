@@ -1360,12 +1360,39 @@ Requirements:
                 error_msg = task_data.get("task_status_msg", "Unknown error")
                 raise ValueError(f"Video element creation failed: {error_msg}")
 
-            # Extract element_id from the completed task
+            # Extract element_id and element_voice_info from the completed task
             task_result = task_data.get("task_result", {})
             elements = task_result.get("elements", [])
             if not elements:
                 raise ValueError("Element creation succeeded but no elements in response")
-            element_id = str(elements[0].get("element_id", ""))
+
+            element_data = elements[0]
+            element_id = str(element_data.get("element_id", ""))
+
+            # Extract auto-generated voice info (Kling auto-extracts voice
+            # from videos with speech audio during element creation)
+            element_voice_info = element_data.get("element_voice_info", {})
+            auto_voice_id = element_voice_info.get("voice_id") if element_voice_info else None
+            auto_voice_name = element_voice_info.get("voice_name", "") if element_voice_info else ""
+            auto_trial_url = element_voice_info.get("trial_url", "") if element_voice_info else ""
+
+            logger.info(
+                f"Element creation response for avatar {avatar_id}: "
+                f"element_id={element_id}, "
+                f"element_voice_info={element_voice_info}, "
+                f"auto_voice_id={auto_voice_id}, "
+                f"auto_voice_name={auto_voice_name}, "
+                f"trial_url={auto_trial_url}"
+            )
+
+            # Use auto-extracted voice_id if we don't already have one
+            # (i.e., voice was embedded in the video rather than created separately)
+            if not voice_id and auto_voice_id:
+                voice_id = str(auto_voice_id)
+                logger.info(
+                    f"Using auto-extracted voice_id={voice_id} from element creation "
+                    f"(voice_name={auto_voice_name})"
+                )
 
             # Update avatar with new element info
             updates = {
@@ -1385,13 +1412,14 @@ Requirements:
 
             logger.info(
                 f"Created video element {element_id} for avatar {avatar_id} "
-                f"(voice_id: {voice_id or 'embedded'})"
+                f"(voice_id: {voice_id or 'none'}, source: {'auto-extracted' if auto_voice_id else 'separate' if voice_id else 'none'})"
             )
 
             return {
                 "element_id": element_id,
                 "voice_id": str(voice_id) if voice_id else None,
                 "calibration_video_path": calibration_path,
+                "element_voice_info": element_voice_info,
             }
 
         finally:

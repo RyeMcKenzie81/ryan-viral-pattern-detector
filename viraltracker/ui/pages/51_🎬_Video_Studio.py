@@ -854,6 +854,33 @@ with tab_manual:
                 except Exception as e:
                     st.error(f"Frame generation failed: {e}")
 
+        st.markdown("---")
+        st.markdown("**Or upload an image as a frame**")
+        uploaded_frame = st.file_uploader(
+            "Upload frame image",
+            type=["png", "jpg", "jpeg", "webp"],
+            key="vs_frame_upload_direct",
+            help="Upload an image to use directly as a start/end frame",
+        )
+        if uploaded_frame is not None:
+            if uploaded_frame.size > 10 * 1024 * 1024:
+                st.warning("File exceeds 10 MB limit.")
+            elif st.button("Add to Gallery", key="vs_add_uploaded_frame"):
+                with st.spinner("Uploading frame..."):
+                    try:
+                        svc = get_manual_video_service()
+                        result = _run_async(svc.upload_frame(
+                            brand_id=brand_id,
+                            image_bytes=uploaded_frame.getvalue(),
+                            filename=uploaded_frame.name,
+                            content_type=uploaded_frame.type or "image/png",
+                        ))
+                        st.session_state.vs_manual_frame_gallery.append(result)
+                        st.success("Frame uploaded!")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Frame upload failed: {e}")
+
     with col_frame_gallery:
         gallery = st.session_state.vs_manual_frame_gallery
         if not gallery:
