@@ -10,9 +10,11 @@ Provides UI for:
 - Internal link management (suggest, auto-link, bidirectional)
 """
 
-import json
+import datetime
 import logging
 
+import altair as alt
+import pandas as pd
 import streamlit as st
 
 from viraltracker.ui.auth import require_auth
@@ -204,6 +206,25 @@ if articles_data["status_counts"]:
 
 
 # =============================================================================
+# ARTICLES LOADING (needed for analytics scoping and articles table)
+# =============================================================================
+
+tracking = get_tracking_service()
+if is_brand_view:
+    articles = tracking.list_articles(
+        organization_id=org_id,
+        brand_id=brand_id,
+    )
+else:
+    articles = tracking.list_articles(
+        organization_id=org_id,
+        project_id=selected_project_id,
+    )
+
+brand_article_ids = [a["id"] for a in articles]
+
+
+# =============================================================================
 # EXTERNAL ANALYTICS
 # =============================================================================
 
@@ -211,63 +232,284 @@ st.divider()
 st.subheader("Analytics")
 
 
-def _load_analytics_data():
-    """Load external analytics data if any integrations exist."""
+def _load_connected_integrations():
+    """Load connected integration platforms for this brand."""
     try:
         from viraltracker.core.database import get_supabase_client
         supabase = get_supabase_client()
-
-        # Check which integrations exist
-        integrations_query = (
+        query = (
             supabase.table("brand_integrations")
             .select("platform, config")
             .eq("brand_id", brand_id)
         )
         if org_id != "all":
-            integrations_query = integrations_query.eq("organization_id", org_id)
-        integrations = integrations_query.execute().data or []
-
-        connected = {i["platform"]: i for i in integrations}
-
-        # Load analytics data if any exists
-        analytics_data = []
-        if connected:
-            query = (
-                supabase.table("seo_article_analytics")
-                .select("*")
-                .order("date", desc=True)
-                .limit(200)
-            )
-            if org_id != "all":
-                query = query.eq("organization_id", org_id)
-            analytics_data = query.execute().data or []
-
-        return connected, analytics_data
-    except Exception as e:
-        logger.warning(f"Failed to load analytics data: {e}")
-        return {}, []
+            query = query.eq("organization_id", org_id)
+        integrations = query.execute().data or []
+        return {i["platform"]: i for i in integrations}
+    except Exception:
+        return {}
 
 
-connected_integrations, analytics_rows = _load_analytics_data()
+@st.cache_data(ttl=300)
+def _load_gsc_analytics(article_ids_tuple, date_from_str, date_to_str):
+    """Load GSC analytics data scoped to brand articles."""
+    from viraltracker.core.database import get_supabase_client
+    supabase = get_supabase_client()
+    article_ids = list(article_ids_tuple)
+    if not article_ids:
+        return []
+    query = (
+        supabase.table("seo_article_analytics")
+        .select("article_id, date, impressions, clicks, ctr, average_position")
+        .eq("source", "gsc")
+        .gte("date", date_from_str)
+        .lte("date", date_to_str)
+        .in_("article_id", article_ids)
+        .order("date")
+        .limit(5000)
+    )
+    return query.execute().data or []
 
-# GSC section
+
+@st.cache_data(ttl=300)
+def _load_source_totals(article_ids_tuple, source):
+    """Load simple totals for a source (GA4 or Shopify), scoped to brand articles."""
+    from viraltracker.core.database import get_supabase_client
+    supabase = get_supabase_client()
+    article_ids = list(article_ids_tuple)
+    if not article_ids:
+        return []
+    query = (
+        supabase.table("seo_article_analytics")
+        .select("sessions, pageviews, conversions, revenue")
+        .eq("source", source)
+        .in_("article_id", article_ids)
+        .limit(5000)
+    )
+    return query.execute().data or []
+
+
+connected_integrations = _load_connected_integrations()
+
+# --- GSC Performance Report ---
 if "gsc" in connected_integrations:
-    gsc_data = [r for r in analytics_rows if r.get("source") == "gsc"]
-    if gsc_data:
-        st.markdown("**Search Performance (Google Search Console)**")
-        gsc_totals = {"impressions": 0, "clicks": 0}
-        for row in gsc_data:
-            gsc_totals["impressions"] += row.get("impressions", 0)
-            gsc_totals["clicks"] += row.get("clicks", 0)
-        avg_ctr = (gsc_totals["clicks"] / gsc_totals["impressions"] * 100) if gsc_totals["impressions"] else 0
+    st.markdown("**Search Performance (Google Search Console)**")
 
-        g1, g2, g3 = st.columns(3)
-        with g1:
-            st.metric("Impressions", f"{gsc_totals['impressions']:,}")
-        with g2:
-            st.metric("Clicks", f"{gsc_totals['clicks']:,}")
-        with g3:
-            st.metric("Avg CTR", f"{avg_ctr:.1f}%")
+    # Controls row
+    ctrl1, ctrl2 = st.columns([1, 1])
+    with ctrl1:
+        time_range = st.selectbox(
+            "Time range",
+            ["Last 7 days", "Last 28 days", "Last 3 months", "Last 6 months", "Custom"],
+            index=1,
+            key="seo_dash_time_range",
+        )
+    with ctrl2:
+        article_label_map = {a["id"]: a.get("keyword") or a.get("title") or "Untitled" for a in articles}
+        selected_article_ids = st.multiselect(
+            "Filter articles",
+            options=list(article_label_map.keys()),
+            format_func=lambda x: article_label_map[x],
+            key="seo_dash_article_filter",
+        )
+
+    today = datetime.date.today()
+    if time_range == "Last 7 days":
+        date_from = today - datetime.timedelta(days=7)
+        date_to = today
+    elif time_range == "Last 28 days":
+        date_from = today - datetime.timedelta(days=28)
+        date_to = today
+    elif time_range == "Last 3 months":
+        date_from = today - datetime.timedelta(days=90)
+        date_to = today
+    elif time_range == "Last 6 months":
+        date_from = today - datetime.timedelta(days=180)
+        date_to = today
+    else:
+        custom_cols = st.columns(2)
+        with custom_cols[0]:
+            date_from = st.date_input(
+                "From", value=today - datetime.timedelta(days=28), key="seo_dash_date_from"
+            )
+        with custom_cols[1]:
+            date_to = st.date_input("To", value=today, key="seo_dash_date_to")
+
+    # Determine which article IDs to query
+    query_article_ids = selected_article_ids if selected_article_ids else brand_article_ids
+
+    with st.spinner("Loading search performance data..."):
+        gsc_rows = _load_gsc_analytics(
+            tuple(query_article_ids),
+            date_from.isoformat(),
+            date_to.isoformat(),
+        )
+
+    if gsc_rows:
+        df = pd.DataFrame(gsc_rows)
+        df["date"] = pd.to_datetime(df["date"])
+        df["impressions"] = df["impressions"].fillna(0).astype(int)
+        df["clicks"] = df["clicks"].fillna(0).astype(int)
+        df["ctr"] = df["ctr"].fillna(0.0).astype(float)
+        df["average_position"] = df["average_position"].fillna(0.0).astype(float)
+        df["_weighted_pos"] = df["average_position"] * df["impressions"]
+
+        # KPI cards
+        total_impressions = int(df["impressions"].sum())
+        total_clicks = int(df["clicks"].sum())
+        avg_ctr = (total_clicks / total_impressions * 100) if total_impressions else 0.0
+        weighted_pos_sum = float(df["_weighted_pos"].sum())
+        avg_position = (weighted_pos_sum / total_impressions) if total_impressions else 0.0
+
+        with st.container(border=True):
+            k1, k2, k3, k4 = st.columns(4)
+            with k1:
+                st.metric("Total Impressions", f"{total_impressions:,}")
+            with k2:
+                st.metric("Total Clicks", f"{total_clicks:,}")
+            with k3:
+                st.metric("Avg CTR", f"{avg_ctr:.1f}%")
+            with k4:
+                st.metric("Avg Position", f"{avg_position:.1f}")
+
+        # Metric toggles
+        tog_cols = st.columns(4)
+        with tog_cols[0]:
+            show_impressions = st.checkbox("Impressions", value=True, key="seo_dash_show_imp")
+        with tog_cols[1]:
+            show_clicks = st.checkbox("Clicks", value=True, key="seo_dash_show_clicks")
+        with tog_cols[2]:
+            show_ctr = st.checkbox("CTR", value=False, key="seo_dash_show_ctr")
+        with tog_cols[3]:
+            show_position = st.checkbox("Position", value=False, key="seo_dash_show_pos")
+
+        # Daily aggregation
+        daily = df.groupby("date").agg(
+            impressions=("impressions", "sum"),
+            clicks=("clicks", "sum"),
+            weighted_pos_sum=("_weighted_pos", "sum"),
+        ).reset_index()
+        daily["ctr"] = daily.apply(
+            lambda r: (r["clicks"] / r["impressions"] * 100) if r["impressions"] else 0.0, axis=1
+        )
+        daily["avg_position"] = daily.apply(
+            lambda r: (r["weighted_pos_sum"] / r["impressions"]) if r["impressions"] else None, axis=1
+        )
+
+        # Fill date gaps
+        full_range = pd.date_range(date_from, date_to, freq="D")
+        daily = daily.set_index("date").reindex(full_range).reset_index()
+        daily.rename(columns={"index": "date"}, inplace=True)
+        daily["impressions"] = daily["impressions"].fillna(0).astype(int)
+        daily["clicks"] = daily["clicks"].fillna(0).astype(int)
+        daily["ctr"] = daily["ctr"].fillna(0.0)
+        # avg_position stays NaN for gap days — chart shows gaps
+
+        # Build time series chart
+        any_toggled = show_impressions or show_clicks or show_ctr or show_position
+        if any_toggled:
+            base = alt.Chart(daily).encode(
+                x=alt.X("date:T", title="Date", axis=alt.Axis(format="%b %d")),
+            )
+            layers = []
+            if show_impressions:
+                layers.append(
+                    base.mark_line(color="#8430CE", strokeWidth=2).encode(
+                        y=alt.Y("impressions:Q", title="Impressions"),
+                        tooltip=[
+                            alt.Tooltip("date:T", format="%b %d, %Y"),
+                            alt.Tooltip("impressions:Q", format=",", title="Impressions"),
+                        ],
+                    )
+                )
+            if show_clicks:
+                layers.append(
+                    base.mark_line(color="#4285F4", strokeWidth=2).encode(
+                        y=alt.Y("clicks:Q", title="Clicks"),
+                        tooltip=[
+                            alt.Tooltip("date:T", format="%b %d, %Y"),
+                            alt.Tooltip("clicks:Q", format=",", title="Clicks"),
+                        ],
+                    )
+                )
+            if show_ctr:
+                layers.append(
+                    base.mark_line(color="#0D652D", strokeWidth=2).encode(
+                        y=alt.Y("ctr:Q", title="CTR (%)"),
+                        tooltip=[
+                            alt.Tooltip("date:T", format="%b %d, %Y"),
+                            alt.Tooltip("ctr:Q", format=".1f", title="CTR (%)"),
+                        ],
+                    )
+                )
+            if show_position:
+                layers.append(
+                    base.mark_line(color="#E37400", strokeWidth=2).encode(
+                        y=alt.Y(
+                            "avg_position:Q",
+                            title="Avg Position",
+                            scale=alt.Scale(reverse=True),
+                        ),
+                        tooltip=[
+                            alt.Tooltip("date:T", format="%b %d, %Y"),
+                            alt.Tooltip("avg_position:Q", format=".1f", title="Position"),
+                        ],
+                    )
+                )
+
+            chart = alt.layer(*layers).resolve_scale(y="independent").properties(height=350)
+            st.altair_chart(chart, use_container_width=True)
+
+        # Per-article breakdown table
+        article_stats = df.groupby("article_id").agg(
+            impressions=("impressions", "sum"),
+            clicks=("clicks", "sum"),
+            weighted_pos_sum=("_weighted_pos", "sum"),
+        ).reset_index()
+        article_stats["ctr"] = article_stats.apply(
+            lambda r: (r["clicks"] / r["impressions"] * 100) if r["impressions"] else 0.0, axis=1
+        )
+        article_stats["avg_position"] = article_stats.apply(
+            lambda r: (r["weighted_pos_sum"] / r["impressions"]) if r["impressions"] else 0.0, axis=1
+        )
+
+        # Sparkline data: daily impressions per article
+        sparklines = {}
+        for aid, group in df.groupby("article_id"):
+            daily_imp = group.groupby("date")["impressions"].sum()
+            daily_imp = daily_imp.reindex(full_range, fill_value=0)
+            sparklines[aid] = daily_imp.tolist()
+
+        article_name_map = {
+            a["id"]: a.get("keyword") or a.get("title") or "Untitled" for a in articles
+        }
+        article_stats["Article"] = article_stats["article_id"].map(article_name_map)
+        article_stats["Trend"] = article_stats["article_id"].map(sparklines)
+        article_stats = article_stats.sort_values("impressions", ascending=False)
+
+        display_df = article_stats[
+            ["Article", "Trend", "impressions", "clicks", "ctr", "avg_position"]
+        ].copy()
+        display_df.columns = ["Article", "Trend", "Impressions", "Clicks", "CTR", "Avg Position"]
+
+        use_expander = len(display_df) > 10
+        container = (
+            st.expander("Per-Article Breakdown", expanded=True) if use_expander else st.container()
+        )
+        with container:
+            st.dataframe(
+                display_df,
+                column_config={
+                    "Article": st.column_config.TextColumn("Article"),
+                    "Trend": st.column_config.LineChartColumn("Trend", width="small"),
+                    "Impressions": st.column_config.NumberColumn("Impressions", format="%d"),
+                    "Clicks": st.column_config.NumberColumn("Clicks", format="%d"),
+                    "CTR": st.column_config.NumberColumn("CTR", format="%.1f%%"),
+                    "Avg Position": st.column_config.NumberColumn("Avg Position", format="%.1f"),
+                },
+                use_container_width=True,
+                hide_index=True,
+            )
     else:
         st.info("GSC connected. No data yet — click Sync Now or wait for daily sync.")
 else:
@@ -339,39 +581,35 @@ else:
                 except Exception as e:
                     st.error(f"Failed: {e}")
 
-# GA4 section
+# GA4 section — simple totals, scoped by brand articles
 if "ga4" in connected_integrations:
-    ga4_data = [r for r in analytics_rows if r.get("source") == "ga4"]
-    if ga4_data:
+    ga4_rows = _load_source_totals(tuple(brand_article_ids), "ga4")
+    if ga4_rows:
         st.markdown("**Traffic (Google Analytics 4)**")
-        ga4_totals = {"sessions": 0, "pageviews": 0}
-        for row in ga4_data:
-            ga4_totals["sessions"] += row.get("sessions", 0)
-            ga4_totals["pageviews"] += row.get("pageviews", 0)
-
+        ga4_sessions = sum(r.get("sessions", 0) for r in ga4_rows)
+        ga4_pageviews = sum(r.get("pageviews", 0) for r in ga4_rows)
         t1, t2 = st.columns(2)
         with t1:
-            st.metric("Sessions", f"{ga4_totals['sessions']:,}")
+            st.metric("Sessions", f"{ga4_sessions:,}")
         with t2:
-            st.metric("Pageviews", f"{ga4_totals['pageviews']:,}")
+            st.metric("Pageviews", f"{ga4_pageviews:,}")
     else:
         st.info("GA4 connected. No data yet — click Sync Now or wait for daily sync.")
 
-# Shopify conversions section
+# Shopify conversions section — simple totals, scoped by brand articles
 if "shopify" in connected_integrations:
-    shopify_data = [r for r in analytics_rows if r.get("source") == "shopify"]
-    if shopify_data:
+    shopify_rows = _load_source_totals(tuple(brand_article_ids), "shopify")
+    if shopify_rows:
         st.markdown("**Conversions (Shopify)**")
-        shop_totals = {"conversions": 0, "revenue": 0.0}
-        for row in shopify_data:
-            shop_totals["conversions"] += row.get("conversions", 0)
-            shop_totals["revenue"] += float(row.get("revenue", 0))
-
+        shop_conversions = sum(r.get("conversions", 0) for r in shopify_rows)
+        shop_revenue = sum(float(r.get("revenue", 0)) for r in shopify_rows)
         s1, s2 = st.columns(2)
         with s1:
-            st.metric("Conversions", shop_totals["conversions"])
+            st.metric("Conversions", shop_conversions)
         with s2:
-            st.metric("Revenue", f"${shop_totals['revenue']:,.2f}")
+            st.metric("Revenue", f"${shop_revenue:,.2f}")
+    else:
+        st.info("Shopify connected. No data yet — click Sync Now or wait for daily sync.")
 
 # Analytics settings expander
 if connected_integrations:
@@ -421,18 +659,6 @@ if connected_integrations:
 
 st.divider()
 st.subheader("Articles")
-
-tracking = get_tracking_service()
-if is_brand_view:
-    articles = tracking.list_articles(
-        organization_id=org_id,
-        brand_id=brand_id,
-    )
-else:
-    articles = tracking.list_articles(
-        organization_id=org_id,
-        project_id=selected_project_id,
-    )
 
 if articles:
     table_data = []
