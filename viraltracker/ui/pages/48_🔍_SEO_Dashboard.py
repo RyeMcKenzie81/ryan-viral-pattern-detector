@@ -691,6 +691,10 @@ if connected_integrations:
                     except Exception as e:
                         results["shopify"] = {"error": str(e)}
 
+                # Clear cached data so site-wide toggle picks up new discovered articles
+                _load_discovered_articles.clear()
+                _load_gsc_analytics.clear()
+
                 for source, result in results.items():
                     if "error" in result:
                         st.error(f"{source.upper()}: {result['error']}")
