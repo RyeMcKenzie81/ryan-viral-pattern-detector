@@ -94,6 +94,17 @@ def get_interlinking_service():
 ALL_PROJECTS_SENTINEL = "__all__"
 
 
+def _resolve_org_id_for_brand(brand_id: str, org_id: str) -> str:
+    """Resolve actual UUID org_id from brand when superuser has org_id='all'."""
+    if org_id != "all":
+        return org_id
+    from viraltracker.core.database import get_supabase_client
+    row = get_supabase_client().table("brands").select("organization_id").eq("id", brand_id).execute()
+    if row.data:
+        return row.data[0]["organization_id"]
+    return org_id  # fallback
+
+
 # =============================================================================
 # MAIN PAGE
 # =============================================================================
@@ -107,6 +118,8 @@ if not brand_id:
     st.stop()
 
 org_id = get_current_organization_id()
+# Real UUID org_id for DB writes (superuser has org_id="all" which can't be inserted into UUID columns)
+_real_org_id = _resolve_org_id_for_brand(brand_id, org_id)
 
 # Project selector — "All Projects" as default
 project_service = get_project_service()
@@ -239,7 +252,8 @@ def _load_analytics_data():
             analytics_data = query.execute().data or []
 
         return connected, analytics_data
-    except Exception:
+    except Exception as e:
+        logger.warning(f"Failed to load analytics data: {e}")
         return {}, []
 
 
@@ -328,17 +342,18 @@ if "shopify" in connected_integrations:
 if connected_integrations:
     with st.expander("Analytics Settings"):
         for platform, integration in connected_integrations.items():
-            status = integration.get("status", "unknown")
-            st.markdown(f"**{platform.upper()}**: {status}")
+            st.markdown(f"**{platform.upper()}**: Connected")
 
         if st.button("Sync Now", key="seo_dash_sync_now"):
             with st.spinner("Syncing analytics..."):
                 results = {}
+                # Use real UUID org_id for DB writes
+                sync_org_id = _real_org_id
                 # GSC
                 if "gsc" in connected_integrations:
                     try:
                         from viraltracker.services.seo_pipeline.services.gsc_service import GSCService
-                        results["gsc"] = GSCService().sync_to_db(brand_id, org_id)
+                        results["gsc"] = GSCService().sync_to_db(brand_id, sync_org_id)
                     except Exception as e:
                         results["gsc"] = {"error": str(e)}
 
@@ -346,7 +361,7 @@ if connected_integrations:
                 if "ga4" in connected_integrations:
                     try:
                         from viraltracker.services.seo_pipeline.services.ga4_service import GA4Service
-                        results["ga4"] = GA4Service().sync_to_db(brand_id, org_id)
+                        results["ga4"] = GA4Service().sync_to_db(brand_id, sync_org_id)
                     except Exception as e:
                         results["ga4"] = {"error": str(e)}
 
@@ -354,7 +369,7 @@ if connected_integrations:
                 if "shopify" in connected_integrations:
                     try:
                         from viraltracker.services.seo_pipeline.services.shopify_analytics_service import ShopifyAnalyticsService
-                        results["shopify"] = ShopifyAnalyticsService().sync_to_db(brand_id, org_id)
+                        results["shopify"] = ShopifyAnalyticsService().sync_to_db(brand_id, sync_org_id)
                     except Exception as e:
                         results["shopify"] = {"error": str(e)}
 
@@ -409,7 +424,13 @@ st.subheader("Topic Clusters")
 try:
     from viraltracker.services.seo_pipeline.services.cluster_management_service import ClusterManagementService
     _cluster_svc = ClusterManagementService()
-    _clusters = _cluster_svc.list_clusters(selected_project_id)
+    if is_brand_view:
+        # Aggregate clusters across all projects for this brand
+        _clusters = []
+        for _p in projects:
+            _clusters.extend(_cluster_svc.list_clusters(_p["id"]))
+    else:
+        _clusters = _cluster_svc.list_clusters(selected_project_id)
 
     if _clusters:
         _cluster_cols = st.columns(min(len(_clusters), 3))
