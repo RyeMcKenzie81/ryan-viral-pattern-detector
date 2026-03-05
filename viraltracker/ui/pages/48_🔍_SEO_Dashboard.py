@@ -216,7 +216,7 @@ def _load_analytics_data():
         # Check which integrations exist
         integrations_query = (
             supabase.table("brand_integrations")
-            .select("platform, config, status")
+            .select("platform, config")
             .eq("brand_id", brand_id)
         )
         if org_id != "all":
@@ -231,10 +231,11 @@ def _load_analytics_data():
             query = (
                 supabase.table("seo_article_analytics")
                 .select("*")
-                .eq("organization_id", org_id)
                 .order("date", desc=True)
                 .limit(200)
             )
+            if org_id != "all":
+                query = query.eq("organization_id", org_id)
             analytics_data = query.execute().data or []
 
         return connected, analytics_data
