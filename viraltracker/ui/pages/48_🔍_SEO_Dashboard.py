@@ -449,19 +449,23 @@ else:
     st.info("No articles yet.")
 
 # Import from Shopify
-if "shopify" in connected_integrations and projects:
+if "shopify" in connected_integrations:
     with st.expander("Import Existing Articles from Shopify"):
         st.markdown(
             "Pull in blog articles that already exist in Shopify so "
             "analytics data can be matched to them."
         )
-        _import_project_opts = {p["id"]: p["name"] for p in projects}
-        _import_project = st.selectbox(
-            "Import into project",
-            options=list(_import_project_opts.keys()),
-            format_func=lambda x: _import_project_opts[x],
-            key="seo_dash_import_project",
-        )
+        if projects:
+            _import_project_opts = {p["id"]: p["name"] for p in projects}
+            _import_project = st.selectbox(
+                "Import into project",
+                options=list(_import_project_opts.keys()),
+                format_func=lambda x: _import_project_opts[x],
+                key="seo_dash_import_project",
+            )
+        else:
+            st.caption("No projects yet — one will be created automatically.")
+            _import_project = None
         _import_domain = st.text_input(
             "Public domain (for URL matching)",
             value="yaketypack.com",
@@ -471,12 +475,25 @@ if "shopify" in connected_integrations and projects:
         if st.button("Import Articles", key="seo_dash_import_btn"):
             with st.spinner("Importing articles from Shopify..."):
                 try:
+                    # Auto-create project if none exists
+                    target_project_id = _import_project
+                    if not target_project_id:
+                        from viraltracker.core.database import get_supabase_client
+                        _sb = get_supabase_client()
+                        new_project = _sb.table("seo_projects").insert({
+                            "brand_id": brand_id,
+                            "organization_id": _real_org_id,
+                            "name": "Imported Articles",
+                            "status": "active",
+                        }).execute()
+                        target_project_id = new_project.data[0]["id"]
+
                     from viraltracker.services.seo_pipeline.services.cms_publisher_service import CMSPublisherService
                     cms = CMSPublisherService()
                     result = cms.import_from_shopify(
                         brand_id=brand_id,
                         organization_id=_real_org_id,
-                        project_id=_import_project,
+                        project_id=target_project_id,
                         public_domain=_import_domain,
                     )
                     st.success(
