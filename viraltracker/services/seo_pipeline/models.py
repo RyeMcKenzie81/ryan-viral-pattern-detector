@@ -39,6 +39,7 @@ class ArticleStatus(str, Enum):
     PUBLISHING = "publishing"
     PUBLISHED = "published"
     ARCHIVED = "archived"
+    DISCOVERED = "discovered"  # Auto-created from GSC, not for content generation
 
 
 class ProjectStatus(str, Enum):

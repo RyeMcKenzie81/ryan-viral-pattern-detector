@@ -58,7 +58,7 @@ class TestArticleStatus:
         expected = {
             "draft", "outline_complete", "draft_complete", "optimized",
             "qa_pending", "qa_passed", "qa_failed",
-            "publishing", "published", "archived",
+            "publishing", "published", "archived", "discovered",
         }
         actual = {s.value for s in ArticleStatus}
         assert actual == expected

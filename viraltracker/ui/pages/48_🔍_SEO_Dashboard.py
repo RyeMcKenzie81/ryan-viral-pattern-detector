@@ -224,6 +224,27 @@ else:
 brand_article_ids = [a["id"] for a in articles]
 
 
+# Load discovered article IDs for site-wide analytics scope
+@st.cache_data(ttl=300)
+def _load_discovered_articles(_brand_id):
+    """Load discovered (GSC auto-created) articles for site-wide view."""
+    from viraltracker.core.database import get_supabase_client
+    supabase = get_supabase_client()
+    result = (
+        supabase.table("seo_articles")
+        .select("id, keyword, published_url")
+        .eq("brand_id", _brand_id)
+        .eq("status", "discovered")
+        .execute()
+    )
+    return result.data or []
+
+
+discovered_articles = _load_discovered_articles(brand_id)
+discovered_article_ids = [a["id"] for a in discovered_articles]
+all_article_ids = brand_article_ids + discovered_article_ids
+
+
 # =============================================================================
 # EXTERNAL ANALYTICS
 # =============================================================================
@@ -295,8 +316,16 @@ connected_integrations = _load_connected_integrations()
 if "gsc" in connected_integrations:
     st.markdown("**Search Performance (Google Search Console)**")
 
-    # Controls row
-    ctrl1, ctrl2 = st.columns([1, 1])
+    # Scope toggle + controls row
+    scope_col, ctrl1, ctrl2 = st.columns([0.8, 1, 1])
+    with scope_col:
+        gsc_scope = st.radio(
+            "Scope",
+            ["Site-wide", "Tracked articles"],
+            index=0,
+            key="seo_dash_gsc_scope",
+            horizontal=True,
+        )
     with ctrl1:
         time_range = st.selectbox(
             "Time range",
@@ -305,13 +334,17 @@ if "gsc" in connected_integrations:
             key="seo_dash_time_range",
         )
     with ctrl2:
-        article_label_map = {a["id"]: a.get("keyword") or a.get("title") or "Untitled" for a in articles}
-        selected_article_ids = st.multiselect(
-            "Filter articles",
-            options=list(article_label_map.keys()),
-            format_func=lambda x: article_label_map[x],
-            key="seo_dash_article_filter",
-        )
+        if gsc_scope == "Tracked articles":
+            article_label_map = {a["id"]: a.get("keyword") or a.get("title") or "Untitled" for a in articles}
+            selected_article_ids = st.multiselect(
+                "Filter articles",
+                options=list(article_label_map.keys()),
+                format_func=lambda x: article_label_map[x],
+                key="seo_dash_article_filter",
+            )
+        else:
+            selected_article_ids = []
+            st.caption("Showing all pages from GSC")
 
     today = datetime.date.today()
     if time_range == "Last 7 days":
@@ -335,8 +368,13 @@ if "gsc" in connected_integrations:
         with custom_cols[1]:
             date_to = st.date_input("To", value=today, key="seo_dash_date_to")
 
-    # Determine which article IDs to query
-    query_article_ids = selected_article_ids if selected_article_ids else brand_article_ids
+    # Determine which article IDs to query based on scope
+    if gsc_scope == "Site-wide":
+        query_article_ids = all_article_ids
+    elif selected_article_ids:
+        query_article_ids = selected_article_ids
+    else:
+        query_article_ids = brand_article_ids
 
     with st.spinner("Loading search performance data..."):
         gsc_rows = _load_gsc_analytics(
@@ -483,6 +521,13 @@ if "gsc" in connected_integrations:
         article_name_map = {
             a["id"]: a.get("keyword") or a.get("title") or "Untitled" for a in articles
         }
+        # Add discovered articles to name map (use published_url path as label)
+        if gsc_scope == "Site-wide":
+            from urllib.parse import urlparse
+            for a in discovered_articles:
+                url = a.get("published_url", "")
+                label = urlparse(url).path if url else a.get("keyword", "Unknown")
+                article_name_map[a["id"]] = label
         article_stats["Article"] = article_stats["article_id"].map(article_name_map)
         article_stats["Trend"] = article_stats["article_id"].map(sparklines)
         article_stats = article_stats.sort_values("impressions", ascending=False)

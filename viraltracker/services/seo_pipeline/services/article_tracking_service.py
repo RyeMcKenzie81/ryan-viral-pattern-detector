@@ -57,6 +57,10 @@ VALID_TRANSITIONS = {
     ArticleStatus.ARCHIVED.value: [
         ArticleStatus.DRAFT.value,
     ],
+    ArticleStatus.DISCOVERED.value: [
+        ArticleStatus.DRAFT.value,
+        ArticleStatus.ARCHIVED.value,
+    ],
 }
 
 
@@ -94,6 +98,7 @@ class ArticleTrackingService:
         project_id: Optional[str] = None,
         brand_id: Optional[str] = None,
         status: Optional[str] = None,
+        exclude_discovered: bool = True,
     ) -> List[Dict[str, Any]]:
         """
         List articles with optional filters.
@@ -103,6 +108,7 @@ class ArticleTrackingService:
             project_id: Filter by project
             brand_id: Filter by brand
             status: Filter by ArticleStatus value
+            exclude_discovered: Exclude discovered (GSC-auto-created) articles (default True)
         """
         query = self.supabase.table("seo_articles").select("*")
 
@@ -114,6 +120,8 @@ class ArticleTrackingService:
             query = query.eq("brand_id", brand_id)
         if status:
             query = query.eq("status", status)
+        elif exclude_discovered:
+            query = query.neq("status", "discovered")
 
         result = query.order("created_at", desc=True).execute()
         return result.data or []

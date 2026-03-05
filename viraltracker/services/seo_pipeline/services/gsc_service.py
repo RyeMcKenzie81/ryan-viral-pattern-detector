@@ -273,6 +273,110 @@ class GSCService(BaseAnalyticsService):
         data = response.json()
         return data.get("rows", [])
 
+    # =========================================================================
+    # DISCOVERED ARTICLE HELPERS
+    # =========================================================================
+
+    def _get_or_create_discovered_project(self, brand_id: str, organization_id: str) -> str:
+        """Get or create the 'Discovered Pages (GSC)' project for a brand."""
+        result = (
+            self.supabase.table("seo_projects")
+            .select("id")
+            .eq("brand_id", brand_id)
+            .eq("name", "Discovered Pages (GSC)")
+            .limit(1)
+            .execute()
+        )
+        if result.data:
+            return result.data[0]["id"]
+
+        new = self.supabase.table("seo_projects").insert({
+            "brand_id": brand_id,
+            "organization_id": organization_id,
+            "name": "Discovered Pages (GSC)",
+            "status": "active",
+        }).execute()
+        logger.info(f"Created 'Discovered Pages (GSC)' project for brand {brand_id}")
+        return new.data[0]["id"]
+
+    def _create_discovered_articles(
+        self,
+        brand_id: str,
+        organization_id: str,
+        all_urls: set,
+    ) -> int:
+        """
+        Create seo_articles with status='discovered' for URLs not yet tracked.
+
+        Args:
+            brand_id: Brand UUID
+            organization_id: Org UUID
+            all_urls: Set of full page URLs from GSC data
+
+        Returns:
+            Number of discovered articles created
+        """
+        from viraltracker.services.seo_pipeline.utils import normalize_url_path
+
+        # Load existing article paths for this brand
+        existing = (
+            self.supabase.table("seo_articles")
+            .select("published_url")
+            .eq("brand_id", brand_id)
+            .execute()
+        ).data or []
+
+        existing_paths = set()
+        for a in existing:
+            pub_url = a.get("published_url")
+            if pub_url:
+                path = normalize_url_path(pub_url)
+                if path:
+                    existing_paths.add(path)
+
+        # Find unmatched URLs
+        unmatched = []
+        for url in all_urls:
+            path = normalize_url_path(url)
+            if path and path not in existing_paths:
+                unmatched.append((url, path))
+
+        if not unmatched:
+            return 0
+
+        project_id = self._get_or_create_discovered_project(brand_id, organization_id)
+
+        # Build article records
+        records = []
+        for url, path in unmatched:
+            # Derive keyword from last path segment
+            segments = [s for s in path.split("/") if s]
+            slug = segments[-1] if segments else "homepage"
+            keyword = slug.replace("-", " ")
+
+            records.append({
+                "project_id": project_id,
+                "brand_id": brand_id,
+                "organization_id": organization_id,
+                "keyword": keyword,
+                "published_url": url,
+                "status": "discovered",
+                "phase": "c",
+            })
+
+        # Batch insert (one-by-one to skip duplicates gracefully)
+        created = 0
+        for record in records:
+            try:
+                self.supabase.table("seo_articles").insert(record).execute()
+                created += 1
+            except Exception as e:
+                # Likely duplicate published_url — skip silently
+                logger.debug(f"Skipped discovered article {record['published_url']}: {e}")
+
+        logger.info(f"Created {created} discovered articles for brand {brand_id}")
+        return created
+
     def sync_to_db(
         self,
         brand_id: str,
@@ -347,7 +451,13 @@ class GSCService(BaseAnalyticsService):
                 "average_position": round(avg_position, 1) if avg_position is not None else None,
             }))
 
-        # Match URLs to articles
+        # Create discovered articles for unmatched URLs
+        all_urls = {url for url, _ in analytics_pairs} | {url for url, _ in ranking_rows}
+        discovered_count = self._create_discovered_articles(brand_id, organization_id, all_urls)
+        if discovered_count:
+            logger.info(f"Created {discovered_count} discovered articles before matching")
+
+        # Match URLs to articles (now includes discovered articles)
         analytics_matched = self._match_urls_to_articles(brand_id, analytics_pairs)
         ranking_matched = self._match_urls_to_articles(brand_id, ranking_rows)
 

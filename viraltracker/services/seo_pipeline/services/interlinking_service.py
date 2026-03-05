@@ -549,6 +549,7 @@ class InterlinkingService:
             self.supabase.table("seo_articles")
             .select("id, keyword, title, published_url, status, content_html, project_id")
             .eq("project_id", project_id)
+            .neq("status", "discovered")
         )
         if exclude_id:
             query = query.neq("id", exclude_id)

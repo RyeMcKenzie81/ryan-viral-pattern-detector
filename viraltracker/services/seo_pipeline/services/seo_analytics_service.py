@@ -180,11 +180,12 @@ class SEOAnalyticsService:
             - total_keywords, selected_keywords
             - internal_links (suggested, implemented)
         """
-        # Article stats
+        # Article stats (exclude discovered pages from KPIs)
         article_query = (
             self.supabase.table("seo_articles")
             .select("id, keyword, status, published_url, cms_article_id")
             .eq("project_id", project_id)
+            .neq("status", "discovered")
         )
         if organization_id != "all":
             article_query = article_query.eq("organization_id", organization_id)
@@ -263,11 +264,12 @@ class SEOAnalyticsService:
         project_ids = [p["id"] for p in projects]
         active_projects = [p for p in projects if p.get("status") != "archived"]
 
-        # Articles by brand_id (seo_articles has brand_id column)
+        # Articles by brand_id (exclude discovered pages from KPIs)
         article_query = (
             self.supabase.table("seo_articles")
             .select("id, keyword, status, published_url")
             .eq("brand_id", brand_id)
+            .neq("status", "discovered")
         )
         if organization_id != "all":
             article_query = article_query.eq("organization_id", organization_id)

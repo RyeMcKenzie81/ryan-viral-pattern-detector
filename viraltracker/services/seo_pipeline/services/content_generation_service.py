@@ -301,6 +301,7 @@ class ContentGenerationService:
             self.supabase.table("seo_articles")
             .select("*")
             .eq("project_id", project_id)
+            .neq("status", "discovered")
         )
         if status:
             query = query.eq("status", status)
