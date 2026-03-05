@@ -346,55 +346,38 @@ class FFmpegService:
             logger.error(f"Unexpected error during conversion: {e}")
             return False
 
-    def extract_audio(self, video_bytes: bytes) -> bytes:
+    def extract_audio(self, video_bytes: bytes, format: str = "mp3") -> bytes:
         """
-        Extract the audio track from a video file as MP3.
+        Extract audio track from a video file.
 
-        Uses MP3 format for broad browser compatibility with st.audio().
-        The MP3 output is also accepted by replace_audio() for re-muxing.
+        Used for previewing voice samples in the UI via st.audio().
 
         NOTE: This is a sync method. When calling from async code,
         wrap with: await asyncio.to_thread(ffmpeg.extract_audio, video_bytes)
 
         Args:
             video_bytes: Raw video file bytes.
+            format: Output audio format ("mp3" or "wav").
 
         Returns:
-            Audio bytes (MP3 format).
+            Audio bytes in the requested format.
 
         Raises:
-            ValueError: If FFmpeg not available or video has no audio track.
+            ValueError: If FFmpeg not available or video has no audio.
+            RuntimeError: If extraction fails.
         """
-        if not self.available:
-            raise ValueError("FFmpeg/FFprobe not available. Cannot extract audio.")
+        if not self._ffmpeg_path:
+            raise ValueError("FFmpeg not available. Cannot extract audio.")
+
+        suffix = f".{format}"
+        codec = "libmp3lame" if format == "mp3" else "pcm_s16le"
 
         with tempfile.TemporaryDirectory() as tmpdir:
             input_path = Path(tmpdir) / "input.mp4"
-            output_path = Path(tmpdir) / "output.mp3"
+            output_path = Path(tmpdir) / f"output{suffix}"
 
             input_path.write_bytes(video_bytes)
 
-            # Check for audio stream first
-            try:
-                probe_result = subprocess.run(
-                    [
-                        self._ffprobe_path,
-                        "-v", "quiet",
-                        "-select_streams", "a",
-                        "-show_entries", "stream=codec_type",
-                        "-of", "csv=p=0",
-                        str(input_path),
-                    ],
-                    capture_output=True,
-                    text=True,
-                    timeout=30,
-                )
-                if not probe_result.stdout.strip():
-                    raise ValueError("Video has no audio track.")
-            except subprocess.TimeoutExpired:
-                raise ValueError("Timed out probing video for audio.")
-
-            # Extract audio as MP3
             try:
                 subprocess.run(
                     [
@@ -402,92 +385,29 @@ class FFmpegService:
                         "-y",
                         "-i", str(input_path),
                         "-vn",
-                        "-acodec", "libmp3lame",
+                        "-acodec", codec,
                         "-q:a", "2",
                         str(output_path),
                     ],
                     capture_output=True,
-                    timeout=60,
+                    timeout=30,
                     check=True,
                 )
             except subprocess.CalledProcessError as e:
                 stderr = e.stderr.decode() if e.stderr else str(e)
-                raise ValueError(f"Failed to extract audio: {stderr}")
+                if "does not contain any stream" in stderr or "no audio" in stderr.lower():
+                    raise ValueError("Video has no audio track.")
+                raise RuntimeError(f"Audio extraction failed: {stderr}")
+
+            if not output_path.exists() or output_path.stat().st_size == 0:
+                raise ValueError("Video has no audio track.")
 
             audio_bytes = output_path.read_bytes()
-            logger.info(f"Extracted audio: {len(audio_bytes)} bytes")
-            return audio_bytes
-
-    def replace_audio(self, video_bytes: bytes, audio_bytes: bytes) -> bytes:
-        """
-        Replace a video's audio track with new audio.
-
-        Strips the original audio, muxes the new audio onto the video
-        with proper specs for Kling voice extraction:
-        - AAC codec, 128kbps, 48kHz, mono
-        - Audio padded with silence if shorter than video (-af apad)
-        - Output trimmed to video length (-shortest)
-        - Video stream copied without re-encoding (-c:v copy)
-        - moov atom at start for streaming (-movflags +faststart)
-
-        NOTE: This is a sync method. When calling from async code,
-        wrap with: await asyncio.to_thread(ffmpeg.replace_audio, ...)
-
-        Args:
-            video_bytes: Raw video file bytes.
-            audio_bytes: Raw audio file bytes (any format FFmpeg can decode).
-
-        Returns:
-            Combined video bytes (MP4).
-
-        Raises:
-            ValueError: If FFmpeg not available.
-            RuntimeError: If FFmpeg muxing fails.
-        """
-        if not self._ffmpeg_path:
-            raise ValueError("FFmpeg not available. Cannot replace audio.")
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            video_path = Path(tmpdir) / "video.mp4"
-            audio_path = Path(tmpdir) / "audio.m4a"
-            output_path = Path(tmpdir) / "output.mp4"
-
-            video_path.write_bytes(video_bytes)
-            audio_path.write_bytes(audio_bytes)
-
-            try:
-                subprocess.run(
-                    [
-                        self._ffmpeg_path,
-                        "-y",
-                        "-i", str(video_path),
-                        "-i", str(audio_path),
-                        "-c:v", "copy",
-                        "-c:a", "aac",
-                        "-b:a", "128k",
-                        "-ar", "48000",
-                        "-ac", "1",
-                        "-map", "0:v:0",
-                        "-map", "1:a:0",
-                        "-af", "apad",
-                        "-shortest",
-                        "-movflags", "+faststart",
-                        str(output_path),
-                    ],
-                    capture_output=True,
-                    timeout=120,
-                    check=True,
-                )
-            except subprocess.CalledProcessError as e:
-                stderr = e.stderr.decode() if e.stderr else str(e)
-                raise RuntimeError(f"FFmpeg audio replacement failed: {stderr}")
-
-            combined_bytes = output_path.read_bytes()
             logger.info(
-                f"Replaced audio: video={len(video_bytes)} + audio={len(audio_bytes)} "
-                f"-> combined={len(combined_bytes)} bytes"
+                f"Extracted audio: {len(video_bytes)} video bytes -> "
+                f"{len(audio_bytes)} {format} bytes"
             )
-            return combined_bytes
+            return audio_bytes
 
     def normalize_video_for_kling(self, video_bytes: bytes) -> bytes:
         """
