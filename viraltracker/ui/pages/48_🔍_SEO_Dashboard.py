@@ -138,24 +138,26 @@ if is_brand_view:
         st.info("No SEO projects yet. Get started by creating your first project.")
         if st.button("Create Your First SEO Project", type="primary"):
             st.switch_page("pages/49_🔑_Keyword_Research.py")
-        st.stop()
 
-    with st.spinner("Loading brand overview..."):
-        dashboard = analytics.get_brand_dashboard(brand_id, org_id)
+    if projects:
+        with st.spinner("Loading brand overview..."):
+            dashboard = analytics.get_brand_dashboard(brand_id, org_id)
 
-    articles_data = dashboard["articles"]
-    keywords_data = dashboard["keywords"]
-    projects_data = dashboard["projects"]
+        articles_data = dashboard["articles"]
+        keywords_data = dashboard["keywords"]
+        projects_data = dashboard["projects"]
 
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric("Total Articles", articles_data["total"])
-    with col2:
-        st.metric("Published", articles_data["published"])
-    with col3:
-        st.metric("Keywords", keywords_data["total"])
-    with col4:
-        st.metric("Projects", projects_data["total"])
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Total Articles", articles_data["total"])
+        with col2:
+            st.metric("Published", articles_data["published"])
+        with col3:
+            st.metric("Keywords", keywords_data["total"])
+        with col4:
+            st.metric("Projects", projects_data["total"])
+    else:
+        articles_data = {"status_counts": {}}
 else:
     dashboard = analytics.get_project_dashboard(selected_project_id, org_id)
 
