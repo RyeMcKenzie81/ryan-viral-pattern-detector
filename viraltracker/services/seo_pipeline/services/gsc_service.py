@@ -102,6 +102,28 @@ class GSCService(BaseAnalyticsService):
 
         return response.json()
 
+    @staticmethod
+    def list_sites(access_token: str) -> List[Dict[str, str]]:
+        """
+        List all Search Console properties the authorized user has access to.
+
+        Returns:
+            List of dicts with siteUrl and permissionLevel
+        """
+        import httpx
+
+        with httpx.Client(timeout=15.0) as client:
+            response = client.get(
+                "https://www.googleapis.com/webmasters/v3/sites",
+                headers={"Authorization": f"Bearer {access_token}"},
+            )
+
+        if response.status_code != 200:
+            raise Exception(f"GSC sites.list failed: {response.status_code} — {response.text[:200]}")
+
+        data = response.json()
+        return data.get("siteEntry", [])
+
     def save_integration(
         self,
         brand_id: str,

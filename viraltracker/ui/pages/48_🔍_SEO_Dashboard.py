@@ -42,23 +42,14 @@ if "code" in st.query_params and "state" in st.query_params:
         redirect_uri = _get_oauth_redirect_uri()
         tokens = gsc.exchange_code_for_tokens(st.query_params["code"], redirect_uri)
 
-        # Resolve actual org_id from brand when superuser has org_id="all"
-        org_id = state_data["org_id"]
-        if org_id == "all":
-            from viraltracker.core.database import get_supabase_client
-            _sb = get_supabase_client()
-            brand_row = _sb.table("brands").select("organization_id").eq("id", state_data["brand_id"]).execute()
-            if brand_row.data:
-                org_id = brand_row.data[0]["organization_id"]
-            else:
-                raise ValueError(f"Brand {state_data['brand_id']} not found")
+        # Fetch available properties so user can pick the right one
+        sites = gsc.list_sites(tokens["access_token"])
 
-        gsc.save_integration(
-            brand_id=state_data["brand_id"],
-            organization_id=org_id,
-            site_url=state_data.get("site_url", ""),
-            tokens=tokens,
-        )
+        # Store tokens + state in session for property selection step
+        st.session_state["_gsc_pending_tokens"] = tokens
+        st.session_state["_gsc_pending_state"] = state_data
+        st.session_state["_gsc_pending_sites"] = sites
+
         st.query_params.clear()
         st.rerun()
     except Exception as e:
@@ -280,29 +271,73 @@ if "gsc" in connected_integrations:
     else:
         st.info("GSC connected. No data yet — click Sync Now or wait for daily sync.")
 else:
-    with st.container(border=True):
-        st.markdown("**Connect Google Search Console** to see real ranking and click data.")
-        with st.expander("Connect GSC"):
-            st.markdown(
-                "Enter your Search Console site URL below. "
-                "You'll be redirected to Google to authorize access."
+    # Check if we're in the property selection step (post-OAuth, pre-save)
+    _pending_tokens = st.session_state.get("_gsc_pending_tokens")
+    _pending_sites = st.session_state.get("_gsc_pending_sites", [])
+    _pending_state = st.session_state.get("_gsc_pending_state", {})
+
+    if _pending_tokens and _pending_sites:
+        with st.container(border=True):
+            st.markdown("**Select your Search Console property**")
+            site_options = {s["siteUrl"]: s["siteUrl"] for s in _pending_sites}
+            selected_site = st.selectbox(
+                "Property",
+                options=list(site_options.keys()),
+                format_func=lambda x: site_options[x],
+                key="seo_dash_gsc_site_picker",
             )
-            gsc_site_url = st.text_input("Site URL", placeholder="https://example.com", key="seo_dash_gsc_site")
+            if st.button("Save & Connect", key="seo_dash_gsc_save", type="primary"):
+                try:
+                    from viraltracker.services.seo_pipeline.services.gsc_service import GSCService
+                    gsc = GSCService()
+                    _cb_org_id = _pending_state.get("org_id", "all")
+                    _cb_brand_id = _pending_state.get("brand_id", brand_id)
+                    if _cb_org_id == "all":
+                        _cb_org_id = _resolve_org_id_for_brand(_cb_brand_id, _cb_org_id)
+                    gsc.save_integration(
+                        brand_id=_cb_brand_id,
+                        organization_id=_cb_org_id,
+                        site_url=selected_site,
+                        tokens=_pending_tokens,
+                    )
+                    # Clear pending state
+                    del st.session_state["_gsc_pending_tokens"]
+                    del st.session_state["_gsc_pending_sites"]
+                    del st.session_state["_gsc_pending_state"]
+                    st.success("GSC connected!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Failed to save: {e}")
+            if st.button("Cancel", key="seo_dash_gsc_cancel"):
+                del st.session_state["_gsc_pending_tokens"]
+                del st.session_state["_gsc_pending_sites"]
+                del st.session_state["_gsc_pending_state"]
+                st.rerun()
+    elif _pending_tokens:
+        # OAuth succeeded but no sites found
+        with st.container(border=True):
+            st.warning("No Search Console properties found for this Google account. "
+                       "Add a property at [Google Search Console](https://search.google.com/search-console) first.")
+            if st.button("Dismiss", key="seo_dash_gsc_dismiss"):
+                del st.session_state["_gsc_pending_tokens"]
+                st.session_state.pop("_gsc_pending_sites", None)
+                st.session_state.pop("_gsc_pending_state", None)
+                st.rerun()
+    else:
+        with st.container(border=True):
+            st.markdown("**Connect Google Search Console** to see real ranking and click data.")
             if st.button("Connect GSC", key="seo_dash_gsc_connect"):
-                if gsc_site_url:
-                    try:
-                        import secrets
-                        from viraltracker.services.seo_pipeline.services.gsc_service import GSCService
-                        gsc = GSCService()
-                        nonce = secrets.token_urlsafe(16)
-                        state = gsc.encode_oauth_state(brand_id, org_id, nonce, site_url=gsc_site_url)
-                        redirect_uri = _get_oauth_redirect_uri()
-                        auth_url = gsc.get_authorization_url(redirect_uri, state)
-                        st.markdown(f"[Authorize with Google]({auth_url})")
-                    except Exception as e:
-                        st.error(f"Failed: {e}")
-                else:
-                    st.warning("Enter your site URL first.")
+                try:
+                    import secrets
+                    from viraltracker.services.seo_pipeline.services.gsc_service import GSCService
+                    gsc = GSCService()
+                    nonce = secrets.token_urlsafe(16)
+                    state = gsc.encode_oauth_state(brand_id, org_id, nonce)
+                    redirect_uri = _get_oauth_redirect_uri()
+                    auth_url = gsc.get_authorization_url(redirect_uri, state)
+                    st.markdown(f"[Authorize with Google]({auth_url})")
+                except Exception as e:
+                    st.error(f"Failed: {e}")
 
 # GA4 section
 if "ga4" in connected_integrations:
