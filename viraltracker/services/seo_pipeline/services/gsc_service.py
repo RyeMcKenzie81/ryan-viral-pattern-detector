@@ -126,7 +126,6 @@ class GSCService(BaseAnalyticsService):
                 "organization_id": organization_id,
                 "platform": self.PLATFORM,
                 "config": config,
-                "status": "active",
             },
             on_conflict="brand_id,platform",
         ).execute()
