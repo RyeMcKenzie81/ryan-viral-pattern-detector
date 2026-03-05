@@ -58,9 +58,10 @@ class GSCService(BaseAnalyticsService):
         return f"https://accounts.google.com/o/oauth2/v2/auth?{params}"
 
     @staticmethod
-    def encode_oauth_state(brand_id: str, org_id: str, nonce: str) -> str:
-        """Encode brand_id + org_id + nonce into OAuth state param."""
-        payload = json.dumps({"brand_id": brand_id, "org_id": org_id, "nonce": nonce})
+    def encode_oauth_state(brand_id: str, org_id: str, nonce: str, **extra) -> str:
+        """Encode brand_id + org_id + nonce (+ optional extra fields) into OAuth state param."""
+        data = {"brand_id": brand_id, "org_id": org_id, "nonce": nonce, **extra}
+        payload = json.dumps(data)
         return base64.urlsafe_b64encode(payload.encode()).decode()
 
     @staticmethod

@@ -27,20 +27,19 @@ logger = logging.getLogger(__name__)
 # OAUTH CALLBACK HANDLING (must be before UI renders)
 # =============================================================================
 
+def _get_oauth_redirect_uri() -> str:
+    """Get OAuth redirect URI from env var, with localhost fallback."""
+    import os
+    base = os.environ.get("APP_BASE_URL", "http://localhost:8501")
+    return f"{base.rstrip('/')}/SEO_Dashboard"
+
+
 if "code" in st.query_params and "state" in st.query_params:
     try:
         from viraltracker.services.seo_pipeline.services.gsc_service import GSCService
         gsc = GSCService()
         state_data = gsc.decode_oauth_state(st.query_params["state"])
-        # Build redirect URI (same page without query params)
-        redirect_uri = st.query_params.get("redirect_uri", "")
-        if not redirect_uri:
-            # Reconstruct from current URL
-            import urllib.parse
-            redirect_uri = urllib.parse.urljoin(
-                st.get_option("browser.serverAddress") or "http://localhost:8501",
-                "/SEO_Dashboard"
-            )
+        redirect_uri = _get_oauth_redirect_uri()
         tokens = gsc.exchange_code_for_tokens(st.query_params["code"], redirect_uri)
         gsc.save_integration(
             brand_id=state_data["brand_id"],
@@ -269,9 +268,8 @@ else:
                         from viraltracker.services.seo_pipeline.services.gsc_service import GSCService
                         gsc = GSCService()
                         nonce = secrets.token_urlsafe(16)
-                        state = gsc.encode_oauth_state(brand_id, org_id, nonce)
-                        # For now, use a placeholder redirect URI
-                        redirect_uri = "http://localhost:8501/SEO_Dashboard"
+                        state = gsc.encode_oauth_state(brand_id, org_id, nonce, site_url=gsc_site_url)
+                        redirect_uri = _get_oauth_redirect_uri()
                         auth_url = gsc.get_authorization_url(redirect_uri, state)
                         st.markdown(f"[Authorize with Google]({auth_url})")
                     except Exception as e:
