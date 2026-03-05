@@ -41,9 +41,21 @@ if "code" in st.query_params and "state" in st.query_params:
         state_data = gsc.decode_oauth_state(st.query_params["state"])
         redirect_uri = _get_oauth_redirect_uri()
         tokens = gsc.exchange_code_for_tokens(st.query_params["code"], redirect_uri)
+
+        # Resolve actual org_id from brand when superuser has org_id="all"
+        org_id = state_data["org_id"]
+        if org_id == "all":
+            from viraltracker.core.database import get_supabase_client
+            _sb = get_supabase_client()
+            brand_row = _sb.table("brands").select("organization_id").eq("id", state_data["brand_id"]).execute()
+            if brand_row.data:
+                org_id = brand_row.data[0]["organization_id"]
+            else:
+                raise ValueError(f"Brand {state_data['brand_id']} not found")
+
         gsc.save_integration(
             brand_id=state_data["brand_id"],
-            organization_id=state_data["org_id"],
+            organization_id=org_id,
             site_url=state_data.get("site_url", ""),
             tokens=tokens,
         )
