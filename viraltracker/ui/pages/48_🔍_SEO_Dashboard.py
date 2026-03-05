@@ -448,6 +448,47 @@ if articles:
 else:
     st.info("No articles yet.")
 
+# Import from Shopify
+if "shopify" in connected_integrations and projects:
+    with st.expander("Import Existing Articles from Shopify"):
+        st.markdown(
+            "Pull in blog articles that already exist in Shopify so "
+            "analytics data can be matched to them."
+        )
+        _import_project_opts = {p["id"]: p["name"] for p in projects}
+        _import_project = st.selectbox(
+            "Import into project",
+            options=list(_import_project_opts.keys()),
+            format_func=lambda x: _import_project_opts[x],
+            key="seo_dash_import_project",
+        )
+        _import_domain = st.text_input(
+            "Public domain (for URL matching)",
+            value="yaketypack.com",
+            help="Your public domain, NOT the .myshopify.com domain",
+            key="seo_dash_import_domain",
+        )
+        if st.button("Import Articles", key="seo_dash_import_btn"):
+            with st.spinner("Importing articles from Shopify..."):
+                try:
+                    from viraltracker.services.seo_pipeline.services.cms_publisher_service import CMSPublisherService
+                    cms = CMSPublisherService()
+                    result = cms.import_from_shopify(
+                        brand_id=brand_id,
+                        organization_id=_real_org_id,
+                        project_id=_import_project,
+                        public_domain=_import_domain,
+                    )
+                    st.success(
+                        f"Imported {result['imported']} articles "
+                        f"(skipped {result['skipped']} existing, "
+                        f"{result['total']} total in Shopify)"
+                    )
+                    if result["imported"] > 0:
+                        st.rerun()
+                except Exception as e:
+                    st.error(f"Import failed: {e}")
+
 
 # =============================================================================
 # TOPIC CLUSTERS SUMMARY

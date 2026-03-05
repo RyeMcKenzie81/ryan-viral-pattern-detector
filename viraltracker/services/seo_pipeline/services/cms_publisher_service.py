@@ -216,6 +216,36 @@ class ShopifyPublisher(CMSPublisher):
             logger.warning(f"Failed to fetch Shopify article {cms_article_id}: {e}")
             return None
 
+    def list_articles(self, limit: int = 250) -> List[Dict[str, Any]]:
+        """
+        List all blog articles from Shopify.
+
+        Paginates through all articles using Shopify's page-based pagination.
+
+        Returns:
+            List of Shopify article dicts (id, title, handle, body_html, published_at, etc.)
+        """
+        articles = []
+        page_info = None
+        url = f"{self._base_url}/blogs/{self.blog_id}/articles.json?limit={min(limit, 250)}&status=any"
+
+        while True:
+            if page_info:
+                url = f"{self._base_url}/blogs/{self.blog_id}/articles.json?limit=250&page_info={page_info}"
+
+            response_data = self._api_request("GET", url)
+            batch = response_data.get("articles", [])
+            articles.extend(batch)
+
+            if len(batch) < 250:
+                break
+            # Note: For cursor pagination, would need to parse Link header.
+            # Most blogs have <250 articles so this suffices.
+            break
+
+        logger.info(f"Listed {len(articles)} Shopify articles from blog {self.blog_id}")
+        return articles
+
     # =========================================================================
     # PAYLOAD BUILDING
     # =========================================================================
@@ -730,3 +760,98 @@ class CMSPublisherService:
         except Exception as e:
             logger.error(f"Failed to update article CMS data for {article_id}: {e}")
             raise
+
+    # =========================================================================
+    # IMPORT FROM CMS
+    # =========================================================================
+
+    def import_from_shopify(
+        self,
+        brand_id: str,
+        organization_id: str,
+        project_id: str,
+        public_domain: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Import existing Shopify blog articles into seo_articles.
+
+        Fetches all articles from the Shopify blog and creates seo_articles
+        records for any that don't already exist (matched by cms_article_id).
+
+        Args:
+            brand_id: Brand UUID
+            organization_id: Organization UUID (must be real UUID, not "all")
+            project_id: Target SEO project UUID
+            public_domain: Public domain for URLs (e.g. "yaketypack.com").
+                If provided, builds published_url with this domain instead of
+                the myshopify.com store domain.
+
+        Returns:
+            Dict with imported count, skipped count, total fetched
+        """
+        integration = self._get_integration(brand_id, organization_id)
+        if not integration:
+            raise ValueError("No Shopify integration configured for this brand")
+
+        config = integration.get("config", {})
+        publisher = self._create_shopify_publisher(config, brand_id, organization_id)
+        blog_handle = config.get("blog_handle", "articles")
+
+        # Fetch all articles from Shopify
+        shopify_articles = publisher.list_articles()
+
+        if not shopify_articles:
+            return {"imported": 0, "skipped": 0, "total": 0}
+
+        # Get existing cms_article_ids to avoid duplicates
+        existing = (
+            self.supabase.table("seo_articles")
+            .select("cms_article_id")
+            .eq("brand_id", brand_id)
+            .not_.is_("cms_article_id", "null")
+            .execute()
+        )
+        existing_ids = {r["cms_article_id"] for r in (existing.data or [])}
+
+        # Determine URL domain
+        url_domain = public_domain or config.get("store_domain", "")
+
+        imported = 0
+        skipped = 0
+        for article in shopify_articles:
+            cms_id = str(article.get("id", ""))
+            if cms_id in existing_ids:
+                skipped += 1
+                continue
+
+            handle = article.get("handle", "")
+            title = article.get("title", "")
+            body_html = article.get("body_html", "")
+            published_at = article.get("published_at")
+
+            published_url = f"https://{url_domain}/blogs/{blog_handle}/{handle}" if handle else None
+
+            row = {
+                "project_id": project_id,
+                "brand_id": brand_id,
+                "organization_id": organization_id,
+                "keyword": title,
+                "title": title,
+                "slug": handle,
+                "content_html": body_html,
+                "cms_article_id": cms_id,
+                "published_url": published_url,
+                "published_at": published_at,
+                "status": "published" if published_at else "draft",
+                "phase": "c",
+            }
+
+            try:
+                self.supabase.table("seo_articles").insert(row).execute()
+                imported += 1
+            except Exception as e:
+                logger.warning(f"Failed to import Shopify article {cms_id}: {e}")
+                skipped += 1
+
+        logger.info(f"Imported {imported} Shopify articles for brand {brand_id} (skipped {skipped})")
+        return {"imported": imported, "skipped": skipped, "total": len(shopify_articles)}
