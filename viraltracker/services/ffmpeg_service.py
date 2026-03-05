@@ -346,6 +346,69 @@ class FFmpegService:
             logger.error(f"Unexpected error during conversion: {e}")
             return False
 
+    def extract_audio(self, video_bytes: bytes, format: str = "mp3") -> bytes:
+        """
+        Extract audio track from a video file.
+
+        Used for previewing voice samples in the UI via st.audio().
+
+        NOTE: This is a sync method. When calling from async code,
+        wrap with: await asyncio.to_thread(ffmpeg.extract_audio, video_bytes)
+
+        Args:
+            video_bytes: Raw video file bytes.
+            format: Output audio format ("mp3" or "wav").
+
+        Returns:
+            Audio bytes in the requested format.
+
+        Raises:
+            ValueError: If FFmpeg not available or video has no audio.
+            RuntimeError: If extraction fails.
+        """
+        if not self._ffmpeg_path:
+            raise ValueError("FFmpeg not available. Cannot extract audio.")
+
+        suffix = f".{format}"
+        codec = "libmp3lame" if format == "mp3" else "pcm_s16le"
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_path = Path(tmpdir) / "input.mp4"
+            output_path = Path(tmpdir) / f"output{suffix}"
+
+            input_path.write_bytes(video_bytes)
+
+            try:
+                subprocess.run(
+                    [
+                        self._ffmpeg_path,
+                        "-y",
+                        "-i", str(input_path),
+                        "-vn",
+                        "-acodec", codec,
+                        "-q:a", "2",
+                        str(output_path),
+                    ],
+                    capture_output=True,
+                    timeout=30,
+                    check=True,
+                )
+            except subprocess.CalledProcessError as e:
+                stderr = e.stderr.decode() if e.stderr else str(e)
+                if "does not contain any stream" in stderr or "no audio" in stderr.lower():
+                    raise ValueError("Video has no audio track.")
+                raise RuntimeError(f"Audio extraction failed: {stderr}")
+
+            if not output_path.exists() or output_path.stat().st_size == 0:
+                raise ValueError("Video has no audio track.")
+
+            audio_bytes = output_path.read_bytes()
+            logger.info(
+                f"Extracted audio: {len(video_bytes)} video bytes -> "
+                f"{len(audio_bytes)} {format} bytes"
+            )
+            return audio_bytes
+
     def normalize_video_for_kling(self, video_bytes: bytes) -> bytes:
         """
         Normalize a video to meet Kling element creation specs.

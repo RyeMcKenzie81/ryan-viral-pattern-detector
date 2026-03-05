@@ -1069,104 +1069,48 @@ Requirements:
             f"(~{max_attempts * interval_seconds}s)"
         )
 
-    async def extract_voice_from_video(
-        self, avatar_id: UUID, organization_id: str, brand_id: str, video_bytes: bytes
+    async def upload_voice_sample(
+        self, avatar_id: UUID, video_bytes: bytes
     ) -> str:
-        """Upload a voice sample video and create a custom voice from it.
+        """Upload and normalize a voice sample video to storage.
 
-        Uses the dedicated Create Custom Voice endpoint (POST /v1/general/custom-voices)
-        which accepts video files directly for voice cloning. This replaces the previous
-        approach of creating a video element and hoping for auto-extraction.
+        Stores the voice sample for later use during create_kling_video_element().
+        Does NOT create a Kling voice — that happens at element creation time.
 
         Args:
             avatar_id: Avatar UUID.
-            organization_id: Organization UUID.
-            brand_id: Brand UUID.
-            video_bytes: Voice sample video bytes (.mp4/.mov, 5-30s with clear speech).
+            video_bytes: Voice sample video bytes (.mp4/.mov, 3-8s with clear speech).
 
         Returns:
-            Created voice_id string.
+            Storage path of the uploaded voice sample.
 
         Raises:
-            ValueError: If voice creation fails or avatar not found.
+            ValueError: If avatar not found or video fails normalization.
         """
         avatar = await self.get_avatar(avatar_id)
         if not avatar:
             raise ValueError(f"Avatar {avatar_id} not found")
 
-        # Resolve org_id for superuser mode
-        if organization_id == "all":
-            try:
-                brand_row = await asyncio.to_thread(
-                    lambda: self.supabase.table("brands")
-                        .select("organization_id")
-                        .eq("id", brand_id)
-                        .single()
-                        .execute()
-                )
-                organization_id = brand_row.data["organization_id"]
-            except Exception as e:
-                raise ValueError(f"Failed to resolve org_id from brand {brand_id}: {e}")
-
-        # Normalize video to exact Kling specs (resolution, codec, audio)
+        # Normalize video to exact Kling specs
         from .ffmpeg_service import FFmpegService
         ffmpeg_svc = FFmpegService()
         video_bytes = await asyncio.to_thread(ffmpeg_svc.normalize_video_for_kling, video_bytes)
 
-        # Upload voice video to storage
+        # Upload to storage
         voice_path = await self._upload_video(
             str(avatar.brand_id), str(avatar_id), video_bytes, "voice_sample.mp4"
         )
-        voice_url = await self._get_video_signed_url(voice_path)
-        await self._verify_video_url(voice_url)
 
-        from .kling_video_service import KlingVideoService
+        # Store path on avatar
+        await asyncio.to_thread(
+            lambda: self.supabase.table("brand_avatars")
+                .update({"voice_sample_path": voice_path})
+                .eq("id", str(avatar_id))
+                .execute()
+        )
 
-        kling = KlingVideoService()
-        try:
-            # Create custom voice directly from video URL
-            voice_result = await kling.create_custom_voice(
-                organization_id=organization_id,
-                brand_id=brand_id,
-                voice_name=f"{avatar.name[:14]}_voice",
-                voice_url=voice_url,
-            )
-
-            task_id = voice_result.get("kling_task_id")
-            if not task_id:
-                raise ValueError("No task_id returned for custom voice creation")
-
-            logger.info(
-                f"Custom voice creation submitted: task_id={task_id}, "
-                f"avatar={avatar_id}, name={avatar.name}"
-            )
-
-            # Poll for voice creation completion (~2-5 minutes typical)
-            voice_id = await self._poll_for_voice_completion(
-                kling, task_id, max_attempts=40, interval_seconds=15
-            )
-
-            if not voice_id:
-                raise ValueError(
-                    "Voice creation completed but no voice_id returned. "
-                    "Please upload a video with clear speech (5-30s, one speaker)."
-                )
-
-            voice_id = str(voice_id)
-
-            # Store voice_id on avatar
-            await asyncio.to_thread(
-                lambda: self.supabase.table("brand_avatars")
-                    .update({"kling_voice_id": voice_id})
-                    .eq("id", str(avatar_id))
-                    .execute()
-            )
-
-            logger.info(f"Created custom voice {voice_id} for avatar {avatar_id}")
-            return voice_id
-
-        finally:
-            await kling.close()
+        logger.info(f"Uploaded voice sample for avatar {avatar_id}: {voice_path}")
+        return voice_path
 
     async def create_kling_video_element(
         self,
@@ -1177,10 +1121,12 @@ Requirements:
     ) -> dict:
         """Create a video-based Kling element with voice binding.
 
-        New workflow (using dedicated voice creation endpoint):
-        1. Prepare video (upload or generate calibration video)
-        2. If no existing voice_id, create custom voice from the video first
-        3. Create video element with element_voice_id binding the voice
+        Two modes:
+        - Mode 1 (video_bytes provided): Upload video, create voice from it,
+          create element with element_voice_id.
+        - Mode 2 (no video_bytes): Generate calibration video from reference images,
+          create voice from voice sample (preferred) or calibration video (fallback),
+          create element with element_voice_id.
 
         Args:
             avatar_id: Avatar UUID.
@@ -1213,23 +1159,21 @@ Requirements:
                 raise ValueError(f"Failed to resolve org_id from brand {brand_id}: {e}")
 
         if video_bytes:
-            # Normalize video to exact Kling specs (resolution, codec, audio)
+            # Mode 1: Upload video directly (visual + voice from upload)
             from .ffmpeg_service import FFmpegService
             ffmpeg_svc = FFmpegService()
             video_bytes = await asyncio.to_thread(ffmpeg_svc.normalize_video_for_kling, video_bytes)
 
-            # Mode: Upload video directly (visual + voice from upload)
             video_path = await self._upload_video(
                 str(avatar.brand_id), str(avatar_id), video_bytes, "video_element_source.mp4"
             )
             video_url = await self._get_video_signed_url(video_path)
             calibration_path = video_path
         else:
-            # Mode: Generate calibration video from frontal image
+            # Mode 2: Generate calibration video from reference images
             if not avatar.reference_image_1:
-                raise ValueError(f"Avatar {avatar_id} has no frontal image (slot 1) for calibration video")
+                raise ValueError(f"Avatar {avatar_id} has no frontal image (slot 1)")
 
-            # Check if calibration video already exists
             if avatar.calibration_video_path:
                 calibration_path = avatar.calibration_video_path
                 video_url = await self._get_video_signed_url(calibration_path)
@@ -1249,18 +1193,27 @@ Requirements:
 
         kling = KlingVideoService()
         try:
-            # Step 1: Create custom voice from the video if we don't already have one
+            # Step 1: Create custom voice if we don't already have one
             voice_id = avatar.kling_voice_id
             if not voice_id:
-                logger.info(
-                    f"No existing voice_id for avatar {avatar_id}, "
-                    f"creating custom voice from video..."
-                )
+                # Determine voice source — prefer dedicated voice sample over calibration video
+                if not video_bytes and avatar.voice_sample_path:
+                    voice_source_url = await self._get_video_signed_url(avatar.voice_sample_path)
+                    logger.info("Using uploaded voice sample for voice creation")
+                else:
+                    voice_source_url = video_url
+                    if video_bytes:
+                        logger.info("Using uploaded video for voice creation")
+                    else:
+                        logger.info("Using calibration video for voice creation (no voice sample)")
+
+                await self._verify_video_url(voice_source_url)
+
                 voice_result = await kling.create_custom_voice(
                     organization_id=organization_id,
                     brand_id=brand_id,
                     voice_name=f"{avatar.name[:14]}_voice",
-                    voice_url=video_url,
+                    voice_url=voice_source_url,
                 )
                 voice_task_id = voice_result.get("kling_task_id")
                 if not voice_task_id:
@@ -1308,7 +1261,6 @@ Requirements:
                 error_msg = task_data.get("task_status_msg", "Unknown error")
                 raise ValueError(f"Video element creation failed: {error_msg}")
 
-            # Extract element_id from the completed task
             task_result = task_data.get("task_result", {})
             elements = task_result.get("elements", [])
             if not elements:
@@ -1424,6 +1376,7 @@ Requirements:
             kling_element_id=row.get("kling_element_id"),
             kling_voice_id=row.get("kling_voice_id"),
             calibration_video_path=row.get("calibration_video_path"),
+            voice_sample_path=row.get("voice_sample_path"),
             avatar_setup_mode=row.get("avatar_setup_mode", "multi_image"),
             generation_prompt=row.get("generation_prompt"),
             default_negative_prompt=row.get(
