@@ -767,7 +767,7 @@ def render_schedule_list():
 
                 if job.get('next_run_at'):
                     next_run = datetime.fromisoformat(job['next_run_at'].replace('Z', '+00:00'))
-                    st.caption(f"Next: {next_run.strftime('%b %d, %I:%M %p')}")
+                    st.caption(f"Next: {next_run.astimezone(PST).strftime('%b %d, %I:%M %p %Z')}")
 
             with col3:
                 runs_completed = job.get('runs_completed', 0)
@@ -3471,7 +3471,7 @@ def render_schedule_detail():
 
         if job.get('next_run_at'):
             next_run = datetime.fromisoformat(job['next_run_at'].replace('Z', '+00:00'))
-            st.markdown(f"**Next Run:** {next_run.strftime('%B %d, %Y at %I:%M %p PST')}")
+            st.markdown(f"**Next Run:** {next_run.astimezone(PST).strftime('%B %d, %Y at %I:%M %p %Z')}")
 
         runs_text = f"{job.get('runs_completed', 0)}"
         if job.get('max_runs'):
@@ -3604,7 +3604,7 @@ def render_schedule_detail():
 
             started = run.get('started_at', '')
             if started:
-                started = datetime.fromisoformat(started.replace('Z', '+00:00')).strftime('%b %d, %I:%M %p')
+                started = datetime.fromisoformat(started.replace('Z', '+00:00')).astimezone(PST).strftime('%b %d, %I:%M %p %Z')
 
             with st.expander(f"{status_emoji} Run - {started or 'Pending'}"):
                 col1, col2 = st.columns(2)
@@ -3612,7 +3612,7 @@ def render_schedule_detail():
                     st.markdown(f"**Status:** {run['status']}")
                     if run.get('completed_at'):
                         completed = datetime.fromisoformat(run['completed_at'].replace('Z', '+00:00'))
-                        st.markdown(f"**Completed:** {completed.strftime('%b %d, %I:%M %p')}")
+                        st.markdown(f"**Completed:** {completed.astimezone(PST).strftime('%b %d, %I:%M %p %Z')}")
 
                 with col2:
                     ad_runs = run.get('ad_run_ids', [])
