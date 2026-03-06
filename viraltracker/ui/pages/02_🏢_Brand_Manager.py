@@ -1293,6 +1293,12 @@ if not selected_brand:
 
 st.subheader("Brand Settings")
 
+# Clear stale auto-fill state on brand change
+if st.session_state.get("_bm_last_brand_id") != selected_brand_id:
+    for _key in ["bm_voice_af_result", "bm_voice_af_running", "bm_voice_af_error", "bm_voice_af_warning"]:
+        st.session_state.pop(_key, None)
+    st.session_state["_bm_last_brand_id"] = selected_brand_id
+
 with st.container():
     # Brand Code (for ad filenames)
     col_code, col_code_spacer = st.columns([1, 3])
@@ -1490,12 +1496,38 @@ with st.container():
             except Exception as e:
                 st.error(f"Failed to save: {e}")
 
+    # Website URL (placed near Brand Voice for auto-fill proximity)
+    st.markdown("")
+    url_col, url_save_col = st.columns([3, 1])
+    with url_col:
+        current_website_url = selected_brand.get('website_url') or ''
+        new_website_url = st.text_input(
+            "Website URL",
+            value=current_website_url,
+            placeholder="https://yourbrand.com",
+            help="Brand website URL — used for auto-filling brand voice below",
+            key="brand_website_url_input",
+        )
+    with url_save_col:
+        st.markdown("")  # Align with input
+        if new_website_url != current_website_url:
+            if st.button("Save URL", key="save_brand_website_url", type="secondary"):
+                try:
+                    db = get_supabase_client()
+                    db.table("brands").update({
+                        "website_url": new_website_url or None
+                    }).eq("id", selected_brand_id).execute()
+                    st.success("Website URL saved!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Failed to save: {e}")
+
     # Brand Voice & Colors Section
     st.markdown("")
     st.markdown("**Brand Voice & Colors**")
     st.caption("Structured brand voice tone and color palette for blueprint generation")
 
-    bv_col1, bv_col2 = st.columns(2)
+    bv_col1, bv_col2, bv_af_col = st.columns([2, 1, 1])
     with bv_col1:
         current_voice = selected_brand.get("brand_voice_tone") or ""
         new_voice = st.text_input(
@@ -1504,6 +1536,67 @@ with st.container():
             placeholder='e.g., "Aggressive, masculine, bold, direct"',
             key="brand_voice_tone_input",
         )
+    with bv_af_col:
+        st.markdown("")  # Align with input
+        website_url_for_af = new_website_url or current_website_url
+        voice_af_prefix = "bm_voice_af"
+        voice_af_running_key = f"{voice_af_prefix}_running"
+        voice_af_result_key = f"{voice_af_prefix}_result"
+        if website_url_for_af:
+            if st.button("🧠 Auto-fill from website", key=f"{voice_af_prefix}_btn", help="Extract brand voice/tone from website"):
+                st.session_state[voice_af_running_key] = True
+        else:
+            st.caption("Enter website URL above to enable")
+
+    # Handle voice auto-fill
+    if st.session_state.get(voice_af_running_key):
+        with st.spinner("Scraping website and extracting brand voice..."):
+            try:
+                from viraltracker.ui.autofill_suggestions import scrape_and_extract
+                suggestions, warning = scrape_and_extract(
+                    url=website_url_for_af,
+                    brand_name=selected_brand.get('name'),
+                    target_fields=["brand.voice_tone"],
+                )
+                voice_suggestion = suggestions.get("brand.voice_tone")
+                if voice_suggestion and voice_suggestion.get("value"):
+                    st.session_state[voice_af_result_key] = voice_suggestion["value"]
+                else:
+                    st.session_state[f"{voice_af_prefix}_error"] = "Could not extract brand voice from website."
+                if warning:
+                    st.session_state[f"{voice_af_prefix}_warning"] = warning
+            except Exception as e:
+                st.session_state[f"{voice_af_prefix}_error"] = str(e)
+            st.session_state[voice_af_running_key] = False
+            st.rerun()
+
+    if f"{voice_af_prefix}_error" in st.session_state:
+        st.error(st.session_state.pop(f"{voice_af_prefix}_error"))
+    if f"{voice_af_prefix}_warning" in st.session_state:
+        st.warning(st.session_state.pop(f"{voice_af_prefix}_warning"))
+    if voice_af_result_key in st.session_state:
+        extracted_voice = st.session_state[voice_af_result_key]
+        if current_voice:
+            st.markdown(f"**Current:** {current_voice}")
+        st.markdown(f"**Suggested:** {extracted_voice}")
+        af_v_col1, af_v_col2 = st.columns([1, 1])
+        with af_v_col1:
+            if st.button("Replace current voice" if current_voice else "Use this voice", key=f"{voice_af_prefix}_accept", type="primary"):
+                try:
+                    db = get_supabase_client()
+                    db.table("brands").update({
+                        "brand_voice_tone": extracted_voice
+                    }).eq("id", selected_brand_id).execute()
+                    st.session_state.pop(voice_af_result_key, None)
+                    st.success("Brand voice saved!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Failed to save: {e}")
+        with af_v_col2:
+            if st.button("Dismiss", key=f"{voice_af_prefix}_dismiss"):
+                st.session_state.pop(voice_af_result_key, None)
+                st.rerun()
+
     with bv_col2:
         current_colors = selected_brand.get("brand_colors") or {}
         new_primary = st.color_picker(
@@ -1547,6 +1640,35 @@ with st.container():
                     update_data["brand_colors"] = new_colors
                 db.table("brands").update(update_data).eq("id", selected_brand_id).execute()
                 st.success("Brand voice & colors saved!")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Failed to save: {e}")
+
+    # Brand-Level Disallowed Claims
+    st.markdown("")
+    st.markdown("**Disallowed Claims**")
+    st.caption("Claims that must NOT appear in any ads for this brand — one per line")
+
+    current_disallowed = selected_brand.get('disallowed_claims') or []
+    disallowed_str = "\n".join(current_disallowed)
+    new_disallowed_str = st.text_area(
+        "Disallowed Claims (one per line)",
+        value=disallowed_str,
+        placeholder="No FDA approval claims\nNo competitor mentions\nNo 'cure' language",
+        height=100,
+        key="brand_disallowed_claims_input",
+        label_visibility="collapsed",
+    )
+    new_disallowed = [c.strip() for c in new_disallowed_str.strip().split("\n") if c.strip()] if new_disallowed_str.strip() else []
+
+    if new_disallowed != current_disallowed:
+        if st.button("Save Disallowed Claims", key="save_brand_disallowed_claims", type="secondary"):
+            try:
+                db = get_supabase_client()
+                db.table("brands").update({
+                    "disallowed_claims": new_disallowed
+                }).eq("id", selected_brand_id).execute()
+                st.success("Disallowed claims saved!")
                 st.rerun()
             except Exception as e:
                 st.error(f"Failed to save: {e}")
@@ -1698,6 +1820,65 @@ else:
                                 if save_product_code(product_id, new_product_code):
                                     st.success("Product code saved!")
                                     st.rerun()
+
+                    # Product URL with auto-fill
+                    prod_url_prefix = f"bm_prod_url_{product_id}"
+                    prod_url_running_key = f"{prod_url_prefix}_running"
+                    prod_url_suggestions_key = f"{prod_url_prefix}_suggestions"
+
+                    purl_col, purl_af_col = st.columns([3, 1])
+                    with purl_col:
+                        prod_url_val = st.text_input(
+                            "Product Website URL",
+                            placeholder="https://yourbrand.com/product-page",
+                            help="Main product page URL — used to auto-fill guarantee, ingredients, FAQ, etc.",
+                            key=f"{prod_url_prefix}_input",
+                        )
+                    with purl_af_col:
+                        st.markdown("")  # Align
+                        if prod_url_val:
+                            purl_btn_label = "🧠 Re-run" if st.session_state.get(prod_url_suggestions_key) else "🧠 Auto-fill"
+                            if st.button(purl_btn_label, key=f"{prod_url_prefix}_btn", help="Extract product details from this page"):
+                                st.session_state[prod_url_running_key] = True
+                        else:
+                            st.caption("Enter URL to auto-fill")
+
+                    if st.session_state.get(prod_url_running_key):
+                        with st.spinner("Scraping product page and extracting fields..."):
+                            try:
+                                from viraltracker.ui.autofill_suggestions import (
+                                    scrape_and_extract, BM_PRODUCT_AUTOFILL_FIELDS,
+                                )
+                                suggestions, warning = scrape_and_extract(
+                                    url=prod_url_val,
+                                    product_name=product_name,
+                                    brand_name=selected_brand.get('name'),
+                                    target_fields=BM_PRODUCT_AUTOFILL_FIELDS,
+                                )
+                                st.session_state[prod_url_suggestions_key] = suggestions
+                                if warning:
+                                    st.session_state[f"{prod_url_prefix}_warning"] = warning
+                            except Exception as e:
+                                st.session_state[f"{prod_url_prefix}_error"] = str(e)
+                            st.session_state[prod_url_running_key] = False
+                            st.rerun()
+
+                    if f"{prod_url_prefix}_error" in st.session_state:
+                        st.error(f"Auto-fill failed: {st.session_state.pop(f'{prod_url_prefix}_error')}")
+                    if f"{prod_url_prefix}_warning" in st.session_state:
+                        st.warning(st.session_state.pop(f"{prod_url_prefix}_warning"))
+
+                    prod_url_suggestions = st.session_state.get(prod_url_suggestions_key)
+                    if prod_url_suggestions:
+                        from viraltracker.ui.autofill_suggestions import render_autofill_suggestions
+                        render_autofill_suggestions(
+                            suggestions=prod_url_suggestions,
+                            brand_id=selected_brand_id,
+                            product_id=product_id,
+                            source_label="Product",
+                            widget_prefix=prod_url_prefix,
+                            source_url=prod_url_val,
+                        )
 
                     st.markdown("")  # Spacer
 
@@ -2094,6 +2275,90 @@ else:
                                 st.session_state[edit_compliance_key] = False
                                 st.rerun()
 
+                    # One-click Amazon Listing Analysis
+                    st.markdown("---")
+                    st.markdown("**Amazon Listing Setup**")
+                    st.caption("Enter an Amazon URL to scrape the listing and analyze reviews in one step")
+
+                    amz_setup_prefix = f"bm_amz_setup_{product_id}"
+                    amz_setup_running_key = f"{amz_setup_prefix}_running"
+
+                    amz_url_col, amz_btn_col = st.columns([3, 1])
+                    with amz_url_col:
+                        amz_listing_url = st.text_input(
+                            "Amazon Product URL",
+                            placeholder="https://www.amazon.com/dp/B0XXXXX...",
+                            key=f"{amz_setup_prefix}_url",
+                            help="Paste an Amazon product URL to scrape reviews and extract insights",
+                        )
+                    with amz_btn_col:
+                        st.markdown("")  # Align
+                        if amz_listing_url:
+                            amz_analyze_clicked = st.button(
+                                "Analyze Listing",
+                                key=f"{amz_setup_prefix}_btn",
+                                type="primary",
+                                disabled=st.session_state.get(amz_setup_running_key, False),
+                            )
+                        else:
+                            amz_analyze_clicked = False
+                            st.caption("Enter URL to analyze")
+
+                    if amz_analyze_clicked:
+                        st.session_state[amz_setup_running_key] = True
+
+                    if st.session_state.get(amz_setup_running_key):
+                        with st.spinner("Scraping Amazon listing & analyzing reviews (2-3 min)..."):
+                            try:
+                                from viraltracker.services.amazon_review_service import AmazonReviewService
+                                from viraltracker.ui.utils import setup_tracking_context
+                                svc = AmazonReviewService()
+                                setup_tracking_context(svc)
+
+                                # Parse ASIN from URL
+                                asin, domain = svc.parse_amazon_url(amz_listing_url)
+                                if not asin:
+                                    raise ValueError("Could not extract ASIN from URL")
+
+                                # Register URL in amazon_product_urls
+                                db = get_supabase_client()
+                                db.table("amazon_product_urls").upsert({
+                                    "product_id": product_id,
+                                    "brand_id": selected_brand_id,
+                                    "amazon_url": amz_listing_url,
+                                    "asin": asin,
+                                    "domain_code": domain or "com",
+                                }, on_conflict="product_id,asin").execute()
+
+                                # Scrape reviews
+                                scrape_result = svc.scrape_reviews_for_product(
+                                    product_id=UUID(product_id),
+                                    amazon_url=amz_listing_url,
+                                )
+                                reviews_saved = scrape_result.reviews_saved
+
+                                # Analyze reviews
+                                if reviews_saved > 0:
+                                    analysis = asyncio.run(
+                                        svc.analyze_reviews_for_product(UUID(product_id))
+                                    )
+                                    st.session_state[f"{amz_setup_prefix}_success"] = (
+                                        f"Scraped {reviews_saved} reviews and analyzed. Check the Amazon Insights tab."
+                                    )
+                                else:
+                                    st.session_state[f"{amz_setup_prefix}_success"] = (
+                                        f"ASIN {asin} registered but no reviews found to analyze."
+                                    )
+                            except Exception as e:
+                                st.session_state[f"{amz_setup_prefix}_error"] = str(e)
+                            st.session_state[amz_setup_running_key] = False
+                            st.rerun()
+
+                    if f"{amz_setup_prefix}_error" in st.session_state:
+                        st.error(f"Analysis failed: {st.session_state.pop(f'{amz_setup_prefix}_error')}")
+                    if f"{amz_setup_prefix}_success" in st.session_state:
+                        st.success(st.session_state.pop(f"{amz_setup_prefix}_success"))
+
                 with tab_offers:
                     # ========================================
                     # Add New Offer Variant Section
@@ -2148,7 +2413,61 @@ else:
                             if result:
                                 st.session_state[f"{new_ov_key}_analysis"] = None
                                 st.session_state[f"{new_ov_key}_url"] = ""
+                                # Clear auto-fill state too
+                                new_af_prefix_clear = f"bm_af_new_{product_id}"
+                                st.session_state.pop(f"{new_af_prefix_clear}_suggestions", None)
+                                st.session_state.pop(f"{new_af_prefix_clear}_running", None)
+                                st.session_state.pop(f"{new_af_prefix_clear}_skipped", None)
                                 st.rerun()
+
+                            # Auto-fill product/brand fields from LP
+                            new_af_prefix = f"bm_af_new_{product_id}"
+                            new_af_running_key = f"{new_af_prefix}_running"
+                            new_af_suggestions_key = f"{new_af_prefix}_suggestions"
+
+                            st.markdown("---")
+                            st.info("Want to also fill product details (guarantee, ingredients, FAQ, results timeline, brand voice) from this landing page?")
+                            btn_label = "🧠 Re-run Auto-fill" if st.session_state.get(new_af_suggestions_key) else "🧠 Auto-fill Product Details"
+                            if st.button(btn_label, key=f"{new_af_prefix}_btn"):
+                                st.session_state[new_af_running_key] = True
+
+                            if st.session_state.get(new_af_running_key):
+                                with st.spinner("Extracting product details from landing page..."):
+                                    try:
+                                        from viraltracker.ui.autofill_suggestions import (
+                                            scrape_and_extract, BM_PRODUCT_AUTOFILL_FIELDS,
+                                        )
+                                        suggestions, warning = scrape_and_extract(
+                                            url=new_ov_url,
+                                            product_name=product_name,
+                                            brand_name=selected_brand.get('name'),
+                                            target_fields=BM_PRODUCT_AUTOFILL_FIELDS,
+                                        )
+                                        st.session_state[new_af_suggestions_key] = suggestions
+                                        if warning:
+                                            st.session_state[f"{new_af_prefix}_warning"] = warning
+                                    except Exception as e:
+                                        st.session_state[f"{new_af_prefix}_error"] = str(e)
+                                    st.session_state[new_af_running_key] = False
+                                    st.rerun()
+
+                            # Show error/warning from previous run
+                            if f"{new_af_prefix}_error" in st.session_state:
+                                st.error(f"Auto-fill failed: {st.session_state.pop(f'{new_af_prefix}_error')}")
+                            if f"{new_af_prefix}_warning" in st.session_state:
+                                st.warning(st.session_state.pop(f"{new_af_prefix}_warning"))
+
+                            new_af_suggestions = st.session_state.get(new_af_suggestions_key)
+                            if new_af_suggestions:
+                                from viraltracker.ui.autofill_suggestions import render_autofill_suggestions
+                                render_autofill_suggestions(
+                                    suggestions=new_af_suggestions,
+                                    brand_id=selected_brand_id,
+                                    product_id=product_id,
+                                    source_label="LP",
+                                    widget_prefix=new_af_prefix,
+                                    source_url=new_ov_url,
+                                )
 
                     st.markdown("---")
 
@@ -2166,36 +2485,95 @@ else:
                             with st.expander(f"**{ov.get('name', 'Unnamed')}**", expanded=False):
                                 ov_id = ov.get('id')
 
-                                # Landing page URL
+                                # Landing page URL + LP actions row
                                 landing_url = ov.get('landing_page_url', '')
                                 if landing_url:
-                                    st.markdown(f"🔗 [{landing_url[:50]}...]({landing_url})" if len(landing_url) > 50 else f"🔗 [{landing_url}]({landing_url})")
+                                    url_col, synth_col, af_col, img_col = st.columns([3, 1, 1, 1])
+                                    with url_col:
+                                        st.markdown(f"🔗 [{landing_url[:50]}...]({landing_url})" if len(landing_url) > 50 else f"🔗 [{landing_url}]({landing_url})")
+                                    with synth_col:
+                                        synth_clicked = st.button("🔮 Synthesize", key=f"synth_ta_{ov_id}", help="Extract target audience from LP")
+                                    with af_col:
+                                        af_prefix = f"bm_af_{ov_id}"
+                                        af_running_key = f"{af_prefix}_running"
+                                        af_suggestions_key = f"{af_prefix}_suggestions"
+                                        af_btn_label = "🧠 Re-run" if st.session_state.get(af_suggestions_key) else "🧠 Auto-fill"
+                                        af_clicked = st.button(af_btn_label, key=f"{af_prefix}_btn", help="Extract product details, mechanism, pain points from LP")
+                                    with img_col:
+                                        scrape_img_clicked = st.button("📷 Images", key=f"scrape_imgs_{ov_id}", help="Extract product images from LP")
 
-                                # Editable Target Audience with Synthesize button
-                                ta_state_key = f"ta_state_{ov_id}"
-                                db_ta = ov.get('target_audience', '') or ''
-
-                                # Initialize state from DB if needed
-                                if ta_state_key not in st.session_state:
-                                    st.session_state[ta_state_key] = db_ta
-
-                                ta_col1, ta_col2 = st.columns([3, 1])
-                                with ta_col1:
-                                    st.markdown("**Target Audience**")
-                                with ta_col2:
-                                    synth_btn_key = f"synth_ta_{ov_id}"
-                                    if landing_url and st.button("🔮 Synthesize", key=synth_btn_key, help="Extract target audience from landing page using AI"):
+                                    # Handle Synthesize
+                                    if synth_clicked:
                                         with st.spinner("Analyzing landing page..."):
                                             from viraltracker.services.product_offer_variant_service import ProductOfferVariantService
                                             ov_service = ProductOfferVariantService()
                                             result = ov_service.analyze_landing_page(landing_url)
                                             if result.get('success') and result.get('target_audience'):
-                                                st.session_state[ta_state_key] = result['target_audience']
+                                                st.session_state[f"ta_state_{ov_id}"] = result['target_audience']
                                                 st.rerun()
                                             else:
                                                 st.error("Could not extract target audience from landing page")
 
-                                # Use unique key per render to avoid state conflicts
+                                    # Handle Auto-fill
+                                    if af_clicked:
+                                        st.session_state[af_running_key] = True
+
+                                    if st.session_state.get(af_running_key):
+                                        with st.spinner("Scraping page and extracting fields with AI..."):
+                                            try:
+                                                from viraltracker.ui.autofill_suggestions import scrape_and_extract
+                                                suggestions, warning = scrape_and_extract(
+                                                    url=landing_url,
+                                                    product_name=product_name,
+                                                    brand_name=selected_brand.get('name'),
+                                                )
+                                                st.session_state[af_suggestions_key] = suggestions
+                                                if warning:
+                                                    st.session_state[f"{af_prefix}_warning"] = warning
+                                            except Exception as e:
+                                                st.session_state[f"{af_prefix}_error"] = str(e)
+                                            st.session_state[af_running_key] = False
+                                            st.rerun()
+
+                                    # Show error/warning from previous run
+                                    if f"{af_prefix}_error" in st.session_state:
+                                        st.error(f"Auto-fill failed: {st.session_state.pop(f'{af_prefix}_error')}")
+                                    if f"{af_prefix}_warning" in st.session_state:
+                                        st.warning(st.session_state.pop(f"{af_prefix}_warning"))
+
+                                    af_suggestions = st.session_state.get(af_suggestions_key)
+                                    if af_suggestions:
+                                        from viraltracker.ui.autofill_suggestions import render_autofill_suggestions
+                                        render_autofill_suggestions(
+                                            suggestions=af_suggestions,
+                                            brand_id=selected_brand_id,
+                                            product_id=product_id,
+                                            offer_variant_id=ov_id,
+                                            source_label="LP",
+                                            widget_prefix=af_prefix,
+                                            source_url=landing_url,
+                                        )
+
+                                    # Handle Scrape Images
+                                    if scrape_img_clicked:
+                                        with st.spinner("Scraping images from landing page..."):
+                                            img_result = scrape_and_save_offer_variant_images(
+                                                product_id, ov_id, landing_url
+                                            )
+                                            if img_result['success']:
+                                                st.success(f"Found {img_result['total_count']} images, added {img_result['new_count']} new")
+                                                st.rerun()
+                                            else:
+                                                st.error(f"Failed: {img_result.get('error', 'Unknown error')}")
+
+                                # Editable Target Audience
+                                ta_state_key = f"ta_state_{ov_id}"
+                                db_ta = ov.get('target_audience', '') or ''
+
+                                if ta_state_key not in st.session_state:
+                                    st.session_state[ta_state_key] = db_ta
+
+                                st.markdown("**Target Audience**")
                                 widget_key = f"ta_widget_{ov_id}_{hash(st.session_state.get(ta_state_key, ''))}"
                                 new_ta = st.text_area(
                                     "Target audience for this offer variant",
@@ -2205,10 +2583,8 @@ else:
                                     help="Define who this offer variant targets. This will be used in ad generation prompts.",
                                     label_visibility="collapsed"
                                 )
-                                # Update our state if user edited
                                 st.session_state[ta_state_key] = new_ta
 
-                                # Save button if changed
                                 original_ta = ov.get('target_audience', '') or ''
                                 if new_ta != original_ta:
                                     if st.button("💾 Save Target Audience", key=f"save_ta_{ov_id}"):
@@ -2224,24 +2600,9 @@ else:
                                         else:
                                             st.error("Failed to save target audience")
 
-                                # Images from Landing Page section
+                                # Images from Landing Page
                                 st.markdown("")
-                                img_col1, img_col2 = st.columns([3, 1])
-                                with img_col1:
-                                    st.markdown("**Images from Landing Page**")
-                                with img_col2:
-                                    scrape_key = f"scrape_imgs_{ov_id}"
-                                    if landing_url and st.button("📷 Scrape Images", key=scrape_key, help="Extract product images from landing page"):
-                                        with st.spinner("Scraping images from landing page..."):
-                                            result = scrape_and_save_offer_variant_images(
-                                                product_id, ov_id, landing_url
-                                            )
-                                            if result['success']:
-                                                st.success(f"Found {result['total_count']} images, added {result['new_count']} new")
-                                                st.rerun()
-                                            else:
-                                                st.error(f"Failed: {result.get('error', 'Unknown error')}")
-
+                                st.markdown("**Images from Landing Page**")
                                 # Display existing images for this offer variant
                                 ov_images = get_offer_variant_images(ov_id)
                                 if ov_images:
@@ -2267,7 +2628,7 @@ else:
                                     if not landing_url:
                                         st.caption("No landing page URL set")
                                     else:
-                                        st.caption("No images scraped yet. Click 'Scrape Images' to extract from landing page.")
+                                        st.caption("No images scraped yet. Click 'Images' above to extract from landing page.")
 
                                 st.markdown("---")
 
@@ -2505,6 +2866,79 @@ else:
                         created_at = amazon_data.get('created_at', '')
                         if created_at:
                             st.caption(f"*Analysis created: {created_at[:10]}*")
+
+                        # Auto-fill from Amazon Reviews
+                        st.markdown("---")
+                        amz_af_prefix = f"bm_amz_af_{product_id}"
+                        amz_af_running_key = f"{amz_af_prefix}_running"
+                        amz_af_suggestions_key = f"{amz_af_prefix}_suggestions"
+
+                        # OV selector for review auto-fill (pain_points and mechanism are OV-level)
+                        _review_ovs = get_offer_variants_for_product(product_id)
+                        _review_ov_id = None
+                        _amz_target_fields = ["product.results_timeline"]  # Always safe
+                        if _review_ovs:
+                            _default_ov = next((ov for ov in _review_ovs if ov.get('is_default')), _review_ovs[0])
+                            _ov_options = {ov['id']: ov.get('name', 'Unnamed') for ov in _review_ovs}
+                            _selected_ov_id = st.selectbox(
+                                "Apply to offer variant",
+                                options=list(_ov_options.keys()),
+                                format_func=lambda x, opts=_ov_options: opts[x],
+                                index=list(_ov_options.keys()).index(_default_ov['id']),
+                                key=f"{amz_af_prefix}_ov_select",
+                                help="Review-extracted pain points and mechanism will be applied to this variant",
+                            )
+                            _review_ov_id = _selected_ov_id
+                            _amz_target_fields = [
+                                "offer_variant.pain_points",
+                                "product.results_timeline",
+                                "offer_variant.mechanism.root_cause",
+                            ]
+                        else:
+                            st.caption("No offer variants yet — only product-level fields will be extracted.")
+
+                        # Get Amazon URL for provenance
+                        _amz_source_url = None
+                        if _amz_url_data:
+                            _amz_source_url = _amz_url_data[0].get("amazon_url")
+
+                        amz_btn_label = "🧠 Re-run Auto-fill" if st.session_state.get(amz_af_suggestions_key) else "🧠 Auto-fill from Reviews"
+                        if st.button(amz_btn_label, key=f"{amz_af_prefix}_btn", help="Extract pain points, results timeline, and mechanism from review analysis"):
+                            st.session_state[amz_af_running_key] = True
+
+                        if st.session_state.get(amz_af_running_key):
+                            with st.spinner("Extracting fields from Amazon reviews..."):
+                                try:
+                                    from viraltracker.ui.autofill_suggestions import _get_gap_filler_service
+                                    gap_filler = _get_gap_filler_service()
+                                    review_suggestions = asyncio.run(
+                                        gap_filler.extract_from_amazon_analysis(
+                                            amazon_analysis=amazon_data,
+                                            target_fields=_amz_target_fields,
+                                        )
+                                    )
+                                    st.session_state[amz_af_suggestions_key] = review_suggestions
+                                except Exception as e:
+                                    st.session_state[f"{amz_af_prefix}_error"] = str(e)
+                                st.session_state[amz_af_running_key] = False
+                                st.rerun()
+
+                        if f"{amz_af_prefix}_error" in st.session_state:
+                            st.error(f"Auto-fill failed: {st.session_state.pop(f'{amz_af_prefix}_error')}")
+
+                        amz_af_suggestions = st.session_state.get(amz_af_suggestions_key)
+                        if amz_af_suggestions:
+                            from viraltracker.ui.autofill_suggestions import render_autofill_suggestions
+                            render_autofill_suggestions(
+                                suggestions=amz_af_suggestions,
+                                brand_id=selected_brand_id,
+                                product_id=product_id,
+                                offer_variant_id=_review_ov_id,
+                                source_label="Reviews",
+                                widget_prefix=amz_af_prefix,
+                                source_url=_amz_source_url,
+                                source_type="amazon_review_analysis",
+                            )
 
                 with tab_variants:
                     variants = product.get('product_variants', [])
