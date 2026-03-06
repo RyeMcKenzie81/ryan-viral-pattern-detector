@@ -1363,6 +1363,79 @@ def render_element_detection():
         st.info("No templates analyzed yet. Use the buttons above to start.")
 
 # ============================================================================
+# Manual Upload Tab
+# ============================================================================
+
+def render_manual_upload():
+    """Render manual template upload UI."""
+    import asyncio
+
+    st.subheader("Manual Template Upload")
+    st.caption("Upload template images directly — they'll be queued for review or auto-approved with AI analysis.")
+
+    uploaded_files = st.file_uploader(
+        "Upload template images",
+        type=["png", "jpg", "jpeg", "webp"],
+        accept_multiple_files=True,
+        key="manual_template_upload",
+    )
+
+    if uploaded_files:
+        # Preview thumbnails
+        st.markdown(f"**{len(uploaded_files)} file(s) selected:**")
+        preview_cols = st.columns(min(len(uploaded_files), 5))
+        for idx, f in enumerate(uploaded_files):
+            with preview_cols[idx % 5]:
+                st.image(f, caption=f.name, width=120)
+
+    run_ai = st.checkbox("Run AI analysis", value=True, key="manual_upload_ai")
+    auto_approve = st.checkbox("Auto-approve with AI defaults", value=False, key="manual_upload_auto")
+    if auto_approve:
+        st.warning("Templates will skip human review and go directly to the library.")
+
+    if uploaded_files and st.button("Upload & Queue", type="primary", key="manual_upload_btn"):
+        from viraltracker.services.template_queue_service import TemplateQueueService
+        service = TemplateQueueService()
+
+        progress = st.progress(0)
+        status_text = st.empty()
+        results = {"queued": 0, "auto_approved": 0, "failed": 0}
+
+        for idx, f in enumerate(uploaded_files):
+            status_text.text(f"Processing {f.name}... ({idx + 1}/{len(uploaded_files)})")
+            try:
+                image_data = f.read()
+                result = asyncio.run(service.add_manual_template(
+                    image_data=image_data,
+                    filename=f.name,
+                    run_ai_analysis=run_ai,
+                    auto_approve=auto_approve,
+                ))
+                if result.get("status") == "auto_approved":
+                    results["auto_approved"] += 1
+                else:
+                    results["queued"] += 1
+            except Exception as e:
+                st.error(f"Failed to upload {f.name}: {e}")
+                results["failed"] += 1
+
+            progress.progress((idx + 1) / len(uploaded_files))
+
+        status_text.empty()
+        progress.empty()
+
+        # Summary
+        parts = []
+        if results["queued"]:
+            parts.append(f"{results['queued']} queued for review")
+        if results["auto_approved"]:
+            parts.append(f"{results['auto_approved']} auto-approved")
+        if results["failed"]:
+            parts.append(f"{results['failed']} failed")
+        st.success(f"Upload complete: {', '.join(parts)}")
+
+
+# ============================================================================
 # Main Page
 # ============================================================================
 
@@ -1374,7 +1447,7 @@ render_stats()
 st.divider()
 
 # Tabs
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["Pending Review", "Template Library", "Ingest New", "Scheduled Scraping", "Element Detection"])
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["Pending Review", "Template Library", "Ingest New", "Manual Upload", "Scheduled Scraping", "Element Detection"])
 
 with tab1:
     render_pending_queue()
@@ -1386,7 +1459,10 @@ with tab3:
     render_ingestion_trigger()
 
 with tab4:
-    render_scheduled_scraping()
+    render_manual_upload()
 
 with tab5:
+    render_scheduled_scraping()
+
+with tab6:
     render_element_detection()
