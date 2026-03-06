@@ -65,16 +65,23 @@ def get_lip_sync_service():
     return LipSyncService()
 
 
-def _auto_save_project():
-    """Auto-save current manual creator project. Wrapped in try/except."""
+def _auto_save_project(resolved_org_id: str = ""):
+    """Auto-save current manual creator project. Wrapped in try/except.
+
+    Args:
+        resolved_org_id: The already-resolved org UUID (handles superuser "all" → real UUID).
+                         Falls back to session state if not provided.
+    """
     try:
         pid = st.session_state.get("vs_manual_project_id")
         name = st.session_state.get("vs_manual_project_name", "Untitled Project")
         final = st.session_state.get("vs_manual_final_video")
         _brand = st.session_state.get("selected_brand_id", "")
+        # Use resolved org_id (not raw get_org_id() which may be "all" for superusers)
+        _org = resolved_org_id or st.session_state.get("vs_resolved_org_id", get_org_id())
         svc = get_manual_video_service()
         result = svc.save_project(
-            organization_id=get_org_id(),
+            organization_id=_org,
             brand_id=_brand,
             project_id=pid,
             name=name,
@@ -238,6 +245,9 @@ if org_id == "all":
     except Exception:
         st.warning("Could not determine organization for this brand.")
         st.stop()
+
+# Store resolved org_id for _auto_save_project and other helpers
+st.session_state.vs_resolved_org_id = org_id
 
 
 # ============================================================================
