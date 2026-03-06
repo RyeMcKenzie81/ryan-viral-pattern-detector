@@ -762,3 +762,25 @@ The current permissive RLS policy (`FOR ALL TO authenticated USING (true)`) mean
 - `viraltracker/services/seo_pipeline/services/gsc_service.py` — OAuth token storage
 - `viraltracker/services/seo_pipeline/services/ga4_service.py` — SA credentials
 - `viraltracker/services/seo_pipeline/services/cms_publisher_service.py` — Shopify tokens
+
+### 32. Element Classifier Misses Listicle Patterns on Some Pages
+
+**Priority**: Medium
+**Complexity**: Medium
+**Added**: 2026-03-06
+
+**Context**: Fix 3 (Listicle LP Number Matching) wired end-to-end support for extracting `listicle_item_count` from `landing_page_analyses.content_patterns` and passing it to ad creation prompts. However, the upstream element classifier (`_extract_content_patterns()` in `analysis_service.py`) doesn't always detect listicle structures.
+
+**Evidence**: The Boba Nutrition `7reabreakfast` page has 10 landing page analyses in the DB, all with empty `content_patterns`. Element detection ran (confirmed by `element_detection` key in `elements` JSONB) but didn't classify the page as containing a `feature_list`, so `listicle_item_count` is never populated. The page visually contains a numbered listicle ("7 reasons...") but the classifier misses it.
+
+**What's needed**:
+1. **Investigate `_extract_content_patterns()`** — Determine why `feature_list` detection fails on pages like Boba's `7reabreakfast`. May need additional heuristics for numbered headings, `<ol>` elements, or "Top N" / "N reasons" title patterns.
+2. **Add listicle detection heuristics** — Look for numbered list indicators beyond just `feature_list` element classification: regex for "N ways/reasons/tips" in H1/H2, ordered list elements, numbered section headings.
+3. **Backfill existing analyses** — Once detection is improved, re-analyze affected pages to populate `content_patterns.listicle_item_count`.
+
+**Impact**: Without this fix, Fix 3's listicle number matching only works for pages where the element classifier happens to detect the pattern. Pages with obvious listicle structures may still get hallucinated numbers in ad copy.
+
+**Related files**:
+- `viraltracker/services/landing_page_analysis/analysis_service.py` — `_extract_content_patterns()`
+- `viraltracker/services/landing_page_analysis/element_classifier.py` — Element classification
+- `viraltracker/pipelines/ad_creation_v2/services/content_service.py` — `AdContentService.get_listicle_count()`
