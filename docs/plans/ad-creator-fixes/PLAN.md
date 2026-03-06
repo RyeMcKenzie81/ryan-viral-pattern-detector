@@ -1,6 +1,6 @@
 # Ad Creator Fixes & Improvements Plan
 
-## Status: Fixes 1-8 COMPLETE | Fixes 9-13 NOT STARTED
+## Status: Fixes 1-9 COMPLETE | Fixes 10-13 NOT STARTED
 
 See `CHECKPOINT_BATCH_FIXES.md` for implementation details.
 See `TESTING_CHECKLIST.md` for manual and unit test checklists.
@@ -35,17 +35,9 @@ See `TESTING_CHECKLIST.md` for manual and unit test checklists.
 
 ## Brand Manager Enhancement
 
-### 9. Brand Manager — LP Analysis, Gap Filling & Feature Parity with Onboarding
-- **Problem**: Client Onboarding has many features missing from Brand Manager. If gaps aren't filled during onboarding, there's no way to do it later.
-- **Missing features**:
-  - Website scraping + brand voice auto-fill (`ContentGapFillerService`)
-  - Amazon listing analysis + review auto-fill (`AmazonReviewService`)
-  - Landing page analysis for new variants (`ProductOfferVariantService.analyze_landing_page()`)
-  - Product image extraction from LP (`WebScrapingService.extract_product_images()`)
-  - Auto-fill UI with Accept/Skip/Undo pattern
-  - All brand input fields visible (some only in onboarding)
-- **Services exist** — just need UI wiring in Brand Manager
-- **Scope**: Large (M-L)
+### 9. Brand Manager — LP Analysis, Gap Filling & Feature Parity with Onboarding -- DONE
+- **Fix**: 4 phases — shared auto-fill UI component, LP gap filling, website/brand voice auto-fill, Amazon review auto-fill + one-click setup, product URL auto-fill
+- **Details**: See `PLAN_FIX9_BRAND_MANAGER_PARITY.md` and `CHECKPOINT_FIX9_PHASE1_2.md`
 
 ## Hard Fixes
 
