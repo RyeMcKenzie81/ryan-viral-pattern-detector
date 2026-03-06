@@ -6,6 +6,7 @@ Tabs:
 2. Recreation - Generate videos from approved candidates (audio-first workflow)
 3. History - Browse completed recreations with cost tracking
 4. Manual Creator - Build multi-scene videos from scratch with avatar + Kling Omni
+5. Lip Sync - Clip-based lip-sync for multi-face videos
 
 Part of the Video Tools Suite (Phase 5).
 """
@@ -56,6 +57,42 @@ def get_manual_video_service():
     """Get ManualVideoService instance."""
     from viraltracker.services.manual_video_service import ManualVideoService
     return ManualVideoService()
+
+
+def get_lip_sync_service():
+    """Get LipSyncService instance."""
+    from viraltracker.services.lip_sync_service import LipSyncService
+    return LipSyncService()
+
+
+def _auto_save_project():
+    """Auto-save current manual creator project. Wrapped in try/except."""
+    try:
+        pid = st.session_state.get("vs_manual_project_id")
+        name = st.session_state.get("vs_manual_project_name", "Untitled Project")
+        final = st.session_state.get("vs_manual_final_video")
+        _brand = st.session_state.get("selected_brand_id", "")
+        svc = get_manual_video_service()
+        result = svc.save_project(
+            organization_id=get_org_id(),
+            brand_id=_brand,
+            project_id=pid,
+            name=name,
+            avatar_id=st.session_state.get("vs_manual_avatar_id_resolved"),
+            quality_mode=st.session_state.get("vs_manual_mode", "pro"),
+            aspect_ratio=st.session_state.get("vs_manual_aspect_ratio", "9:16"),
+            scenes=st.session_state.get("vs_manual_scenes", []),
+            frame_gallery=st.session_state.get("vs_manual_frame_gallery", []),
+            final_video_path=final.get("final_video_path") if final else None,
+            final_video_duration_sec=final.get("duration_sec") if final else None,
+        )
+        if not pid and result.get("id"):
+            st.session_state.vs_manual_project_id = result["id"]
+        st.session_state.vs_manual_last_saved = datetime.now().isoformat()
+        st.toast("Project saved")
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"Auto-save failed: {e}")
 
 
 def _run_async(coro):
@@ -156,6 +193,28 @@ if "vs_manual_session_id" not in st.session_state:
 if "vs_manual_final_video" not in st.session_state:
     st.session_state.vs_manual_final_video = None
 
+# Manual Creator project persistence
+if "vs_manual_project_id" not in st.session_state:
+    st.session_state.vs_manual_project_id = None
+if "vs_manual_project_name" not in st.session_state:
+    st.session_state.vs_manual_project_name = "Untitled Project"
+if "vs_manual_show_history" not in st.session_state:
+    st.session_state.vs_manual_show_history = False
+if "vs_manual_last_saved" not in st.session_state:
+    st.session_state.vs_manual_last_saved = None
+
+# Lip Sync session state
+if "vs_ls_video_bytes" not in st.session_state:
+    st.session_state.vs_ls_video_bytes = None
+if "vs_ls_audio_bytes" not in st.session_state:
+    st.session_state.vs_ls_audio_bytes = None
+if "vs_ls_job_id" not in st.session_state:
+    st.session_state.vs_ls_job_id = None
+if "vs_ls_results" not in st.session_state:
+    st.session_state.vs_ls_results = None
+if "vs_ls_preloaded_path" not in st.session_state:
+    st.session_state.vs_ls_preloaded_path = None
+
 
 # ============================================================================
 # Brand Selector
@@ -185,11 +244,12 @@ if org_id == "all":
 # Tabs
 # ============================================================================
 
-tab_candidates, tab_recreation, tab_history, tab_manual = st.tabs([
+tab_candidates, tab_recreation, tab_history, tab_manual, tab_lipsync = st.tabs([
     "📊 Candidates",
     "🎬 Recreation",
     "📁 History",
     "🎥 Manual Creator",
+    "👄 Lip Sync",
 ])
 
 
@@ -695,6 +755,115 @@ with tab_manual:
         "write prompts and dialogue per scene, then generate and stitch clips."
     )
 
+    # ---- Project Header ----
+    col_proj_name, col_proj_save, col_proj_new, col_proj_load = st.columns([3, 1, 1, 1])
+    with col_proj_name:
+        st.session_state.vs_manual_project_name = st.text_input(
+            "Project name",
+            value=st.session_state.vs_manual_project_name,
+            key="vs_manual_project_name_input",
+            label_visibility="collapsed",
+            placeholder="Untitled Project",
+        )
+    with col_proj_save:
+        if st.button("Save Draft", type="secondary", use_container_width=True):
+            # Need brand_id in scope — it's already set above
+            _auto_save_project()
+    with col_proj_new:
+        if st.button("New", use_container_width=True):
+            # Auto-save current project before clearing
+            if st.session_state.vs_manual_scenes or st.session_state.vs_manual_frame_gallery:
+                _auto_save_project()
+            # Clear session state for new project
+            st.session_state.vs_manual_project_id = None
+            st.session_state.vs_manual_project_name = "Untitled Project"
+            st.session_state.vs_manual_scenes = []
+            st.session_state.vs_manual_frame_gallery = []
+            st.session_state.vs_manual_session_id = str(uuid4())
+            st.session_state.vs_manual_final_video = None
+            st.session_state.vs_manual_last_saved = None
+            st.toast("Previous project saved. Starting new project.")
+            st.rerun()
+    with col_proj_load:
+        if st.button("Load", use_container_width=True):
+            st.session_state.vs_manual_show_history = not st.session_state.vs_manual_show_history
+            st.rerun()
+
+    # Last saved timestamp
+    if st.session_state.vs_manual_last_saved:
+        try:
+            saved_dt = datetime.fromisoformat(st.session_state.vs_manual_last_saved)
+            delta = datetime.now() - saved_dt
+            if delta.total_seconds() < 60:
+                ago = "just now"
+            elif delta.total_seconds() < 3600:
+                ago = f"{int(delta.total_seconds() / 60)} min ago"
+            else:
+                ago = saved_dt.strftime("%H:%M")
+            st.caption(f"Last saved: {ago}")
+        except Exception:
+            pass
+
+    # ---- Project Browser ----
+    if st.session_state.vs_manual_show_history:
+        st.markdown("---")
+        st.markdown("**Load Saved Project**")
+        svc = get_manual_video_service()
+        projects = svc.list_projects(brand_id=brand_id, organization_id=org_id, limit=20)
+
+        if not projects:
+            st.info("No saved projects for this brand.")
+        else:
+            for proj in projects:
+                p_status = proj.get("status", "draft")
+                p_icon = {"draft": "📝", "in_progress": "⏳", "completed": "🎉"}.get(p_status, "📄")
+                p_name = proj.get("name", "Untitled")
+                p_scenes = proj.get("scene_count", 0)
+                p_date = format_date(proj.get("updated_at"))
+
+                col_info, col_actions = st.columns([3, 1])
+                with col_info:
+                    st.markdown(f"{p_icon} **{p_name}** — {p_status} — {p_scenes} scenes — {p_date}")
+                with col_actions:
+                    col_load_btn, col_del_btn = st.columns(2)
+                    with col_load_btn:
+                        if st.button("Load", key=f"load_proj_{proj['id']}"):
+                            loaded = svc.load_project(proj["id"])
+                            if loaded:
+                                # Populate session state from loaded project
+                                st.session_state.vs_manual_project_id = loaded["id"]
+                                st.session_state.vs_manual_project_name = loaded.get("name", "Untitled")
+                                st.session_state.vs_manual_frame_gallery = loaded.get("frame_gallery", [])
+                                st.session_state.vs_manual_scenes = loaded.get("scenes", [])
+                                st.session_state.vs_manual_session_id = str(uuid4())
+                                final_path = loaded.get("final_video_path")
+                                if final_path:
+                                    parts = final_path.split("/", 1)
+                                    signed_url = ""
+                                    if len(parts) == 2:
+                                        from viraltracker.core.database import get_supabase_client as _get_sb_load
+                                        signed = _get_sb_load().storage.from_(parts[0]).create_signed_url(parts[1], 3600)
+                                        signed_url = signed.get("signedURL", "") if isinstance(signed, dict) else ""
+                                    st.session_state.vs_manual_final_video = {
+                                        "final_video_path": final_path,
+                                        "duration_sec": loaded.get("final_video_duration_sec"),
+                                        "signed_url": signed_url,
+                                    }
+                                else:
+                                    st.session_state.vs_manual_final_video = None
+                                st.session_state.vs_manual_show_history = False
+                                st.session_state.vs_manual_last_saved = loaded.get("updated_at")
+                                if loaded.get("_avatar_warning"):
+                                    st.warning(f"Avatar was deleted. Please select a new avatar.")
+                                st.rerun()
+                            else:
+                                st.error("Failed to load project")
+                    with col_del_btn:
+                        if st.button("Delete", key=f"del_proj_{proj['id']}"):
+                            svc.delete_project(proj["id"])
+                            st.rerun()
+        st.markdown("---")
+
     # ---- Global Settings ----
     col_avatar, col_quality, col_ratio = st.columns(3)
 
@@ -734,6 +903,7 @@ with tab_manual:
             key="vs_manual_avatar",
         )
         manual_avatar_id = avatar_display.get(selected_avatar_label)
+        st.session_state.vs_manual_avatar_id_resolved = manual_avatar_id
 
         # Warn if no element
         selected_av = next(
@@ -852,6 +1022,7 @@ with tab_manual:
                     st.session_state.vs_manual_frame_gallery.append(result)
                     # Clear stored ref bytes
                     st.session_state.pop("vs_manual_ref_bytes", None)
+                    _auto_save_project()
                     st.success("Frame generated!")
                     st.rerun()
                 except Exception as e:
@@ -1004,6 +1175,7 @@ with tab_manual:
                                 reference_image_bytes=qf_ref_bytes,
                             ))
                             st.session_state.vs_manual_frame_gallery.append(result)
+                            _auto_save_project()
                             st.success("Frame added to gallery!")
                             st.rerun()
                         except Exception as e:
@@ -1158,6 +1330,7 @@ with tab_manual:
                     entry["error"] = str(e)
             # Sync top-level fields from selected generation
             _sync_scene_from_selected_generation(scene)
+            _auto_save_project()
             st.rerun()
 
     # Add Scene controls
@@ -1265,6 +1438,7 @@ with tab_manual:
                         entry["error"] = str(e)
                     _sync_scene_from_selected_generation(scene)
                     progress.progress((i + 1) / len(draft_scenes))
+                _auto_save_project()
                 st.rerun()
         else:
             st.button("Generate All", disabled=True, help="Add scenes with prompts first")
@@ -1281,6 +1455,7 @@ with tab_manual:
                             session_id=st.session_state.vs_manual_session_id,
                         ))
                         st.session_state.vs_manual_final_video = result
+                        _auto_save_project()
                         st.success(
                             f"Final video assembled! Duration: {result.get('duration_sec', '?')}s"
                         )
@@ -1300,10 +1475,414 @@ with tab_manual:
     if final and final.get("signed_url"):
         st.markdown("---")
         st.markdown("#### Final Video")
-        vid_col, _ = st.columns([1, 1])
+        vid_col, action_col = st.columns([1, 1])
         with vid_col:
             st.video(final["signed_url"])
+        with action_col:
+            # Bridge to Lip Sync tab
+            if st.button("Lip-Sync This Video", key="vs_manual_to_lipsync"):
+                st.session_state.vs_ls_preloaded_path = final.get("final_video_path")
+                st.success("Video preloaded. Switch to the Lip Sync tab to continue.")
         st.caption(
             f"Duration: {final.get('duration_sec', '?')}s | "
             f"Path: {final.get('final_video_path', '')}"
         )
+
+
+# ============================================================================
+# Tab 5: Lip Sync
+# ============================================================================
+
+with tab_lipsync:
+    st.subheader("Lip Sync")
+    st.caption(
+        "Upload a video with someone speaking. AI will detect faces and sync "
+        "lip movement to the audio for each face segment independently."
+    )
+
+    # ---- Upload Section ----
+    st.markdown("#### Upload")
+
+    col_video_upload, col_audio_upload = st.columns(2)
+
+    with col_video_upload:
+        # Check for preloaded video from Manual Creator
+        preloaded_path = st.session_state.vs_ls_preloaded_path
+        if preloaded_path:
+            st.info(f"Video preloaded from Manual Creator: `{preloaded_path[-40:]}...`")
+            if st.button("Clear preloaded video"):
+                st.session_state.vs_ls_preloaded_path = None
+                st.rerun()
+        else:
+            video_upload = st.file_uploader(
+                "Video file",
+                type=["mp4", "mov"],
+                key="vs_ls_video_upload",
+                help="Upload a video with someone speaking. AI will sync lip movement to the audio.",
+            )
+            if video_upload is not None:
+                st.session_state.vs_ls_video_bytes = video_upload.getvalue()
+                st.session_state.vs_ls_video_filename = video_upload.name
+
+    with col_audio_upload:
+        audio_upload = st.file_uploader(
+            "Replacement audio (optional)",
+            type=["mp3", "wav", "m4a"],
+            key="vs_ls_audio_upload",
+            help="Optional: upload replacement audio. If not provided, the video's own audio is used.",
+        )
+        if audio_upload is not None:
+            st.session_state.vs_ls_audio_bytes = audio_upload.getvalue()
+
+    # Audio preset
+    audio_preset = st.selectbox(
+        "Original audio handling",
+        ["Mute original audio", "Blend at half volume", "Keep original audio"],
+        key="vs_ls_audio_preset",
+    )
+    audio_volume_map = {
+        "Mute original audio": 0.0,
+        "Blend at half volume": 0.5,
+        "Keep original audio": 1.0,
+    }
+    original_audio_volume = audio_volume_map.get(audio_preset, 0.0)
+
+    # Advanced settings
+    with st.expander("Advanced Settings"):
+        padding_ms = st.slider(
+            "Edge padding (ms)",
+            min_value=0,
+            max_value=2000,
+            value=500,
+            step=100,
+            key="vs_ls_padding",
+            help="Padding added around each face segment to ensure smooth transitions.",
+        )
+
+    # Process button
+    has_video = bool(st.session_state.vs_ls_video_bytes) or bool(st.session_state.vs_ls_preloaded_path)
+    if st.button("Process Video", disabled=not has_video, type="primary"):
+        import time as _time
+        import tempfile
+        from pathlib import Path
+
+        ls_svc = get_lip_sync_service()
+        ffmpeg_svc = ls_svc._get_ffmpeg()
+        start_time = _time.time()
+
+        with st.status("Processing lip sync...", expanded=True) as status:
+            st.warning("This takes ~2-3 min per face segment. Do not close this page.")
+
+            try:
+                # Step 1: Get video bytes
+                st.write("Step 1/5: Loading video...")
+                if st.session_state.vs_ls_preloaded_path:
+                    # Download from Supabase
+                    preloaded = st.session_state.vs_ls_preloaded_path
+                    parts = preloaded.split("/", 1)
+                    if len(parts) != 2:
+                        st.error(f"Invalid storage path: {preloaded}")
+                        st.stop()
+                    from viraltracker.core.database import get_supabase_client as _get_sb_ls
+                    video_bytes = _get_sb_ls().storage.from_(parts[0]).download(parts[1])
+                    filename = "preloaded_video.mp4"
+                else:
+                    video_bytes = st.session_state.vs_ls_video_bytes
+                    filename = st.session_state.get("vs_ls_video_filename", "upload.mp4")
+
+                # Validate
+                with tempfile.TemporaryDirectory(prefix="ls_validate_") as tmpdir:
+                    tmpdir = Path(tmpdir)
+                    tmp_video = tmpdir / "input.mp4"
+                    tmp_video.write_bytes(video_bytes)
+
+                    validation = ffmpeg_svc.validate_for_lip_sync(tmp_video)
+                    if not validation["valid"]:
+                        for err in validation["errors"]:
+                            st.error(err)
+                        st.stop()
+
+                    video_info = validation["info"]
+
+                elapsed = _time.time() - start_time
+                st.write(f"Step 1/5: Loading video... done ({elapsed:.0f}s)")
+
+                # Step 2: Normalize
+                st.write("Step 2/5: Normalizing video...")
+                norm_bytes = _run_async(ls_svc.normalize_video(video_bytes))
+                elapsed = _time.time() - start_time
+                st.write(f"Step 2/5: Normalizing... done ({elapsed:.0f}s)")
+
+                # Create job (includes settings used)
+                job_id = _run_async(ls_svc.create_job(
+                    org_id=org_id,
+                    brand_id=brand_id,
+                    filename=filename,
+                    video_info=video_info,
+                    original_audio_volume=original_audio_volume,
+                    padding_ms=padding_ms,
+                ))
+                st.session_state.vs_ls_job_id = job_id
+
+                # Upload normalized video to Supabase for Kling API
+                from viraltracker.core.database import get_supabase_client as _get_sb_ls2
+                _sb_ls = _get_sb_ls2()
+                norm_storage_key = f"lip-sync/{brand_id}/{job_id}/normalized.mp4"
+                _sb_ls.storage.from_("kling-videos").upload(
+                    norm_storage_key, norm_bytes,
+                    {"content-type": "video/mp4", "upsert": "true"},
+                )
+                norm_signed = _sb_ls.storage.from_("kling-videos").create_signed_url(
+                    norm_storage_key, 3600
+                )
+                norm_url = norm_signed.get("signedURL", "") if isinstance(norm_signed, dict) else ""
+
+                # Step 3: Detect faces
+                st.write("Step 3/5: Detecting faces...")
+                _run_async(ls_svc.update_job(job_id, status="detecting_faces"))
+                face_result = _run_async(ls_svc.detect_faces(org_id, brand_id, norm_url))
+                face_data = face_result.get("face_data", [])
+                face_count = len(face_data)
+                elapsed = _time.time() - start_time
+                st.write(f"Step 3/5: Detected {face_count} face(s) ({elapsed:.0f}s)")
+
+                _run_async(ls_svc.update_job(job_id,
+                    face_count=face_count,
+                    face_data=face_data,
+                ))
+
+                if face_count == 0:
+                    _run_async(ls_svc.update_job(job_id, status="completed",
+                        error_message="No faces detected. Original video returned unchanged."))
+                    st.warning("No faces detected in the video.")
+                    # Return original video as result
+                    orig_signed = _sb_ls.storage.from_("kling-videos").create_signed_url(
+                        norm_storage_key, 3600
+                    )
+                    orig_url = orig_signed.get("signedURL", "") if isinstance(orig_signed, dict) else ""
+                    st.session_state.vs_ls_results = {
+                        "final_video_path": f"kling-videos/{norm_storage_key}",
+                        "signed_url": orig_url,
+                        "face_count": 0,
+                        "status": "completed",
+                    }
+                    status.update(label="Completed (no faces detected)", state="complete")
+                else:
+                    # Step 4: Plan and process clips
+                    clip_plan = ls_svc.plan_clips(face_data, video_info["duration_ms"], padding_ms)
+                    face_clips = clip_plan["face_clips"]
+                    gap_clips = clip_plan["gap_clips"]
+                    total_clips = len(face_clips) + len(gap_clips)
+
+                    _run_async(ls_svc.update_job(job_id,
+                        status="processing_clips",
+                        clip_plan=clip_plan,
+                    ))
+
+                    st.write(f"Step 4/5: Processing {len(face_clips)} face clip(s) + {len(gap_clips)} gap clip(s)...")
+                    progress = st.progress(0)
+
+                    # Save normalized video locally for clipping
+                    with tempfile.TemporaryDirectory(prefix="ls_process_") as work_dir:
+                        work_dir = Path(work_dir)
+                        norm_video_path = work_dir / "normalized.mp4"
+                        norm_video_path.write_bytes(norm_bytes)
+
+                        # Extract audio for clip processing
+                        full_audio_path = work_dir / "full_audio.m4a"
+                        ffmpeg_svc.clip_audio(
+                            norm_video_path, 0, video_info["duration_ms"], full_audio_path
+                        )
+
+                        # Process face clips
+                        face_results = []
+                        for i, fc in enumerate(face_clips):
+                            st.write(f"  Face clip {i+1}/{len(face_clips)}: {fc['start_ms']}-{fc['end_ms']}ms")
+                            result = _run_async(ls_svc.process_face_clip(
+                                org_id=org_id,
+                                brand_id=brand_id,
+                                job_id=job_id,
+                                clip_index=i,
+                                face_clip=fc,
+                                norm_video_path=norm_video_path,
+                                full_audio_path=full_audio_path,
+                                original_audio_volume=original_audio_volume,
+                            ))
+                            face_results.append(result)
+                            progress.progress((i + 1) / total_clips)
+
+                        # Process gap clips
+                        gap_results = []
+                        for i, gc in enumerate(gap_clips):
+                            st.write(f"  Gap clip {i+1}/{len(gap_clips)}: {gc['start_ms']}-{gc['end_ms']}ms")
+                            result = _run_async(ls_svc.extract_gap_clip(
+                                job_id=job_id,
+                                brand_id=brand_id,
+                                gap_index=i,
+                                gap_clip=gc,
+                                norm_video_path=norm_video_path,
+                            ))
+                            gap_results.append(result)
+                            progress.progress((len(face_clips) + i + 1) / total_clips)
+
+                    elapsed = _time.time() - start_time
+                    st.write(f"Step 4/5: Clips processed ({elapsed:.0f}s)")
+
+                    _run_async(ls_svc.update_job(job_id,
+                        face_clip_results=face_results,
+                        gap_clip_results=gap_results,
+                    ))
+
+                    # Step 5: Reassemble
+                    st.write("Step 5/5: Reassembling final video...")
+                    _run_async(ls_svc.update_job(job_id, status="reassembling"))
+
+                    final_result = _run_async(ls_svc.reassemble(
+                        job_id=job_id,
+                        brand_id=brand_id,
+                        face_results=face_results,
+                        gap_results=gap_results,
+                        face_clips=face_clips,
+                        gap_clips=gap_clips,
+                    ))
+
+                    elapsed = _time.time() - start_time
+                    st.write(f"Step 5/5: Reassembly complete ({elapsed:.0f}s)")
+
+                    # Determine final status
+                    all_ok = all(r.get("status") == "succeed" for r in face_results)
+                    any_ok = any(r.get("status") == "succeed" for r in face_results)
+                    all_failed = all(r.get("status") == "failed" for r in face_results)
+
+                    if all_failed:
+                        job_status = "failed"
+                    else:
+                        job_status = "completed"
+
+                    _run_async(ls_svc.update_job(job_id,
+                        status=job_status,
+                        final_video_path=final_result.get("final_video_path"),
+                        final_video_duration_ms=final_result.get("final_video_duration_ms"),
+                    ))
+
+                    st.session_state.vs_ls_results = {
+                        **final_result,
+                        "face_count": face_count,
+                        "face_results": face_results,
+                        "gap_results": gap_results,
+                        "face_clips": face_clips,
+                        "gap_clips": gap_clips,
+                        "status": job_status,
+                        "partial": any_ok and not all_ok,
+                    }
+
+                    if not all_ok and any_ok:
+                        status.update(label="Completed (partial success)", state="complete")
+                    elif all_failed:
+                        status.update(label="Failed", state="error")
+                    else:
+                        status.update(label="Completed", state="complete")
+
+                    total_elapsed = _time.time() - start_time
+                    st.write(f"Total time: {total_elapsed:.0f}s")
+
+            except Exception as e:
+                status.update(label="Failed", state="error")
+                st.error(f"Lip sync processing failed: {e}")
+                if st.session_state.vs_ls_job_id:
+                    _run_async(ls_svc.update_job(
+                        st.session_state.vs_ls_job_id,
+                        status="failed",
+                        error_message=str(e),
+                    ))
+
+    # ---- Results Section ----
+    ls_results = st.session_state.vs_ls_results
+    if ls_results:
+        st.markdown("---")
+        st.markdown("#### Results")
+
+        if ls_results.get("status") == "failed":
+            st.error("All face clips failed processing. Check the processing logs above.")
+        else:
+            if ls_results.get("partial"):
+                st.warning("Some face clips failed. The final video uses original footage for failed segments.")
+
+            # Hero: final video
+            if ls_results.get("signed_url"):
+                st.markdown("**Final Video**")
+                vid_col, dl_col = st.columns([2, 1])
+                with vid_col:
+                    st.video(ls_results["signed_url"])
+                with dl_col:
+                    if ls_results.get("final_video_path"):
+                        parts = ls_results["final_video_path"].split("/", 1)
+                        if len(parts) == 2:
+                            try:
+                                from viraltracker.core.database import get_supabase_client as _get_sb_dl
+                                dl_bytes = _get_sb_dl().storage.from_(parts[0]).download(parts[1])
+                                st.download_button(
+                                    "Download Final Video",
+                                    data=dl_bytes,
+                                    file_name="lip_synced.mp4",
+                                    mime="video/mp4",
+                                    key="vs_ls_download_final",
+                                )
+                            except Exception:
+                                st.caption("Download unavailable")
+
+            # Individual segments expander
+            face_results = ls_results.get("face_results", [])
+            if face_results:
+                with st.expander("Individual Segments"):
+                    for i, fr in enumerate(face_results):
+                        status_icon = "✅" if fr.get("status") == "succeed" else "❌"
+                        fc = ls_results.get("face_clips", [])[i] if i < len(ls_results.get("face_clips", [])) else {}
+                        st.markdown(
+                            f"{status_icon} Face clip {i+1}: "
+                            f"{fc.get('start_ms', '?')}-{fc.get('end_ms', '?')}ms "
+                            f"— {fr.get('status', '?')}"
+                        )
+                        if fr.get("error"):
+                            st.caption(f"Error: {fr['error']}")
+
+            # Processing summary expander
+            with st.expander("Processing Summary"):
+                st.markdown(f"**Faces detected**: {ls_results.get('face_count', 0)}")
+                st.markdown(f"**Face clips**: {len(ls_results.get('face_results', []))}")
+                st.markdown(f"**Gap clips**: {len(ls_results.get('gap_results', []))}")
+
+    # ---- Past Jobs ----
+    with st.expander("Past Lip Sync Jobs"):
+        ls_svc = get_lip_sync_service()
+        past_jobs = _run_async(ls_svc.list_jobs(org_id, brand_id))
+
+        if not past_jobs:
+            st.info("No past lip-sync jobs for this brand.")
+        else:
+            for job in past_jobs:
+                j_status = job.get("status", "?")
+                j_icon = {
+                    "completed": "🎉",
+                    "failed": "💥",
+                    "pending": "⏳",
+                    "processing_clips": "⏳",
+                }.get(j_status, "📄")
+                j_name = job.get("original_filename", "Unknown")
+                j_faces = job.get("face_count", "?")
+                j_date = format_date(job.get("created_at"))
+
+                st.markdown(
+                    f"{j_icon} **{j_name}** — {j_status} — "
+                    f"{j_faces} face(s) — {j_date}"
+                )
+                if job.get("error_message"):
+                    st.caption(f"Error: {job['error_message']}")
+                if job.get("final_video_path"):
+                    parts = job["final_video_path"].split("/", 1)
+                    if len(parts) == 2:
+                        from viraltracker.core.database import get_supabase_client as _get_sb_past
+                        signed = _get_sb_past().storage.from_(parts[0]).create_signed_url(parts[1], 3600)
+                        past_url = signed.get("signedURL", "") if isinstance(signed, dict) else ""
+                        if past_url:
+                            st.video(past_url)
