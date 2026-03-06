@@ -133,7 +133,7 @@ def get_industry_niches():
         return []
 
 
-def get_scraped_templates(category=None, awareness_level=None, industry_niche=None, target_sex=None, limit=100):
+def get_scraped_templates(category=None, awareness_level=None, industry_niche=None, target_sex=None, limit=100, source_brand=None, sort_by="most_used"):
     """Fetch active scraped templates with optional filters."""
     try:
         from viraltracker.services.template_queue_service import TemplateQueueService
@@ -145,9 +145,20 @@ def get_scraped_templates(category=None, awareness_level=None, industry_niche=No
             target_sex=target_sex if target_sex != "all" else None,
             active_only=True,
             limit=limit,
+            source_brand=source_brand if source_brand != "All" else None,
+            sort_by=sort_by,
         )
     except Exception as e:
         st.warning(f"Could not load templates: {e}")
+        return []
+
+def get_source_brands():
+    """Fetch distinct source brand names from template library."""
+    try:
+        from viraltracker.services.template_queue_service import TemplateQueueService
+        service = TemplateQueueService()
+        return service.get_source_brands()
+    except Exception:
         return []
 
 
@@ -327,8 +338,28 @@ def _render_manual_template_selection():
             key="v2_filter_sex",
         )
 
+    # --- Filter row 2 (Source Brand + Sort) ---
+    fc5, fc6 = st.columns(2)
+
+    with fc5:
+        brand_options = ["All"] + get_source_brands()
+        source_brand = st.selectbox(
+            "Source Brand",
+            options=brand_options,
+            key="v2_filter_source_brand",
+        )
+
+    with fc6:
+        sort_options = ["most_used", "least_used", "newest", "oldest"]
+        sort_by = st.selectbox(
+            "Sort By",
+            options=sort_options,
+            format_func=lambda x: x.replace("_", " ").title(),
+            key="v2_filter_sort",
+        )
+
     # Reset pagination when any filter changes
-    _current_filters = (category, awareness_level, industry_niche, target_sex)
+    _current_filters = (category, awareness_level, industry_niche, target_sex, source_brand, sort_by)
     if st.session_state.get('_v2_prev_filters') != _current_filters:
         st.session_state.v2_templates_visible = 30
         st.session_state['_v2_prev_filters'] = _current_filters
@@ -353,6 +384,8 @@ def _render_manual_template_selection():
         awareness_level=awareness_level,
         industry_niche=industry_niche,
         target_sex=target_sex,
+        source_brand=source_brand,
+        sort_by=sort_by,
     )
 
     if not templates:

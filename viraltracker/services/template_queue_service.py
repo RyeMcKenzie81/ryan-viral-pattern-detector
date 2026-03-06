@@ -350,7 +350,9 @@ class TemplateQueueService:
         industry_niche: Optional[str] = None,
         target_sex: Optional[str] = None,
         active_only: bool = True,
-        limit: int = 50
+        limit: int = 50,
+        source_brand: Optional[str] = None,
+        sort_by: str = "most_used",
     ) -> List[Dict]:
         """
         Get approved templates from library.
@@ -362,6 +364,8 @@ class TemplateQueueService:
             target_sex: Optional target sex filter (male/female/unisex)
             active_only: Only return active templates
             limit: Maximum templates to return
+            source_brand: Optional source brand (advertiser) name substring filter
+            sort_by: Sort order — "most_used", "least_used", "newest", "oldest"
 
         Returns:
             List of template records
@@ -378,11 +382,35 @@ class TemplateQueueService:
             query = query.eq("industry_niche", industry_niche)
         if target_sex:
             query = query.eq("target_sex", target_sex)
+        if source_brand:
+            query = query.ilike("source_brand", f"%{source_brand}%")
 
-        query = query.order("times_used", desc=True).limit(limit)
+        # Sort
+        if sort_by == "newest":
+            query = query.order("created_at", desc=True)
+        elif sort_by == "oldest":
+            query = query.order("created_at", desc=False)
+        elif sort_by == "least_used":
+            query = query.order("times_used", desc=False)
+        else:  # most_used (default)
+            query = query.order("times_used", desc=True)
+
+        query = query.limit(limit)
         result = query.execute()
 
         return result.data
+
+    def get_source_brands(self) -> List[str]:
+        """Get distinct non-null source brand names from active templates."""
+        result = self.supabase.table("scraped_templates").select(
+            "source_brand"
+        ).eq("is_active", True).not_.is_("source_brand", "null").execute()
+
+        brands = sorted(set(
+            r["source_brand"] for r in (result.data or [])
+            if r.get("source_brand")
+        ))
+        return brands
 
     def get_template_categories(self) -> List[str]:
         """Get list of valid template categories."""
@@ -797,3 +825,100 @@ class TemplateQueueService:
 
         logger.info(f"Bulk approval finalized: {len(template_ids)}/{len(items)} items approved")
         return {"approved": len(template_ids), "template_ids": template_ids}
+
+    async def add_manual_template(
+        self,
+        image_data: bytes,
+        filename: str,
+        brand_id: Optional[str] = None,
+        run_ai_analysis: bool = True,
+        auto_approve: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Manually upload a template image and route it through the ingestion pipeline.
+
+        Args:
+            image_data: Raw image bytes
+            filename: Original filename
+            brand_id: Optional brand ID for organization
+            run_ai_analysis: Whether to run AI pre-analysis
+            auto_approve: Whether to auto-approve with AI defaults (skips human review)
+
+        Returns:
+            Dict with asset_id, queue_id, template_id (if auto-approved), status
+        """
+        import uuid as _uuid
+
+        # Determine file extension
+        ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else 'png'
+        if ext not in ('png', 'jpg', 'jpeg', 'webp'):
+            ext = 'png'
+
+        # Upload to S3
+        unique_name = f"{_uuid.uuid4()}.{ext}"
+        storage_path = f"scraped-assets/manual/{unique_name}"
+
+        # Detect content type
+        content_type = {
+            'png': 'image/png', 'jpg': 'image/jpeg',
+            'jpeg': 'image/jpeg', 'webp': 'image/webp',
+        }.get(ext, 'image/png')
+
+        bucket, path = storage_path.split("/", 1)
+        self.supabase.storage.from_(bucket).upload(
+            path, image_data, {"content-type": content_type}
+        )
+
+        # Create scraped_ad_assets record (facebook_ad_id is NULL for manual uploads)
+        asset_data = {
+            "storage_path": storage_path,
+            "asset_type": "image",
+            "scrape_source": "manual_upload",
+        }
+        asset_result = self.supabase.table("scraped_ad_assets").insert(asset_data).execute()
+        asset_id = asset_result.data[0]["id"]
+
+        # Create template_queue record
+        queue_data = {
+            "asset_id": asset_id,
+            "status": "pending",
+        }
+        queue_result = self.supabase.table("template_queue").insert(queue_data).execute()
+        queue_id = queue_result.data[0]["id"]
+
+        result = {
+            "asset_id": asset_id,
+            "queue_id": queue_id,
+            "template_id": None,
+            "status": "queued",
+        }
+
+        # Run AI analysis if requested
+        if run_ai_analysis:
+            try:
+                suggestions = await self.start_approval(UUID(queue_id))
+                result["status"] = "analyzed"
+                result["suggestions"] = suggestions
+
+                # Auto-approve with AI defaults
+                if auto_approve and suggestions:
+                    template = self.finalize_approval(
+                        queue_id=UUID(queue_id),
+                        name=suggestions.get("suggested_name", filename),
+                        description=suggestions.get("suggested_description", "Manually uploaded template"),
+                        category=suggestions.get("format_type", "other"),
+                        industry_niche=suggestions.get("industry_niche", "other"),
+                        target_sex=suggestions.get("target_sex", "unisex"),
+                        awareness_level=suggestions.get("awareness_level", 3),
+                        sales_event=suggestions.get("sales_event"),
+                        reviewed_by="auto_approve",
+                    )
+                    result["template_id"] = template["id"]
+                    result["status"] = "auto_approved"
+            except Exception as e:
+                logger.error(f"AI analysis failed for manual upload {queue_id}: {e}")
+                result["status"] = "queued_no_analysis"
+                result["error"] = str(e)
+
+        logger.info(f"Manual template uploaded: asset={asset_id}, queue={queue_id}, status={result['status']}")
+        return result
