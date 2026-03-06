@@ -201,7 +201,7 @@ class AdReviewOverrideService:
                 "review_check_scores, defect_scan_result, congruence_score, "
                 "override_status, hook_text, prompt_version, template_name, "
                 "created_at, "
-                "ad_runs!inner(id, product_id, source_scraped_template_id)"
+                "ad_runs(id, product_id, source_scraped_template_id)"
             )
         )
 
@@ -251,7 +251,7 @@ class AdReviewOverrideService:
             self._db.table("generated_ads")
             .select(
                 "final_status, override_status, "
-                "ad_runs!inner(product_id)"
+                "ad_runs(product_id)"
             )
         )
 

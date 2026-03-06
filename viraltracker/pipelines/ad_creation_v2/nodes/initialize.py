@@ -88,12 +88,16 @@ class InitializeNode(BaseNode[AdCreationPipelineState]):
             product_uuid = UUID(ctx.state.product_id)
             project_uuid = UUID(ctx.state.project_id) if ctx.state.project_id else None
 
+            # Pass source template ID for V2 results join
+            source_template_uuid = UUID(ctx.state.template_id) if ctx.state.template_id else None
+
             ad_run_id = await ctx.deps.ad_creation.create_ad_run(
                 product_id=product_uuid,
                 reference_ad_storage_path="temp",
                 project_id=project_uuid,
                 parameters=run_parameters,
                 generation_config=generation_config,
+                source_scraped_template_id=source_template_uuid,
             )
             ctx.state.ad_run_id = str(ad_run_id)
 
