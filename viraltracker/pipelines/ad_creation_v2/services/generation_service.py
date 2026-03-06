@@ -74,6 +74,8 @@ class AdGenerationService:
         performance_context: Optional[Dict[str, Any]] = None,
         # Logo injection
         logo_image_base64: Optional[str] = None,
+        # Blueprint context
+        blueprint_context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Generate structured JSON prompt for Gemini image generation using Pydantic models.
@@ -229,6 +231,22 @@ class AdGenerationService:
                 optimization_notes=performance_context.get("optimization_notes"),
             )
 
+        # Build BlueprintContext from blueprint data
+        blueprint_ctx_model = None
+        if blueprint_context:
+            from ..models.prompt import BlueprintContext
+            blueprint_ctx_model = BlueprintContext(
+                source_url=blueprint_context.get("source_url"),
+                strategy_tone=blueprint_context.get("strategy_tone"),
+                key_differentiators=blueprint_context.get("key_differentiators"),
+                awareness_adaptation=blueprint_context.get("awareness_adaptation"),
+                hero_copy_direction=blueprint_context.get("hero_copy_direction"),
+                hero_emotional_hook=blueprint_context.get("hero_emotional_hook"),
+                top_copy_directions=blueprint_context.get("top_copy_directions"),
+                sections_covered=blueprint_context.get("sections_covered", 0),
+                total_sections=blueprint_context.get("total_sections", 0),
+            )
+
         # Construct the Pydantic prompt model
         prompt_model = AdGenerationPrompt(
             task=TaskConfig(
@@ -319,6 +337,7 @@ class AdGenerationService:
                 instructions=ad_brief_instructions,
             ),
             performance_context=perf_context_model,
+            blueprint_context=blueprint_ctx_model,
         )
 
         # Serialize using Pydantic's exclude_none

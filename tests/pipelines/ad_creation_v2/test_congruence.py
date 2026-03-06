@@ -32,6 +32,7 @@ class TestCongruenceResult:
         assert r.offer_alignment is None
         assert r.hero_alignment is None
         assert r.belief_alignment is None
+        assert r.blueprint_alignment is None
         assert r.adapted_headline is None
         assert r.dimensions_scored == 0
 
@@ -46,6 +47,15 @@ class TestCongruenceResult:
         )
         assert r.dimensions_scored == 3
         assert r.overall_score == 0.8
+
+    def test_blueprint_alignment_field(self):
+        r = CongruenceResult(
+            headline="Test",
+            blueprint_alignment=0.75,
+            overall_score=0.75,
+            dimensions_scored=1,
+        )
+        assert r.blueprint_alignment == 0.75
 
     def test_adapted_headline(self):
         r = CongruenceResult(
@@ -158,6 +168,55 @@ class TestCongruenceServiceCheckCongruence:
             assert result.overall_score == 1.0
             assert result.dimensions_scored == 0
 
+    @pytest.mark.asyncio
+    async def test_blueprint_context_only(self):
+        """Blueprint context alone triggers congruence scoring."""
+        mock_scores = {
+            "blueprint_alignment": 0.85,
+            "adapted_headline": None,
+        }
+        with patch.object(self.service, "_score_with_llm", new_callable=AsyncMock) as mock_llm:
+            mock_llm.return_value = mock_scores
+            result = await self.service.check_congruence(
+                "Clear skin guaranteed",
+                blueprint_context={"strategy_tone": "clinical", "key_differentiators": ["dermatologist-tested"]},
+            )
+            assert result.blueprint_alignment == 0.85
+            assert result.overall_score == 0.85
+            assert result.dimensions_scored == 1
+            mock_llm.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_no_context_including_blueprint_returns_neutral(self):
+        """No offer/LP/belief/blueprint → pass-through with score 1.0."""
+        result = await self.service.check_congruence("Buy now!", blueprint_context=None)
+        assert result.overall_score == 1.0
+        assert result.dimensions_scored == 0
+
+    @pytest.mark.asyncio
+    async def test_all_four_dimensions(self):
+        """With all 4 dimensions, computes weighted average."""
+        mock_scores = {
+            "offer_alignment": 0.8,
+            "hero_alignment": 0.6,
+            "belief_alignment": 0.9,
+            "blueprint_alignment": 0.7,
+            "adapted_headline": None,
+        }
+        with patch.object(self.service, "_score_with_llm", new_callable=AsyncMock) as mock_llm:
+            mock_llm.return_value = mock_scores
+            result = await self.service.check_congruence(
+                "Transform your life",
+                offer_variant_data={"pain_points": ["stress"]},
+                lp_hero_data={"hero_headline": "Stress Relief"},
+                belief_data={"belief_statement": "Stress is manageable"},
+                blueprint_context={"strategy_tone": "empathetic"},
+            )
+            expected = round((0.8 + 0.6 + 0.9 + 0.7) / 4, 3)
+            assert result.overall_score == expected
+            assert result.dimensions_scored == 4
+            assert result.blueprint_alignment == 0.7
+
 
 # ============================================================================
 # CongruenceService — check_congruence_batch
@@ -215,6 +274,31 @@ class TestCongruenceServiceBatch:
             assert len(results) == 2
             assert all(r.overall_score == 1.0 for r in results)
 
+    @pytest.mark.asyncio
+    async def test_batch_no_context_including_blueprint(self):
+        """No context including blueprint → all neutral."""
+        hooks = [{"hook_text": "Hook 1"}]
+        results = await self.service.check_congruence_batch(hooks, blueprint_context=None)
+        assert len(results) == 1
+        assert results[0].overall_score == 1.0
+
+    @pytest.mark.asyncio
+    async def test_batch_blueprint_only_triggers_scoring(self):
+        """Blueprint context alone triggers batch scoring."""
+        hooks = [{"hook_text": "Hook A"}]
+        batch_results = [
+            CongruenceResult(headline="Hook A", blueprint_alignment=0.9, overall_score=0.9, dimensions_scored=1),
+        ]
+        with patch.object(self.service, "_score_batch_with_llm", new_callable=AsyncMock) as mock:
+            mock.return_value = batch_results
+            results = await self.service.check_congruence_batch(
+                hooks,
+                blueprint_context={"strategy_tone": "clinical"},
+            )
+            assert len(results) == 1
+            assert results[0].blueprint_alignment == 0.9
+            mock.assert_called_once()
+
 
 # ============================================================================
 # CongruenceService — prompt building
@@ -254,6 +338,40 @@ class TestCongruencePromptBuilding:
         assert "belief_alignment" in prompt
         assert "Headline 1" in prompt
         assert "Headline 2" in prompt
+
+    def test_build_prompt_with_blueprint(self):
+        """Blueprint context adds LANDING PAGE BLUEPRINT section and blueprint_alignment dimension."""
+        prompt = self.service._build_prompt(
+            ["Test headline"],
+            offer_variant_data=None,
+            lp_hero_data=None,
+            belief_data=None,
+            blueprint_context={
+                "strategy_tone": "authoritative and clinical",
+                "key_differentiators": ["dermatologist-tested", "FDA cleared"],
+                "hero_copy_direction": "Lead with clinical proof",
+                "hero_emotional_hook": "Finally, real results",
+            },
+        )
+        assert "LANDING PAGE BLUEPRINT" in prompt
+        assert "authoritative and clinical" in prompt
+        assert "dermatologist-tested" in prompt
+        assert "blueprint_alignment" in prompt
+        # Should NOT have other sections
+        assert "OFFER VARIANT" not in prompt
+        assert "LANDING PAGE HERO" not in prompt
+
+    def test_build_prompt_without_blueprint(self):
+        """No blueprint context → no LANDING PAGE BLUEPRINT section."""
+        prompt = self.service._build_prompt(
+            ["Test headline"],
+            offer_variant_data={"pain_points": ["acne"]},
+            lp_hero_data=None,
+            belief_data=None,
+            blueprint_context=None,
+        )
+        assert "LANDING PAGE BLUEPRINT" not in prompt
+        assert "blueprint_alignment" not in prompt
 
 
 # ============================================================================
@@ -336,6 +454,17 @@ class TestCongruenceParsing:
         assert len(results) == 1
         assert results[0].adapted_headline is not None
         assert "\u2014" not in results[0].adapted_headline
+
+    def test_parse_batch_result_with_blueprint_alignment(self):
+        """_parse_batch_result extracts blueprint_alignment."""
+        raw = '[{"offer_alignment": 0.8, "blueprint_alignment": 0.75}]'
+        results = self.service._parse_batch_result(raw, ["H1"])
+        assert len(results) == 1
+        assert results[0].blueprint_alignment == 0.75
+        assert results[0].offer_alignment == 0.8
+        expected_overall = round((0.8 + 0.75) / 2, 3)
+        assert results[0].overall_score == expected_overall
+        assert results[0].dimensions_scored == 2
 
 
 # ============================================================================
@@ -429,6 +558,81 @@ class TestHeadlineCongruenceNode:
         # Second hook unchanged
         assert state.selected_hooks[1]["hook_text"] == "Good hook"
         assert "congruence_adapted" not in state.selected_hooks[1]
+
+    @pytest.mark.asyncio
+    async def test_blueprint_context_triggers_congruence(self):
+        """Blueprint context without offer_variant_id still runs congruence."""
+        from viraltracker.pipelines.ad_creation_v2.nodes.headline_congruence import HeadlineCongruenceNode
+        from viraltracker.pipelines.ad_creation_v2.state import AdCreationPipelineState
+
+        state = AdCreationPipelineState(
+            product_id="prod-1",
+            reference_ad_base64="base64data",
+            offer_variant_id=None,  # No offer variant
+            selected_hooks=[
+                {"hook_text": "Clear skin fast"},
+            ],
+            product_dict={},
+        )
+        state.blueprint_context = {
+            "strategy_tone": "clinical",
+            "key_differentiators": ["dermatologist-tested"],
+        }
+
+        ctx = MagicMock()
+        ctx.state = state
+        ctx.deps = MagicMock()
+
+        batch_results = [
+            CongruenceResult(
+                headline="Clear skin fast",
+                blueprint_alignment=0.85,
+                overall_score=0.85,
+                dimensions_scored=1,
+            ),
+        ]
+
+        with patch(
+            "viraltracker.pipelines.ad_creation_v2.services.congruence_service.CongruenceService.check_congruence_batch",
+            new_callable=AsyncMock,
+            return_value=batch_results,
+        ):
+            node = HeadlineCongruenceNode()
+            next_node = await node.run(ctx)
+
+        from viraltracker.pipelines.ad_creation_v2.nodes.select_images import SelectImagesNode
+        assert isinstance(next_node, SelectImagesNode)
+
+        # Should have congruence results (NOT pass-through)
+        assert len(state.congruence_results) == 1
+        assert state.congruence_results[0]["blueprint_alignment"] == 0.85
+        assert "skipped" not in state.congruence_results[0]
+
+    @pytest.mark.asyncio
+    async def test_no_offer_no_blueprint_passes_through(self):
+        """No offer_variant_id AND no blueprint_context → pass-through."""
+        from viraltracker.pipelines.ad_creation_v2.nodes.headline_congruence import HeadlineCongruenceNode
+        from viraltracker.pipelines.ad_creation_v2.state import AdCreationPipelineState
+
+        state = AdCreationPipelineState(
+            product_id="prod-1",
+            reference_ad_base64="base64data",
+            offer_variant_id=None,
+            selected_hooks=[{"hook_text": "Hook 1"}],
+        )
+        # Explicitly no blueprint_context (None by default)
+
+        ctx = MagicMock()
+        ctx.state = state
+        ctx.deps = MagicMock()
+
+        node = HeadlineCongruenceNode()
+        next_node = await node.run(ctx)
+
+        from viraltracker.pipelines.ad_creation_v2.nodes.select_images import SelectImagesNode
+        assert isinstance(next_node, SelectImagesNode)
+        assert len(state.congruence_results) == 1
+        assert state.congruence_results[0]["skipped"] is True
 
     @pytest.mark.asyncio
     async def test_error_fallback_passes_through(self):

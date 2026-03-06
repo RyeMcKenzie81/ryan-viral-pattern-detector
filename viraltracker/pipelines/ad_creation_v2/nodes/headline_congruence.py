@@ -54,8 +54,8 @@ class HeadlineCongruenceNode(BaseNode[AdCreationPipelineState]):
         logger.info("Step 4b: Checking headline congruence...")
         ctx.state.current_step = "headline_congruence"
 
-        # Pass-through if no offer variant (nothing to compare against)
-        if not ctx.state.offer_variant_id:
+        # Pass-through if no offer variant and no blueprint (nothing to compare against)
+        if not ctx.state.offer_variant_id and not ctx.state.blueprint_context:
             logger.info("No offer_variant_id — skipping congruence (pass-through)")
             ctx.state.congruence_results = [
                 {
@@ -87,6 +87,7 @@ class HeadlineCongruenceNode(BaseNode[AdCreationPipelineState]):
                 offer_variant_data=offer_variant_data,
                 lp_hero_data=lp_hero_data,
                 belief_data=belief_data,
+                blueprint_context=ctx.state.blueprint_context,
             )
 
             # Process results: replace hooks below threshold with adapted headlines
@@ -99,6 +100,7 @@ class HeadlineCongruenceNode(BaseNode[AdCreationPipelineState]):
                     "offer_alignment": cr.offer_alignment,
                     "hero_alignment": cr.hero_alignment,
                     "belief_alignment": cr.belief_alignment,
+                    "blueprint_alignment": cr.blueprint_alignment,
                     "overall_score": cr.overall_score,
                     "adapted_headline": cr.adapted_headline,
                     "dimensions_scored": cr.dimensions_scored,

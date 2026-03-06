@@ -220,6 +220,8 @@ class ReviewAdsNode(BaseNode[AdCreationPipelineState]):
                 # Phase 6: Creative Genome element tags + pre-gen score
                 element_tags=ad_data.get("element_tags"),
                 pre_gen_score=ad_data.get("pre_gen_score"),
+                # Blueprint-aware generation
+                blueprint_id=UUID(ctx.state.blueprint_id) if ctx.state.blueprint_id else None,
             )
 
             reviewed_ads.append({

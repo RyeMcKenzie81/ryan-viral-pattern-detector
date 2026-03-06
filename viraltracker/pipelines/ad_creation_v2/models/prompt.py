@@ -258,6 +258,23 @@ class PerformanceContext(BaseModel):
     optimization_notes: Optional[str] = None
 
 
+class BlueprintContext(BaseModel):
+    """Landing page blueprint context for ad-to-LP alignment (optional).
+
+    Injected when user selects a blueprint. Guides generation toward
+    messaging, tone, and style consistent with the landing page design.
+    """
+    source_url: Optional[str] = None
+    strategy_tone: Optional[str] = None
+    key_differentiators: Optional[List[str]] = None
+    awareness_adaptation: Optional[str] = None
+    hero_copy_direction: Optional[str] = None
+    hero_emotional_hook: Optional[str] = None
+    top_copy_directions: Optional[List[str]] = None
+    sections_covered: int = 0
+    total_sections: int = 0
+
+
 # ============================================================================
 # Top-level Prompt Model
 # ============================================================================
@@ -280,3 +297,4 @@ class AdGenerationPrompt(BaseModel):
     rules: GenerationRules
     ad_brief: AdBriefConfig = Field(default_factory=AdBriefConfig)
     performance_context: Optional[PerformanceContext] = None
+    blueprint_context: Optional[BlueprintContext] = None

@@ -172,6 +172,7 @@ class GenerateAdsNode(BaseNode[AdCreationPipelineState]):
                             selected_image_tags=selected_image_tags,
                             performance_context=ctx.state.performance_context,
                             logo_image_base64=logo_b64_override,
+                            blueprint_context=ctx.state.blueprint_context,
                         )
 
                         # Execute generation

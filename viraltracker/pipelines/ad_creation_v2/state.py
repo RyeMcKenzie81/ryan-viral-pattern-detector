@@ -49,6 +49,7 @@ class AdCreationPipelineState:
     persona_id: Optional[str] = None
     variant_id: Optional[str] = None
     offer_variant_id: Optional[str] = None
+    blueprint_id: Optional[str] = None  # landing_page_blueprints.id UUID
     current_offer_override: Optional[str] = None
     additional_instructions: Optional[str] = None
     creative_direction: Optional[str] = None
@@ -79,6 +80,9 @@ class AdCreationPipelineState:
 
     # FetchContextNode (Phase 4 — congruence)
     lp_hero_data: Optional[Dict[str, Any]] = None           # LP hero headline/subheadline from brand_landing_pages
+
+    # FetchContextNode (blueprint context for generation + congruence)
+    blueprint_context: Optional[Dict[str, Any]] = None
 
     # FetchContextNode (Phase 6 — Creative Genome)
     performance_context: Optional[Dict[str, Any]] = None    # Advisory performance context from genome

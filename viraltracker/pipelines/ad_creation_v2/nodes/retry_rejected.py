@@ -177,6 +177,7 @@ class RetryRejectedNode(BaseNode[AdCreationPipelineState]):
                     selected_image_tags=selected_image_tags,
                     performance_context=ctx.state.performance_context,
                     logo_image_base64=ctx.state.logo_image_base64,
+                    blueprint_context=ctx.state.blueprint_context,
                 )
 
                 # Execute generation
@@ -274,6 +275,7 @@ class RetryRejectedNode(BaseNode[AdCreationPipelineState]):
                         prompt_version=ctx.state.prompt_version,
                         element_tags=retry_element_tags,
                         pre_gen_score=None,
+                        blueprint_id=UUID(ctx.state.blueprint_id) if ctx.state.blueprint_id else None,
                     )
 
                     ctx.state.reviewed_ads.append({
@@ -351,6 +353,7 @@ class RetryRejectedNode(BaseNode[AdCreationPipelineState]):
                     prompt_version=ctx.state.prompt_version,
                     element_tags=retry_element_tags,
                     pre_gen_score=None,
+                    blueprint_id=UUID(ctx.state.blueprint_id) if ctx.state.blueprint_id else None,
                 )
 
                 # Append retry result to reviewed_ads (match ReviewAdsNode dict shape)

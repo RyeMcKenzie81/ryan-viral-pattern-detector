@@ -44,6 +44,7 @@ class CongruenceResult:
     offer_alignment: Optional[float] = None
     hero_alignment: Optional[float] = None
     belief_alignment: Optional[float] = None
+    blueprint_alignment: Optional[float] = None
     overall_score: float = 1.0
     adapted_headline: Optional[str] = None
     dimensions_scored: int = 0
@@ -58,6 +59,7 @@ class CongruenceService:
         offer_variant_data: Optional[Dict[str, Any]] = None,
         lp_hero_data: Optional[Dict[str, Any]] = None,
         belief_data: Optional[Dict[str, Any]] = None,
+        blueprint_context: Optional[Dict[str, Any]] = None,
     ) -> CongruenceResult:
         """Score congruence of a headline against available context.
 
@@ -75,7 +77,7 @@ class CongruenceService:
         Returns:
             CongruenceResult with per-dimension scores.
         """
-        if not offer_variant_data and not lp_hero_data and not belief_data:
+        if not offer_variant_data and not lp_hero_data and not belief_data and not blueprint_context:
             # No context to compare against — neutral pass-through
             return CongruenceResult(
                 headline=headline,
@@ -85,7 +87,7 @@ class CongruenceService:
 
         try:
             scores = await self._score_with_llm(
-                headline, offer_variant_data, lp_hero_data, belief_data
+                headline, offer_variant_data, lp_hero_data, belief_data, blueprint_context
             )
         except Exception as e:
             logger.warning(f"Congruence LLM call failed, returning neutral: {e}")
@@ -100,6 +102,7 @@ class CongruenceService:
         offer_alignment = scores.get("offer_alignment")
         hero_alignment = scores.get("hero_alignment")
         belief_alignment = scores.get("belief_alignment")
+        blueprint_alignment = scores.get("blueprint_alignment")
 
         if offer_alignment is not None:
             scored_values.append(offer_alignment)
@@ -107,6 +110,8 @@ class CongruenceService:
             scored_values.append(hero_alignment)
         if belief_alignment is not None:
             scored_values.append(belief_alignment)
+        if blueprint_alignment is not None:
+            scored_values.append(blueprint_alignment)
 
         overall = sum(scored_values) / len(scored_values) if scored_values else 1.0
 
@@ -119,6 +124,7 @@ class CongruenceService:
             offer_alignment=offer_alignment,
             hero_alignment=hero_alignment,
             belief_alignment=belief_alignment,
+            blueprint_alignment=blueprint_alignment,
             overall_score=round(overall, 3),
             adapted_headline=adapted_headline,
             dimensions_scored=len(scored_values),
@@ -130,6 +136,7 @@ class CongruenceService:
         offer_variant_data: Optional[Dict[str, Any]] = None,
         lp_hero_data: Optional[Dict[str, Any]] = None,
         belief_data: Optional[Dict[str, Any]] = None,
+        blueprint_context: Optional[Dict[str, Any]] = None,
     ) -> List[CongruenceResult]:
         """Check congruence for multiple hooks in a single LLM call.
 
@@ -147,7 +154,7 @@ class CongruenceService:
         if not hooks:
             return []
 
-        if not offer_variant_data and not lp_hero_data and not belief_data:
+        if not offer_variant_data and not lp_hero_data and not belief_data and not blueprint_context:
             return [
                 CongruenceResult(
                     headline=h.get("adapted_text") or h.get("hook_text") or h.get("text", ""),
@@ -159,7 +166,7 @@ class CongruenceService:
 
         try:
             results = await self._score_batch_with_llm(
-                hooks, offer_variant_data, lp_hero_data, belief_data
+                hooks, offer_variant_data, lp_hero_data, belief_data, blueprint_context
             )
             return results
         except Exception as e:
@@ -179,13 +186,14 @@ class CongruenceService:
         offer_variant_data: Optional[Dict[str, Any]],
         lp_hero_data: Optional[Dict[str, Any]],
         belief_data: Optional[Dict[str, Any]],
+        blueprint_context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Call Claude to score congruence dimensions."""
         from pydantic_ai import Agent
         from viraltracker.core.config import Config
 
         prompt = self._build_prompt(
-            [headline], offer_variant_data, lp_hero_data, belief_data
+            [headline], offer_variant_data, lp_hero_data, belief_data, blueprint_context
         )
 
         agent = Agent(
@@ -202,6 +210,7 @@ class CongruenceService:
         offer_variant_data: Optional[Dict[str, Any]],
         lp_hero_data: Optional[Dict[str, Any]],
         belief_data: Optional[Dict[str, Any]],
+        blueprint_context: Optional[Dict[str, Any]] = None,
     ) -> List[CongruenceResult]:
         """Call Claude to score congruence for a batch of headlines."""
         from pydantic_ai import Agent
@@ -209,7 +218,7 @@ class CongruenceService:
 
         headlines = [h.get("adapted_text") or h.get("hook_text") or h.get("text", "") for h in hooks]
         prompt = self._build_prompt(
-            headlines, offer_variant_data, lp_hero_data, belief_data
+            headlines, offer_variant_data, lp_hero_data, belief_data, blueprint_context
         )
 
         agent = Agent(
@@ -226,6 +235,7 @@ class CongruenceService:
         offer_variant_data: Optional[Dict[str, Any]],
         lp_hero_data: Optional[Dict[str, Any]],
         belief_data: Optional[Dict[str, Any]],
+        blueprint_context: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Build congruence evaluation prompt."""
         dimensions = []
@@ -261,6 +271,18 @@ class CongruenceService:
             )
             dimensions.append(
                 '"belief_alignment": float 0.0-1.0 (how well headline reinforces the belief)'
+            )
+
+        if blueprint_context:
+            context_sections.append(
+                f"LANDING PAGE BLUEPRINT:\n"
+                f"- Strategy tone: {blueprint_context.get('strategy_tone', 'N/A')}\n"
+                f"- Key differentiators: {', '.join(blueprint_context.get('key_differentiators', []))}\n"
+                f"- Hero copy direction: {blueprint_context.get('hero_copy_direction', 'N/A')}\n"
+                f"- Hero emotional hook: {blueprint_context.get('hero_emotional_hook', 'N/A')}"
+            )
+            dimensions.append(
+                '"blueprint_alignment": float 0.0-1.0 (how well headline aligns with blueprint strategy/tone/differentiators)'
             )
 
         headlines_block = "\n".join(
@@ -346,6 +368,7 @@ Only return the JSON array, no other text.
             offer_alignment = self._safe_float(scores.get("offer_alignment"))
             hero_alignment = self._safe_float(scores.get("hero_alignment"))
             belief_alignment = self._safe_float(scores.get("belief_alignment"))
+            blueprint_alignment = self._safe_float(scores.get("blueprint_alignment"))
 
             if offer_alignment is not None:
                 scored_values.append(offer_alignment)
@@ -353,6 +376,8 @@ Only return the JSON array, no other text.
                 scored_values.append(hero_alignment)
             if belief_alignment is not None:
                 scored_values.append(belief_alignment)
+            if blueprint_alignment is not None:
+                scored_values.append(blueprint_alignment)
 
             overall = sum(scored_values) / len(scored_values) if scored_values else 1.0
 
@@ -365,6 +390,7 @@ Only return the JSON array, no other text.
                 offer_alignment=offer_alignment,
                 hero_alignment=hero_alignment,
                 belief_alignment=belief_alignment,
+                blueprint_alignment=blueprint_alignment,
                 overall_score=round(overall, 3),
                 adapted_headline=adapted,
                 dimensions_scored=len(scored_values),

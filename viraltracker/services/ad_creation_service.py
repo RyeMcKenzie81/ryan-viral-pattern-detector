@@ -592,6 +592,8 @@ class AdCreationService:
         # V2 Phase 6: Creative Genome
         element_tags: Optional[Dict] = None,
         pre_gen_score: Optional[float] = None,
+        # Blueprint-aware generation
+        blueprint_id: Optional[UUID] = None,
     ) -> UUID:
         """
         Save generated ad metadata to database.
@@ -701,6 +703,10 @@ class AdCreationService:
             data["element_tags"] = element_tags
         if pre_gen_score is not None:
             data["pre_gen_score"] = float(pre_gen_score)
+
+        # Blueprint-aware generation
+        if blueprint_id is not None:
+            data["blueprint_id"] = str(blueprint_id)
 
         result = self.supabase.table("generated_ads").insert(data).execute()
         generated_ad_id = UUID(result.data[0]["id"])

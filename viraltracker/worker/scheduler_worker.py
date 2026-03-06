@@ -686,6 +686,7 @@ async def execute_ad_creation_v2_job(job: Dict) -> Dict[str, Any]:
         template_category = params.get('template_category')
         content_source = params.get('content_source', 'hooks')
         num_variations = params.get('num_variations', 5)
+        blueprint_id = params.get('blueprint_id')
 
         # Phase 2: multi-size/color — type-normalize, validate, dedupe
         VALID_CANVAS_SIZES = {"1080x1080px", "1080x1350px", "1080x1920px", "1200x628px"}
@@ -932,6 +933,7 @@ async def execute_ad_creation_v2_job(job: Dict) -> Dict[str, Any]:
                     persona_id=params.get('persona_id'),
                     variant_id=params.get('variant_id'),
                     offer_variant_id=params.get('offer_variant_id'),
+                    blueprint_id=blueprint_id,
                     current_offer_override=params.get('current_offer_override'),
                     additional_instructions=combined_instructions,
                     creative_direction=params.get('creative_direction'),

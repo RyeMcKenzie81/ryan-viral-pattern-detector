@@ -159,3 +159,39 @@ class TestStateSerialization:
         assert state.creative_direction is None
         assert state.logo_image_base64 is None
         assert state.user_selected_image_ids is None
+
+    def test_blueprint_fields_default_none(self):
+        """Blueprint fields default to None when not provided."""
+        state = AdCreationPipelineState(
+            product_id="p1", reference_ad_base64="img"
+        )
+        assert state.blueprint_id is None
+        assert state.blueprint_context is None
+
+    def test_round_trip_blueprint_fields(self):
+        """Blueprint fields survive to_dict/from_dict round trip."""
+        state = AdCreationPipelineState(
+            product_id="p1", reference_ad_base64="img",
+            blueprint_id="bp-123",
+        )
+        state.blueprint_context = {
+            "blueprint_id": "bp-123",
+            "strategy_tone": "authoritative",
+            "key_differentiators": ["clinically proven"],
+            "sections_covered": 5,
+            "total_sections": 8,
+        }
+        data = state.to_dict()
+        restored = AdCreationPipelineState.from_dict(data)
+        assert restored.blueprint_id == "bp-123"
+        assert restored.blueprint_context["strategy_tone"] == "authoritative"
+        assert restored.blueprint_context["sections_covered"] == 5
+
+    def test_to_dict_contains_blueprint_fields(self):
+        """to_dict includes blueprint fields."""
+        state = AdCreationPipelineState(
+            product_id="p1", reference_ad_base64="img"
+        )
+        data = state.to_dict()
+        assert "blueprint_id" in data
+        assert "blueprint_context" in data

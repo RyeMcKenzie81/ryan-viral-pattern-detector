@@ -278,6 +278,58 @@ class FetchContextNode(BaseNode[AdCreationPipelineState]):
                     except Exception as e:
                         logger.warning(f"Failed to fetch LP hero data (non-fatal): {e}")
 
+            # Blueprint context (optional, non-fatal)
+            if ctx.state.blueprint_id:
+                try:
+                    from viraltracker.services.landing_page_analysis.blueprint_service import (
+                        ReconstructionBlueprintService,
+                    )
+                    bp_svc = ReconstructionBlueprintService()
+                    bp_row = bp_svc.get_blueprint(ctx.state.blueprint_id)
+
+                    if bp_row and bp_row.get("status") == "completed":
+                        bp_json = bp_row.get("blueprint") or {}
+                        rb = bp_json.get("reconstruction_blueprint", bp_json)
+                        strategy = rb.get("strategy_summary") or {}
+                        sections = rb.get("sections") or []  # Defensive: handles null
+                        populated = [s for s in sections if s.get("content_status") == "populated"]
+
+                        ctx.state.blueprint_context = {
+                            "blueprint_id": ctx.state.blueprint_id,
+                            "source_url": bp_row.get("source_url"),
+                            "strategy_tone": strategy.get("tone_direction"),
+                            "key_differentiators": (strategy.get("key_differentiators") or [])[:5],
+                            "awareness_adaptation": strategy.get("awareness_adaptation"),
+                            "architecture_recommendation": strategy.get("architecture_recommendation"),
+                            "hero_copy_direction": sections[0].get("copy_direction") if sections else None,
+                            "hero_emotional_hook": (sections[0].get("brand_mapping") or {}).get("emotional_hook") if sections else None,
+                            "top_copy_directions": [
+                                s["copy_direction"] for s in sections[:5]
+                                if s.get("copy_direction")
+                            ],
+                            "sections_covered": len(populated),
+                            "total_sections": len(sections),
+                        }
+
+                        # Enrich lp_hero_data from blueprint if not already loaded
+                        if not ctx.state.lp_hero_data and sections:
+                            hero = sections[0]
+                            hero_mapping = hero.get("brand_mapping") or {}
+                            ctx.state.lp_hero_data = {
+                                "hero_headline": hero_mapping.get("primary_content", ""),
+                                "hero_subheadline": hero_mapping.get("emotional_hook", ""),
+                                "key_claims": strategy.get("key_differentiators") or [],
+                            }
+                            logger.info("Blueprint enriched lp_hero_data (no existing LP data)")
+
+                        logger.info(
+                            f"Blueprint context loaded: {len(populated)}/{len(sections)} sections populated"
+                        )
+                    else:
+                        logger.warning(f"Blueprint {ctx.state.blueprint_id} not found or not completed")
+                except Exception as e:
+                    logger.warning(f"Failed to load blueprint context (non-fatal): {e}")
+
             # Phase 6: Fetch Creative Genome performance context (non-fatal)
             if brand_id:
                 try:

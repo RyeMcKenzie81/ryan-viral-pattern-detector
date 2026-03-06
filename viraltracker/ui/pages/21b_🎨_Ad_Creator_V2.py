@@ -59,6 +59,8 @@ if 'v2_ref_image_mode' not in st.session_state:
     st.session_state.v2_ref_image_mode = "Auto-select (recommended)"
 if 'v2_user_selected_image_ids' not in st.session_state:
     st.session_state.v2_user_selected_image_ids = []
+if 'v2_blueprint_id' not in st.session_state:
+    st.session_state.v2_blueprint_id = None
 
 
 # ============================================================================
@@ -177,6 +179,20 @@ def get_offer_variants_for_product(product_id: str):
         from uuid import UUID
         service = ProductOfferVariantService()
         return service.get_offer_variants(UUID(product_id), active_only=True)
+    except Exception:
+        return []
+
+
+def get_blueprints_for_product(product_id: str):
+    """Get completed landing page blueprints for a product."""
+    try:
+        db = get_supabase_client()
+        result = db.table("landing_page_blueprints").select(
+            "id, source_url, status, blueprint, updated_at"
+        ).eq("product_id", product_id).eq(
+            "status", "completed"
+        ).order("updated_at", desc=True).execute()
+        return result.data or []
     except Exception:
         return []
 
@@ -686,6 +702,80 @@ def render_offer_context(product: dict, product_id: str):
 
 
 # ============================================================================
+# Blueprint Selector Section
+# ============================================================================
+
+def render_blueprint_selector(product_id: str):
+    """Render optional landing page blueprint selector."""
+    # Guard: clear blueprint if product changed
+    if st.session_state.get('_v2_bp_product') != product_id:
+        st.session_state.v2_blueprint_id = None
+        st.session_state._v2_bp_product = product_id
+
+    blueprints = get_blueprints_for_product(product_id)
+    if not blueprints:
+        return
+
+    st.markdown("**Landing Page Blueprint** (optional)")
+
+    option_ids = [None] + [bp['id'] for bp in blueprints]
+    bp_lookup = {bp['id']: bp for bp in blueprints}
+
+    # Guard stale blueprint IDs
+    if st.session_state.get('v2_blueprint_id') not in option_ids:
+        st.session_state.v2_blueprint_id = None
+
+    def format_blueprint(bp_id):
+        if bp_id is None:
+            return "No blueprint"
+        bp = bp_lookup[bp_id]
+        url = bp.get('source_url', '')
+        if url:
+            from urllib.parse import urlparse
+            parsed = urlparse(url)
+            path = parsed.path[:30] + '...' if len(parsed.path) > 30 else parsed.path
+            label = f"{parsed.netloc}{path}"
+        else:
+            label = bp_id[:8]
+        # Section count
+        bp_json = bp.get('blueprint') or {}
+        rb = bp_json.get('reconstruction_blueprint', bp_json)
+        sections = rb.get('sections') or []
+        populated = sum(1 for s in sections if s.get('content_status') == 'populated')
+        label += f"  |  {populated}/{len(sections)} sections"
+        # Date
+        updated = bp.get('updated_at', '')[:10]
+        if updated:
+            label += f"  |  {updated}"
+        return label
+
+    st.selectbox(
+        "Blueprint",
+        options=option_ids,
+        format_func=format_blueprint,
+        key="v2_blueprint_id",
+        help="Select a landing page blueprint to align ad generation with LP strategy, tone, and messaging",
+    )
+
+    # Compact preview
+    selected_id = st.session_state.get('v2_blueprint_id')
+    if selected_id and selected_id in bp_lookup:
+        bp = bp_lookup[selected_id]
+        bp_json = bp.get('blueprint') or {}
+        rb = bp_json.get('reconstruction_blueprint', bp_json)
+        strategy = rb.get('strategy_summary') or {}
+        preview_parts = []
+        tone = strategy.get('tone_direction')
+        if tone:
+            preview_parts.append(f"Tone: {tone}")
+        diffs = strategy.get('key_differentiators') or []
+        if diffs:
+            preview_parts.append("Differentiators: " + " | ".join(str(d) for d in diffs[:3]))
+        if preview_parts:
+            st.caption("  \n".join(preview_parts))
+
+
+# ============================================================================
 # Creative Direction Section
 # ============================================================================
 
@@ -1131,6 +1221,7 @@ def _handle_submit():
         'creative_direction': st.session_state.get('v2_creative_direction') or None,
         'user_selected_image_ids': st.session_state.get('v2_user_selected_image_ids') or None,
         'offer_variant_id': st.session_state.get('v2_offer_variant_id'),
+        'blueprint_id': st.session_state.get('v2_blueprint_id'),
     }
 
     # Normalize current_offer_override — strip whitespace, treat empty/blank as None
@@ -1783,6 +1874,7 @@ else:
     # Reset offer state when product changes to prevent stale carryover
     if st.session_state.get('_v2_last_product_id') != product_id:
         st.session_state.v2_offer_variant_id = None
+        st.session_state.v2_blueprint_id = None
         st.session_state.v2_current_offer_override = ""
         st.session_state.v2_creative_direction = ""
         st.session_state.v2_creative_direction_tags = []
@@ -1802,6 +1894,7 @@ else:
     st.subheader("2. Creative Brief")
     if product:
         render_offer_context(product, product_id)
+    render_blueprint_selector(product_id)
     render_creative_direction()
     render_reference_images(product_id)
 
