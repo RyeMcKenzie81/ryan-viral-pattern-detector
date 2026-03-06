@@ -1818,6 +1818,7 @@ else:
                                     "Guarantee",
                                     value=product.get('guarantee', '') or '',
                                     placeholder='e.g., "365-day money-back guarantee"',
+                                    help="If set, this guarantee will be included in ad copy. Leave blank to prevent guarantee mentions.",
                                     key=f"det_guarantee_{product_id}"
                                 )
 

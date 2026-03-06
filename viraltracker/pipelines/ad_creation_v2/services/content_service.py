@@ -305,6 +305,7 @@ class AdContentService:
         count: int = 5,
         persona_data: Optional[Dict[str, Any]] = None,
         docs_service: Optional[Any] = None,
+        listicle_count: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """
         Generate hook-like variations by applying the template angle to product benefits.
@@ -316,6 +317,7 @@ class AdContentService:
             count: Number of variations to generate (1-15)
             persona_data: Optional persona data for targeted copy
             docs_service: Optional DocService for knowledge base queries
+            listicle_count: Optional listicle item count from landing page analysis
 
         Returns:
             List of hook-like dicts with hook_id, text, category, framework,
@@ -409,7 +411,7 @@ class AdContentService:
         technical_specs = []
         for usp in (usps or []):
             usp_lower = usp.lower()
-            if any(term in usp_lower for term in ['cards', 'pages', 'included', 'app', 'guide', 'dictionary', 'guarantee', 'money-back']):
+            if any(term in usp_lower for term in ['cards', 'pages', 'included', 'app', 'guide', 'dictionary']):
                 technical_specs.append(usp)
             else:
                 emotional_usps.append(usp)
@@ -459,6 +461,9 @@ class AdContentService:
 
         **PROHIBITED CLAIMS (NEVER USE THESE):**
         {_json_dumps(prohibited_claims) if prohibited_claims else "None specified"}
+
+        **GUARANTEE (CRITICAL - DO NOT HALLUCINATE):**
+        {f'VERIFIED GUARANTEE: "{product.get("guarantee")}". You MAY reference this guarantee in ad copy.' if product.get("guarantee") else "This brand has NO verified guarantee. Do NOT mention any guarantee, warranty, money-back offer, or risk-free claim."}
 
         **BANNED COMPETITOR NAMES (NEVER USE - use "{brand_name}" instead):**
         {_json_dumps(banned_terms) if banned_terms else "None specified"}
@@ -590,6 +595,11 @@ class AdContentService:
         - If the template says "4 FREE gifts" but our product offer doesn't mention gifts, DO NOT include gifts
         - If our offer is just "Up to 35% off", that's ALL you can say about the offer - no additions
 
+        {f"""**CRITICAL LISTICLE RULE (DO NOT INVENT NUMBERS):**
+        The landing page contains a listicle with exactly {listicle_count} items.
+        If you reference a number of items, reasons, tips, ways, or steps, you MUST use exactly {listicle_count}.
+        Do NOT invent a different number. Example: "Top {listicle_count} ways..." not "Top 5 ways..." (unless {listicle_count} is 5).
+        """ if listicle_count else ""}
         **CRITICAL ACCURACY RULES:**
         - Each variation MUST use a DIFFERENT benefit
         - DO NOT use technical specs like "linen-finish cards", "86 cards", etc. in headlines

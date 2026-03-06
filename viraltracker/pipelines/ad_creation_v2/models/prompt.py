@@ -50,6 +50,7 @@ class ProductContext(BaseModel):
     variant: Optional[str] = None
     offer_variant: Optional[Dict[str, Any]] = None
     offer_pain_points: Optional[List[str]] = None
+    guarantee: Optional[str] = None
 
 
 class HeadlineConfig(BaseModel):
@@ -273,6 +274,7 @@ class BlueprintContext(BaseModel):
     top_copy_directions: Optional[List[str]] = None
     sections_covered: int = 0
     total_sections: int = 0
+    listicle_count: Optional[int] = None
 
 
 # ============================================================================

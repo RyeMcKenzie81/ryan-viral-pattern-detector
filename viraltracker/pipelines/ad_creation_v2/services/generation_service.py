@@ -275,6 +275,7 @@ class AdGenerationService:
                 variant=product.get('variant'),
                 offer_variant=product.get('offer_variant') if using_offer_variant else None,
                 offer_pain_points=product.get('offer_pain_points', []) if using_offer_variant else None,
+                guarantee=product.get('guarantee'),
             ),
             content=ContentConfig(
                 headline=HeadlineConfig(

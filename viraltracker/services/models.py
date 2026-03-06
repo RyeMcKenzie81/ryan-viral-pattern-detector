@@ -744,6 +744,7 @@ class Product(BaseModel):
     founders: Optional[str] = Field(None, description="Founder names for personal signatures in ads (e.g., 'Chris, Kevin, D'Arcy, and Ryan')")
     brand_name: Optional[str] = Field(None, description="Brand name to use in ad copy (e.g., 'Wonder Paws')")
     banned_terms: Optional[List[str]] = Field(None, description="Competitor names and terms that must never appear in ads (e.g., ['Wuffes', 'PupVitality'])")
+    guarantee: Optional[str] = Field(None, description="Verified guarantee text (e.g., '365-day money-back guarantee'). If set, ads may reference it. If None, ads must not mention any guarantee.")
 
     @field_validator('benefits', 'key_ingredients', 'reference_image_storage_paths', 'prohibited_claims', 'unique_selling_points', 'banned_terms', mode='before')
     @classmethod
