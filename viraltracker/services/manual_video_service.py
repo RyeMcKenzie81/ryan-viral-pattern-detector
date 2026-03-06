@@ -519,6 +519,204 @@ class ManualVideoService:
             return None
 
     # =========================================================================
+    # Project persistence
+    # =========================================================================
+
+    def save_project(
+        self,
+        organization_id: str,
+        brand_id: str,
+        project_id: Optional[str],
+        name: str,
+        avatar_id: Optional[str],
+        quality_mode: str,
+        aspect_ratio: str,
+        scenes: List[Dict[str, Any]],
+        frame_gallery: List[Dict[str, Any]],
+        final_video_path: Optional[str] = None,
+        final_video_duration_sec: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Upsert a manual video project.
+
+        Strips signed_url from frame gallery items (they expire).
+        Auto-computes status and scene_count.
+
+        Args:
+            organization_id: Org UUID.
+            brand_id: Brand UUID.
+            project_id: Existing project UUID, or None to create new.
+            name: Project name.
+            avatar_id: Avatar UUID.
+            quality_mode: "pro" or "std".
+            aspect_ratio: "9:16", "16:9", or "1:1".
+            scenes: Scenes list (same structure as session state).
+            frame_gallery: Frame gallery list.
+            final_video_path: Storage path of final video if assembled.
+            final_video_duration_sec: Duration of final video.
+
+        Returns:
+            Dict with id, name, status, updated_at.
+        """
+        # Strip signed_url from frames (they expire)
+        clean_gallery = []
+        for frame in frame_gallery:
+            clean = {k: v for k, v in frame.items() if k != "signed_url"}
+            clean_gallery.append(clean)
+
+        # Auto-compute status
+        has_final = bool(final_video_path)
+        has_generations = any(
+            any(g.get("status") == "succeed" for g in s.get("generations", []))
+            for s in scenes
+        )
+        if has_final:
+            status = "completed"
+        elif has_generations:
+            status = "in_progress"
+        else:
+            status = "draft"
+
+        record = {
+            "organization_id": organization_id,
+            "brand_id": brand_id,
+            "name": name,
+            "status": status,
+            "avatar_id": avatar_id,
+            "quality_mode": quality_mode,
+            "aspect_ratio": aspect_ratio,
+            "frame_gallery": clean_gallery,
+            "scenes": scenes,
+            "final_video_path": final_video_path,
+            "final_video_duration_sec": final_video_duration_sec,
+            "scene_count": len(scenes),
+        }
+
+        if project_id:
+            # Update
+            result = self.supabase.table("manual_video_projects").update(
+                record
+            ).eq("id", project_id).execute()
+        else:
+            # Insert
+            project_id = str(uuid.uuid4())
+            record["id"] = project_id
+            result = self.supabase.table("manual_video_projects").insert(
+                record
+            ).execute()
+
+        row = result.data[0] if result.data else record
+        logger.info(f"Saved project {project_id} ({name}) as {status}")
+        return {
+            "id": row.get("id", project_id),
+            "name": row.get("name", name),
+            "status": row.get("status", status),
+            "updated_at": row.get("updated_at"),
+        }
+
+    def list_projects(
+        self,
+        brand_id: str,
+        organization_id: str,
+        limit: int = 20,
+    ) -> List[Dict[str, Any]]:
+        """List projects ordered by updated_at DESC.
+
+        Args:
+            brand_id: Brand UUID.
+            organization_id: Org UUID.
+            limit: Max results.
+
+        Returns:
+            List of project records (full rows).
+        """
+        result = self.supabase.table("manual_video_projects").select(
+            "id, name, status, avatar_id, quality_mode, aspect_ratio, "
+            "scene_count, final_video_path, final_video_duration_sec, "
+            "created_at, updated_at"
+        ).eq("brand_id", brand_id).eq(
+            "organization_id", organization_id
+        ).order(
+            "updated_at", desc=True
+        ).limit(limit).execute()
+
+        return result.data or []
+
+    def load_project(self, project_id: str) -> Optional[Dict[str, Any]]:
+        """Load a project and re-sign all storage paths.
+
+        Re-generates signed URLs for frames and scene videos.
+        If avatar_id references a deleted avatar, sets avatar_id=None.
+
+        Args:
+            project_id: Project UUID.
+
+        Returns:
+            Full project dict with refreshed URLs, or None.
+        """
+        result = self.supabase.table("manual_video_projects").select(
+            "*"
+        ).eq("id", project_id).single().execute()
+
+        if not result.data:
+            return None
+
+        project = result.data
+
+        # Refresh frame gallery URLs
+        gallery = project.get("frame_gallery") or []
+        for frame in gallery:
+            storage_path = frame.get("storage_path", "")
+            if storage_path:
+                parts = storage_path.split("/", 1)
+                if len(parts) == 2:
+                    try:
+                        signed = self.supabase.storage.from_(parts[0]).create_signed_url(
+                            parts[1], 3600
+                        )
+                        frame["signed_url"] = (
+                            signed.get("signedURL", "")
+                            if isinstance(signed, dict) else ""
+                        )
+                    except Exception:
+                        frame["signed_url"] = ""
+                        frame["missing"] = True
+            else:
+                frame["signed_url"] = ""
+
+        # Check avatar still exists
+        avatar_id = project.get("avatar_id")
+        if avatar_id:
+            check = self.supabase.table("brand_avatars").select("id").eq(
+                "id", avatar_id
+            ).execute()
+            if not check.data:
+                project["avatar_id"] = None
+                project["_avatar_warning"] = "Avatar was deleted"
+
+        project["frame_gallery"] = gallery
+        logger.info(f"Loaded project {project_id}")
+        return project
+
+    def delete_project(self, project_id: str) -> bool:
+        """Hard delete a project. Storage files remain.
+
+        Args:
+            project_id: Project UUID.
+
+        Returns:
+            True if deleted.
+        """
+        try:
+            self.supabase.table("manual_video_projects").delete().eq(
+                "id", project_id
+            ).execute()
+            logger.info(f"Deleted project {project_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to delete project {project_id}: {e}")
+            return False
+
+    # =========================================================================
     # Private helpers
     # =========================================================================
 
@@ -553,7 +751,8 @@ class ManualVideoService:
             )
             stdout, _ = await process.communicate()
             return bool(stdout.decode().strip())
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Audio stream check failed for {video_path}: {e}")
             return False
 
     async def _add_silent_audio(
@@ -613,6 +812,6 @@ class ManualVideoService:
             stdout, _ = await process.communicate()
             if process.returncode == 0:
                 return float(stdout.decode().strip())
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Duration probe failed for {file_path}: {e}")
         return None
