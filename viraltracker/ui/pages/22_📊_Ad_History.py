@@ -1319,6 +1319,10 @@ else:
                                         if is_edit_modal_open:
                                             st.markdown("**Smart Edit**")
                                             st.caption("Edit this ad with specific instructions")
+                                            DIMS_TO_RATIO = {"1080x1080": "1:1", "1080x1350": "4:5", "1080x1920": "9:16", "1920x1080": "16:9"}
+                                            _current_ratio = get_ad_current_size(ad)
+                                            _current_dims = {"1:1": "1080x1080", "4:5": "1080x1350", "9:16": "1080x1920", "16:9": "1920x1080"}.get(_current_ratio, "1080x1080")
+                                            st.info(f"Current size: {_current_ratio} ({_current_dims})")
 
                                             # Edit prompt input
                                             edit_prompt = st.text_area(

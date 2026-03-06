@@ -458,6 +458,7 @@ class AdCreationService:
         project_id: Optional[UUID] = None,
         parameters: Optional[Dict] = None,
         generation_config: Optional[Dict] = None,
+        source_scraped_template_id: Optional[UUID] = None,
     ) -> UUID:
         """
         Create new ad run record.
@@ -468,6 +469,7 @@ class AdCreationService:
             project_id: Optional project UUID
             parameters: Optional generation parameters (num_variations, content_source, etc.)
             generation_config: Optional reproducibility snapshot (prompt_version, pipeline_version, etc.)
+            source_scraped_template_id: Optional FK to scraped_templates for V2 pipeline
 
         Returns:
             UUID of created ad run
@@ -486,6 +488,9 @@ class AdCreationService:
 
         if generation_config:
             data["generation_config"] = generation_config
+
+        if source_scraped_template_id:
+            data["source_scraped_template_id"] = str(source_scraped_template_id)
 
         result = self.supabase.table("ad_runs").insert(data).execute()
         ad_run_id = UUID(result.data[0]["id"])
@@ -1702,12 +1707,33 @@ This is a SIZE VARIANT - the content should be IDENTICAL, only the canvas dimens
 
         preservation_text = "\n".join(preservation_rules) if preservation_rules else ""
 
-        # Get canvas dimensions from original spec
+        # Get canvas dimensions from original spec (multi-step fallback chain)
+        RATIO_TO_DIMS = {"1:1": "1080x1080", "4:5": "1080x1350", "9:16": "1080x1920", "16:9": "1920x1080"}
+        dimensions = None
         canvas = original_spec.get("canvas", {})
         if isinstance(canvas, dict):
-            dimensions = canvas.get("dimensions", "1080x1080")
-        else:
+            # Try explicit dimensions first
+            dims = canvas.get("dimensions", "")
+            if dims and "x" in str(dims):
+                dimensions = dims.replace("px", "")
+            # Try aspect_ratio -> map to dimensions
+            if not dimensions:
+                ar = canvas.get("aspect_ratio", "")
+                if ar in RATIO_TO_DIMS:
+                    dimensions = RATIO_TO_DIMS[ar]
+        elif isinstance(canvas, str):
+            for dim_str in ["1080x1920", "1080x1350", "1920x1080", "1080x1080"]:
+                if dim_str in canvas:
+                    dimensions = dim_str
+                    break
+        # Try variant_size on the source ad record
+        if not dimensions and source_ad.get("variant_size"):
+            vs = source_ad["variant_size"]
+            if vs in RATIO_TO_DIMS:
+                dimensions = RATIO_TO_DIMS[vs]
+        if not dimensions:
             dimensions = "1080x1080"
+            logger.warning(f"Could not detect dimensions for ad {ad_id}, falling back to 1080x1080")
 
         # Build the edit prompt
         full_prompt = f"""Edit this Facebook ad image according to the following instructions.
@@ -1720,7 +1746,7 @@ This is a SIZE VARIANT - the content should be IDENTICAL, only the canvas dimens
 - The hook text is: "{hook_text}" - preserve this exactly unless told to change it
 - Maintain the same overall composition and visual hierarchy
 - Keep the product image(s) exactly the same - do not modify products
-- Output at the same dimensions: {dimensions}px
+- Output MUST be {dimensions} pixels exactly — do not change the aspect ratio or dimensions
 
 **REFERENCE IMAGE:**
 The attached image is the original ad to edit. Make ONLY the requested changes.
