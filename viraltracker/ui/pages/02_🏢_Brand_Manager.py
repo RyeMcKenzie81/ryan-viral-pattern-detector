@@ -2909,13 +2909,10 @@ else:
                         if st.session_state.get(amz_af_running_key):
                             with st.spinner("Extracting fields from Amazon reviews..."):
                                 try:
-                                    from viraltracker.ui.autofill_suggestions import _get_gap_filler_service
-                                    gap_filler = _get_gap_filler_service()
-                                    review_suggestions = asyncio.run(
-                                        gap_filler.extract_from_amazon_analysis(
-                                            amazon_analysis=amazon_data,
-                                            target_fields=_amz_target_fields,
-                                        )
+                                    from viraltracker.ui.autofill_suggestions import extract_from_reviews
+                                    review_suggestions = extract_from_reviews(
+                                        amazon_analysis=amazon_data,
+                                        target_fields=_amz_target_fields,
                                     )
                                     st.session_state[amz_af_suggestions_key] = review_suggestions
                                 except Exception as e:

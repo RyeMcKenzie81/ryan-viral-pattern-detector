@@ -110,6 +110,28 @@ def scrape_and_extract(
     return suggestions, warning
 
 
+def extract_from_reviews(
+    amazon_analysis: Dict,
+    target_fields: List[str],
+) -> Dict:
+    """Extract auto-fill suggestions from Amazon review analysis data.
+
+    Args:
+        amazon_analysis: Amazon review analysis dict (from DB).
+        target_fields: Fields to extract.
+
+    Returns:
+        Suggestions dict keyed by gap_key.
+    """
+    gap_filler = _get_gap_filler_service()
+    return asyncio.run(
+        gap_filler.extract_from_amazon_analysis(
+            amazon_analysis=amazon_analysis,
+            target_fields=target_fields,
+        )
+    )
+
+
 def _apply_single(
     gap_key: str,
     value,
