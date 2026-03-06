@@ -64,23 +64,11 @@ class SelectContentNode(BaseNode[AdCreationPipelineState]):
 
             # Extract listicle count from landing page analysis if blueprint context exists
             if ctx.state.blueprint_context and ctx.state.blueprint_context.get('source_url'):
-                try:
-                    from viraltracker.core.supabase import get_supabase
-                    _db = get_supabase()
-                    lp_url = ctx.state.blueprint_context['source_url']
-                    lp_result = _db.table("landing_page_analyses").select(
-                        "content_patterns"
-                    ).eq("url", lp_url).order("created_at", desc=True).limit(1).execute()
-                    if lp_result.data and lp_result.data[0].get("content_patterns"):
-                        cp = lp_result.data[0]["content_patterns"]
-                        if isinstance(cp, str):
-                            import json as _json
-                            cp = _json.loads(cp)
-                        if isinstance(cp, dict) and cp.get("listicle_item_count"):
-                            ctx.state.blueprint_context["listicle_count"] = cp["listicle_item_count"]
-                            logger.info(f"Listicle count from LP: {cp['listicle_item_count']}")
-                except Exception as e:
-                    logger.warning(f"Could not extract listicle count from LP: {e}")
+                lp_url = ctx.state.blueprint_context['source_url']
+                listicle_count = content_service.get_listicle_count(lp_url)
+                if listicle_count:
+                    ctx.state.blueprint_context["listicle_count"] = listicle_count
+                    logger.info(f"Listicle count from LP: {listicle_count}")
 
             if content_source == "hooks":
                 # Extract offer variant data for offer-aware hook selection

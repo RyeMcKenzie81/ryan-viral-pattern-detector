@@ -28,6 +28,33 @@ def _json_dumps(obj: Any, **kwargs) -> str:
 class AdContentService:
     """Handles hook selection, benefit variations, and image selection for ad creation."""
 
+    @staticmethod
+    def get_listicle_count(source_url: str) -> Optional[int]:
+        """Query landing_page_analyses for listicle item count.
+
+        Args:
+            source_url: The landing page URL to look up.
+
+        Returns:
+            The listicle item count, or None if not found.
+        """
+        from viraltracker.core.database import get_supabase_client
+        try:
+            db = get_supabase_client()
+            result = db.table("landing_page_analyses").select(
+                "content_patterns"
+            ).eq("url", source_url).order("created_at", desc=True).limit(1).execute()
+
+            if result.data and result.data[0].get("content_patterns"):
+                cp = result.data[0]["content_patterns"]
+                if isinstance(cp, str):
+                    cp = json.loads(cp)
+                if isinstance(cp, dict) and cp.get("listicle_item_count"):
+                    return cp["listicle_item_count"]
+        except Exception as e:
+            logger.warning(f"Could not extract listicle count from LP: {e}")
+        return None
+
     async def select_hooks(
         self,
         hooks: List[Dict[str, Any]],
