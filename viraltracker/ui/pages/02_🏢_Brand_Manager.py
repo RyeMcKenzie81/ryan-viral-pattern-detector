@@ -1317,6 +1317,32 @@ with st.container():
                     st.success("Brand code saved!")
                     st.rerun()
 
+    # Website URL (prominent placement for auto-fill)
+    st.markdown("")
+    url_col, url_save_col = st.columns([3, 1])
+    with url_col:
+        current_website_url = selected_brand.get('website_url') or ''
+        new_website_url = st.text_input(
+            "Website URL",
+            value=current_website_url,
+            placeholder="https://yourbrand.com",
+            help="Brand website URL — used for auto-filling brand voice below",
+            key="brand_website_url_input",
+        )
+    with url_save_col:
+        st.markdown("")  # Align with input
+        if new_website_url != current_website_url:
+            if st.button("Save URL", key="save_brand_website_url", type="secondary"):
+                try:
+                    db = get_supabase_client()
+                    db.table("brands").update({
+                        "website_url": new_website_url or None
+                    }).eq("id", selected_brand_id).execute()
+                    st.success("Website URL saved!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Failed to save: {e}")
+
     st.markdown("")  # Spacer
 
     col1, col2 = st.columns(2)
@@ -1496,32 +1522,6 @@ with st.container():
             except Exception as e:
                 st.error(f"Failed to save: {e}")
 
-    # Website URL (placed near Brand Voice for auto-fill proximity)
-    st.markdown("")
-    url_col, url_save_col = st.columns([3, 1])
-    with url_col:
-        current_website_url = selected_brand.get('website_url') or ''
-        new_website_url = st.text_input(
-            "Website URL",
-            value=current_website_url,
-            placeholder="https://yourbrand.com",
-            help="Brand website URL — used for auto-filling brand voice below",
-            key="brand_website_url_input",
-        )
-    with url_save_col:
-        st.markdown("")  # Align with input
-        if new_website_url != current_website_url:
-            if st.button("Save URL", key="save_brand_website_url", type="secondary"):
-                try:
-                    db = get_supabase_client()
-                    db.table("brands").update({
-                        "website_url": new_website_url or None
-                    }).eq("id", selected_brand_id).execute()
-                    st.success("Website URL saved!")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Failed to save: {e}")
-
     # Brand Voice & Colors Section
     st.markdown("")
     st.markdown("**Brand Voice & Colors**")
@@ -1588,6 +1588,8 @@ with st.container():
                         "brand_voice_tone": extracted_voice
                     }).eq("id", selected_brand_id).execute()
                     st.session_state.pop(voice_af_result_key, None)
+                    # Update the widget's session state so text_input reflects new value
+                    st.session_state["brand_voice_tone_input"] = extracted_voice
                     st.success("Brand voice saved!")
                     st.rerun()
                 except Exception as e:
