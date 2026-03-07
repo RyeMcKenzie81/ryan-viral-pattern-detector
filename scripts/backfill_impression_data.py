@@ -30,38 +30,44 @@ def backfill_impressions(supabase, dry_run: bool = False):
     """Parse existing impressions TEXT column into structured fields."""
     logger.info("=== Backfilling impression data ===")
 
-    # Fetch ads that have impressions text but no parsed impression_lower
-    result = supabase.table("facebook_ads").select(
-        "id, impressions"
-    ).not_.is_("impressions", "null").is_("impression_lower", "null").limit(1000).execute()
-
-    if not result.data:
-        logger.info("No ads need impression backfill")
-        return 0
-
     updated = 0
     skipped = 0
+    batch_size = 1000
 
-    for row in result.data:
-        raw = row["impressions"]
-        lower, upper, text = parse_impression_data(raw)
+    while True:
+        result = supabase.table("facebook_ads").select(
+            "id, impressions"
+        ).not_.is_("impressions", "null").is_("impression_lower", "null").limit(batch_size).execute()
 
-        if lower is None:
-            skipped += 1
-            continue
+        if not result.data:
+            break
 
-        if dry_run:
-            logger.info(f"  [DRY RUN] Would update ad {row['id']}: {raw} -> lower={lower}, upper={upper}, text={text}")
-        else:
-            supabase.table("facebook_ads").update({
-                "impression_lower": lower,
-                "impression_upper": upper,
-                "impression_text": text,
-            }).eq("id", row["id"]).execute()
+        for row in result.data:
+            raw = row["impressions"]
+            lower, upper, text = parse_impression_data(raw)
 
-        updated += 1
+            if lower is None:
+                skipped += 1
+                continue
 
-    logger.info(f"Impression backfill: {updated} updated, {skipped} unparseable (of {len(result.data)} total)")
+            if dry_run:
+                logger.info(f"  [DRY RUN] Would update ad {row['id']}: {raw} -> lower={lower}, upper={upper}, text={text}")
+            else:
+                supabase.table("facebook_ads").update({
+                    "impression_lower": lower,
+                    "impression_upper": upper,
+                    "impression_text": text,
+                }).eq("id", row["id"]).execute()
+
+            updated += 1
+
+        logger.info(f"  Batch: processed {len(result.data)} rows ({updated} updated so far)")
+
+        # In dry-run mode, rows aren't updated so the same batch would return forever
+        if dry_run or len(result.data) < batch_size:
+            break
+
+    logger.info(f"Impression backfill: {updated} updated, {skipped} unparseable")
     return updated
 
 
