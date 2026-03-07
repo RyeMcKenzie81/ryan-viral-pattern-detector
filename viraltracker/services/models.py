@@ -248,6 +248,12 @@ class FacebookAd(BaseModel):
     political_countries: Optional[str] = Field(None, description="Countries for political ads (JSON array)")
     entity_type: Optional[str] = Field(None, description="Type of entity running ad")
 
+    # Apify metadata (position & collation)
+    collation_id: Optional[str] = Field(None, description="Groups ads sharing same creative")
+    collation_count: Optional[int] = Field(None, description="Number of ads in collation group (lead has count, variants have 0/null)")
+    scrape_position: Optional[int] = Field(None, description="Apify position in search results (1-based)")
+    scrape_total: Optional[int] = Field(None, description="Total ads in search results")
+
     @property
     def engagement_score(self) -> float:
         """Simple engagement score based on impressions and reach"""

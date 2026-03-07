@@ -2099,12 +2099,37 @@ async def execute_template_scrape_job(job: Dict) -> Dict[str, Any]:
 
         logs.append(f"Scraped {len(ads)} ads from Facebook Ad Library")
 
-        # Step 2: Process each ad with longevity tracking
+        # Step 2: Compute deduped positions (Fix 10 — Task 1.4)
+        # Raw Apify position is inflated by creative group expansion.
+        # Count only lead ads (collation_count > 0 or no collation_id) to get true creative rank.
+        deduped_pos = 0
+        deduped_positions = {}  # ad_archive_id -> deduped_position
+        scrape_total = None
+
+        for idx, ad in enumerate(ads):
+            # Capture scrape_total from first ad (same for all ads in batch)
+            if scrape_total is None and ad.scrape_total is not None:
+                scrape_total = ad.scrape_total
+
+            collation_id = ad.collation_id
+            collation_count = ad.collation_count
+            is_lead = (collation_count is not None and collation_count > 0) or collation_id is None
+
+            if is_lead:
+                deduped_pos += 1
+                deduped_positions[ad.ad_archive_id] = deduped_pos
+
+        if deduped_positions:
+            logs.append(f"Computed deduped positions for {len(deduped_positions)} lead ads out of {len(ads)} total")
+
+        # Step 3: Process each ad with longevity tracking
         new_count = 0
         updated_count = 0
         queued_count = 0
+        deduped_count = 0
         skipped_videos = 0
         failed_saves = 0
+        queued_collation_ids = set()
 
         # Log first ad for debugging
         if ads:
@@ -2112,7 +2137,7 @@ async def execute_template_scrape_job(job: Dict) -> Dict[str, Any]:
             logger.info(f"First ad sample - ad_archive_id: {first_ad.ad_archive_id}, page_name: {first_ad.page_name}")
             logs.append(f"First ad: {first_ad.page_name} (archive_id: {first_ad.ad_archive_id[:20]}...)")
 
-        for ad in ads:
+        for idx, ad in enumerate(ads):
             try:
                 # Build dict manually to match template_ingestion pattern exactly
                 ad_dict = {
@@ -2132,6 +2157,8 @@ async def execute_template_scrape_job(job: Dict) -> Dict[str, Any]:
                     "publisher_platform": ad.publisher_platform,
                     "political_countries": ad.political_countries,
                     "entity_type": ad.entity_type,
+                    "collation_id": ad.collation_id,
+                    "collation_count": ad.collation_count,
                 }
 
                 # Skip video ads if images_only is True
@@ -2159,11 +2186,18 @@ async def execute_template_scrape_job(job: Dict) -> Dict[str, Any]:
                         skipped_videos += 1
                         continue
 
-                # Save ad using same method as template_ingestion
-                # Note: Not passing brand_id to match working pattern
+                # Position data for this ad (Fix 10)
+                # Prefer Apify's native position field, fallback to array index
+                raw_position = ad.scrape_position if ad.scrape_position is not None else (idx + 1)
+                ad_deduped_position = deduped_positions.get(ad.ad_archive_id)
+
+                # Save ALL ads to facebook_ads (preserve complete data — Risk 7)
                 result = scraping_service.save_facebook_ad_with_tracking(
                     ad_data=ad_dict,
-                    scrape_source="scheduled_scrape"
+                    scrape_source="scheduled_scrape",
+                    scrape_position=raw_position,
+                    deduped_position=ad_deduped_position,
+                    scrape_total=scrape_total,
                 )
 
                 if not result or result.get('error'):
@@ -2198,18 +2232,32 @@ async def execute_template_scrape_job(job: Dict) -> Dict[str, Any]:
                             scrape_source="scheduled_scrape"
                         )
 
-                        # Queue for review if auto_queue enabled and we got assets
+                        # Queue for review with collation dedup (Fix 10 — Task 1.3)
                         if auto_queue:
                             asset_ids = asset_result.get('images', []) + asset_result.get('videos', [])
                             if asset_ids:
-                                try:
-                                    queued = await queue_service.add_to_queue(
-                                        asset_ids=asset_ids,
-                                        run_ai_analysis=False  # Skip AI analysis for scheduled scrapes
-                                    )
-                                    queued_count += queued
-                                except Exception as qe:
-                                    logger.warning(f"Failed to queue assets: {qe}")
+                                collation_id = ad.collation_id
+                                collation_count = ad.collation_count
+
+                                # Determine if this ad should be queued
+                                # Lead ads (collation_count > 0) or singletons (no collation_id) → queue
+                                # Variants (collation_count == 0/null with a collation_id) → skip if lead already queued
+                                is_lead = (collation_count is not None and collation_count > 0) or collation_id is None
+                                is_already_queued = collation_id is not None and collation_id in queued_collation_ids
+
+                                if is_lead or not is_already_queued:
+                                    try:
+                                        queued = await queue_service.add_to_queue(
+                                            asset_ids=asset_ids,
+                                            run_ai_analysis=False  # Skip AI analysis for scheduled scrapes
+                                        )
+                                        queued_count += queued
+                                        if collation_id:
+                                            queued_collation_ids.add(collation_id)
+                                    except Exception as qe:
+                                        logger.warning(f"Failed to queue assets: {qe}")
+                                else:
+                                    deduped_count += 1
                 else:
                     updated_count += 1
                     # Longevity tracking already updated by save_facebook_ad_with_tracking
@@ -2230,6 +2278,8 @@ async def execute_template_scrape_job(job: Dict) -> Dict[str, Any]:
             logs.append(f"Failed to save: {failed_saves}")
         if auto_queue:
             logs.append(f"Queued for review: {queued_count}")
+        if deduped_count > 0:
+            logs.append(f"Deduped {deduped_count} variant ads across {len(queued_collation_ids)} collation groups")
 
         if brand_id:
             freshness.record_success(brand_id, "templates_scraped", records_affected=new_count, run_id=run_id)

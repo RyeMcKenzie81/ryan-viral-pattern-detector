@@ -15,8 +15,11 @@ import json
 from typing import List, Optional
 from datetime import datetime
 
+import pandas as pd
+
 from ..scrapers.facebook_ads import FacebookAdsScraper
 from .models import FacebookAd
+from .ad_scraping_service import parse_impression_data
 
 logger = logging.getLogger(__name__)
 
@@ -97,19 +100,49 @@ class FacebookService:
                     except (ValueError, TypeError):
                         pass
 
-                # Parse impressions - can be int or dict with impressions_text
+                # Parse impressions - use parser from ad_scraping_service
                 impressions = None
                 imp_value = row.get('impressions')
-                if isinstance(imp_value, dict):
-                    pass  # Can't reliably convert text ranges to int
-                elif isinstance(imp_value, (int, float)):
-                    impressions = int(imp_value)
+                imp_lower, imp_upper, _imp_text = parse_impression_data(imp_value)
+                if imp_lower is not None:
+                    impressions = imp_lower  # Use lower bound as conservative estimate
 
                 # Parse reach_estimate similarly
                 reach = None
                 reach_value = row.get('reach_estimate')
                 if isinstance(reach_value, (int, float)):
                     reach = int(reach_value)
+
+                # Parse position/total (may be int, float, or NaN from pandas)
+                position = row.get('position')
+                if position is not None:
+                    try:
+                        if pd.notna(position):
+                            position = int(position)
+                        else:
+                            position = None
+                    except (ValueError, TypeError):
+                        position = None
+
+                total = row.get('total')
+                if total is not None:
+                    try:
+                        if pd.notna(total):
+                            total = int(total)
+                        else:
+                            total = None
+                    except (ValueError, TypeError):
+                        total = None
+
+                collation_count = row.get('collation_count')
+                if collation_count is not None:
+                    try:
+                        if pd.notna(collation_count):
+                            collation_count = int(collation_count)
+                        else:
+                            collation_count = None
+                    except (ValueError, TypeError):
+                        collation_count = None
 
                 ad = FacebookAd(
                     id=str(row.get('ad_id', '')),
@@ -128,7 +161,11 @@ class FacebookService:
                     categories=row.get('categories') if isinstance(row.get('categories'), str) else json.dumps(row.get('categories', [])),
                     publisher_platform=row.get('publisher_platform') if isinstance(row.get('publisher_platform'), str) else json.dumps(row.get('publisher_platform', [])),
                     political_countries=row.get('political_countries') if isinstance(row.get('political_countries'), str) else json.dumps(row.get('political_countries', [])),
-                    entity_type=row.get('entity_type')
+                    entity_type=row.get('entity_type'),
+                    collation_id=row.get('collation_id') if pd.notna(row.get('collation_id')) else None,
+                    collation_count=collation_count,
+                    scrape_position=position,
+                    scrape_total=total,
                 )
                 ads.append(ad)
             except Exception as e:
@@ -194,19 +231,49 @@ class FacebookService:
                     except (ValueError, TypeError):
                         pass
 
-                # Parse impressions - can be int or dict with impressions_text
+                # Parse impressions - use parser from ad_scraping_service
                 impressions = None
                 imp_value = row.get('impressions')
-                if isinstance(imp_value, dict):
-                    pass  # Can't reliably convert text ranges to int
-                elif isinstance(imp_value, (int, float)):
-                    impressions = int(imp_value)
+                imp_lower, imp_upper, _imp_text = parse_impression_data(imp_value)
+                if imp_lower is not None:
+                    impressions = imp_lower
 
                 # Parse reach_estimate similarly
                 reach = None
                 reach_value = row.get('reach_estimate')
                 if isinstance(reach_value, (int, float)):
                     reach = int(reach_value)
+
+                # Parse position/total (may be int, float, or NaN from pandas)
+                position = row.get('position')
+                if position is not None:
+                    try:
+                        if pd.notna(position):
+                            position = int(position)
+                        else:
+                            position = None
+                    except (ValueError, TypeError):
+                        position = None
+
+                total = row.get('total')
+                if total is not None:
+                    try:
+                        if pd.notna(total):
+                            total = int(total)
+                        else:
+                            total = None
+                    except (ValueError, TypeError):
+                        total = None
+
+                collation_count = row.get('collation_count')
+                if collation_count is not None:
+                    try:
+                        if pd.notna(collation_count):
+                            collation_count = int(collation_count)
+                        else:
+                            collation_count = None
+                    except (ValueError, TypeError):
+                        collation_count = None
 
                 ad = FacebookAd(
                     id=str(row.get('ad_id', '')),
@@ -225,7 +292,11 @@ class FacebookService:
                     categories=row.get('categories') if isinstance(row.get('categories'), str) else json.dumps(row.get('categories', [])),
                     publisher_platform=row.get('publisher_platform') if isinstance(row.get('publisher_platform'), str) else json.dumps(row.get('publisher_platform', [])),
                     political_countries=row.get('political_countries') if isinstance(row.get('political_countries'), str) else json.dumps(row.get('political_countries', [])),
-                    entity_type=row.get('entity_type')
+                    entity_type=row.get('entity_type'),
+                    collation_id=row.get('collation_id') if pd.notna(row.get('collation_id')) else None,
+                    collation_count=collation_count,
+                    scrape_position=position,
+                    scrape_total=total,
                 )
                 ads.append(ad)
             except Exception as e:

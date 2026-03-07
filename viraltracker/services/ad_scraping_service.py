@@ -24,6 +24,83 @@ from ..core.database import get_supabase_client
 logger = logging.getLogger(__name__)
 
 
+def parse_impression_data(raw_value) -> tuple:
+    """Parse Apify's impressions_with_index into (lower, upper, display_text).
+
+    Handles:
+    - dict: {"impressions_text": "1K-5K", "impressions_index": 3} -> (1000, 5000, "1K-5K")
+    - int/float: 12345 -> (12345, 12345, "12345")
+    - None or {"impressions_text": null}: -> (None, None, None)
+
+    Returns:
+        Tuple of (impression_lower, impression_upper, impression_text)
+    """
+    if raw_value is None:
+        return (None, None, None)
+
+    if isinstance(raw_value, (int, float)):
+        val = int(raw_value)
+        return (val, val, str(val))
+
+    if isinstance(raw_value, str):
+        # Try as plain integer string first
+        try:
+            val = int(raw_value)
+            return (val, val, str(val))
+        except ValueError:
+            pass
+        # Try to parse as JSON dict
+        try:
+            raw_value = json.loads(raw_value)
+        except (json.JSONDecodeError, TypeError):
+            return (None, None, None)
+
+    if isinstance(raw_value, dict):
+        text = raw_value.get("impressions_text")
+        if not text:
+            return (None, None, None)
+
+        # Parse range text like "1K-5K", "10K-50K", "1M-5M"
+        lower, upper = _parse_impression_text(text)
+        return (lower, upper, text)
+
+    return (None, None, None)
+
+
+def _parse_impression_text(text: str) -> tuple:
+    """Parse impression range text like '1K-5K' into (1000, 5000).
+
+    Returns:
+        Tuple of (lower, upper) as ints, or (None, None) if unparseable.
+    """
+    import re
+
+    multipliers = {"K": 1_000, "M": 1_000_000, "B": 1_000_000_000}
+
+    # Match patterns like "1K-5K", "100-500", "1M-5M", "<1K", ">1M"
+    # Also handle single values like "5K"
+    range_match = re.match(
+        r'[<>]?(\d+(?:\.\d+)?)\s*([KMB]?)(?:\s*[-–]\s*(\d+(?:\.\d+)?)\s*([KMB]?))?',
+        text.strip(),
+        re.IGNORECASE
+    )
+    if not range_match:
+        return (None, None)
+
+    low_num = float(range_match.group(1))
+    low_mult = multipliers.get(range_match.group(2).upper(), 1) if range_match.group(2) else 1
+    lower = int(low_num * low_mult)
+
+    if range_match.group(3):
+        high_num = float(range_match.group(3))
+        high_mult = multipliers.get(range_match.group(4).upper(), 1) if range_match.group(4) else 1
+        upper = int(high_num * high_mult)
+    else:
+        upper = lower
+
+    return (lower, upper)
+
+
 class AdScrapingService:
     """Service for scraping and storing Facebook ad assets."""
 
@@ -305,7 +382,10 @@ class AdScrapingService:
         ad_data: Dict,
         brand_id: Optional[UUID] = None,
         project_id: Optional[UUID] = None,
-        scrape_source: str = "ad_library_search"
+        scrape_source: str = "ad_library_search",
+        scrape_position: Optional[int] = None,
+        deduped_position: Optional[int] = None,
+        scrape_total: Optional[int] = None,
     ) -> Optional[Dict]:
         """
         Save a Facebook ad to the database with longevity tracking.
@@ -321,6 +401,9 @@ class AdScrapingService:
             brand_id: Optional brand to link
             project_id: Optional project to link
             scrape_source: Source identifier
+            scrape_position: Raw Apify position (inflated by creative group expansion)
+            deduped_position: Position counting only lead ads (primary scoring signal)
+            scrape_total: Total ads in search results for normalization
 
         Returns:
             Dict with ad_id, is_new, was_active (previous active status), or None if failed
@@ -333,7 +416,7 @@ class AdScrapingService:
 
             # Check if ad already exists
             existing_result = self.supabase.table("facebook_ads").select(
-                "id, first_seen_at, is_active, last_seen_at, times_seen"
+                "id, first_seen_at, is_active, last_seen_at, times_seen, best_scrape_position"
             ).eq("ad_archive_id", ad_archive_id).execute()
 
             # Handle result - will be a list, take first item if exists
@@ -393,6 +476,9 @@ class AdScrapingService:
                 "page_like_count": snapshot.get("page_like_count"),
                 "page_profile_uri": snapshot.get("page_profile_uri"),
                 "display_format": snapshot.get("display_format"),
+                # Collation data (from Apify)
+                "collation_id": ad_data.get("collation_id"),
+                "collation_count": ad_data.get("collation_count"),
                 # Longevity tracking - always update last_checked_at
                 "last_checked_at": now,
             }
@@ -414,6 +500,30 @@ class AdScrapingService:
                     record["last_seen_at"] = existing.get("last_seen_at")
                 # Increment times_seen
                 record["times_seen"] = (existing.get("times_seen") or 1) + 1
+
+            # Position tracking (Fix 10)
+            if scrape_position is not None:
+                record["scrape_position"] = scrape_position
+            if scrape_total is not None:
+                record["scrape_total"] = scrape_total
+            if deduped_position is not None:
+                record["latest_scrape_position"] = deduped_position
+                # best_scrape_position = min(existing, new)
+                existing_best = existing.get("best_scrape_position") if existing else None
+                if existing_best is not None:
+                    record["best_scrape_position"] = min(existing_best, deduped_position)
+                else:
+                    record["best_scrape_position"] = deduped_position
+
+            # Parse and store impression data (Fix 10)
+            raw_impressions = ad_data.get("impressions")
+            imp_lower, imp_upper, imp_text = parse_impression_data(raw_impressions)
+            if imp_lower is not None:
+                record["impression_lower"] = imp_lower
+            if imp_upper is not None:
+                record["impression_upper"] = imp_upper
+            if imp_text is not None:
+                record["impression_text"] = imp_text
 
             # Upsert based on ad_archive_id
             result = self.supabase.table("facebook_ads").upsert(

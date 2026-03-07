@@ -410,6 +410,10 @@ class FacebookAdsScraper:
                     "collation_id": ad.get("collation_id"),
                     "collation_count": ad.get("collation_count", 0),
 
+                    # Position & total (from Apify, for impression-based scoring)
+                    "position": ad.get("position"),
+                    "total": ad.get("total"),
+
                     # Safety & moderation
                     "has_user_reported": ad.get("has_user_reported", False),
                     "report_count": ad.get("report_count", 0),
