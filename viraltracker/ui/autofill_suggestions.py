@@ -110,20 +110,23 @@ def scrape_and_extract(
     return suggestions, warning
 
 
+def _collect_css_text(html: str) -> str:
+    """Extract all CSS text from <style> tags and inline style attributes."""
+    import re
+    # <style> tag contents
+    style_blocks = re.findall(r'<style[^>]*>(.*?)</style>', html, re.DOTALL | re.IGNORECASE)
+    # Inline style="..." attributes
+    inline_styles = re.findall(r'style="([^"]*)"', html, re.IGNORECASE)
+    inline_styles += re.findall(r"style='([^']*)'", html, re.IGNORECASE)
+    return "\n".join(style_blocks + inline_styles)
+
+
 def _extract_colors_from_html(html: str) -> Dict:
-    """Extract brand colors from CSS in HTML (deterministic, no LLM)."""
+    """Extract brand colors from CSS in HTML (deterministic, regex only)."""
     import re
     from collections import Counter
-    from bs4 import BeautifulSoup
 
-    soup = BeautifulSoup(html, 'html.parser')
-
-    # Collect all CSS content
-    css_text = ""
-    for style_tag in soup.find_all('style'):
-        css_text += (style_tag.string or "")
-    for elem in soup.find_all(style=True):
-        css_text += elem['style']
+    css_text = _collect_css_text(html)
 
     # Find hex colors
     hex_colors = re.findall(r'#([0-9a-fA-F]{3,6})\b', css_text)
@@ -160,29 +163,20 @@ def _extract_colors_from_html(html: str) -> Dict:
 
 
 def _extract_fonts_from_html(html: str) -> Dict:
-    """Extract brand fonts from CSS and Google Fonts links (deterministic, no LLM)."""
+    """Extract brand fonts from CSS and Google Fonts links (deterministic, regex only)."""
     import re
     from collections import Counter
-    from bs4 import BeautifulSoup
 
-    soup = BeautifulSoup(html, 'html.parser')
+    css_text = _collect_css_text(html)
 
-    # Collect CSS text from <style> tags and inline styles
-    css_text = ""
-    for style_tag in soup.find_all('style'):
-        css_text += (style_tag.string or "")
-    for elem in soup.find_all(style=True):
-        css_text += elem['style']
-
-    # Check <link> tags for Google Fonts
+    # Check for Google Fonts <link> tags
     google_fonts = []
-    for link in soup.find_all('link', href=True):
-        href = link['href']
-        if 'fonts.googleapis.com' in href:
-            family_matches = re.findall(r'family=([^&:]+)', href)
-            for fam in family_matches:
-                font_name = fam.replace('+', ' ')
-                google_fonts.append(font_name)
+    link_hrefs = re.findall(r'<link[^>]+href="([^"]*fonts\.googleapis\.com[^"]*)"', html, re.IGNORECASE)
+    link_hrefs += re.findall(r"<link[^>]+href='([^']*fonts\.googleapis\.com[^']*)'", html, re.IGNORECASE)
+    for href in link_hrefs:
+        family_matches = re.findall(r'family=([^&:]+)', href)
+        for fam in family_matches:
+            google_fonts.append(fam.replace('+', ' '))
 
     # Find font-family declarations in CSS
     font_declarations = re.findall(r'font-family:\s*([^;}"]+)', css_text, re.IGNORECASE)
