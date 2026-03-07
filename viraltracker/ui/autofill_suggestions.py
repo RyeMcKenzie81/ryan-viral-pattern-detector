@@ -110,6 +110,12 @@ def scrape_and_extract(
     return suggestions, warning
 
 
+def _decode_html_entities(text: str) -> str:
+    """Decode common HTML entities."""
+    import html
+    return html.unescape(text)
+
+
 def _collect_css_text(html: str) -> str:
     """Extract all CSS text from <style> tags and inline style attributes."""
     import re
@@ -118,7 +124,8 @@ def _collect_css_text(html: str) -> str:
     # Inline style="..." attributes
     inline_styles = re.findall(r'style="([^"]*)"', html, re.IGNORECASE)
     inline_styles += re.findall(r"style='([^']*)'", html, re.IGNORECASE)
-    return "\n".join(style_blocks + inline_styles)
+    raw = "\n".join(style_blocks + inline_styles)
+    return _decode_html_entities(raw)
 
 
 def _extract_colors_from_html(html: str) -> Dict:
@@ -140,16 +147,17 @@ def _extract_colors_from_html(html: str) -> Dict:
             continue
         normalized.append(f"#{h.upper()}")
 
-    # Filter common neutrals
-    neutrals = {
-        "#000000", "#FFFFFF", "#CCCCCC", "#333333", "#666666", "#999999",
-        "#F5F5F5", "#EEEEEE", "#DDDDDD", "#AAAAAA", "#888888", "#FAFAFA",
-        "#F0F0F0", "#E0E0E0", "#111111", "#222222", "#444444", "#555555",
-        "#777777", "#BBBBBB", "#F8F8F8", "#FEFEFE", "#F9F9F9",
-    }
+    def _is_neutral(hex_color: str) -> bool:
+        """Check if a color is grayscale/near-neutral."""
+        r = int(hex_color[1:3], 16)
+        g = int(hex_color[3:5], 16)
+        b = int(hex_color[5:7], 16)
+        spread = max(r, g, b) - min(r, g, b)
+        # Grayscale: all channels within 25 of each other
+        return spread <= 25
 
     counter = Counter(normalized)
-    brand_colors = [(c, n) for c, n in counter.most_common(20) if c not in neutrals]
+    brand_colors = [(c, n) for c, n in counter.most_common(30) if not _is_neutral(c)]
 
     result = {}
     if brand_colors:
@@ -171,8 +179,9 @@ def _extract_fonts_from_html(html: str) -> Dict:
 
     # Check for Google Fonts <link> tags
     google_fonts = []
-    link_hrefs = re.findall(r'<link[^>]+href="([^"]*fonts\.googleapis\.com[^"]*)"', html, re.IGNORECASE)
-    link_hrefs += re.findall(r"<link[^>]+href='([^']*fonts\.googleapis\.com[^']*)'", html, re.IGNORECASE)
+    decoded_html = _decode_html_entities(html)
+    link_hrefs = re.findall(r'<link[^>]+href="([^"]*fonts\.googleapis\.com[^"]*)"', decoded_html, re.IGNORECASE)
+    link_hrefs += re.findall(r"<link[^>]+href='([^']*fonts\.googleapis\.com[^']*)'", decoded_html, re.IGNORECASE)
     for href in link_hrefs:
         family_matches = re.findall(r'family=([^&:]+)', href)
         for fam in family_matches:
