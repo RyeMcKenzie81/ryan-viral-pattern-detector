@@ -110,6 +110,174 @@ def scrape_and_extract(
     return suggestions, warning
 
 
+def _extract_colors_from_html(html: str) -> Dict:
+    """Extract brand colors from CSS in HTML (deterministic, no LLM)."""
+    import re
+    from collections import Counter
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(html, 'html.parser')
+
+    # Collect all CSS content
+    css_text = ""
+    for style_tag in soup.find_all('style'):
+        css_text += (style_tag.string or "")
+    for elem in soup.find_all(style=True):
+        css_text += elem['style']
+
+    # Find hex colors
+    hex_colors = re.findall(r'#([0-9a-fA-F]{3,6})\b', css_text)
+
+    # Normalize to 6-digit uppercase hex
+    normalized = []
+    for h in hex_colors:
+        if len(h) == 3:
+            h = h[0]*2 + h[1]*2 + h[2]*2
+        elif len(h) != 6:
+            continue
+        normalized.append(f"#{h.upper()}")
+
+    # Filter common neutrals
+    neutrals = {
+        "#000000", "#FFFFFF", "#CCCCCC", "#333333", "#666666", "#999999",
+        "#F5F5F5", "#EEEEEE", "#DDDDDD", "#AAAAAA", "#888888", "#FAFAFA",
+        "#F0F0F0", "#E0E0E0", "#111111", "#222222", "#444444", "#555555",
+        "#777777", "#BBBBBB", "#F8F8F8", "#FEFEFE", "#F9F9F9",
+    }
+
+    counter = Counter(normalized)
+    brand_colors = [(c, n) for c, n in counter.most_common(20) if c not in neutrals]
+
+    result = {}
+    if brand_colors:
+        result["primary"] = brand_colors[0][0]
+        if len(brand_colors) > 1:
+            result["accent"] = brand_colors[1][0]
+        if len(brand_colors) > 2:
+            result["secondary"] = [c for c, _ in brand_colors[2:5]]
+
+    return result
+
+
+def _extract_fonts_from_html(html: str) -> Dict:
+    """Extract brand fonts from CSS and Google Fonts links (deterministic, no LLM)."""
+    import re
+    from collections import Counter
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(html, 'html.parser')
+
+    # Collect CSS text from <style> tags and inline styles
+    css_text = ""
+    for style_tag in soup.find_all('style'):
+        css_text += (style_tag.string or "")
+    for elem in soup.find_all(style=True):
+        css_text += elem['style']
+
+    # Check <link> tags for Google Fonts
+    google_fonts = []
+    for link in soup.find_all('link', href=True):
+        href = link['href']
+        if 'fonts.googleapis.com' in href:
+            family_matches = re.findall(r'family=([^&:]+)', href)
+            for fam in family_matches:
+                font_name = fam.replace('+', ' ')
+                google_fonts.append(font_name)
+
+    # Find font-family declarations in CSS
+    font_declarations = re.findall(r'font-family:\s*([^;}"]+)', css_text, re.IGNORECASE)
+
+    generic_families = {
+        "serif", "sans-serif", "monospace", "cursive", "fantasy",
+        "system-ui", "-apple-system", "blinkmacsystemfont", "segoe ui",
+        "inherit", "initial", "unset",
+    }
+
+    fonts = []
+    for decl in font_declarations:
+        parts = [f.strip().strip("'\"") for f in decl.split(",")]
+        for p in parts:
+            if p.lower() not in generic_families and p:
+                fonts.append(p)
+                break
+
+    counter = Counter(fonts)
+
+    # Prefer Google Fonts if found (they're intentional choices)
+    if google_fonts:
+        result = {"primary": google_fonts[0]}
+        if len(google_fonts) > 1:
+            result["secondary"] = google_fonts[1]
+        return result
+
+    result = {}
+    if counter:
+        top = counter.most_common(2)
+        result["primary"] = top[0][0]
+        if len(top) > 1:
+            result["secondary"] = top[1][0]
+
+    return result
+
+
+def extract_brand_identity(
+    url: str,
+    brand_name: Optional[str] = None,
+) -> Dict:
+    """Scrape a website and extract brand voice, colors, and fonts.
+
+    Args:
+        url: Brand website URL.
+        brand_name: Brand name for context.
+
+    Returns:
+        Dict with keys: voice (str|None), colors (dict), fonts (dict), warning (str|None).
+    """
+    from viraltracker.services.web_scraping_service import WebScrapingService
+
+    web_service = WebScrapingService()
+    result = web_service.scrape_url(url, formats=["markdown", "html"], only_main_content=False)
+
+    if not result.success:
+        raise ValueError(f"Scrape failed: {result.error or 'No content returned'}")
+
+    warning = None
+    voice = None
+    colors = {}
+    fonts = {}
+
+    # Extract colors and fonts from HTML (deterministic)
+    if result.html:
+        colors = _extract_colors_from_html(result.html)
+        fonts = _extract_fonts_from_html(result.html)
+
+    # Extract brand voice from markdown (LLM)
+    if result.markdown:
+        if len(result.markdown) < 2000:
+            warning = (
+                f"Very short content ({len(result.markdown)} chars) — "
+                "page may not have loaded fully. Try re-running."
+            )
+        try:
+            gap_filler = _get_gap_filler_service()
+            suggestions = asyncio.run(
+                gap_filler.extract_from_raw_content(
+                    raw_content=result.markdown,
+                    target_fields=["brand.voice_tone"],
+                    content_source="fresh_scrape",
+                    source_url=url,
+                    brand_name=brand_name,
+                )
+            )
+            voice_suggestion = suggestions.get("brand.voice_tone")
+            if voice_suggestion and voice_suggestion.get("value"):
+                voice = voice_suggestion["value"]
+        except Exception as e:
+            logger.warning(f"Voice extraction failed: {e}")
+
+    return {"voice": voice, "colors": colors, "fonts": fonts, "warning": warning}
+
+
 def extract_from_reviews(
     amazon_analysis: Dict,
     target_fields: List[str],

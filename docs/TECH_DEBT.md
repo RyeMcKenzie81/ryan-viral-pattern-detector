@@ -784,3 +784,21 @@ The current permissive RLS policy (`FOR ALL TO authenticated USING (true)`) mean
 - `viraltracker/services/landing_page_analysis/analysis_service.py` — `_extract_content_patterns()`
 - `viraltracker/services/landing_page_analysis/element_classifier.py` — Element classification
 - `viraltracker/pipelines/ad_creation_v2/services/content_service.py` — `AdContentService.get_listicle_count()`
+
+### 33. Brand Manager — Manual Font Editor
+
+**Priority**: Low
+**Complexity**: Low
+**Added**: 2026-03-06
+
+**Context**: The `brand_fonts` JSONB column exists and is used by the ad creation pipeline (`GenerationService` builds `FontConfig` from it), but Brand Manager only has a read-only display for fonts (lines ~1377-1388 in `02_Brand_Manager.py`). There's no way to manually edit fonts — they can only be set via the new "Auto-fill from Website" feature which writes directly to DB.
+
+**What's needed**:
+1. Add text inputs for primary/secondary font family names in Brand Voice & Colors section
+2. Wire up a "Save" button that writes to `brands.brand_fonts`
+3. Match the existing structure: `{primary: "Font Name", primary_weights: [...], secondary: "Font Name", secondary_weights: [...]}`
+
+**Related files**:
+- `viraltracker/ui/pages/02_🏢_Brand_Manager.py` — Read-only font display
+- `viraltracker/pipelines/ad_creation_v2/services/generation_service.py` — Consumes `brand_fonts`
+- `viraltracker/pipelines/ad_creation_v2/nodes/fetch_context.py` — Loads fonts from DB

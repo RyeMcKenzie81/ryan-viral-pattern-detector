@@ -1295,7 +1295,8 @@ st.subheader("Brand Settings")
 
 # Clear stale auto-fill state on brand change
 if st.session_state.get("_bm_last_brand_id") != selected_brand_id:
-    for _key in ["bm_voice_af_result", "bm_voice_af_running", "bm_voice_af_error", "bm_voice_af_warning"]:
+    for _key in ["bm_brand_identity_result", "bm_brand_identity_running",
+                  "bm_brand_identity_error", "bm_brand_identity_warning"]:
         st.session_state.pop(_key, None)
     st.session_state["_bm_last_brand_id"] = selected_brand_id
 
@@ -1317,16 +1318,16 @@ with st.container():
                     st.success("Brand code saved!")
                     st.rerun()
 
-    # Website URL (prominent placement for auto-fill)
+    # Website URL + Auto-fill Brand Identity
     st.markdown("")
-    url_col, url_save_col = st.columns([3, 1])
+    url_col, url_save_col, url_af_col = st.columns([3, 1, 1])
     with url_col:
         current_website_url = selected_brand.get('website_url') or ''
         new_website_url = st.text_input(
             "Website URL",
             value=current_website_url,
             placeholder="https://yourbrand.com",
-            help="Brand website URL — used for auto-filling brand voice below",
+            help="Brand website URL — used for auto-filling brand voice, colors, and fonts",
             key="brand_website_url_input",
         )
     with url_save_col:
@@ -1342,6 +1343,185 @@ with st.container():
                     st.rerun()
                 except Exception as e:
                     st.error(f"Failed to save: {e}")
+    with url_af_col:
+        st.markdown("")  # Align with input
+        _bi_url = new_website_url or current_website_url
+        _bi_prefix = "bm_brand_identity"
+        _bi_running_key = f"{_bi_prefix}_running"
+        _bi_result_key = f"{_bi_prefix}_result"
+        if _bi_url:
+            _bi_btn_label = "Re-run Auto-fill" if st.session_state.get(_bi_result_key) else "Auto-fill from Website"
+            if st.button(f"🧠 {_bi_btn_label}", key=f"{_bi_prefix}_btn", help="Extract brand voice, colors, and fonts from website"):
+                st.session_state[_bi_running_key] = True
+        else:
+            st.caption("Enter URL to enable auto-fill")
+
+    # Handle brand identity auto-fill
+    if st.session_state.get(_bi_running_key):
+        with st.spinner("Scraping website and extracting brand identity (voice, colors, fonts)..."):
+            try:
+                from viraltracker.ui.autofill_suggestions import extract_brand_identity
+                identity = extract_brand_identity(
+                    url=_bi_url,
+                    brand_name=selected_brand.get('name'),
+                )
+                st.session_state[_bi_result_key] = identity
+                if identity.get("warning"):
+                    st.session_state[f"{_bi_prefix}_warning"] = identity["warning"]
+            except Exception as e:
+                st.session_state[f"{_bi_prefix}_error"] = str(e)
+            st.session_state[_bi_running_key] = False
+            st.rerun()
+
+    if f"{_bi_prefix}_error" in st.session_state:
+        st.error(st.session_state.pop(f"{_bi_prefix}_error"))
+    if f"{_bi_prefix}_warning" in st.session_state:
+        st.warning(st.session_state.pop(f"{_bi_prefix}_warning"))
+
+    # Show brand identity results
+    if _bi_result_key in st.session_state:
+        _bi_data = st.session_state[_bi_result_key]
+        _has_results = _bi_data.get("voice") or _bi_data.get("colors") or _bi_data.get("fonts")
+
+        if _has_results:
+            st.markdown("#### Extracted Brand Identity")
+
+            # --- Voice ---
+            if _bi_data.get("voice"):
+                current_voice_display = selected_brand.get("brand_voice_tone") or ""
+                st.markdown(f"**Brand Voice:** {_bi_data['voice']}")
+                if current_voice_display:
+                    st.caption(f"Current: {current_voice_display}")
+                v_col1, v_col2 = st.columns([1, 1])
+                with v_col1:
+                    if st.button("Accept Voice" if not current_voice_display else "Replace Voice", key=f"{_bi_prefix}_accept_voice", type="primary"):
+                        try:
+                            db = get_supabase_client()
+                            db.table("brands").update({"brand_voice_tone": _bi_data["voice"]}).eq("id", selected_brand_id).execute()
+                            st.session_state["brand_voice_tone_input"] = _bi_data["voice"]
+                            _bi_data["voice"] = None  # Mark as handled
+                            st.session_state[_bi_result_key] = _bi_data
+                            st.success("Brand voice saved!")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Failed: {e}")
+                with v_col2:
+                    if st.button("Skip Voice", key=f"{_bi_prefix}_skip_voice"):
+                        _bi_data["voice"] = None
+                        st.session_state[_bi_result_key] = _bi_data
+                        st.rerun()
+
+            # --- Colors ---
+            if _bi_data.get("colors"):
+                extracted_colors = _bi_data["colors"]
+                color_parts = []
+                if extracted_colors.get("primary"):
+                    color_parts.append(f"Primary: {extracted_colors['primary']}")
+                if extracted_colors.get("accent"):
+                    color_parts.append(f"Accent: {extracted_colors['accent']}")
+                if extracted_colors.get("secondary"):
+                    color_parts.append(f"Secondary: {', '.join(extracted_colors['secondary'])}")
+                st.markdown(f"**Colors:** {' | '.join(color_parts)}")
+
+                # Show color swatches
+                swatch_html = ""
+                for key in ["primary", "accent"]:
+                    if extracted_colors.get(key):
+                        swatch_html += f'<span style="display:inline-block;width:24px;height:24px;background:{extracted_colors[key]};border:1px solid #ccc;border-radius:4px;vertical-align:middle;margin-right:4px;"></span>{key}: {extracted_colors[key]}  '
+                if swatch_html:
+                    st.markdown(swatch_html, unsafe_allow_html=True)
+
+                c_col1, c_col2 = st.columns([1, 1])
+                with c_col1:
+                    if st.button("Accept Colors", key=f"{_bi_prefix}_accept_colors", type="primary"):
+                        try:
+                            db = get_supabase_client()
+                            db.table("brands").update({"brand_colors": extracted_colors}).eq("id", selected_brand_id).execute()
+                            # Update color picker session states
+                            if extracted_colors.get("primary"):
+                                st.session_state["brand_color_primary"] = extracted_colors["primary"]
+                            if extracted_colors.get("accent"):
+                                st.session_state["brand_color_accent"] = extracted_colors["accent"]
+                            if extracted_colors.get("secondary"):
+                                st.session_state["brand_color_secondary"] = ", ".join(extracted_colors["secondary"])
+                            _bi_data["colors"] = None
+                            st.session_state[_bi_result_key] = _bi_data
+                            st.success("Brand colors saved!")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Failed: {e}")
+                with c_col2:
+                    if st.button("Skip Colors", key=f"{_bi_prefix}_skip_colors"):
+                        _bi_data["colors"] = None
+                        st.session_state[_bi_result_key] = _bi_data
+                        st.rerun()
+
+            # --- Fonts ---
+            if _bi_data.get("fonts"):
+                extracted_fonts = _bi_data["fonts"]
+                font_parts = []
+                if extracted_fonts.get("primary"):
+                    font_parts.append(f"Primary: {extracted_fonts['primary']}")
+                if extracted_fonts.get("secondary"):
+                    font_parts.append(f"Secondary: {extracted_fonts['secondary']}")
+                st.markdown(f"**Fonts:** {' | '.join(font_parts)}")
+
+                f_col1, f_col2 = st.columns([1, 1])
+                with f_col1:
+                    if st.button("Accept Fonts", key=f"{_bi_prefix}_accept_fonts", type="primary"):
+                        try:
+                            db = get_supabase_client()
+                            db.table("brands").update({"brand_fonts": extracted_fonts}).eq("id", selected_brand_id).execute()
+                            _bi_data["fonts"] = None
+                            st.session_state[_bi_result_key] = _bi_data
+                            st.success("Brand fonts saved!")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Failed: {e}")
+                with f_col2:
+                    if st.button("Skip Fonts", key=f"{_bi_prefix}_skip_fonts"):
+                        _bi_data["fonts"] = None
+                        st.session_state[_bi_result_key] = _bi_data
+                        st.rerun()
+
+            # Accept All + Dismiss
+            _remaining = sum(1 for k in ("voice", "colors", "fonts") if _bi_data.get(k))
+            aa_col, dismiss_col = st.columns([1, 1])
+            if _remaining > 1:
+                with aa_col:
+                    if st.button(f"Accept All ({_remaining})", key=f"{_bi_prefix}_accept_all", type="primary"):
+                        try:
+                            db = get_supabase_client()
+                            update_data = {}
+                            if _bi_data.get("voice"):
+                                update_data["brand_voice_tone"] = _bi_data["voice"]
+                                st.session_state["brand_voice_tone_input"] = _bi_data["voice"]
+                            if _bi_data.get("colors"):
+                                update_data["brand_colors"] = _bi_data["colors"]
+                                if _bi_data["colors"].get("primary"):
+                                    st.session_state["brand_color_primary"] = _bi_data["colors"]["primary"]
+                                if _bi_data["colors"].get("accent"):
+                                    st.session_state["brand_color_accent"] = _bi_data["colors"]["accent"]
+                                if _bi_data["colors"].get("secondary"):
+                                    st.session_state["brand_color_secondary"] = ", ".join(_bi_data["colors"]["secondary"])
+                            if _bi_data.get("fonts"):
+                                update_data["brand_fonts"] = _bi_data["fonts"]
+                            if update_data:
+                                db.table("brands").update(update_data).eq("id", selected_brand_id).execute()
+                            st.session_state.pop(_bi_result_key, None)
+                            st.success("All brand identity saved!")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Failed: {e}")
+            with dismiss_col:
+                if st.button("Dismiss", key=f"{_bi_prefix}_dismiss"):
+                    st.session_state.pop(_bi_result_key, None)
+                    st.rerun()
+        else:
+            st.info("No brand identity data could be extracted from this website.")
+            if st.button("Dismiss", key=f"{_bi_prefix}_dismiss_empty"):
+                st.session_state.pop(_bi_result_key, None)
+                st.rerun()
 
     st.markdown("")  # Spacer
 
@@ -1527,7 +1707,7 @@ with st.container():
     st.markdown("**Brand Voice & Colors**")
     st.caption("Structured brand voice tone and color palette for blueprint generation")
 
-    bv_col1, bv_col2, bv_af_col = st.columns([2, 1, 1])
+    bv_col1, bv_col2 = st.columns([2, 1])
     with bv_col1:
         current_voice = selected_brand.get("brand_voice_tone") or ""
         new_voice = st.text_input(
@@ -1536,68 +1716,6 @@ with st.container():
             placeholder='e.g., "Aggressive, masculine, bold, direct"',
             key="brand_voice_tone_input",
         )
-    with bv_af_col:
-        st.markdown("")  # Align with input
-        website_url_for_af = new_website_url or current_website_url
-        voice_af_prefix = "bm_voice_af"
-        voice_af_running_key = f"{voice_af_prefix}_running"
-        voice_af_result_key = f"{voice_af_prefix}_result"
-        if website_url_for_af:
-            if st.button("🧠 Auto-fill from website", key=f"{voice_af_prefix}_btn", help="Extract brand voice/tone from website"):
-                st.session_state[voice_af_running_key] = True
-        else:
-            st.caption("Enter website URL above to enable")
-
-    # Handle voice auto-fill
-    if st.session_state.get(voice_af_running_key):
-        with st.spinner("Scraping website and extracting brand voice..."):
-            try:
-                from viraltracker.ui.autofill_suggestions import scrape_and_extract
-                suggestions, warning = scrape_and_extract(
-                    url=website_url_for_af,
-                    brand_name=selected_brand.get('name'),
-                    target_fields=["brand.voice_tone"],
-                )
-                voice_suggestion = suggestions.get("brand.voice_tone")
-                if voice_suggestion and voice_suggestion.get("value"):
-                    st.session_state[voice_af_result_key] = voice_suggestion["value"]
-                else:
-                    st.session_state[f"{voice_af_prefix}_error"] = "Could not extract brand voice from website."
-                if warning:
-                    st.session_state[f"{voice_af_prefix}_warning"] = warning
-            except Exception as e:
-                st.session_state[f"{voice_af_prefix}_error"] = str(e)
-            st.session_state[voice_af_running_key] = False
-            st.rerun()
-
-    if f"{voice_af_prefix}_error" in st.session_state:
-        st.error(st.session_state.pop(f"{voice_af_prefix}_error"))
-    if f"{voice_af_prefix}_warning" in st.session_state:
-        st.warning(st.session_state.pop(f"{voice_af_prefix}_warning"))
-    if voice_af_result_key in st.session_state:
-        extracted_voice = st.session_state[voice_af_result_key]
-        if current_voice:
-            st.markdown(f"**Current:** {current_voice}")
-        st.markdown(f"**Suggested:** {extracted_voice}")
-        af_v_col1, af_v_col2 = st.columns([1, 1])
-        with af_v_col1:
-            if st.button("Replace current voice" if current_voice else "Use this voice", key=f"{voice_af_prefix}_accept", type="primary"):
-                try:
-                    db = get_supabase_client()
-                    db.table("brands").update({
-                        "brand_voice_tone": extracted_voice
-                    }).eq("id", selected_brand_id).execute()
-                    st.session_state.pop(voice_af_result_key, None)
-                    # Update the widget's session state so text_input reflects new value
-                    st.session_state["brand_voice_tone_input"] = extracted_voice
-                    st.success("Brand voice saved!")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Failed to save: {e}")
-        with af_v_col2:
-            if st.button("Dismiss", key=f"{voice_af_prefix}_dismiss"):
-                st.session_state.pop(voice_af_result_key, None)
-                st.rerun()
 
     with bv_col2:
         current_colors = selected_brand.get("brand_colors") or {}
