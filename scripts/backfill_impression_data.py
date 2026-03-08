@@ -42,11 +42,18 @@ def backfill_impressions(supabase, dry_run: bool = False):
         if not result.data:
             break
 
+        batch_updated = 0
         for row in result.data:
             raw = row["impressions"]
             lower, upper, text = parse_impression_data(raw)
 
             if lower is None:
+                # Mark as processed so this row isn't re-fetched
+                if not dry_run:
+                    supabase.table("facebook_ads").update({
+                        "impression_lower": 0,
+                        "impression_text": "_unparseable",
+                    }).eq("id", row["id"]).execute()
                 skipped += 1
                 continue
 
@@ -60,8 +67,9 @@ def backfill_impressions(supabase, dry_run: bool = False):
                 }).eq("id", row["id"]).execute()
 
             updated += 1
+            batch_updated += 1
 
-        logger.info(f"  Batch: processed {len(result.data)} rows ({updated} updated so far)")
+        logger.info(f"  Batch: processed {len(result.data)} rows ({batch_updated} parsed, {updated} total updated)")
 
         # In dry-run mode, rows aren't updated so the same batch would return forever
         if dry_run or len(result.data) < batch_size:
