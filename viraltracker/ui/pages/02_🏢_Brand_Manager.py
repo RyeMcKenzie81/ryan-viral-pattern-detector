@@ -1437,13 +1437,9 @@ with st.container():
                         try:
                             db = get_supabase_client()
                             db.table("brands").update({"brand_colors": extracted_colors}).eq("id", selected_brand_id).execute()
-                            # Update color picker session states
-                            if extracted_colors.get("primary"):
-                                st.session_state["brand_color_primary"] = extracted_colors["primary"]
-                            if extracted_colors.get("accent"):
-                                st.session_state["brand_color_accent"] = extracted_colors["accent"]
-                            if extracted_colors.get("secondary"):
-                                st.session_state["brand_color_secondary"] = ", ".join(extracted_colors["secondary"])
+                            # Clear color picker session state so widgets re-init from DB
+                            for _ck in ("brand_color_primary", "brand_color_accent", "brand_color_secondary"):
+                                st.session_state.pop(_ck, None)
                             _bi_data["colors"] = None
                             st.session_state[_bi_result_key] = _bi_data
                             st.success("Brand colors saved!")
@@ -1498,12 +1494,8 @@ with st.container():
                                 st.session_state["brand_voice_tone_input"] = _bi_data["voice"]
                             if _bi_data.get("colors"):
                                 update_data["brand_colors"] = _bi_data["colors"]
-                                if _bi_data["colors"].get("primary"):
-                                    st.session_state["brand_color_primary"] = _bi_data["colors"]["primary"]
-                                if _bi_data["colors"].get("accent"):
-                                    st.session_state["brand_color_accent"] = _bi_data["colors"]["accent"]
-                                if _bi_data["colors"].get("secondary"):
-                                    st.session_state["brand_color_secondary"] = ", ".join(_bi_data["colors"]["secondary"])
+                                for _ck in ("brand_color_primary", "brand_color_accent", "brand_color_secondary"):
+                                    st.session_state.pop(_ck, None)
                             if _bi_data.get("fonts"):
                                 update_data["brand_fonts"] = _bi_data["fonts"]
                             if update_data:
