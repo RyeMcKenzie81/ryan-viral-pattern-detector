@@ -365,15 +365,18 @@ class TemplateQueueService:
             active_only: Only return active templates
             limit: Maximum templates to return
             source_brand: Optional source brand (advertiser) name substring filter
-            sort_by: Sort order — "most_used", "least_used", "highest_viewed", "newest", "oldest"
+            sort_by: Sort order — "most_used", "least_used", "highest_rank", "hottest", "newest", "oldest"
 
         Returns:
             List of template records
         """
-        # For highest_viewed, we need to join facebook_ads to get best_scrape_position
-        use_position_sort = sort_by == "highest_viewed"
-        if use_position_sort:
-            select_cols = "*, facebook_ads!source_facebook_ad_id(best_scrape_position)"
+        # Position-based sorts join facebook_ads for position + start_date
+        use_position_join = sort_by in ("highest_rank", "hottest")
+        if use_position_join:
+            select_cols = (
+                "*, facebook_ads!source_facebook_ad_id("
+                "best_scrape_position, latest_scrape_position, scrape_total, start_date)"
+            )
         else:
             select_cols = "*"
 
@@ -392,16 +395,14 @@ class TemplateQueueService:
         if source_brand:
             query = query.ilike("source_brand", f"%{source_brand}%")
 
-        # Sort
+        # Sort — position-based sorts are computed in Python after fetch
         if sort_by == "newest":
             query = query.order("created_at", desc=True)
         elif sort_by == "oldest":
             query = query.order("created_at", desc=False)
         elif sort_by == "least_used":
             query = query.order("times_used", desc=False)
-        elif use_position_sort:
-            # PostgREST can't sort by embedded resource columns,
-            # so fetch all and sort in Python (ascending = best position first)
+        elif use_position_join:
             query = query.order("created_at", desc=True)
         else:  # most_used (default)
             query = query.order("times_used", desc=True)
@@ -409,18 +410,56 @@ class TemplateQueueService:
         query = query.limit(limit)
         result = query.execute()
 
-        if use_position_sort and result.data:
-            # Extract position from embedded facebook_ads, sort ascending (lower = more views)
+        if use_position_join and result.data:
+            from datetime import datetime, timezone
+
+            now = datetime.now(timezone.utc)
+
             for row in result.data:
                 fb = row.pop("facebook_ads", None) or {}
-                row["_sort_position"] = fb.get("best_scrape_position") if fb else None
+                best_pos = fb.get("best_scrape_position") if fb else None
+                latest_pos = fb.get("latest_scrape_position") if fb else None
+                total = fb.get("scrape_total") if fb else None
+                start_date = fb.get("start_date") if fb else None
 
-            # Sort: rows with position first (ascending), then nulls last
-            result.data.sort(
-                key=lambda r: (r["_sort_position"] is None, r["_sort_position"] or 0)
-            )
+                if sort_by == "highest_rank":
+                    # Pure position rank — lower position = more total impressions
+                    row["_sort_key"] = (best_pos is None, best_pos or 0)
+
+                else:  # hottest — velocity formula from plan
+                    # velocity = position_percentile * (0.4 + 0.6 * recency_factor)
+                    if latest_pos is not None and start_date is not None:
+                        # Position percentile: 0.0 worst, 1.0 best
+                        if total and total > 1:
+                            pos_pct = 1.0 - (latest_pos - 1) / (total - 1)
+                        else:
+                            pos_pct = 1.0 if latest_pos == 1 else 0.5
+
+                        # Days active (floor at 1)
+                        try:
+                            if isinstance(start_date, str):
+                                start_dt = datetime.fromisoformat(
+                                    start_date.replace("Z", "+00:00")
+                                )
+                            else:
+                                start_dt = start_date
+                            days_active = max((now - start_dt).days, 1)
+                        except (ValueError, TypeError):
+                            days_active = 365
+
+                        # 30-day half-life exponential decay
+                        recency_factor = 2 ** (-days_active / 30)
+                        velocity = pos_pct * (0.4 + 0.6 * recency_factor)
+                    else:
+                        velocity = 0.0  # No data → bottom
+
+                    # Negate for descending sort (highest velocity first)
+                    row["_sort_key"] = (velocity == 0.0, -velocity)
+
+            result.data.sort(key=lambda r: r.get("_sort_key", (True, 0)))
+
             for row in result.data:
-                row.pop("_sort_position", None)
+                row.pop("_sort_key", None)
 
         return result.data
 
