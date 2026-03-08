@@ -350,7 +350,7 @@ def _render_manual_template_selection():
         )
 
     with fc6:
-        sort_options = ["most_used", "least_used", "newest", "oldest"]
+        sort_options = ["most_used", "least_used", "highest_viewed", "newest", "oldest"]
         sort_by = st.selectbox(
             "Sort By",
             options=sort_options,

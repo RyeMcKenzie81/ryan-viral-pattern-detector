@@ -365,12 +365,19 @@ class TemplateQueueService:
             active_only: Only return active templates
             limit: Maximum templates to return
             source_brand: Optional source brand (advertiser) name substring filter
-            sort_by: Sort order — "most_used", "least_used", "newest", "oldest"
+            sort_by: Sort order — "most_used", "least_used", "highest_viewed", "newest", "oldest"
 
         Returns:
             List of template records
         """
-        query = self.supabase.table("scraped_templates").select("*")
+        # For highest_viewed, we need to join facebook_ads to get best_scrape_position
+        use_position_sort = sort_by == "highest_viewed"
+        if use_position_sort:
+            select_cols = "*, facebook_ads!source_facebook_ad_id(best_scrape_position)"
+        else:
+            select_cols = "*"
+
+        query = self.supabase.table("scraped_templates").select(select_cols)
 
         if active_only:
             query = query.eq("is_active", True)
@@ -392,11 +399,28 @@ class TemplateQueueService:
             query = query.order("created_at", desc=False)
         elif sort_by == "least_used":
             query = query.order("times_used", desc=False)
+        elif use_position_sort:
+            # PostgREST can't sort by embedded resource columns,
+            # so fetch all and sort in Python (ascending = best position first)
+            query = query.order("created_at", desc=True)
         else:  # most_used (default)
             query = query.order("times_used", desc=True)
 
         query = query.limit(limit)
         result = query.execute()
+
+        if use_position_sort and result.data:
+            # Extract position from embedded facebook_ads, sort ascending (lower = more views)
+            for row in result.data:
+                fb = row.pop("facebook_ads", None) or {}
+                row["_sort_position"] = fb.get("best_scrape_position") if fb else None
+
+            # Sort: rows with position first (ascending), then nulls last
+            result.data.sort(
+                key=lambda r: (r["_sort_position"] is None, r["_sort_position"] or 0)
+            )
+            for row in result.data:
+                row.pop("_sort_position", None)
 
         return result.data
 

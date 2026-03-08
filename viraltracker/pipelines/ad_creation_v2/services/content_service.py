@@ -622,11 +622,11 @@ class AdContentService:
         - If the template says "4 FREE gifts" but our product offer doesn't mention gifts, DO NOT include gifts
         - If our offer is just "Up to 35% off", that's ALL you can say about the offer - no additions
 
-        {f"""**CRITICAL LISTICLE RULE (DO NOT INVENT NUMBERS):**
+        {f'''**CRITICAL LISTICLE RULE (DO NOT INVENT NUMBERS):**
         The landing page contains a listicle with exactly {listicle_count} items.
         If you reference a number of items, reasons, tips, ways, or steps, you MUST use exactly {listicle_count}.
         Do NOT invent a different number. Example: "Top {listicle_count} ways..." not "Top 5 ways..." (unless {listicle_count} is 5).
-        """ if listicle_count else ""}
+        ''' if listicle_count else ""}
         **CRITICAL ACCURACY RULES:**
         - Each variation MUST use a DIFFERENT benefit
         - DO NOT use technical specs like "linen-finish cards", "86 cards", etc. in headlines
