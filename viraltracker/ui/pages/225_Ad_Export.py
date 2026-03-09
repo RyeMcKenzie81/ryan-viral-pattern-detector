@@ -278,9 +278,12 @@ if selected_folder_id and count > 0:
                 progress_callback=update_progress,
             )
             progress_bar.empty()
+
+            folder_url = f"https://drive.google.com/drive/folders/{selected_folder_id}"
             st.success(
                 f"Uploaded {result['uploaded']}/{result['total']} files"
                 + (f" ({result['failed']} failed)" if result['failed'] else "")
+                + f"  —  [Open folder in Google Drive]({folder_url})"
             )
 
             if result.get("links"):
