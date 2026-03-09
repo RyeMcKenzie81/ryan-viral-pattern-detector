@@ -272,9 +272,6 @@ def _render_browse(prefix: str, access_token: str, allow_create: bool):
     if current_folder_id:
         current_name = breadcrumbs[-1][1] if breadcrumbs else "Current folder"
         can_write = True  # With full drive scope, assume writable
-        # Check capabilities if we have the info
-        for f in folders:
-            pass  # capabilities are on the parent, not children
 
         if st.button(
             f"✅ Select: {current_name}",

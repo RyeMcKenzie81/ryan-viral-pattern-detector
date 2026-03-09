@@ -59,7 +59,6 @@ if "code" in st.query_params and "state" in st.query_params:
             tokens=tokens,
         )
 
-        st.session_state["_drive_connected"] = True
         st.query_params.clear()
         st.rerun()
     except Exception as e:
