@@ -14,7 +14,7 @@ Part of the Brand Research Pipeline (Phase 1: Foundation).
 import logging
 import httpx
 import json
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional
 from uuid import UUID
 from datetime import datetime
 
@@ -405,6 +405,7 @@ class AdScrapingService:
             scrape_position: Raw Apify position (inflated by creative group expansion)
             deduped_position: Position counting only lead ads (primary scoring signal)
             scrape_total: Total ads in search results for normalization
+            scrape_run_id: Optional scheduled_job_runs ID for position history tracking
 
         Returns:
             Dict with ad_id, is_new, was_active (previous active status), or None if failed
