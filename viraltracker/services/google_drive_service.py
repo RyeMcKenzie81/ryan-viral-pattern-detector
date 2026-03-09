@@ -26,7 +26,7 @@ class GoogleDriveService:
     """Google Drive integration — OAuth, folder ops, file upload."""
 
     PLATFORM = "google_drive"
-    SCOPE = "https://www.googleapis.com/auth/drive.file"
+    SCOPE = "https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.readonly"
     DRIVE_API = "https://www.googleapis.com/drive/v3"
     UPLOAD_API = "https://www.googleapis.com/upload/drive/v3"
 
@@ -224,7 +224,7 @@ class GoogleDriveService:
 
     @staticmethod
     def list_folders(access_token: str, parent_id: str = None) -> List[Dict]:
-        """List folders (with drive.file scope, returns only app-created folders)."""
+        """List folders visible to the user (including shared folders with drive.readonly)."""
         q = "mimeType='application/vnd.google-apps.folder' and trashed=false"
         if parent_id:
             q += f" and '{parent_id}' in parents"
@@ -242,7 +242,7 @@ class GoogleDriveService:
             )
 
         if response.status_code != 200:
-            logger.error(f"Drive list_folders failed: {response.status_code}")
+            logger.error(f"Drive list_folders failed: {response.status_code} — {response.text}")
             return []
 
         return response.json().get("files", [])
