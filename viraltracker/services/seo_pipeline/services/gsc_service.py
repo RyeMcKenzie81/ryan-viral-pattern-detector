@@ -16,6 +16,11 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from viraltracker.services.seo_pipeline.services.base_analytics_service import BaseAnalyticsService
+from viraltracker.services.google_oauth_utils import (
+    encode_oauth_state,
+    decode_oauth_state,
+    refresh_google_token,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +31,7 @@ class GSCService(BaseAnalyticsService):
     PLATFORM = "gsc"
 
     # =========================================================================
-    # OAUTH2 HELPERS
+    # OAUTH2 HELPERS (delegated to google_oauth_utils)
     # =========================================================================
 
     @staticmethod
@@ -57,18 +62,9 @@ class GSCService(BaseAnalyticsService):
         })
         return f"https://accounts.google.com/o/oauth2/v2/auth?{params}"
 
-    @staticmethod
-    def encode_oauth_state(brand_id: str, org_id: str, nonce: str, **extra) -> str:
-        """Encode brand_id + org_id + nonce (+ optional extra fields) into OAuth state param."""
-        data = {"brand_id": brand_id, "org_id": org_id, "nonce": nonce, **extra}
-        payload = json.dumps(data)
-        return base64.urlsafe_b64encode(payload.encode()).decode()
-
-    @staticmethod
-    def decode_oauth_state(state: str) -> Dict[str, str]:
-        """Decode OAuth state param back to brand_id, org_id, nonce."""
-        payload = base64.urlsafe_b64decode(state.encode()).decode()
-        return json.loads(payload)
+    # Delegate to shared utils — keep static method signatures for backward compat
+    encode_oauth_state = staticmethod(encode_oauth_state)
+    decode_oauth_state = staticmethod(decode_oauth_state)
 
     @staticmethod
     def exchange_code_for_tokens(code: str, redirect_uri: str) -> Dict[str, Any]:
@@ -164,57 +160,7 @@ class GSCService(BaseAnalyticsService):
 
         Returns updated config with fresh access_token, or None if revoked.
         """
-        import httpx
-
-        token_expiry = config.get("token_expiry", "")
-        if token_expiry:
-            try:
-                expiry = datetime.fromisoformat(token_expiry)
-                if expiry > datetime.now(timezone.utc):
-                    return config  # Token still valid
-            except (ValueError, TypeError):
-                pass
-
-        # Token expired — refresh
-        refresh_token = config.get("refresh_token")
-        if not refresh_token:
-            logger.warning("No refresh_token available for GSC")
-            return None
-
-        client_id = os.environ.get("GOOGLE_OAUTH_CLIENT_ID", "")
-        client_secret = os.environ.get("GOOGLE_OAUTH_CLIENT_SECRET", "")
-        if not client_id or not client_secret:
-            logger.warning("GOOGLE_OAUTH_CLIENT_ID/SECRET not set, can't refresh")
-            return None
-
-        try:
-            with httpx.Client(timeout=15.0) as client:
-                response = client.post(
-                    "https://oauth2.googleapis.com/token",
-                    data={
-                        "client_id": client_id,
-                        "client_secret": client_secret,
-                        "refresh_token": refresh_token,
-                        "grant_type": "refresh_token",
-                    },
-                )
-
-            if response.status_code != 200:
-                logger.error(f"GSC token refresh failed: {response.status_code}")
-                return None
-
-            data = response.json()
-            config["access_token"] = data["access_token"]
-            config["token_expiry"] = (
-                datetime.now(timezone.utc) + timedelta(seconds=data.get("expires_in", 3600))
-            ).isoformat()
-
-            logger.info("GSC access token refreshed")
-            return config
-
-        except Exception as e:
-            logger.error(f"GSC token refresh error: {e}")
-            return None
+        return refresh_google_token(config)
 
     # =========================================================================
     # DATA FETCHING

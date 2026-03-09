@@ -145,6 +145,7 @@ def _get_org_features_cached(org_id: str) -> Dict[str, bool]:
             FeatureKey.TEMPLATE_EVALUATION: True,
             FeatureKey.TEMPLATE_RECOMMENDATIONS: True,
             FeatureKey.PUBLIC_GALLERY: True,
+            FeatureKey.AD_EXPORT: True,
             # Content pages
             FeatureKey.CONTENT_PIPELINE: True,
             FeatureKey.COMIC_VIDEO: True,
@@ -273,6 +274,8 @@ def build_navigation_pages() -> Dict[str, List[st.Page]]:
         ads.append(st.Page("pages/21b_🎨_Ad_Creator_V2.py", title="Ad Creator V2", icon="🎨"))
     if visible(SK_ADS, "ad_history"):
         ads.append(st.Page("pages/22_📊_Ad_History.py", title="Ad History", icon="📊"))
+    if visible(SK_ADS, "ad_export"):
+        ads.append(st.Page("pages/22b_📦_Ad_Export.py", title="Ad Export", icon="📦"))
     if visible(SK_ADS, "ad_performance"):
         ads.append(st.Page("pages/30_📈_Ad_Performance.py", title="Ad Performance", icon="📈"))
     if visible(SK_ADS, "ad_scheduler"):

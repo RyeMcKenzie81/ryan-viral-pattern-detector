@@ -18,6 +18,10 @@ import asyncio
 from datetime import datetime
 from uuid import UUID
 
+# Initialize export list
+if "export_ads" not in st.session_state:
+    st.session_state.export_ads = []
+
 # Page config
 st.set_page_config(
     page_title="Ad History",
@@ -33,6 +37,11 @@ require_feature("ad_history", "Ad History")
 
 st.title("📊 Ad History")
 st.markdown("Review all past ad runs and generated ads.")
+
+# Export count indicator in sidebar
+_export_count = len(st.session_state.get("export_ads", []))
+if _export_count > 0:
+    st.sidebar.markdown(f"📦 **Export List: {_export_count}** item{'s' if _export_count != 1 else ''}")
 
 def get_supabase_client():
     """Get Supabase client."""
@@ -1019,7 +1028,7 @@ else:
                 if retry_key not in st.session_state:
                     st.session_state[retry_key] = False
 
-                col_btn1, col_btn2, col_btn3, col_spacer = st.columns([1, 1, 1, 1])
+                col_btn1, col_btn2, col_btn3, col_btn4 = st.columns([1, 1, 1, 1])
 
                 with col_btn1:
                     if ads:
@@ -1074,6 +1083,27 @@ else:
                                 except Exception as e:
                                     st.error(f"Retry failed: {e}")
                                     st.session_state[retry_key] = False
+
+                with col_btn4:
+                    if ads:
+                        if st.button("📦 Add All to Export", key=f"export_run_{run_id_full}", use_container_width=True):
+                            product_data = run.get('products', {}) or {}
+                            brand_data = product_data.get('brands', {}) or {}
+                            bc = brand_data.get('brand_code', 'XX')
+                            pc = product_data.get('product_code', 'XX')
+                            from viraltracker.ui.export_utils import get_format_code_from_spec
+                            for ad in ads:
+                                if ad.get('storage_path'):
+                                    st.session_state.export_ads.append({
+                                        "storage_path": ad['storage_path'],
+                                        "brand_code": bc,
+                                        "product_code": pc,
+                                        "run_id": str(run_id_full),
+                                        "ad_id": str(ad.get('id', '')),
+                                        "format_code": get_format_code_from_spec(ad.get('prompt_spec', {})),
+                                        "ext": "png",
+                                    })
+                            st.success(f"Added {len([a for a in ads if a.get('storage_path')])} ads to export")
 
                 st.markdown("")  # Spacing
 
@@ -1217,6 +1247,23 @@ else:
                                     # Get ad_id for buttons
                                     ad_id = ad.get('id')
                                     is_variant = ad.get('parent_ad_id') is not None
+
+                                    # Export button
+                                    if ad_id and ad.get('storage_path'):
+                                        if st.button("📦 Export", key=f"export_ad_{ad_id}"):
+                                            product_data = run.get('products', {}) or {}
+                                            brand_data = product_data.get('brands', {}) or {}
+                                            from viraltracker.ui.export_utils import get_format_code_from_spec
+                                            st.session_state.export_ads.append({
+                                                "storage_path": ad['storage_path'],
+                                                "brand_code": brand_data.get('brand_code', 'XX'),
+                                                "product_code": product_data.get('product_code', 'XX'),
+                                                "run_id": str(run_id_full),
+                                                "ad_id": str(ad_id),
+                                                "format_code": get_format_code_from_spec(ad.get('prompt_spec', {})),
+                                                "ext": "png",
+                                            })
+                                            st.success("Added to export")
 
                                     # Create Sizes button for approved ads (non-variants only)
                                     if ad_status == 'approved' and ad_id and not is_variant:

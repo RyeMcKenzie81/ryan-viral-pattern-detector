@@ -30,6 +30,10 @@ PST = pytz.timezone('America/Los_Angeles')
 import logging
 logger = logging.getLogger(__name__)
 
+# Initialize export list
+if "export_ads" not in st.session_state:
+    st.session_state.export_ads = []
+
 
 # ============================================================================
 # Session State
@@ -1494,6 +1498,42 @@ def _render_ad_card(ad: dict, run_key: str, org_id: str, user_id: str):
         # Phase 8A: Mark as Exemplar button
         _render_exemplar_button(ad, run_key)
 
+        # Export button
+        if ad_id and storage_path:
+            export_key = f"export_{run_key}_{ad_id}"
+            if st.button("📦 Export", key=export_key):
+                # Look up brand/product codes from session state
+                brand_id = st.session_state.get("v2_brand_id", "")
+                product_id = st.session_state.get("v2_product_id", "")
+                bc = "XX"
+                pc = "XX"
+                if brand_id or product_id:
+                    try:
+                        from viraltracker.core.database import get_supabase_client
+                        db = get_supabase_client()
+                        if brand_id:
+                            br = db.table("brands").select("brand_code").eq("id", brand_id).limit(1).execute()
+                            if br.data:
+                                bc = br.data[0].get("brand_code", "XX") or "XX"
+                        if product_id:
+                            pr = db.table("products").select("product_code").eq("id", product_id).limit(1).execute()
+                            if pr.data:
+                                pc = pr.data[0].get("product_code", "XX") or "XX"
+                    except Exception:
+                        pass
+
+                run_id = ad.get("ad_run_id", "000000")
+                st.session_state.export_ads.append({
+                    "storage_path": storage_path,
+                    "brand_code": bc,
+                    "product_code": pc,
+                    "run_id": str(run_id),
+                    "ad_id": str(ad_id),
+                    "format_code": "UNK",
+                    "ext": "png",
+                })
+                st.success("Added to export")
+
 
 def _apply_override(ad_id: str, org_id: str, user_id: str, action: str, override_key: str):
     """Apply override via service and refresh."""
@@ -1738,7 +1778,7 @@ def _render_filtered_ads(svc, org_id: str, user_id: str, filters: dict):
                     and a.get("id")
                 ]
                 if overrideable_ids:
-                    ba_col1, ba_col2 = st.columns(2)
+                    ba_col1, ba_col2, ba_col3 = st.columns(3)
                     with ba_col1:
                         if st.button(
                             "Approve All",
@@ -1762,6 +1802,37 @@ def _render_filtered_ads(svc, org_id: str, user_id: str, filters: dict):
                             )
                             st.success(f"Rejected {result['success']} ads")
                             st.rerun()
+                    with ba_col3:
+                        exportable = [a for a in group_ads if a.get("storage_path") and a.get("id")]
+                        if exportable and st.button("📦 Export All", key=f"bulk_export_{tpl_id}"):
+                            b_id = st.session_state.get("v2_brand_id", "")
+                            p_id = st.session_state.get("v2_product_id", "")
+                            bc = "XX"
+                            pc = "XX"
+                            try:
+                                from viraltracker.core.database import get_supabase_client
+                                db = get_supabase_client()
+                                if b_id:
+                                    br = db.table("brands").select("brand_code").eq("id", b_id).limit(1).execute()
+                                    if br.data:
+                                        bc = br.data[0].get("brand_code", "XX") or "XX"
+                                if p_id:
+                                    pr = db.table("products").select("product_code").eq("id", p_id).limit(1).execute()
+                                    if pr.data:
+                                        pc = pr.data[0].get("product_code", "XX") or "XX"
+                            except Exception:
+                                pass
+                            for a in exportable:
+                                st.session_state.export_ads.append({
+                                    "storage_path": a["storage_path"],
+                                    "brand_code": bc,
+                                    "product_code": pc,
+                                    "run_id": str(a.get("ad_run_id", "000000")),
+                                    "ad_id": str(a["id"]),
+                                    "format_code": "UNK",
+                                    "ext": "png",
+                                })
+                            st.success(f"Added {len(exportable)} ads to export")
 
             # Render individual ad cards
             for ad in group_ads:
