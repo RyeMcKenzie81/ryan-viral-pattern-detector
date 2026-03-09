@@ -35,4 +35,8 @@ def normalize_url_path(url: str) -> str:
     if path != "/":
         path = path.rstrip("/")
 
+    # Ensure homepage returns "/" not ""
+    if not path:
+        path = "/"
+
     return path

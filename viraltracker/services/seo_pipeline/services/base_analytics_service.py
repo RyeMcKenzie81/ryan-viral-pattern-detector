@@ -110,11 +110,21 @@ class BaseAnalyticsService:
 
         # Match analytics URLs
         matched = []
+        unmatched_paths = []
         for url, data in url_data_pairs:
             path = normalize_url_path(url)
             article_id = path_to_article.get(path)
             if article_id:
                 matched.append({"article_id": article_id, **data})
+            else:
+                unmatched_paths.append(path)
+
+        if unmatched_paths:
+            logger.warning(
+                f"URL matching: {len(unmatched_paths)}/{len(url_data_pairs)} URLs unmatched. "
+                f"Articles in map: {len(path_to_article)}. "
+                f"Sample unmatched: {unmatched_paths[:5]}"
+            )
 
         return matched
 

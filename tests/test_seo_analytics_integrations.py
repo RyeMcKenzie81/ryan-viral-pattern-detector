@@ -257,30 +257,36 @@ class TestGSCSyncToDb:
     """Test GSC sync_to_db aggregation logic."""
 
     def test_sync_empty_data(self, gsc_service):
-        with patch.object(gsc_service, "fetch_search_performance", return_value=[]):
+        with patch.object(gsc_service, "fetch_search_performance", return_value={"analytics": [], "rankings": []}):
             result = gsc_service.sync_to_db("brand-1", "org-1")
-            assert result == {"analytics_rows": 0, "ranking_rows": 0}
+            assert result["analytics_rows"] == 0
+            assert result["ranking_rows"] == 0
+            assert result["api_rows"] == 0
 
     def test_sync_aggregates_by_page_date(self, gsc_service):
-        raw_rows = [
+        # Analytics rows use [page, date] dimensions
+        analytics_rows = [
+            {"keys": ["https://example.com/blog/a", "2026-03-01"], "clicks": 8, "impressions": 150, "ctr": 0.053, "position": 5.25},
+        ]
+        # Ranking rows use [page, query, date] dimensions
+        ranking_rows = [
             {"keys": ["https://example.com/blog/a", "keyword1", "2026-03-01"], "clicks": 5, "impressions": 100, "ctr": 0.05, "position": 3.5},
             {"keys": ["https://example.com/blog/a", "keyword2", "2026-03-01"], "clicks": 3, "impressions": 50, "ctr": 0.06, "position": 7.0},
         ]
 
-        with patch.object(gsc_service, "fetch_search_performance", return_value=raw_rows):
+        with patch.object(gsc_service, "fetch_search_performance", return_value={"analytics": analytics_rows, "rankings": ranking_rows}):
             with patch.object(gsc_service, "_match_urls_to_articles", return_value=[]) as mock_match:
                 with patch.object(gsc_service, "_batch_upsert_analytics", return_value=0):
                     with patch.object(gsc_service, "_batch_upsert_rankings", return_value=0):
                         gsc_service.sync_to_db("brand-1", "org-1")
 
-                        # Check analytics pairs: should be 1 aggregated row for same page+date
+                        # Check analytics pairs: should be 1 row for page+date
                         analytics_call = mock_match.call_args_list[0]
                         analytics_pairs = analytics_call[0][1]
                         assert len(analytics_pairs) == 1
                         _, data = analytics_pairs[0]
-                        assert data["clicks"] == 8  # 5 + 3
-                        assert data["impressions"] == 150  # 100 + 50
-                        # average_position should be weighted avg: (3.5 + 7.0) / 2 = 5.25 → 5.2
+                        assert data["clicks"] == 8
+                        assert data["impressions"] == 150
                         assert data["average_position"] == 5.2
 
                         # Check ranking pairs: should be 2 individual rows

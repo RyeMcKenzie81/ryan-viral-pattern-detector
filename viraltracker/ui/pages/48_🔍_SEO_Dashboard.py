@@ -698,6 +698,24 @@ if connected_integrations:
                 for source, result in results.items():
                     if "error" in result:
                         st.error(f"{source.upper()}: {result['error']}")
+                    elif source == "gsc" and "api_rows" in result:
+                        # Show detailed GSC sync stats
+                        matched = result.get("analytics_matched", 0)
+                        total = result.get("analytics_total", 0)
+                        unmatched = total - matched
+                        st.success(
+                            f"GSC: {result['api_rows']:,} API rows, "
+                            f"{result.get('api_impressions', 0):,} impressions, "
+                            f"{result.get('unique_urls', 0)} pages found"
+                        )
+                        st.info(
+                            f"Matched {matched}/{total} page-dates "
+                            f"({result.get('discovered_created', 0)} new pages discovered). "
+                            f"Stored {result.get('analytics_rows', 0)} analytics + "
+                            f"{result.get('ranking_rows', 0)} ranking rows."
+                        )
+                        if unmatched > 0:
+                            st.warning(f"{unmatched} page-date entries could not be matched to articles.")
                     else:
                         st.success(f"{source.upper()}: synced {result.get('analytics_rows', 0)} rows")
 

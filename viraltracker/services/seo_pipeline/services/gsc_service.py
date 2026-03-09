@@ -220,19 +220,16 @@ class GSCService(BaseAnalyticsService):
     # DATA FETCHING
     # =========================================================================
 
-    def fetch_search_performance(
-        self,
-        brand_id: str,
-        organization_id: str,
-        days_back: int = 28,
-    ) -> List[Dict[str, Any]]:
+    # Search types to fetch
+    _SEARCH_TYPES = ["web", "image"]
+
+    def _get_api_credentials(
+        self, brand_id: str, organization_id: str
+    ) -> tuple:
         """
-        Fetch search performance from Google Search Console API.
+        Load and refresh GSC credentials. Returns (access_token, site_url, config).
 
-        Queries with dimensions [page, query, date] for the specified date range.
-
-        Returns:
-            List of row dicts with keys, clicks, impressions, ctr, position
+        Persists refreshed token to DB so subsequent calls skip refresh.
         """
         import httpx
 
@@ -240,38 +237,105 @@ class GSCService(BaseAnalyticsService):
         if not config:
             raise ValueError("GSC integration not configured")
 
+        original_token = config.get("access_token")
         config = self._get_credentials(config)
         if not config:
             raise ValueError("GSC credentials expired or revoked")
 
-        site_url = config.get("site_url", "")
-        access_token = config["access_token"]
+        # Persist refreshed token so subsequent calls don't need to refresh
+        if config["access_token"] != original_token:
+            try:
+                self.supabase.table("brand_integrations").update(
+                    {"config": config}
+                ).eq("brand_id", brand_id).eq("platform", self.PLATFORM).execute()
+            except Exception as e:
+                logger.warning(f"Failed to persist refreshed GSC token: {e}")
+
+        return config["access_token"], config.get("site_url", ""), config
+
+    def _query_gsc_api(
+        self,
+        client,
+        encoded_site_url: str,
+        access_token: str,
+        start_date: str,
+        end_date: str,
+        dimensions: List[str],
+        search_type: str,
+    ) -> List[Dict[str, Any]]:
+        """Make a single GSC searchAnalytics query and return rows."""
+        request_body = {
+            "startDate": start_date,
+            "endDate": end_date,
+            "dimensions": dimensions,
+            "type": search_type,
+            "rowLimit": 25000,
+        }
+        response = client.post(
+            f"https://www.googleapis.com/webmasters/v3/sites/{encoded_site_url}/searchAnalytics/query",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json=request_body,
+        )
+        if response.status_code != 200:
+            logger.warning(
+                f"GSC API error for type={search_type} dims={dimensions}: "
+                f"{response.status_code} — {response.text[:200]}"
+            )
+            return []
+        return response.json().get("rows", [])
+
+    def fetch_search_performance(
+        self,
+        brand_id: str,
+        organization_id: str,
+        days_back: int = 28,
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """
+        Fetch search performance from Google Search Console API.
+
+        Makes two queries per search type (web, image):
+        - [page, date] for analytics — captures ALL impressions (no privacy filtering)
+        - [page, query, date] for rankings — per-keyword data (some low-impression
+          queries filtered by Google's privacy threshold)
+
+        Returns:
+            Dict with 'analytics' and 'rankings' row lists
+        """
+        import httpx
+
+        access_token, site_url, _ = self._get_api_credentials(brand_id, organization_id)
 
         end_date = datetime.now(timezone.utc).date()
         start_date = end_date - timedelta(days=days_back)
 
-        request_body = {
-            "startDate": start_date.isoformat(),
-            "endDate": end_date.isoformat(),
-            "dimensions": ["page", "query", "date"],
-            "rowLimit": 25000,
-        }
-
         from urllib.parse import quote
         encoded_site_url = quote(site_url, safe="")
 
+        analytics_rows = []
+        ranking_rows = []
+
         with httpx.Client(timeout=30.0) as client:
-            response = client.post(
-                f"https://www.googleapis.com/webmasters/v3/sites/{encoded_site_url}/searchAnalytics/query",
-                headers={"Authorization": f"Bearer {access_token}"},
-                json=request_body,
-            )
+            for search_type in self._SEARCH_TYPES:
+                # [page, date] — full impressions, no privacy filtering
+                page_date_rows = self._query_gsc_api(
+                    client, encoded_site_url, access_token,
+                    start_date.isoformat(), end_date.isoformat(),
+                    ["page", "date"], search_type,
+                )
+                imp = sum(r.get("impressions", 0) for r in page_date_rows)
+                logger.info(f"GSC {search_type} analytics: {len(page_date_rows)} rows, {imp:,} impressions")
+                analytics_rows.extend(page_date_rows)
 
-        if response.status_code != 200:
-            raise Exception(f"GSC API error: {response.status_code} — {response.text[:200]}")
+                # [page, query, date] — per-keyword rankings (privacy-filtered)
+                query_rows = self._query_gsc_api(
+                    client, encoded_site_url, access_token,
+                    start_date.isoformat(), end_date.isoformat(),
+                    ["page", "query", "date"], search_type,
+                )
+                logger.info(f"GSC {search_type} rankings: {len(query_rows)} rows")
+                ranking_rows.extend(query_rows)
 
-        data = response.json()
-        return data.get("rows", [])
+        return {"analytics": analytics_rows, "rankings": ranking_rows}
 
     # =========================================================================
     # DISCOVERED ARTICLE HELPERS
@@ -366,15 +430,20 @@ class GSCService(BaseAnalyticsService):
 
         # Batch insert (one-by-one to skip duplicates gracefully)
         created = 0
+        failed = 0
         for record in records:
             try:
                 self.supabase.table("seo_articles").insert(record).execute()
                 created += 1
             except Exception as e:
-                # Likely duplicate published_url — skip silently
-                logger.debug(f"Skipped discovered article {record['published_url']}: {e}")
+                failed += 1
+                # Log at WARNING so insert failures are visible (not silently swallowed)
+                logger.warning(f"Failed to create discovered article {record['published_url']}: {e}")
 
-        logger.info(f"Created {created} discovered articles for brand {brand_id}")
+        logger.info(
+            f"Discovered articles for brand {brand_id}: "
+            f"{created} created, {failed} failed, {len(records)} attempted"
+        )
         return created
 
     def sync_to_db(
@@ -382,87 +451,114 @@ class GSCService(BaseAnalyticsService):
         brand_id: str,
         organization_id: str,
         days_back: int = 28,
-    ) -> Dict[str, int]:
+    ) -> Dict[str, Any]:
         """
         Fetch GSC data and sync to seo_article_analytics + seo_article_rankings.
 
+        Uses [page, date] dimensions for analytics (captures ALL impressions) and
+        [page, query, date] for rankings (per-keyword, some privacy-filtered).
+
         Returns:
-            Dict with analytics_rows and ranking_rows counts
+            Dict with detailed sync stats
         """
-        rows = self.fetch_search_performance(brand_id, organization_id, days_back)
+        raw = self.fetch_search_performance(brand_id, organization_id, days_back)
+        raw_analytics = raw["analytics"]
+        raw_rankings = raw["rankings"]
 
-        if not rows:
-            return {"analytics_rows": 0, "ranking_rows": 0}
+        if not raw_analytics and not raw_rankings:
+            logger.info("GSC sync: no data returned from API")
+            return {"api_rows": 0, "analytics_rows": 0, "ranking_rows": 0}
 
-        # Group by page URL + date for analytics
+        # --- Analytics: process [page, date] rows ---
+        # These are already grouped by page+date (one row per combination),
+        # but we aggregate across search types (web + image)
         page_date_data = {}
-        ranking_rows = []
-
-        for row in rows:
+        for row in raw_analytics:
             keys = row.get("keys", [])
-            if len(keys) < 3:
+            if len(keys) < 2:
                 continue
-
-            page_url, query, date_str = keys[0], keys[1], keys[2]
-            clicks = row.get("clicks", 0)
-            impressions = row.get("impressions", 0)
-            ctr = row.get("ctr", 0.0)
-            position = row.get("position", 0.0)
-
-            # Aggregate for analytics (per page+date)
+            page_url, date_str = keys[0], keys[1]
             key = (page_url, date_str)
             if key not in page_date_data:
                 page_date_data[key] = {
-                    "clicks": 0,
-                    "impressions": 0,
-                    "ctr_sum": 0.0,
-                    "ctr_count": 0,
-                    "position_sum": 0.0,
-                    "position_count": 0,
+                    "clicks": 0, "impressions": 0,
+                    "ctr_sum": 0.0, "ctr_count": 0,
+                    "position_sum": 0.0, "position_count": 0,
                 }
-            page_date_data[key]["clicks"] += clicks
-            page_date_data[key]["impressions"] += impressions
-            page_date_data[key]["ctr_sum"] += ctr
+            page_date_data[key]["clicks"] += row.get("clicks", 0)
+            page_date_data[key]["impressions"] += row.get("impressions", 0)
+            page_date_data[key]["ctr_sum"] += row.get("ctr", 0.0)
             page_date_data[key]["ctr_count"] += 1
-            page_date_data[key]["position_sum"] += position
-            page_date_data[key]["position_count"] += 1
+            position = row.get("position")
+            if position is not None:
+                page_date_data[key]["position_sum"] += position
+                page_date_data[key]["position_count"] += 1
 
-            # Individual ranking rows (per query)
-            ranking_rows.append((page_url, {
-                "keyword": query,
-                "position": round(position),
-                "checked_at": f"{date_str}T00:00:00Z",
-                "impressions": impressions,
-                "clicks": clicks,
-                "ctr": ctr,
-            }))
-
-        # Build analytics URL pairs
         analytics_pairs = []
         for (page_url, date_str), agg in page_date_data.items():
             avg_ctr = agg["ctr_sum"] / agg["ctr_count"] if agg["ctr_count"] else 0.0
-            avg_position = agg["position_sum"] / agg["position_count"] if agg["position_count"] else None
+            avg_position = (
+                round(agg["position_sum"] / agg["position_count"], 1)
+                if agg["position_count"] else None
+            )
             analytics_pairs.append((page_url, {
                 "organization_id": organization_id,
                 "date": date_str,
                 "impressions": agg["impressions"],
                 "clicks": agg["clicks"],
                 "ctr": round(avg_ctr, 4),
-                "average_position": round(avg_position, 1) if avg_position is not None else None,
+                "average_position": avg_position,
             }))
 
+        # --- Rankings: process [page, query, date] rows ---
+        ranking_pairs = []
+        for row in raw_rankings:
+            keys = row.get("keys", [])
+            if len(keys) < 3:
+                continue
+            page_url, query, date_str = keys[0], keys[1], keys[2]
+            ranking_pairs.append((page_url, {
+                "keyword": query,
+                "position": round(row.get("position", 0.0)),
+                "checked_at": f"{date_str}T00:00:00Z",
+                "impressions": row.get("impressions", 0),
+                "clicks": row.get("clicks", 0),
+                "ctr": row.get("ctr", 0.0),
+            }))
+
+        # Collect all unique URLs from both datasets
+        all_urls = {url for url, _ in analytics_pairs} | {url for url, _ in ranking_pairs}
+        api_impressions = sum(agg["impressions"] for agg in page_date_data.values())
+        logger.info(
+            f"GSC sync: {len(analytics_pairs)} analytics pairs, "
+            f"{len(ranking_pairs)} ranking rows, {len(all_urls)} unique URLs, "
+            f"{api_impressions:,} total impressions"
+        )
+
         # Create discovered articles for unmatched URLs
-        all_urls = {url for url, _ in analytics_pairs} | {url for url, _ in ranking_rows}
         discovered_count = self._create_discovered_articles(brand_id, organization_id, all_urls)
-        if discovered_count:
-            logger.info(f"Created {discovered_count} discovered articles before matching")
+        logger.info(f"GSC sync: created {discovered_count} discovered articles")
 
         # Match URLs to articles (now includes discovered articles)
         analytics_matched = self._match_urls_to_articles(brand_id, analytics_pairs)
-        ranking_matched = self._match_urls_to_articles(brand_id, ranking_rows)
+        ranking_matched = self._match_urls_to_articles(brand_id, ranking_pairs)
+        logger.info(
+            f"GSC sync: matched {len(analytics_matched)}/{len(analytics_pairs)} analytics, "
+            f"{len(ranking_matched)}/{len(ranking_pairs)} rankings"
+        )
 
         # Upsert
         analytics_count = self._batch_upsert_analytics(analytics_matched, self.PLATFORM)
         ranking_count = self._batch_upsert_rankings(ranking_matched, self.PLATFORM)
 
-        return {"analytics_rows": analytics_count, "ranking_rows": ranking_count}
+        logger.info(f"GSC sync complete: {analytics_count} analytics, {ranking_count} rankings upserted")
+        return {
+            "api_rows": len(raw_analytics) + len(raw_rankings),
+            "api_impressions": api_impressions,
+            "unique_urls": len(all_urls),
+            "discovered_created": discovered_count,
+            "analytics_matched": len(analytics_matched),
+            "analytics_total": len(analytics_pairs),
+            "analytics_rows": analytics_count,
+            "ranking_rows": ranking_count,
+        }
