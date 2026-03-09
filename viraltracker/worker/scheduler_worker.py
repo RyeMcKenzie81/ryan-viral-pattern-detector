@@ -2198,6 +2198,7 @@ async def execute_template_scrape_job(job: Dict) -> Dict[str, Any]:
                     scrape_position=raw_position,
                     deduped_position=ad_deduped_position,
                     scrape_total=scrape_total,
+                    scrape_run_id=run_id,
                 )
 
                 if not result or result.get('error'):

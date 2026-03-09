@@ -386,6 +386,7 @@ class AdScrapingService:
         scrape_position: Optional[int] = None,
         deduped_position: Optional[int] = None,
         scrape_total: Optional[int] = None,
+        scrape_run_id: Optional[str] = None,
     ) -> Optional[Dict]:
         """
         Save a Facebook ad to the database with longevity tracking.
@@ -535,6 +536,26 @@ class AdScrapingService:
                 ad_id = UUID(result.data[0]["id"])
                 action = "Created new" if is_new else "Updated"
                 logger.info(f"{action} Facebook ad: {ad_id} (times_seen: {record['times_seen']})")
+
+                # Record position history (Phase 3)
+                if scrape_position is not None:
+                    try:
+                        history_record = {
+                            "facebook_ad_id": str(ad_id),
+                            "raw_position": scrape_position,
+                            "deduped_position": deduped_position,
+                            "scrape_total": scrape_total,
+                            "is_active": record.get("is_active", True),
+                        }
+                        if scrape_run_id:
+                            history_record["scrape_run_id"] = scrape_run_id
+                        self.supabase.table("facebook_ad_position_history").insert(
+                            history_record
+                        ).execute()
+                    except Exception as hist_err:
+                        # Non-fatal — don't break the save flow
+                        logger.warning(f"Failed to record position history for {ad_id}: {hist_err}")
+
                 return {
                     "ad_id": ad_id,
                     "is_new": is_new,

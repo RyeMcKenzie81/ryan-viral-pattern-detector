@@ -821,16 +821,18 @@ def render_template_library():
                 if badges:
                     st.caption(" | ".join(badges))
 
-                # Position / velocity / variant badges
+                # Position / trend / variant badges
                 pos_badges = []
                 best_pos = template.get("best_scrape_position")
                 if best_pos is not None:
+                    trend = template.get("position_trend")
+                    trend_arrow = {"rising": " ↑", "falling": " ↓", "stable": ""}.get(trend, "")
                     if best_pos <= 10:
-                        pos_badges.append(f"🟢 #{best_pos}")
+                        pos_badges.append(f"🟢 #{best_pos}{trend_arrow}")
                     elif best_pos <= 25:
-                        pos_badges.append(f"🟡 #{best_pos}")
+                        pos_badges.append(f"🟡 #{best_pos}{trend_arrow}")
                     else:
-                        pos_badges.append(f"#{best_pos}")
+                        pos_badges.append(f"#{best_pos}{trend_arrow}")
                 collation_count = template.get("collation_count")
                 if collation_count and collation_count > 1:
                     pos_badges.append(f"{collation_count} variants")

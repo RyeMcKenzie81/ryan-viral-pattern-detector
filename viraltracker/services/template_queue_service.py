@@ -412,6 +412,7 @@ class TemplateQueueService:
             return []
 
         # Always flatten facebook_ads join data onto template rows
+        fb_ad_ids = []
         for row in result.data:
             fb = row.pop("facebook_ads", None) or {}
             row["best_scrape_position"] = fb.get("best_scrape_position")
@@ -419,6 +420,15 @@ class TemplateQueueService:
             row["scrape_total"] = fb.get("scrape_total")
             row["start_date"] = fb.get("start_date")
             row["collation_count"] = fb.get("collation_count")
+            fb_id = row.get("source_facebook_ad_id")
+            if fb_id:
+                fb_ad_ids.append(fb_id)
+
+        # Batch fetch position trends from history table
+        trends = self._compute_position_trends(fb_ad_ids) if fb_ad_ids else {}
+        for row in result.data:
+            fb_id = row.get("source_facebook_ad_id")
+            row["position_trend"] = trends.get(fb_id) if fb_id else None
 
         # Position-based sorts computed in Python
         if use_position_sort:
@@ -466,6 +476,66 @@ class TemplateQueueService:
                 row.pop("_sort_key", None)
 
         return result.data
+
+    def _compute_position_trends(self, facebook_ad_ids: List[str]) -> Dict[str, str]:
+        """Compute position trends from last 3 scrapes per ad.
+
+        Returns:
+            Dict mapping facebook_ad_id → trend string: "rising", "falling", "stable", or None.
+        """
+        if not facebook_ad_ids:
+            return {}
+
+        try:
+            # Batch fetch recent position history (last 3 per ad, ordered by date desc)
+            # Supabase doesn't support LATERAL joins, so fetch all recent history
+            # and group in Python
+            unique_ids = list(set(facebook_ad_ids))
+            all_history = []
+            batch_size = 50
+            for i in range(0, len(unique_ids), batch_size):
+                batch = unique_ids[i:i + batch_size]
+                hist_result = self.supabase.table("facebook_ad_position_history").select(
+                    "facebook_ad_id, deduped_position, scraped_at"
+                ).in_("facebook_ad_id", batch).order(
+                    "scraped_at", desc=True
+                ).limit(batch_size * 3).execute()
+                if hist_result.data:
+                    all_history.extend(hist_result.data)
+
+            # Group by ad, keep last 3
+            from collections import defaultdict
+            by_ad = defaultdict(list)
+            for row in all_history:
+                ad_id = row["facebook_ad_id"]
+                pos = row.get("deduped_position")
+                if pos is not None and len(by_ad[ad_id]) < 3:
+                    by_ad[ad_id].append(pos)
+
+            # Compute trend from positions (ordered newest-first)
+            trends = {}
+            for ad_id, positions in by_ad.items():
+                if len(positions) < 2:
+                    trends[ad_id] = None
+                    continue
+
+                # positions[0] = most recent, positions[-1] = oldest
+                # Rising = position number going down (improving)
+                newest = positions[0]
+                oldest = positions[-1]
+                diff = oldest - newest  # positive = improving (position dropped)
+
+                if diff >= 2:
+                    trends[ad_id] = "rising"
+                elif diff <= -2:
+                    trends[ad_id] = "falling"
+                else:
+                    trends[ad_id] = "stable"
+
+            return trends
+        except Exception as e:
+            logger.warning(f"Failed to compute position trends: {e}")
+            return {}
 
     def get_source_brands(self) -> List[str]:
         """Get distinct non-null source brand names from active templates."""
