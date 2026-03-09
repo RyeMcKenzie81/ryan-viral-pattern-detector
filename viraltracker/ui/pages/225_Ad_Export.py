@@ -47,10 +47,15 @@ if "code" in st.query_params and "state" in st.query_params:
             st.query_params["code"], redirect_uri
         )
 
+        # Resolve "all" to real UUID for superusers
+        cb_org_id = state_data["org_id"]
+        if cb_org_id == "all":
+            cb_org_id = _resolve_org_id_for_brand(state_data["brand_id"], cb_org_id)
+
         # Save integration
         drive_svc.save_integration(
             brand_id=state_data["brand_id"],
-            organization_id=state_data["org_id"],
+            organization_id=cb_org_id,
             tokens=tokens,
         )
 
@@ -70,6 +75,17 @@ if "code" in st.query_params and "state" in st.query_params:
 def _get_drive_service():
     from viraltracker.services.google_drive_service import GoogleDriveService
     return GoogleDriveService()
+
+
+def _resolve_org_id_for_brand(brand_id: str, org_id: str) -> str:
+    """Resolve actual UUID org_id from brand when superuser has org_id='all'."""
+    if org_id != "all":
+        return org_id
+    from viraltracker.core.database import get_supabase_client
+    row = get_supabase_client().table("brands").select("organization_id").eq("id", brand_id).execute()
+    if row.data:
+        return row.data[0]["organization_id"]
+    return org_id
 
 
 # =============================================================================
@@ -207,6 +223,8 @@ if not brand_id:
     st.stop()
 
 org_id = get_current_organization_id() or ""
+# Resolve "all" to real UUID for superusers
+org_id = _resolve_org_id_for_brand(brand_id, org_id)
 
 drive_svc = _get_drive_service()
 connected = drive_svc.is_connected(brand_id, org_id)
