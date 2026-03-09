@@ -112,100 +112,95 @@ with hcol2:
 
 if count == 0:
     st.info("No ads in export list. Add ads from Ad History or Ad Creator V2.")
-    st.stop()
 
 # =============================================================================
-# EXPORT LIST TABLE
+# EXPORT LIST TABLE + ZIP (only when items exist)
 # =============================================================================
 
-st.subheader("Export List")
+if count > 0:
+    st.subheader("Export List")
 
-# Table header
-tcol1, tcol2, tcol3, tcol4, tcol5 = st.columns([3, 1, 1, 1, 1])
-with tcol1:
-    st.caption("**Filename**")
-with tcol2:
-    st.caption("**Format**")
-with tcol3:
-    st.caption("**Ext**")
-with tcol4:
-    st.caption("**Brand**")
-with tcol5:
-    st.caption("**Action**")
+    # Table header
+    tcol1, tcol2, tcol3, tcol4, tcol5 = st.columns([3, 1, 1, 1, 1])
+    with tcol1:
+        st.caption("**Filename**")
+    with tcol2:
+        st.caption("**Format**")
+    with tcol3:
+        st.caption("**Ext**")
+    with tcol4:
+        st.caption("**Brand**")
+    with tcol5:
+        st.caption("**Action**")
 
-# Table rows
-from viraltracker.ui.export_utils import generate_structured_filename
+    # Table rows
+    from viraltracker.ui.export_utils import generate_structured_filename
 
-items_to_remove = []
-for idx, item in enumerate(export_list):
-    rcol1, rcol2, rcol3, rcol4, rcol5 = st.columns([3, 1, 1, 1, 1])
-    with rcol1:
-        filename = generate_structured_filename(
-            brand_code=item.get("brand_code", "XX"),
-            product_code=item.get("product_code", "XX"),
-            run_id=item.get("run_id", "000000"),
-            ad_id=item.get("ad_id", "000000"),
-            format_code=item.get("format_code", "SQ"),
-            ext=item.get("ext", "png"),
-        )
-        st.text(filename)
-    with rcol2:
-        st.text(item.get("format_code", "SQ"))
-    with rcol3:
-        st.text(item.get("ext", "png"))
-    with rcol4:
-        st.text(item.get("brand_code", "XX"))
-    with rcol5:
-        if st.button("Remove", key=f"export_remove_{idx}"):
-            items_to_remove.append(idx)
+    items_to_remove = []
+    for idx, item in enumerate(export_list):
+        rcol1, rcol2, rcol3, rcol4, rcol5 = st.columns([3, 1, 1, 1, 1])
+        with rcol1:
+            filename = generate_structured_filename(
+                brand_code=item.get("brand_code", "XX"),
+                product_code=item.get("product_code", "XX"),
+                run_id=item.get("run_id", "000000"),
+                ad_id=item.get("ad_id", "000000"),
+                format_code=item.get("format_code", "SQ"),
+                ext=item.get("ext", "png"),
+            )
+            st.text(filename)
+        with rcol2:
+            st.text(item.get("format_code", "SQ"))
+        with rcol3:
+            st.text(item.get("ext", "png"))
+        with rcol4:
+            st.text(item.get("brand_code", "XX"))
+        with rcol5:
+            if st.button("Remove", key=f"export_remove_{idx}"):
+                items_to_remove.append(idx)
 
-# Process removals
-if items_to_remove:
-    for idx in sorted(items_to_remove, reverse=True):
-        st.session_state.export_ads.pop(idx)
-    st.session_state.export_zip_ready = False
-    st.rerun()
-
-
-# =============================================================================
-# ZIP DOWNLOAD
-# =============================================================================
-
-st.divider()
-st.subheader("Download as ZIP")
-
-zcol1, zcol2 = st.columns([2, 1])
-with zcol1:
-    zip_name = st.text_input(
-        "ZIP filename",
-        value="ad_export",
-        key="export_zip_name",
-        label_visibility="collapsed",
-        placeholder="ZIP filename (without .zip)",
-    )
-
-# Use a session state flag to trigger ZIP creation
-if "export_zip_ready" not in st.session_state:
-    st.session_state.export_zip_ready = False
-
-with zcol2:
-    if st.button("Prepare ZIP", key="export_prepare_zip", use_container_width=True):
-        st.session_state.export_zip_ready = True
+    # Process removals
+    if items_to_remove:
+        for idx in sorted(items_to_remove, reverse=True):
+            st.session_state.export_ads.pop(idx)
+        st.session_state.export_zip_ready = False
         st.rerun()
 
-if st.session_state.export_zip_ready:
-    with st.spinner("Creating ZIP..."):
-        zip_bytes = create_zip_from_export_list(export_list, zip_name)
+    # ----- ZIP DOWNLOAD -----
+    st.divider()
+    st.subheader("Download as ZIP")
 
-    safe_name = "".join(c if c.isalnum() or c in ('-', '_') else '_' for c in zip_name)
-    st.download_button(
-        label="Download ZIP",
-        data=zip_bytes,
-        file_name=f"{safe_name}.zip",
-        mime="application/zip",
-        key="export_download_zip",
-        use_container_width=True,
-    )
+    zcol1, zcol2 = st.columns([2, 1])
+    with zcol1:
+        zip_name = st.text_input(
+            "ZIP filename",
+            value="ad_export",
+            key="export_zip_name",
+            label_visibility="collapsed",
+            placeholder="ZIP filename (without .zip)",
+        )
+
+    if "export_zip_ready" not in st.session_state:
+        st.session_state.export_zip_ready = False
+
+    with zcol2:
+        if st.button("Prepare ZIP", key="export_prepare_zip", use_container_width=True):
+            st.session_state.export_zip_ready = True
+            st.rerun()
+
+    if st.session_state.export_zip_ready:
+        with st.spinner("Creating ZIP..."):
+            zip_bytes = create_zip_from_export_list(export_list, zip_name)
+
+        safe_name = "".join(c if c.isalnum() or c in ('-', '_') else '_' for c in zip_name)
+        st.download_button(
+            label="Download ZIP",
+            data=zip_bytes,
+            file_name=f"{safe_name}.zip",
+            mime="application/zip",
+            key="export_download_zip",
+            use_container_width=True,
+        )
 
 
 # =============================================================================
