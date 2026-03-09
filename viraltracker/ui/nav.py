@@ -275,7 +275,7 @@ def build_navigation_pages() -> Dict[str, List[st.Page]]:
     if visible(SK_ADS, "ad_history"):
         ads.append(st.Page("pages/22_📊_Ad_History.py", title="Ad History", icon="📊"))
     if visible(SK_ADS, "ad_export"):
-        ads.append(st.Page("pages/22b_📦_Ad_Export.py", title="Ad Export", icon="📦"))
+        ads.append(st.Page("pages/225_Ad_Export.py", title="Ad Export", icon="📦"))
     if visible(SK_ADS, "ad_performance"):
         ads.append(st.Page("pages/30_📈_Ad_Performance.py", title="Ad Performance", icon="📈"))
     if visible(SK_ADS, "ad_scheduler"):
