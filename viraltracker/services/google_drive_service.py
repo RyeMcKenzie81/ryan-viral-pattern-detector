@@ -26,7 +26,7 @@ class GoogleDriveService:
     """Google Drive integration — OAuth, folder ops, file upload."""
 
     PLATFORM = "google_drive"
-    SCOPE = "https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/drive.readonly"
+    SCOPE = "https://www.googleapis.com/auth/drive"
     DRIVE_API = "https://www.googleapis.com/drive/v3"
     UPLOAD_API = "https://www.googleapis.com/upload/drive/v3"
 
