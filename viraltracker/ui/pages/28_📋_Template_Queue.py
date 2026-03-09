@@ -821,6 +821,22 @@ def render_template_library():
                 if badges:
                     st.caption(" | ".join(badges))
 
+                # Position / velocity / variant badges
+                pos_badges = []
+                best_pos = template.get("best_scrape_position")
+                if best_pos is not None:
+                    if best_pos <= 10:
+                        pos_badges.append(f"🟢 #{best_pos}")
+                    elif best_pos <= 25:
+                        pos_badges.append(f"🟡 #{best_pos}")
+                    else:
+                        pos_badges.append(f"#{best_pos}")
+                collation_count = template.get("collation_count")
+                if collation_count and collation_count > 1:
+                    pos_badges.append(f"{collation_count} variants")
+                if pos_badges:
+                    st.caption(" | ".join(pos_badges))
+
                 times_used = template.get("times_used", 0)
                 if times_used > 0:
                     st.caption(f"Used {times_used}x")

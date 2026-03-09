@@ -58,6 +58,9 @@ ROLL_THE_DICE_WEIGHTS: Dict[str, float] = {
     "belief_clarity": 0.0,
     "performance": 0.0,
     "fatigue": 0.2,
+    "impression_rank": 0.0,
+    "impression_velocity": 0.0,
+    "creative_variants": 0.0,
 }
 
 SMART_SELECT_WEIGHTS: Dict[str, float] = {
@@ -69,6 +72,9 @@ SMART_SELECT_WEIGHTS: Dict[str, float] = {
     "belief_clarity": 0.6,
     "performance": 0.3,
     "fatigue": 0.4,
+    "impression_rank": 0.4,
+    "impression_velocity": 0.6,
+    "creative_variants": 0.3,
 }
 
 
@@ -279,6 +285,101 @@ class BeliefClarityScorer(TemplateScorer):
 
         # Normalize D1-D5 total (0-15) to [0, 1]
         return eval_total_score / 15.0
+
+
+class ImpressionRankScorer(TemplateScorer):
+    """Score by impression-based position rank.
+
+    Lower position = higher total impressions = higher score.
+    Normalizes by total results; mutes for small pages (Risk 10).
+    Score range: [0.2, 1.0] with neutral 0.5 for missing data.
+    """
+    name = "impression_rank"
+
+    def score(self, template: dict, context: SelectionContext) -> float:
+        best_pos = template.get("best_scrape_position")
+        total = template.get("scrape_total")
+        if best_pos is None:
+            return 0.5  # Neutral for manual uploads / old data
+
+        # Risk 10: Mute signal for small result sets
+        if total and total <= 10:
+            normalized = 1.0 - (best_pos - 1) / max(total - 1, 1)
+            return 0.4 + normalized * 0.2  # Compress to [0.4, 0.6]
+
+        # Normal: position 1 → 1.0, position 50+ → 0.2
+        return max(0.2, 1.0 - (best_pos - 1) * 0.016)
+
+
+class ImpressionVelocityScorer(TemplateScorer):
+    """Score by implied current spend velocity (position relative to age).
+
+    Meta sorts by total lifetime impressions. A new ad near the top must be
+    spending aggressively NOW to accumulate that many impressions so quickly.
+
+    Formula:
+        position_percentile = 1.0 - (position - 1) / max(total - 1, 1)
+        recency_factor = 2^(-days_active / 30)   # 30-day half-life
+        velocity = position_percentile * (0.4 + 0.6 * recency_factor)
+
+    Examples (total=87):
+        7-day-old ad at #2:   0.99 * (0.4 + 0.6*0.85) = 0.90  (hot!)
+        180-day-old ad at #1: 1.00 * (0.4 + 0.6*0.02) = 0.41  (steady)
+        7-day-old ad at #40:  0.55 * (0.4 + 0.6*0.85) = 0.47  (mediocre)
+    """
+    name = "impression_velocity"
+
+    def score(self, template: dict, context: SelectionContext) -> float:
+        from datetime import datetime, timezone
+
+        position = template.get("latest_scrape_position")  # Use latest, not best
+        total = template.get("scrape_total")
+        start_date = template.get("start_date")
+
+        if position is None or start_date is None:
+            return 0.5
+
+        if isinstance(start_date, str):
+            try:
+                start_dt = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
+            except ValueError:
+                return 0.5
+        else:
+            start_dt = start_date
+
+        now = datetime.now(timezone.utc)
+        days_active = max((now - start_dt).days, 1)  # Floor at 1 day
+
+        # Position percentile (0.0 worst, 1.0 best)
+        if total and total > 1:
+            position_percentile = 1.0 - (position - 1) / (total - 1)
+        else:
+            position_percentile = 1.0 if position == 1 else 0.5
+
+        # Recency factor: 30-day half-life exponential decay
+        recency_factor = 2 ** (-days_active / 30)
+
+        # Velocity: 40% from pure position, 60% boosted by recency
+        return position_percentile * (0.4 + 0.6 * recency_factor)
+
+
+class CreativeVariantScorer(TemplateScorer):
+    """Score by number of creative variants (collation_count).
+
+    More variants = advertiser investing more in testing this creative.
+    Independent of sort order — survives Meta algorithm changes.
+    """
+    name = "creative_variants"
+
+    def score(self, template: dict, context: SelectionContext) -> float:
+        count = template.get("collation_count") or 1
+        if count <= 1:
+            return 0.3
+        elif count <= 3:
+            return 0.6
+        elif count <= 7:
+            return 0.8
+        return 1.0  # 8+ variants
 
 
 class PerformanceScorer(TemplateScorer):
@@ -493,6 +594,13 @@ PHASE_6_SCORERS: List[TemplateScorer] = [
 # Phase 8 scorer instances (includes fatigue scorer)
 PHASE_8_SCORERS: List[TemplateScorer] = PHASE_6_SCORERS + [FatigueScorer()]
 
+# Phase 10 scorer instances (includes impression/velocity/variant scorers)
+PHASE_10_SCORERS: List[TemplateScorer] = PHASE_8_SCORERS + [
+    ImpressionRankScorer(),
+    ImpressionVelocityScorer(),
+    CreativeVariantScorer(),
+]
+
 
 # ============================================================================
 # Selection Function
@@ -671,14 +779,27 @@ async def fetch_template_candidates(
 
     db = get_supabase_client()
 
-    # Query 1: All active templates
-    query = db.table("scraped_templates").select("*").eq("is_active", True)
+    # Query 1: All active templates with facebook_ads position/velocity data
+    query = db.table("scraped_templates").select(
+        "*, facebook_ads!source_facebook_ad_id("
+        "best_scrape_position, latest_scrape_position, scrape_total, "
+        "start_date, collation_count)"
+    ).eq("is_active", True)
     if category:
         query = query.eq("category", category)
     query = query.order("id")
 
     templates_result = query.execute()
     templates = templates_result.data or []
+
+    # Flatten joined facebook_ads fields onto each template row
+    for template in templates:
+        fb = template.pop("facebook_ads", None) or {}
+        template["best_scrape_position"] = fb.get("best_scrape_position")
+        template["latest_scrape_position"] = fb.get("latest_scrape_position")
+        template["scrape_total"] = fb.get("scrape_total")
+        template["start_date"] = fb.get("start_date")
+        template["collation_count"] = fb.get("collation_count")
 
     if not templates:
         return []
@@ -825,13 +946,13 @@ def select_templates_with_fallback(
         weights: Scorer weight dict.
         count: Number of templates to select.
         min_asset_score: Asset gate threshold.
-        scorers: Scorer instances (defaults to PHASE_8_SCORERS).
+        scorers: Scorer instances (defaults to PHASE_10_SCORERS).
 
     Returns:
         SelectionResult — check result.empty to see if selection succeeded.
     """
     if scorers is None:
-        scorers = PHASE_8_SCORERS
+        scorers = PHASE_10_SCORERS
 
     # Tier 1: Normal selection
     result = select_templates(

@@ -537,6 +537,13 @@ def _render_scored_template_selection(mode: str):
                             st.metric("Awareness", f"{scores.get('awareness_align', 0):.2f}")
                         with s6:
                             st.metric("Audience", f"{scores.get('audience_match', 0):.2f}")
+                        r1, r2, r3 = st.columns(3)
+                        with r1:
+                            st.metric("Rank", f"{scores.get('impression_rank', 0):.2f}")
+                        with r2:
+                            st.metric("Velocity", f"{scores.get('impression_velocity', 0):.2f}")
+                        with r3:
+                            st.metric("Variants", f"{scores.get('creative_variants', 0):.2f}")
                     st.caption(f"Category: {tmpl.get('category', 'N/A')} | "
                                f"Used: {tmpl.get('times_used', 0)}x")
 
