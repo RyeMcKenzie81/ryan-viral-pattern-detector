@@ -324,6 +324,9 @@ class GSCService(BaseAnalyticsService):
                 )
                 imp = sum(r.get("impressions", 0) for r in page_date_rows)
                 logger.info(f"GSC {search_type} analytics: {len(page_date_rows)} rows, {imp:,} impressions")
+                # Tag each row with search type for per-type storage
+                for row in page_date_rows:
+                    row["_search_type"] = search_type
                 analytics_rows.extend(page_date_rows)
 
                 # [page, query, date] — per-keyword rankings (privacy-filtered)
@@ -469,16 +472,18 @@ class GSCService(BaseAnalyticsService):
             logger.info("GSC sync: no data returned from API")
             return {"api_rows": 0, "analytics_rows": 0, "ranking_rows": 0}
 
-        # --- Analytics: process [page, date] rows ---
-        # These are already grouped by page+date (one row per combination),
-        # but we aggregate across search types (web + image)
+        # --- Analytics: process [page, date] rows per search type ---
+        # Each row is tagged with _search_type from fetch_search_performance.
+        # We store one row per (page, date, search_type) so the dashboard
+        # can filter by type (web vs image).
         page_date_data = {}
         for row in raw_analytics:
             keys = row.get("keys", [])
             if len(keys) < 2:
                 continue
             page_url, date_str = keys[0], keys[1]
-            key = (page_url, date_str)
+            search_type = row.get("_search_type", "web")
+            key = (page_url, date_str, search_type)
             if key not in page_date_data:
                 page_date_data[key] = {
                     "clicks": 0, "impressions": 0,
@@ -495,7 +500,7 @@ class GSCService(BaseAnalyticsService):
                 page_date_data[key]["position_count"] += 1
 
         analytics_pairs = []
-        for (page_url, date_str), agg in page_date_data.items():
+        for (page_url, date_str, search_type), agg in page_date_data.items():
             avg_ctr = agg["ctr_sum"] / agg["ctr_count"] if agg["ctr_count"] else 0.0
             avg_position = (
                 round(agg["position_sum"] / agg["position_count"], 1)
@@ -504,6 +509,7 @@ class GSCService(BaseAnalyticsService):
             analytics_pairs.append((page_url, {
                 "organization_id": organization_id,
                 "date": date_str,
+                "search_type": search_type,
                 "impressions": agg["impressions"],
                 "clicks": agg["clicks"],
                 "ctr": round(avg_ctr, 4),

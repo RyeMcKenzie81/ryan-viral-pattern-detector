@@ -143,7 +143,7 @@ class BaseAnalyticsService:
         Each row must have: article_id, organization_id, date.
         The source is set automatically.
 
-        Uses UPSERT on (article_id, date, source) unique constraint.
+        Uses UPSERT on (article_id, date, source, search_type) unique constraint.
 
         Returns:
             Number of rows upserted
@@ -156,11 +156,14 @@ class BaseAnalyticsService:
             batch = rows[i:i + UPSERT_BATCH_SIZE]
             for row in batch:
                 row["source"] = source
+                # Default search_type for non-GSC sources
+                if "search_type" not in row:
+                    row["search_type"] = "web"
 
             try:
                 self.supabase.table("seo_article_analytics").upsert(
                     batch,
-                    on_conflict="article_id,date,source",
+                    on_conflict="article_id,date,source,search_type",
                 ).execute()
                 total += len(batch)
             except Exception as e:

@@ -272,8 +272,8 @@ def _load_connected_integrations():
 
 
 @st.cache_data(ttl=300)
-def _load_gsc_analytics(article_ids_tuple, date_from_str, date_to_str):
-    """Load GSC analytics data scoped to brand articles."""
+def _load_gsc_analytics(article_ids_tuple, date_from_str, date_to_str, search_type="all"):
+    """Load GSC analytics data scoped to brand articles, optionally filtered by search type."""
     from viraltracker.core.database import get_supabase_client
     supabase = get_supabase_client()
     article_ids = list(article_ids_tuple)
@@ -281,7 +281,7 @@ def _load_gsc_analytics(article_ids_tuple, date_from_str, date_to_str):
         return []
     query = (
         supabase.table("seo_article_analytics")
-        .select("article_id, date, impressions, clicks, ctr, average_position")
+        .select("article_id, date, impressions, clicks, ctr, average_position, search_type")
         .eq("source", "gsc")
         .gte("date", date_from_str)
         .lte("date", date_to_str)
@@ -289,6 +289,8 @@ def _load_gsc_analytics(article_ids_tuple, date_from_str, date_to_str):
         .order("date")
         .limit(5000)
     )
+    if search_type != "all":
+        query = query.eq("search_type", search_type)
     return query.execute().data or []
 
 
@@ -317,7 +319,7 @@ if "gsc" in connected_integrations:
     st.markdown("**Search Performance (Google Search Console)**")
 
     # Scope toggle + controls row
-    scope_col, ctrl1, ctrl2 = st.columns([0.8, 1, 1])
+    scope_col, type_col, ctrl1, ctrl2 = st.columns([0.8, 0.6, 1, 1])
     with scope_col:
         gsc_scope = st.radio(
             "Scope",
@@ -325,6 +327,14 @@ if "gsc" in connected_integrations:
             index=0,
             key="seo_dash_gsc_scope",
             horizontal=True,
+        )
+    with type_col:
+        gsc_search_type = st.selectbox(
+            "Search type",
+            ["web", "image", "all"],
+            index=0,
+            format_func=lambda x: {"web": "Web", "image": "Image", "all": "All types"}[x],
+            key="seo_dash_search_type",
         )
     with ctrl1:
         time_range = st.selectbox(
@@ -381,6 +391,7 @@ if "gsc" in connected_integrations:
             tuple(query_article_ids),
             date_from.isoformat(),
             date_to.isoformat(),
+            search_type=gsc_search_type,
         )
 
     if gsc_rows:

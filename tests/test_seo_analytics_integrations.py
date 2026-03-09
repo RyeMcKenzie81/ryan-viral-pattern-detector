@@ -168,6 +168,9 @@ class TestBaseAnalyticsServiceBatchUpserts:
         assert count == 2
         assert rows[0]["source"] == "gsc"
         assert rows[1]["source"] == "gsc"
+        # search_type defaults to 'web' for rows that don't specify it
+        assert rows[0]["search_type"] == "web"
+        assert rows[1]["search_type"] == "web"
 
     def test_batch_upsert_empty_returns_zero(self, base_service):
         assert base_service._batch_upsert_analytics([], "gsc") == 0
@@ -263,10 +266,11 @@ class TestGSCSyncToDb:
             assert result["ranking_rows"] == 0
             assert result["api_rows"] == 0
 
-    def test_sync_aggregates_by_page_date(self, gsc_service):
-        # Analytics rows use [page, date] dimensions
+    def test_sync_aggregates_by_page_date_and_type(self, gsc_service):
+        # Analytics rows use [page, date] dimensions, tagged with _search_type
         analytics_rows = [
-            {"keys": ["https://example.com/blog/a", "2026-03-01"], "clicks": 8, "impressions": 150, "ctr": 0.053, "position": 5.25},
+            {"keys": ["https://example.com/blog/a", "2026-03-01"], "clicks": 8, "impressions": 150, "ctr": 0.053, "position": 5.25, "_search_type": "web"},
+            {"keys": ["https://example.com/blog/a", "2026-03-01"], "clicks": 2, "impressions": 30, "ctr": 0.067, "position": 12.0, "_search_type": "image"},
         ]
         # Ranking rows use [page, query, date] dimensions
         ranking_rows = [
@@ -280,14 +284,18 @@ class TestGSCSyncToDb:
                     with patch.object(gsc_service, "_batch_upsert_rankings", return_value=0):
                         gsc_service.sync_to_db("brand-1", "org-1")
 
-                        # Check analytics pairs: should be 1 row for page+date
+                        # Check analytics pairs: should be 2 rows (one per search type)
                         analytics_call = mock_match.call_args_list[0]
                         analytics_pairs = analytics_call[0][1]
-                        assert len(analytics_pairs) == 1
-                        _, data = analytics_pairs[0]
-                        assert data["clicks"] == 8
-                        assert data["impressions"] == 150
-                        assert data["average_position"] == 5.2
+                        assert len(analytics_pairs) == 2
+
+                        # Find web and image rows
+                        by_type = {d["search_type"]: d for _, d in analytics_pairs}
+                        assert by_type["web"]["clicks"] == 8
+                        assert by_type["web"]["impressions"] == 150
+                        assert by_type["web"]["average_position"] == 5.2
+                        assert by_type["image"]["clicks"] == 2
+                        assert by_type["image"]["impressions"] == 30
 
                         # Check ranking pairs: should be 2 individual rows
                         ranking_call = mock_match.call_args_list[1]
