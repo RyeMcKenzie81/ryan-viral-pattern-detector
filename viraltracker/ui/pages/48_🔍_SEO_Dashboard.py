@@ -651,6 +651,57 @@ if "ga4" in connected_integrations:
             st.metric("Pageviews", f"{ga4_pageviews:,}")
     else:
         st.info("GA4 connected. No data yet — click Sync Now or wait for daily sync.")
+else:
+    with st.container(border=True):
+        st.markdown("**Connect Google Analytics 4** to see traffic and engagement data.")
+        st.caption(
+            "GA4 uses a service account. "
+            "[Create one](https://console.cloud.google.com/iam-admin/serviceaccounts) "
+            "with Analytics Viewer access, then add the SA email as a viewer on your GA4 property."
+        )
+        with st.expander("Setup GA4 Connection"):
+            ga4_property_id = st.text_input(
+                "GA4 Property ID",
+                placeholder="e.g. 123456789",
+                help="Found in GA4 Admin > Property Settings > Property ID",
+                key="seo_dash_ga4_property_id",
+            )
+            ga4_sa_json = st.text_area(
+                "Service Account JSON",
+                placeholder='Paste the full JSON key file contents here...',
+                height=150,
+                key="seo_dash_ga4_sa_json",
+            )
+            if st.button("Save GA4 Connection", key="seo_dash_ga4_save", type="primary"):
+                if not ga4_property_id or not ga4_sa_json:
+                    st.warning("Both Property ID and Service Account JSON are required.")
+                else:
+                    try:
+                        import json as _json
+                        sa_creds = _json.loads(ga4_sa_json)
+                        from viraltracker.core.database import get_supabase_client
+                        _sb = get_supabase_client()
+                        _sb.table("brand_integrations").upsert(
+                            {
+                                "brand_id": brand_id,
+                                "organization_id": _real_org_id,
+                                "platform": "ga4",
+                                "config": {
+                                    "property_id": ga4_property_id.strip(),
+                                    "sa_credentials": sa_creds,
+                                },
+                            },
+                            on_conflict="brand_id,platform",
+                        ).execute()
+                        st.success(
+                            f"GA4 connected! SA email: `{sa_creds.get('client_email', 'unknown')}` — "
+                            f"make sure this email has Viewer access on your GA4 property."
+                        )
+                        st.rerun()
+                    except _json.JSONDecodeError:
+                        st.error("Invalid JSON. Paste the full service account key file contents.")
+                    except Exception as e:
+                        st.error(f"Failed to save: {e}")
 
 # Shopify conversions section — simple totals, scoped by brand articles
 if "shopify" in connected_integrations:
