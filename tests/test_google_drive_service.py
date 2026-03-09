@@ -45,7 +45,7 @@ class TestOAuth:
             redirect_uri="http://localhost:8501/Ad_Export",
             state="test-state",
         )
-        assert "drive.file" in url
+        assert "drive" in url
         assert "test-client-id" in url
         assert "offline" in url
         assert "consent" in url
@@ -229,6 +229,275 @@ class TestFolders:
         assert folder_id == "new-id"
         find_mock.assert_called_once()
         create_mock.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Pagination, search, folder info, URL resolution
+# ---------------------------------------------------------------------------
+
+class TestPagination:
+    def test_list_folders_paginates(self):
+        from viraltracker.services.google_drive_service import GoogleDriveService
+
+        page1 = MagicMock()
+        page1.status_code = 200
+        page1.json.return_value = {
+            "files": [{"id": "f1", "name": "A"}],
+            "nextPageToken": "page2_token",
+        }
+        page2 = MagicMock()
+        page2.status_code = 200
+        page2.json.return_value = {
+            "files": [{"id": "f2", "name": "B"}],
+        }
+
+        with patch("httpx.Client") as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.get.side_effect = [page1, page2]
+            mock_client.return_value.__enter__ = MagicMock(return_value=mock_instance)
+            mock_client.return_value.__exit__ = MagicMock(return_value=False)
+
+            result = GoogleDriveService.list_folders("token")
+
+        assert len(result) == 2
+        assert result[0]["id"] == "f1"
+        assert result[1]["id"] == "f2"
+        assert mock_instance.get.call_count == 2
+
+    def test_list_folders_caps_at_max_results(self):
+        from viraltracker.services.google_drive_service import GoogleDriveService
+
+        page1 = MagicMock()
+        page1.status_code = 200
+        page1.json.return_value = {
+            "files": [{"id": f"f{i}", "name": f"Folder {i}"} for i in range(5)],
+            "nextPageToken": "more",
+        }
+
+        with patch("httpx.Client") as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.get.return_value = page1
+            mock_client.return_value.__enter__ = MagicMock(return_value=mock_instance)
+            mock_client.return_value.__exit__ = MagicMock(return_value=False)
+
+            result = GoogleDriveService.list_folders("token", max_results=3)
+
+        assert len(result) == 3
+
+    def test_list_folders_root_uses_root_in_parents(self):
+        from viraltracker.services.google_drive_service import GoogleDriveService
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"files": []}
+
+        with patch("httpx.Client") as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.get.return_value = mock_response
+            mock_client.return_value.__enter__ = MagicMock(return_value=mock_instance)
+            mock_client.return_value.__exit__ = MagicMock(return_value=False)
+
+            GoogleDriveService.list_folders("token")
+
+        q = mock_instance.get.call_args[1]["params"]["q"]
+        assert "'root' in parents" in q
+
+    def test_list_folders_shared_with_me(self):
+        from viraltracker.services.google_drive_service import GoogleDriveService
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"files": [{"id": "s1", "name": "Shared"}]}
+
+        with patch("httpx.Client") as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.get.return_value = mock_response
+            mock_client.return_value.__enter__ = MagicMock(return_value=mock_instance)
+            mock_client.return_value.__exit__ = MagicMock(return_value=False)
+
+            result = GoogleDriveService.list_folders("token", shared_with_me=True)
+
+        q = mock_instance.get.call_args[1]["params"]["q"]
+        assert "sharedWithMe=true" in q
+        assert len(result) == 1
+
+    def test_list_folders_subfolder(self):
+        from viraltracker.services.google_drive_service import GoogleDriveService
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"files": []}
+
+        with patch("httpx.Client") as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.get.return_value = mock_response
+            mock_client.return_value.__enter__ = MagicMock(return_value=mock_instance)
+            mock_client.return_value.__exit__ = MagicMock(return_value=False)
+
+            GoogleDriveService.list_folders("token", parent_id="folder-xyz")
+
+        q = mock_instance.get.call_args[1]["params"]["q"]
+        assert "'folder-xyz' in parents" in q
+
+
+class TestSearch:
+    def test_search_folders_basic(self):
+        from viraltracker.services.google_drive_service import GoogleDriveService
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "files": [{"id": "f1", "name": "Campaign Assets", "parents": ["p1"]}]
+        }
+
+        # Mock get_folder_info for parent resolution
+        parent_info = {"id": "p1", "name": "Client A"}
+
+        with patch("httpx.Client") as mock_client, \
+             patch.object(GoogleDriveService, "get_folder_info", return_value=parent_info):
+            mock_instance = MagicMock()
+            mock_instance.get.return_value = mock_response
+            mock_client.return_value.__enter__ = MagicMock(return_value=mock_instance)
+            mock_client.return_value.__exit__ = MagicMock(return_value=False)
+
+            result = GoogleDriveService.search_folders("token", "Campaign")
+
+        assert len(result) == 1
+        assert result[0]["name"] == "Campaign Assets"
+        assert result[0]["parent_name"] == "Client A"
+        q = mock_instance.get.call_args[1]["params"]["q"]
+        assert "name contains 'Campaign'" in q
+
+    def test_search_folders_escapes_quotes(self):
+        from viraltracker.services.google_drive_service import GoogleDriveService
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"files": []}
+
+        with patch("httpx.Client") as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.get.return_value = mock_response
+            mock_client.return_value.__enter__ = MagicMock(return_value=mock_instance)
+            mock_client.return_value.__exit__ = MagicMock(return_value=False)
+
+            GoogleDriveService.search_folders("token", "Bob's Folder")
+
+        q = mock_instance.get.call_args[1]["params"]["q"]
+        assert "\\'" in q
+
+
+class TestFolderInfo:
+    def test_get_folder_info_success(self):
+        from viraltracker.services.google_drive_service import GoogleDriveService
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "id": "folder-1",
+            "name": "My Folder",
+            "parents": ["root"],
+            "capabilities": {"canAddChildren": True},
+        }
+
+        with patch("httpx.Client") as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.get.return_value = mock_response
+            mock_client.return_value.__enter__ = MagicMock(return_value=mock_instance)
+            mock_client.return_value.__exit__ = MagicMock(return_value=False)
+
+            result = GoogleDriveService.get_folder_info("token", "folder-1")
+
+        assert result["name"] == "My Folder"
+        assert result["capabilities"]["canAddChildren"] is True
+        # Verify supportsAllDrives param
+        params = mock_instance.get.call_args[1]["params"]
+        assert params["supportsAllDrives"] == "true"
+
+    def test_get_folder_info_not_found(self):
+        from viraltracker.services.google_drive_service import GoogleDriveService
+
+        mock_response = MagicMock()
+        mock_response.status_code = 404
+
+        with patch("httpx.Client") as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.get.return_value = mock_response
+            mock_client.return_value.__enter__ = MagicMock(return_value=mock_instance)
+            mock_client.return_value.__exit__ = MagicMock(return_value=False)
+
+            result = GoogleDriveService.get_folder_info("token", "nonexistent")
+
+        assert result is None
+
+
+class TestResolveUrl:
+    def test_standard_url(self):
+        from viraltracker.services.google_drive_service import GoogleDriveService
+
+        info = {"id": "abc123", "name": "Ads", "capabilities": {"canAddChildren": True}}
+
+        with patch.object(GoogleDriveService, "get_folder_info", return_value=info):
+            result = GoogleDriveService.resolve_folder_url(
+                "token", "https://drive.google.com/drive/folders/abc123"
+            )
+
+        assert result["id"] == "abc123"
+        assert result["name"] == "Ads"
+        assert result["can_write"] is True
+
+    def test_url_with_account_selector(self):
+        from viraltracker.services.google_drive_service import GoogleDriveService
+
+        info = {"id": "xyz789", "name": "Shared", "capabilities": {"canAddChildren": False}}
+
+        with patch.object(GoogleDriveService, "get_folder_info", return_value=info):
+            result = GoogleDriveService.resolve_folder_url(
+                "token", "https://drive.google.com/drive/u/0/folders/xyz789"
+            )
+
+        assert result["id"] == "xyz789"
+        assert result["can_write"] is False
+
+    def test_url_with_query_params(self):
+        from viraltracker.services.google_drive_service import GoogleDriveService
+
+        info = {"id": "def456", "name": "Campaign", "capabilities": {"canAddChildren": True}}
+
+        with patch.object(GoogleDriveService, "get_folder_info", return_value=info):
+            result = GoogleDriveService.resolve_folder_url(
+                "token", "https://drive.google.com/drive/folders/def456?usp=sharing"
+            )
+
+        assert result["id"] == "def456"
+
+    def test_legacy_open_url(self):
+        from viraltracker.services.google_drive_service import GoogleDriveService
+
+        info = {"id": "leg123", "name": "Old Link", "capabilities": {"canAddChildren": True}}
+
+        with patch.object(GoogleDriveService, "get_folder_info", return_value=info):
+            result = GoogleDriveService.resolve_folder_url(
+                "token", "https://drive.google.com/open?id=leg123"
+            )
+
+        assert result["id"] == "leg123"
+
+    def test_invalid_url(self):
+        from viraltracker.services.google_drive_service import GoogleDriveService
+
+        result = GoogleDriveService.resolve_folder_url("token", "https://example.com/not-drive")
+        assert result is None
+
+    def test_folder_not_found(self):
+        from viraltracker.services.google_drive_service import GoogleDriveService
+
+        with patch.object(GoogleDriveService, "get_folder_info", return_value=None):
+            result = GoogleDriveService.resolve_folder_url(
+                "token", "https://drive.google.com/drive/folders/gone123"
+            )
+
+        assert result is None
 
 
 # ---------------------------------------------------------------------------

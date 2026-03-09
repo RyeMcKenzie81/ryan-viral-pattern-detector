@@ -243,48 +243,22 @@ else:
         st.markdown(f"[Authorize Google Drive]({auth_url})")
     st.stop()
 
-# Folder browser
-try:
-    access_token, _ = drive_svc._get_credentials(brand_id, org_id)
-except Exception as e:
-    st.error(f"Drive credentials error: {e}")
-    st.stop()
+# Folder picker
+from viraltracker.ui.drive_picker import render_drive_folder_picker
 
-folders = drive_svc.list_folders(access_token)
+selected = render_drive_folder_picker(
+    brand_id=brand_id,
+    organization_id=org_id,
+    prefix="export_drive",
+    allow_create=True,
+    show_recents=True,
+    label="Upload folder",
+)
 
-fcol1, fcol2 = st.columns([2, 1])
-with fcol1:
-    folder_options = {f["id"]: f["name"] for f in folders}
-
-    if folder_options:
-        selected_folder_id = st.selectbox(
-            "Target folder",
-            options=list(folder_options.keys()),
-            format_func=lambda x: folder_options[x],
-            key="export_drive_folder",
-        )
-    else:
-        st.info("No folders found. Create one below.")
-        selected_folder_id = None
-
-with fcol2:
-    new_folder_name = st.text_input(
-        "Create subfolder",
-        key="export_drive_new_folder",
-        placeholder="New folder name...",
-        label_visibility="collapsed",
-    )
-    if new_folder_name and st.button("Create Folder", key="export_drive_create_folder"):
-        try:
-            parent = selected_folder_id if selected_folder_id else None
-            new_folder = drive_svc.create_folder(access_token, new_folder_name, parent)
-            st.success(f"Created folder: {new_folder_name}")
-            st.rerun()
-        except Exception as e:
-            st.error(f"Failed to create folder: {e}")
+selected_folder_id = selected["id"] if selected else None
 
 # Upload button
-if selected_folder_id:
+if selected_folder_id and count > 0:
     if st.button(
         f"Upload {count} ad{'s' if count != 1 else ''} to Google Drive",
         key="export_drive_upload",

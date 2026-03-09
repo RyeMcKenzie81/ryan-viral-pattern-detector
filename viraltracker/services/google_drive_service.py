@@ -8,8 +8,9 @@ Tokens stored in brand_integrations with platform='google_drive'.
 import json
 import logging
 import os
+import re
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import httpx
 
@@ -223,29 +224,196 @@ class GoogleDriveService:
         return response.json()
 
     @staticmethod
-    def list_folders(access_token: str, parent_id: str = None) -> List[Dict]:
-        """List folders visible to the user (including shared folders with drive.readonly)."""
-        q = "mimeType='application/vnd.google-apps.folder' and trashed=false"
-        if parent_id:
-            q += f" and '{parent_id}' in parents"
+    def list_folders(
+        access_token: str,
+        parent_id: str = None,
+        shared_with_me: bool = False,
+        page_size: int = 1000,
+        max_results: int = 500,
+    ) -> List[Dict]:
+        """
+        List folders with pagination.
+
+        Args:
+            access_token: OAuth access token
+            parent_id: Filter to children of this folder (None = root level)
+            shared_with_me: If True, list folders shared with the user (top-level only)
+            page_size: Results per API page (max 1000)
+            max_results: Safety cap on total results
+        """
+        if shared_with_me:
+            q = "sharedWithMe=true and mimeType='application/vnd.google-apps.folder' and trashed=false"
+        elif parent_id:
+            q = f"'{parent_id}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false"
+        else:
+            q = "'root' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false"
+
+        all_folders = []
+        page_token = None
 
         with httpx.Client(timeout=15.0) as client:
-            response = client.get(
-                f"{GoogleDriveService.DRIVE_API}/files",
-                headers={"Authorization": f"Bearer {access_token}"},
-                params={
+            while True:
+                params = {
                     "q": q,
-                    "fields": "files(id,name)",
+                    "fields": "nextPageToken,files(id,name,capabilities/canAddChildren)",
                     "spaces": "drive",
                     "orderBy": "name",
+                    "pageSize": min(page_size, 1000),
+                }
+                if page_token:
+                    params["pageToken"] = page_token
+
+                response = client.get(
+                    f"{GoogleDriveService.DRIVE_API}/files",
+                    headers={"Authorization": f"Bearer {access_token}"},
+                    params=params,
+                )
+
+                if response.status_code != 200:
+                    logger.error(f"Drive list_folders failed: {response.status_code} — {response.text}")
+                    return all_folders
+
+                data = response.json()
+                all_folders.extend(data.get("files", []))
+
+                if len(all_folders) >= max_results:
+                    return all_folders[:max_results]
+
+                page_token = data.get("nextPageToken")
+                if not page_token:
+                    break
+
+        return all_folders
+
+    @staticmethod
+    def search_folders(
+        access_token: str,
+        query: str,
+        page_size: int = 100,
+        max_results: int = 100,
+    ) -> List[Dict]:
+        """
+        Search folders by name.
+
+        Returns list of dicts with id, name, and parent_id (if available).
+        """
+        escaped = query.replace("\\", "\\\\").replace("'", "\\'")
+        q = f"name contains '{escaped}' and mimeType='application/vnd.google-apps.folder' and trashed=false"
+
+        all_results = []
+        page_token = None
+
+        with httpx.Client(timeout=15.0) as client:
+            while True:
+                params = {
+                    "q": q,
+                    "fields": "nextPageToken,files(id,name,parents)",
+                    "spaces": "drive",
+                    "orderBy": "name",
+                    "pageSize": min(page_size, 1000),
+                }
+                if page_token:
+                    params["pageToken"] = page_token
+
+                response = client.get(
+                    f"{GoogleDriveService.DRIVE_API}/files",
+                    headers={"Authorization": f"Bearer {access_token}"},
+                    params=params,
+                )
+
+                if response.status_code != 200:
+                    logger.error(f"Drive search_folders failed: {response.status_code} — {response.text}")
+                    return all_results
+
+                data = response.json()
+                all_results.extend(data.get("files", []))
+
+                if len(all_results) >= max_results:
+                    all_results = all_results[:max_results]
+                    break
+
+                page_token = data.get("nextPageToken")
+                if not page_token:
+                    break
+
+        # Batch-resolve parent names for display
+        parent_ids = set()
+        for f in all_results:
+            parents = f.get("parents", [])
+            if parents:
+                parent_ids.add(parents[0])
+
+        parent_names = {}
+        for pid in parent_ids:
+            info = GoogleDriveService.get_folder_info(access_token, pid)
+            if info:
+                parent_names[pid] = info.get("name", "")
+
+        # Enrich results with parent_name
+        for f in all_results:
+            parents = f.get("parents", [])
+            if parents and parents[0] in parent_names:
+                f["parent_name"] = parent_names[parents[0]]
+            else:
+                f["parent_name"] = ""
+
+        return all_results
+
+    @staticmethod
+    def get_folder_info(access_token: str, folder_id: str) -> Optional[Dict]:
+        """Get folder metadata by ID. Returns None if not found or no access."""
+        with httpx.Client(timeout=15.0) as client:
+            response = client.get(
+                f"{GoogleDriveService.DRIVE_API}/files/{folder_id}",
+                headers={"Authorization": f"Bearer {access_token}"},
+                params={
+                    "fields": "id,name,parents,capabilities/canAddChildren",
+                    "supportsAllDrives": "true",
                 },
             )
 
         if response.status_code != 200:
-            logger.error(f"Drive list_folders failed: {response.status_code} — {response.text}")
-            return []
+            logger.error(f"Drive get_folder_info failed: {response.status_code}")
+            return None
 
-        return response.json().get("files", [])
+        return response.json()
+
+    # URL patterns for Google Drive folder links
+    _FOLDER_URL_PATTERNS = [
+        # https://drive.google.com/drive/folders/{id}
+        # https://drive.google.com/drive/u/0/folders/{id}
+        # https://drive.google.com/drive/folders/{id}?usp=sharing
+        re.compile(r"drive\.google\.com/drive(?:/u/\d+)?/folders/([a-zA-Z0-9_-]+)"),
+        # https://drive.google.com/open?id={id}
+        re.compile(r"drive\.google\.com/open\?id=([a-zA-Z0-9_-]+)"),
+    ]
+
+    @staticmethod
+    def resolve_folder_url(access_token: str, url: str) -> Optional[Dict]:
+        """
+        Extract folder ID from a Google Drive URL and validate it.
+
+        Returns {"id": ..., "name": ..., "can_write": bool} or None.
+        """
+        folder_id = None
+        for pattern in GoogleDriveService._FOLDER_URL_PATTERNS:
+            match = pattern.search(url)
+            if match:
+                folder_id = match.group(1)
+                break
+
+        if not folder_id:
+            return None
+
+        info = GoogleDriveService.get_folder_info(access_token, folder_id)
+        if not info:
+            return None
+
+        return {
+            "id": info["id"],
+            "name": info.get("name", "Unknown"),
+            "can_write": info.get("capabilities", {}).get("canAddChildren", False),
+        }
 
     @staticmethod
     def get_or_create_folder(access_token: str, name: str, parent_id: str = None) -> str:
