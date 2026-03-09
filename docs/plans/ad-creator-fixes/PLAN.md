@@ -1,6 +1,6 @@
 # Ad Creator Fixes & Improvements Plan
 
-## Status: Fixes 1-9 COMPLETE | Fixes 10-13 NOT STARTED
+## Status: Fixes 1-10 COMPLETE | Fixes 11-13 NOT STARTED
 
 See `CHECKPOINT_BATCH_FIXES.md` for implementation details.
 See `TESTING_CHECKLIST.md` for manual and unit test checklists.
@@ -41,9 +41,9 @@ See `TESTING_CHECKLIST.md` for manual and unit test checklists.
 
 ## Hard Fixes
 
-### 10. Template ingestion/scoring — impression-based prioritization
+### 10. Template ingestion/scoring — impression-based prioritization -- DONE
 - **Problem**: Meta now sorts Ad Library by impressions; we should leverage this to prioritize testing high-performing ads
-- **Fix**: Capture position/impression data during scrapes, track changes over time, surface top performers
+- **Fix**: Phase 1 (position capture + collation dedup), Phase 2 (3 new scorers + UI sorts/badges), Phase 3 (position history + trends + compaction)
 
 ### 11. Fix SEO tool — GSC integration
 - **Problem**: SEO pipeline GSC integration not functional
