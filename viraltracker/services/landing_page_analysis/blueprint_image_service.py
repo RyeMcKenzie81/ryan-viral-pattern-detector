@@ -900,8 +900,10 @@ class BlueprintImageService:
         if brand_profile:
             basics = brand_profile.get("brand_basics", {})
             colors = basics.get("colors", [])
-            if colors:
-                brand_colors = ", ".join(colors[:3])
+            if isinstance(colors, dict):
+                colors = list(colors.values())
+            if colors and isinstance(colors, list):
+                brand_colors = ", ".join(str(c) for c in colors[:3])
 
         # Persona demographics + context
         persona_age = ""
