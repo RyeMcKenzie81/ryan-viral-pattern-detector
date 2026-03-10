@@ -295,6 +295,27 @@ def _load_gsc_analytics(article_ids_tuple, date_from_str, date_to_str, search_ty
 
 
 @st.cache_data(ttl=300)
+def _load_ga4_analytics(article_ids_tuple, date_from_str, date_to_str):
+    """Load GA4 analytics data with date range, scoped to articles."""
+    from viraltracker.core.database import get_supabase_client
+    supabase = get_supabase_client()
+    article_ids = list(article_ids_tuple)
+    if not article_ids:
+        return []
+    query = (
+        supabase.table("seo_article_analytics")
+        .select("article_id, date, sessions, pageviews, avg_time_on_page, bounce_rate")
+        .eq("source", "ga4")
+        .gte("date", date_from_str)
+        .lte("date", date_to_str)
+        .in_("article_id", article_ids)
+        .order("date")
+        .limit(5000)
+    )
+    return query.execute().data or []
+
+
+@st.cache_data(ttl=300)
 def _load_source_totals(article_ids_tuple, source):
     """Load simple totals for a source (GA4 or Shopify), scoped to brand articles."""
     from viraltracker.core.database import get_supabase_client
@@ -313,6 +334,11 @@ def _load_source_totals(article_ids_tuple, source):
 
 
 connected_integrations = _load_connected_integrations()
+
+# Default date range (used by GSC and GA4 sections)
+today = datetime.date.today()
+date_from = today - datetime.timedelta(days=28)
+date_to = today
 
 # --- GSC Performance Report ---
 if "gsc" in connected_integrations:
@@ -637,18 +663,66 @@ else:
                 except Exception as e:
                     st.error(f"Failed: {e}")
 
-# GA4 section — simple totals, scoped by brand articles
+# GA4 section — traffic data with time series
 if "ga4" in connected_integrations:
-    ga4_rows = _load_source_totals(tuple(brand_article_ids), "ga4")
+    ga4_article_ids = all_article_ids  # Include discovered pages
+    ga4_rows = _load_ga4_analytics(tuple(ga4_article_ids), date_from.isoformat(), date_to.isoformat())
     if ga4_rows:
         st.markdown("**Traffic (Google Analytics 4)**")
-        ga4_sessions = sum(r.get("sessions", 0) for r in ga4_rows)
-        ga4_pageviews = sum(r.get("pageviews", 0) for r in ga4_rows)
-        t1, t2 = st.columns(2)
-        with t1:
-            st.metric("Sessions", f"{ga4_sessions:,}")
-        with t2:
-            st.metric("Pageviews", f"{ga4_pageviews:,}")
+        ga4_df = pd.DataFrame(ga4_rows)
+        ga4_df["date"] = pd.to_datetime(ga4_df["date"])
+        ga4_df["sessions"] = ga4_df["sessions"].fillna(0).astype(int)
+        ga4_df["pageviews"] = ga4_df["pageviews"].fillna(0).astype(int)
+
+        total_sessions = int(ga4_df["sessions"].sum())
+        total_pageviews = int(ga4_df["pageviews"].sum())
+        avg_bounce = ga4_df["bounce_rate"].mean() if "bounce_rate" in ga4_df.columns else 0.0
+        avg_time = ga4_df["avg_time_on_page"].mean() if "avg_time_on_page" in ga4_df.columns else 0.0
+
+        with st.container(border=True):
+            g1, g2, g3, g4 = st.columns(4)
+            with g1:
+                st.metric("Sessions", f"{total_sessions:,}")
+            with g2:
+                st.metric("Pageviews", f"{total_pageviews:,}")
+            with g3:
+                st.metric("Avg Bounce Rate", f"{avg_bounce:.1f}%")
+            with g4:
+                st.metric("Avg Time on Page", f"{avg_time:.0f}s")
+
+        # Daily time series
+        ga4_daily = ga4_df.groupby("date").agg(
+            sessions=("sessions", "sum"),
+            pageviews=("pageviews", "sum"),
+        ).reset_index()
+
+        ga4_full_range = pd.date_range(date_from, date_to, freq="D")
+        ga4_daily = ga4_daily.set_index("date").reindex(ga4_full_range).reset_index()
+        ga4_daily.rename(columns={"index": "date"}, inplace=True)
+        ga4_daily["sessions"] = ga4_daily["sessions"].fillna(0).astype(int)
+        ga4_daily["pageviews"] = ga4_daily["pageviews"].fillna(0).astype(int)
+
+        ga4_base = alt.Chart(ga4_daily).encode(
+            x=alt.X("date:T", title="Date", axis=alt.Axis(format="%b %d")),
+        )
+        ga4_layers = [
+            ga4_base.mark_line(color="#4285F4", strokeWidth=2).encode(
+                y=alt.Y("sessions:Q", title="Sessions"),
+                tooltip=[
+                    alt.Tooltip("date:T", format="%b %d, %Y"),
+                    alt.Tooltip("sessions:Q", format=",", title="Sessions"),
+                ],
+            ),
+            ga4_base.mark_line(color="#34A853", strokeWidth=2).encode(
+                y=alt.Y("pageviews:Q", title="Pageviews"),
+                tooltip=[
+                    alt.Tooltip("date:T", format="%b %d, %Y"),
+                    alt.Tooltip("pageviews:Q", format=",", title="Pageviews"),
+                ],
+            ),
+        ]
+        ga4_chart = alt.layer(*ga4_layers).resolve_scale(y="independent").properties(height=250)
+        st.altair_chart(ga4_chart, use_container_width=True)
     else:
         st.info("GA4 connected. No data yet — click Sync Now or wait for daily sync.")
 else:
@@ -817,6 +891,7 @@ if connected_integrations:
                 # Clear cached data so site-wide toggle picks up new discovered articles
                 _load_discovered_articles.clear()
                 _load_gsc_analytics.clear()
+                _load_ga4_analytics.clear()
 
                 for source, result in results.items():
                     if "error" in result:
