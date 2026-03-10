@@ -913,6 +913,8 @@ def _render_drive_export(brand_id: str, org_id: str, session_id: str, results):
             bname = r.get("bucket_name", "Uncategorized")
             by_bucket.setdefault(bname, []).append(r)
 
+        skipped_count = 0
+
         for bucket_name, bucket_results in by_bucket.items():
             # Create per-bucket subfolder
             try:
@@ -924,8 +926,21 @@ def _render_drive_export(brand_id: str, org_id: str, session_id: str, results):
                 failed_count += len(bucket_results)
                 continue
 
+            # List existing files in subfolder to avoid duplicates
+            try:
+                existing = GoogleDriveService.list_files(token, subfolder_id)
+                existing_names = {f["name"] for f in existing}
+            except Exception:
+                existing_names = set()
+
             for r in bucket_results:
                 filename = r["filename"]
+
+                if filename in existing_names:
+                    skipped_count += 1
+                    progress_bar.progress((uploaded_count + failed_count + skipped_count) / total)
+                    continue
+
                 status.markdown(f"Uploading `{filename}` to `{bucket_name}/`...")
 
                 try:
@@ -939,15 +954,16 @@ def _render_drive_export(brand_id: str, org_id: str, session_id: str, results):
                     logger.warning(f"Drive upload failed for {filename}: {e}")
                     failed_count += 1
 
-                progress_bar.progress((uploaded_count + failed_count) / total)
+                progress_bar.progress((uploaded_count + failed_count + skipped_count) / total)
 
         progress_bar.progress(1.0)
+        folder_link = f"https://drive.google.com/drive/folders/{selected['id']}"
+        skip_msg = f" ({skipped_count} already in folder, skipped)" if skipped_count else ""
         if failed_count:
-            status.warning(f"Uploaded {uploaded_count} files, {failed_count} failed.")
+            status.warning(f"Uploaded {uploaded_count} files, {failed_count} failed.{skip_msg}")
         else:
-            folder_link = f"https://drive.google.com/drive/folders/{selected['id']}"
             status.success(
-                f"Uploaded {uploaded_count} files! "
+                f"Uploaded {uploaded_count} files!{skip_msg} "
                 f"[Open folder in Google Drive]({folder_link})"
             )
 
