@@ -675,6 +675,8 @@ else:
             if st.button("Save GA4 Connection", key="seo_dash_ga4_save", type="primary"):
                 if not ga4_property_id or not ga4_sa_json:
                     st.warning("Both Property ID and Service Account JSON are required.")
+                elif not ga4_property_id.strip().isdigit():
+                    st.error("Property ID must be numeric (e.g. 123456789). Find it in GA4 Admin > Property Settings.")
                 else:
                     try:
                         import json as _json
@@ -722,7 +724,66 @@ if "shopify" in connected_integrations:
 if connected_integrations:
     with st.expander("Analytics Settings"):
         for platform, integration in connected_integrations.items():
-            st.markdown(f"**{platform.upper()}**: Connected")
+            config = integration.get("config", {})
+            detail = ""
+            if platform == "gsc":
+                detail = f" — {config.get('site_url', '')}"
+            elif platform == "ga4":
+                detail = f" — Property: {config.get('property_id', '?')}"
+            elif platform == "shopify":
+                detail = ""
+            st.markdown(f"**{platform.upper()}**: Connected{detail}")
+
+        # Edit / Disconnect integrations
+        _disconnect_platform = st.selectbox(
+            "Manage integration",
+            options=[""] + list(connected_integrations.keys()),
+            format_func=lambda x: "Select to edit..." if x == "" else f"{x.upper()}",
+            key="seo_dash_manage_integration",
+        )
+        if _disconnect_platform:
+            _manage_cols = st.columns(2)
+            with _manage_cols[0]:
+                if _disconnect_platform == "ga4":
+                    _current_config = connected_integrations["ga4"].get("config", {})
+                    _new_property_id = st.text_input(
+                        "GA4 Property ID",
+                        value=_current_config.get("property_id", ""),
+                        key="seo_dash_ga4_edit_prop",
+                    )
+                    if st.button("Update Property ID", key="seo_dash_ga4_update"):
+                        if not _new_property_id.strip().isdigit():
+                            st.error("Property ID must be numeric (e.g. 123456789)")
+                        else:
+                            try:
+                                from viraltracker.core.database import get_supabase_client
+                                _sb = get_supabase_client()
+                                _current_config["property_id"] = _new_property_id.strip()
+                                _sb.table("brand_integrations").update(
+                                    {"config": _current_config}
+                                ).eq("brand_id", brand_id).eq("platform", "ga4").execute()
+                                st.success("GA4 Property ID updated!")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Failed: {e}")
+            with _manage_cols[1]:
+                if st.button(
+                    f"Disconnect {_disconnect_platform.upper()}",
+                    key="seo_dash_disconnect_btn",
+                    type="secondary",
+                ):
+                    try:
+                        from viraltracker.core.database import get_supabase_client
+                        _sb = get_supabase_client()
+                        _sb.table("brand_integrations").delete().eq(
+                            "brand_id", brand_id
+                        ).eq("platform", _disconnect_platform).execute()
+                        st.success(f"{_disconnect_platform.upper()} disconnected.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Failed: {e}")
+
+        st.divider()
 
         if st.button("Sync Now", key="seo_dash_sync_now"):
             with st.spinner("Syncing analytics..."):
