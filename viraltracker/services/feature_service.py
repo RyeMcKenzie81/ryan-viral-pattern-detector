@@ -253,6 +253,7 @@ class FeatureService:
             FeatureKey.LANDING_PAGE_ANALYZER,
             FeatureKey.HOOK_ANALYSIS,
             FeatureKey.EXPERIMENTS,
+            FeatureKey.VIDEO_BUCKETS,
             FeatureKey.PLAN_LIST,
             FeatureKey.PLAN_EXECUTOR,
             FeatureKey.TEMPLATE_QUEUE,

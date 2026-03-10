@@ -34,7 +34,7 @@ Welcome to the ViralTracker documentation! Choose your path:
 ### Specialized Guides
 - [Hook Analysis Guide](HOOK_ANALYSIS_GUIDE.md) - Statistical analysis methods
 - [Facebook Ads Ingestion](workflows/facebook_ads_ingestion.md) - FB Ad Library scraping
-- [Video Buckets](VIDEO_BUCKETS.md) - Bulk video categorization, upload tracking, download-per-bucket
+- [Content Buckets](CONTENT_BUCKETS.md) - Bulk image/video categorization, Drive import/export, upload tracking
 
 ### Video Generation & Avatars
 - **Kling AI Integration**: Omni Video, avatar talking-head, lip-sync, multi-shot, custom elements

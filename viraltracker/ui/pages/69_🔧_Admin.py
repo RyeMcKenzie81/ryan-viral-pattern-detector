@@ -413,7 +413,7 @@ with tab_features:
                 (FeatureKey.RESEARCH_INSIGHTS, "Research Insights"),
                 (FeatureKey.PUBLIC_GALLERY, "Public Gallery"),
                 (FeatureKey.AD_EXPORT, "Ad Export"),
-                (FeatureKey.VIDEO_BUCKETS, "Video Buckets"),
+                (FeatureKey.VIDEO_BUCKETS, "Content Buckets"),
             ],
         },
         {

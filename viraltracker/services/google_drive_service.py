@@ -1,5 +1,5 @@
 """
-Google Drive Service — OAuth2 + folder management + file upload.
+Google Drive Service — OAuth2 + folder management + file upload/download.
 
 Uses httpx for HTTP calls and shared google_oauth_utils for token refresh.
 Tokens stored in brand_integrations with platform='google_drive'.
@@ -423,6 +423,150 @@ class GoogleDriveService:
             return existing["id"]
         created = GoogleDriveService.create_folder(access_token, name, parent_id)
         return created["id"]
+
+    # =========================================================================
+    # FILE LISTING & DOWNLOAD
+    # =========================================================================
+
+    @staticmethod
+    def list_files(
+        access_token: str,
+        folder_id: str,
+        mime_types: Optional[List[str]] = None,
+        page_size: int = 100,
+        max_results: int = 200,
+    ) -> List[Dict]:
+        """
+        List files in a Drive folder with optional MIME type filtering.
+
+        Args:
+            access_token: OAuth access token.
+            folder_id: Parent folder ID.
+            mime_types: Optional list of MIME types to include
+                        (e.g., ["image/jpeg", "video/mp4"]).
+            page_size: Results per API page.
+            max_results: Safety cap on total results.
+
+        Returns:
+            List of file dicts with id, name, mimeType, size,
+            thumbnailLink, modifiedTime.
+        """
+        q = f"'{folder_id}' in parents and trashed=false"
+        if mime_types:
+            mime_clauses = " or ".join(f"mimeType='{m}'" for m in mime_types)
+            q += f" and ({mime_clauses})"
+
+        all_files: List[Dict] = []
+        page_token = None
+
+        with httpx.Client(timeout=15.0) as client:
+            while True:
+                params: Dict[str, Any] = {
+                    "q": q,
+                    "fields": "nextPageToken,files(id,name,mimeType,size,thumbnailLink,modifiedTime)",
+                    "spaces": "drive",
+                    "orderBy": "name",
+                    "pageSize": min(page_size, 1000),
+                    "supportsAllDrives": "true",
+                }
+                if page_token:
+                    params["pageToken"] = page_token
+
+                response = client.get(
+                    f"{GoogleDriveService.DRIVE_API}/files",
+                    headers={"Authorization": f"Bearer {access_token}"},
+                    params=params,
+                )
+
+                if response.status_code != 200:
+                    logger.error(f"Drive list_files failed: {response.status_code} — {response.text[:200]}")
+                    return all_files
+
+                data = response.json()
+                all_files.extend(data.get("files", []))
+
+                if len(all_files) >= max_results:
+                    return all_files[:max_results]
+
+                page_token = data.get("nextPageToken")
+                if not page_token:
+                    break
+
+        return all_files
+
+    @staticmethod
+    def download_file(
+        access_token: str,
+        file_id: str,
+        max_image_bytes: int = 20 * 1024 * 1024,
+        max_video_bytes: int = 100 * 1024 * 1024,
+    ) -> Tuple[bytes, Dict]:
+        """
+        Download a file from Drive.
+
+        Two-step: (1) fetch metadata for name/type/size,
+        (2) download content bytes.
+
+        Args:
+            access_token: OAuth access token.
+            file_id: Drive file ID.
+            max_image_bytes: Max size for image downloads (default 20MB).
+            max_video_bytes: Max size for video downloads (default 100MB).
+
+        Returns:
+            Tuple of (file_bytes, metadata_dict) where metadata has
+            name, mimeType, size keys.
+
+        Raises:
+            Exception on API error or file too large.
+        """
+        # Step 1: Get metadata
+        with httpx.Client(timeout=15.0) as client:
+            meta_resp = client.get(
+                f"{GoogleDriveService.DRIVE_API}/files/{file_id}",
+                headers={"Authorization": f"Bearer {access_token}"},
+                params={
+                    "fields": "id,name,mimeType,size",
+                    "supportsAllDrives": "true",
+                },
+            )
+
+        if meta_resp.status_code != 200:
+            raise Exception(
+                f"Drive metadata fetch failed: {meta_resp.status_code} — "
+                f"{meta_resp.text[:200]}"
+            )
+
+        metadata = meta_resp.json()
+        file_size = int(metadata.get("size", 0))
+        mime_type = metadata.get("mimeType", "")
+
+        # Size guard
+        is_image = mime_type.startswith("image/")
+        max_bytes = max_image_bytes if is_image else max_video_bytes
+        if file_size > max_bytes:
+            size_mb = file_size / (1024 * 1024)
+            limit_mb = max_bytes / (1024 * 1024)
+            raise Exception(
+                f"File too large: {metadata.get('name')} is {size_mb:.1f}MB "
+                f"(max {limit_mb:.0f}MB for {'images' if is_image else 'videos'})"
+            )
+
+        # Step 2: Download content
+        with httpx.Client(timeout=120.0) as client:
+            content_resp = client.get(
+                f"{GoogleDriveService.DRIVE_API}/files/{file_id}",
+                headers={"Authorization": f"Bearer {access_token}"},
+                params={"alt": "media", "supportsAllDrives": "true"},
+            )
+
+        if content_resp.status_code != 200:
+            raise Exception(
+                f"Drive download failed: {content_resp.status_code} — "
+                f"{content_resp.text[:200]}"
+            )
+
+        return content_resp.content, metadata
 
     # =========================================================================
     # FILE UPLOAD

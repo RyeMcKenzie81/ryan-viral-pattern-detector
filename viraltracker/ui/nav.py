@@ -313,7 +313,7 @@ def build_navigation_pages() -> Dict[str, List[st.Page]]:
     if visible(SK_ADS, "experiments"):
         ads.append(st.Page("pages/36_🧪_Experiments.py", title="Experiments", icon="🧪"))
     if visible(SK_ADS, "video_buckets"):
-        ads.append(st.Page("pages/37_📦_Video_Buckets.py", title="Video Buckets", icon="📦"))
+        ads.append(st.Page("pages/37_📦_Content_Buckets.py", title="Content Buckets", icon="📦"))
     if visible(SK_ADS, "public_gallery"):
         ads.append(st.Page("pages/66_🌐_Public_Gallery.py", title="Public Gallery", icon="🌐"))
     if ads:

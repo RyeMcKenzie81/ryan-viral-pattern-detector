@@ -1,4 +1,4 @@
-"""Tests for GoogleDriveService — OAuth, folders, upload."""
+"""Tests for GoogleDriveService — OAuth, folders, upload, listing, download."""
 
 import json
 import os
@@ -603,3 +603,181 @@ class TestSharedOAuthUtils:
         config = {"access_token": "old", "token_expiry": past}
         result = refresh_google_token(config)
         assert result is None
+
+
+# ---------------------------------------------------------------------------
+# File listing
+# ---------------------------------------------------------------------------
+
+class TestListFiles:
+    def test_lists_files_in_folder(self):
+        from viraltracker.services.google_drive_service import GoogleDriveService
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "files": [
+                {"id": "f1", "name": "photo.jpg", "mimeType": "image/jpeg", "size": "1024"},
+                {"id": "f2", "name": "clip.mp4", "mimeType": "video/mp4", "size": "5000000"},
+            ]
+        }
+
+        with patch("httpx.Client") as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.get.return_value = mock_response
+            mock_client.return_value.__enter__ = MagicMock(return_value=mock_instance)
+            mock_client.return_value.__exit__ = MagicMock(return_value=False)
+
+            result = GoogleDriveService.list_files("token", "folder-123")
+
+        assert len(result) == 2
+        assert result[0]["name"] == "photo.jpg"
+        # Verify query includes parent folder
+        q = mock_instance.get.call_args[1]["params"]["q"]
+        assert "'folder-123' in parents" in q
+
+    def test_filters_by_mime_types(self):
+        from viraltracker.services.google_drive_service import GoogleDriveService
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"files": []}
+
+        with patch("httpx.Client") as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.get.return_value = mock_response
+            mock_client.return_value.__enter__ = MagicMock(return_value=mock_instance)
+            mock_client.return_value.__exit__ = MagicMock(return_value=False)
+
+            GoogleDriveService.list_files(
+                "token", "folder-123",
+                mime_types=["image/jpeg", "video/mp4"],
+            )
+
+        q = mock_instance.get.call_args[1]["params"]["q"]
+        assert "mimeType='image/jpeg'" in q
+        assert "mimeType='video/mp4'" in q
+
+    def test_empty_folder(self):
+        from viraltracker.services.google_drive_service import GoogleDriveService
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"files": []}
+
+        with patch("httpx.Client") as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.get.return_value = mock_response
+            mock_client.return_value.__enter__ = MagicMock(return_value=mock_instance)
+            mock_client.return_value.__exit__ = MagicMock(return_value=False)
+
+            result = GoogleDriveService.list_files("token", "empty-folder")
+
+        assert result == []
+
+    def test_caps_at_max_results(self):
+        from viraltracker.services.google_drive_service import GoogleDriveService
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "files": [{"id": f"f{i}", "name": f"file{i}"} for i in range(10)],
+            "nextPageToken": "more",
+        }
+
+        with patch("httpx.Client") as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.get.return_value = mock_response
+            mock_client.return_value.__enter__ = MagicMock(return_value=mock_instance)
+            mock_client.return_value.__exit__ = MagicMock(return_value=False)
+
+            result = GoogleDriveService.list_files("token", "folder-1", max_results=5)
+
+        assert len(result) == 5
+
+
+# ---------------------------------------------------------------------------
+# File download
+# ---------------------------------------------------------------------------
+
+class TestDownloadFile:
+    def test_downloads_file_successfully(self):
+        from viraltracker.services.google_drive_service import GoogleDriveService
+
+        meta_response = MagicMock()
+        meta_response.status_code = 200
+        meta_response.json.return_value = {
+            "id": "file-1", "name": "photo.jpg",
+            "mimeType": "image/jpeg", "size": "1024",
+        }
+
+        content_response = MagicMock()
+        content_response.status_code = 200
+        content_response.content = b"fake-image-bytes"
+
+        with patch("httpx.Client") as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.get.side_effect = [meta_response, content_response]
+            mock_client.return_value.__enter__ = MagicMock(return_value=mock_instance)
+            mock_client.return_value.__exit__ = MagicMock(return_value=False)
+
+            file_bytes, metadata = GoogleDriveService.download_file("token", "file-1")
+
+        assert file_bytes == b"fake-image-bytes"
+        assert metadata["name"] == "photo.jpg"
+
+    def test_rejects_oversized_image(self):
+        from viraltracker.services.google_drive_service import GoogleDriveService
+
+        meta_response = MagicMock()
+        meta_response.status_code = 200
+        meta_response.json.return_value = {
+            "id": "file-1", "name": "huge.jpg",
+            "mimeType": "image/jpeg",
+            "size": str(25 * 1024 * 1024),  # 25MB
+        }
+
+        with patch("httpx.Client") as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.get.return_value = meta_response
+            mock_client.return_value.__enter__ = MagicMock(return_value=mock_instance)
+            mock_client.return_value.__exit__ = MagicMock(return_value=False)
+
+            with pytest.raises(Exception, match="too large"):
+                GoogleDriveService.download_file("token", "file-1")
+
+    def test_rejects_oversized_video(self):
+        from viraltracker.services.google_drive_service import GoogleDriveService
+
+        meta_response = MagicMock()
+        meta_response.status_code = 200
+        meta_response.json.return_value = {
+            "id": "file-1", "name": "big.mp4",
+            "mimeType": "video/mp4",
+            "size": str(150 * 1024 * 1024),  # 150MB
+        }
+
+        with patch("httpx.Client") as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.get.return_value = meta_response
+            mock_client.return_value.__enter__ = MagicMock(return_value=mock_instance)
+            mock_client.return_value.__exit__ = MagicMock(return_value=False)
+
+            with pytest.raises(Exception, match="too large"):
+                GoogleDriveService.download_file("token", "file-1")
+
+    def test_raises_on_metadata_error(self):
+        from viraltracker.services.google_drive_service import GoogleDriveService
+
+        meta_response = MagicMock()
+        meta_response.status_code = 404
+        meta_response.text = "Not Found"
+
+        with patch("httpx.Client") as mock_client:
+            mock_instance = MagicMock()
+            mock_instance.get.return_value = meta_response
+            mock_client.return_value.__enter__ = MagicMock(return_value=mock_instance)
+            mock_client.return_value.__exit__ = MagicMock(return_value=False)
+
+            with pytest.raises(Exception, match="metadata fetch failed"):
+                GoogleDriveService.download_file("token", "nonexistent")
