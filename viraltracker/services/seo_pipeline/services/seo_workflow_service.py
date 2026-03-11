@@ -611,10 +611,11 @@ class SEOWorkflowService:
                         base_content = base_content + "\n\n" + "\n\n".join(marker_lines)
                     markdown = base_content
                 else:
-                    raise ValueError(
-                        "Article has no image markers or prior image metadata. "
-                        "Run a full content generation first."
-                    )
+                    # No markers AND no metadata — generate fresh markers from content
+                    base_content = phase_c or row.get("phase_b_output") or ""
+                    if not base_content:
+                        raise ValueError("Article has no content to generate images for")
+                    markdown = self._inject_image_markers(base_content, keyword)
 
         if not markdown:
             raise ValueError("Article has no content to generate images for")
@@ -653,6 +654,36 @@ class SEOWorkflowService:
             future = executor.submit(_run)
             result = future.result(timeout=600)  # 10 min timeout for many images
         return result or {}
+
+    @staticmethod
+    def _inject_image_markers(content: str, keyword: str) -> str:
+        """
+        Generate image markers from article content when none exist.
+
+        Inserts a HERO IMAGE marker before the first paragraph and an
+        IMAGE marker after each H2 heading, using the heading text as
+        the image description contextualized with the keyword.
+
+        Returns content with markers inserted.
+        """
+        lines = content.split("\n")
+        result_lines = [f"[HERO IMAGE: {keyword} - featured image]", ""]
+        marker_count = 0
+        max_inline = 4  # Cap inline images to avoid excessive generation
+
+        for line in lines:
+            result_lines.append(line)
+            stripped = line.strip()
+
+            # Insert inline marker after each H2 heading
+            if stripped.startswith("## ") and marker_count < max_inline:
+                heading_text = re.sub(r'^#+\s*', '', stripped).strip() or keyword
+                result_lines.append("")
+                result_lines.append(f"[IMAGE: {heading_text} - {keyword}]")
+                result_lines.append("")
+                marker_count += 1
+
+        return "\n".join(result_lines)
 
     # =========================================================================
     # CLUSTER RESEARCH
