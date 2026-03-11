@@ -180,6 +180,13 @@ def render_avatar_management(brand_id: str):
                 help="Describe the character's appearance. This will be combined with angle-specific prompts."
             )
 
+            ref_upload = st.file_uploader(
+                "Reference image (optional)",
+                type=["png", "jpg", "jpeg", "webp"],
+                help="Upload a photo to use as visual reference when generating avatar angles. Max 10 MB.",
+                key="avatar_create_ref_image",
+            )
+
             col1, col2 = st.columns(2)
             with col1:
                 aspect_ratio = st.selectbox(
@@ -197,6 +204,14 @@ def render_avatar_management(brand_id: str):
             submitted = st.form_submit_button("Create Avatar")
 
             if submitted and name:
+                # Validate reference image size
+                ref_images_bytes = None
+                if ref_upload is not None:
+                    if ref_upload.size > 10_000_000:
+                        st.warning("Reference image exceeds 10 MB limit. Avatar created without reference.")
+                    else:
+                        ref_images_bytes = [ref_upload.getvalue()]
+
                 async def create_avatar():
                     from viraltracker.services.veo_models import BrandAvatarCreate, AspectRatio, Resolution
 
@@ -209,7 +224,7 @@ def render_avatar_management(brand_id: str):
                         default_aspect_ratio=AspectRatio(aspect_ratio),
                         default_resolution=Resolution(resolution)
                     )
-                    return await service.create_avatar(data)
+                    return await service.create_avatar(data, reference_images=ref_images_bytes)
 
                 with st.spinner("Creating avatar..."):
                     avatar = run_async(create_avatar())
