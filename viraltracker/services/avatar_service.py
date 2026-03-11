@@ -542,14 +542,17 @@ Requirements:
 
     ANGLE_PROMPTS = {
         1: "Frontal passport-style portrait. Face directly facing camera, neutral expression, "
-           "clean solid-color background, even studio lighting, square composition.",
-        2: "3/4 view portrait of the SAME person. Face turned ~45 degrees to the right, "
+           "clean solid-color background, even studio lighting.",
+        2: "3/4 view portrait of the SAME person. Face turned approximately 45 degrees to the right, "
            "same outfit and hairstyle, clean background, same lighting. "
            "Maintain exact facial features, skin tone, and hair.",
-        3: "Side profile portrait of the SAME person. Pure side view facing right, "
-           "showing jawline, ear, and hair. Same outfit, clean background, same lighting.",
+        3: "True 90-degree side profile portrait of the SAME person. "
+           "Head rotated fully to the right so the nose points directly right. "
+           "Only ONE eye visible. Show the ear, jawline, and hair from the side. "
+           "Do NOT show any frontal features — no second eye, no front-facing nose. "
+           "Same outfit, clean background, same lighting.",
         4: "Full-body front-facing photo of the SAME person. Standing straight, facing camera, "
-           "full body visible head to feet, portrait orientation. Same outfit and hairstyle, "
+           "full body visible head to feet. Same outfit and hairstyle, "
            "clean background, even studio lighting.",
     }
 
@@ -587,10 +590,15 @@ Requirements:
         if custom_prompt_suffix:
             full_prompt += f"\n\n{custom_prompt_suffix}"
 
-        # Add aspect ratio instruction so Gemini generates the correct shape
+        # Add aspect ratio + resolution instruction
         ar = avatar.default_aspect_ratio.value  # e.g. "9:16"
-        AR_DIMENSIONS = {"9:16": (1080, 1920), "16:9": (1920, 1080), "1:1": (1080, 1080)}
-        w, h = AR_DIMENSIONS.get(ar, (1080, 1920))
+        res = avatar.default_resolution.value   # e.g. "1080p"
+        AR_RES_DIMENSIONS = {
+            ("9:16", "720p"): (720, 1280),   ("16:9", "720p"): (1280, 720),   ("1:1", "720p"): (720, 720),
+            ("9:16", "1080p"): (1080, 1920), ("16:9", "1080p"): (1920, 1080), ("1:1", "1080p"): (1080, 1080),
+            ("9:16", "4k"): (2160, 3840),    ("16:9", "4k"): (3840, 2160),    ("1:1", "4k"): (2160, 2160),
+        }
+        w, h = AR_RES_DIMENSIONS.get((ar, res), (1080, 1920))
         orientation = "portrait/vertical" if h > w else "landscape/horizontal" if w > h else "square"
         full_prompt += (
             f"\n\nIMPORTANT: Generate this image in {ar} aspect ratio "
