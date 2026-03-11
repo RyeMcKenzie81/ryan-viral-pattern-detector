@@ -354,8 +354,12 @@ class ShopifyPublisher(CMSPublisher):
         """
         content = markdown_text
 
-        # Strip YAML frontmatter
-        content = re.sub(r'^---\n[\s\S]+?\n---\n', '', content)
+        # Strip hero image from body — it's already the Shopify featured image.
+        # Hero <img> tags have loading="eager" (inline ones have loading="lazy").
+        content = re.sub(r'<img[^>]*loading="eager"[^>]*/?>[\s]*', '', content)
+
+        # Strip YAML frontmatter (may not be at start if markers were prepended)
+        content = re.sub(r'---\n[\s\S]+?\n---\n', '', content, count=1)
 
         # Remove schema markup sections (kept in metafields, not body)
         content = re.sub(r'<!--[\s\S]*?SCHEMA MARKUP[\s\S]*?-->\s*```json\s*[\s\S]*?\s*```', '', content)
