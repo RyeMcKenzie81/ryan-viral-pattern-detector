@@ -580,12 +580,22 @@ Requirements:
         if not avatar:
             return None
 
-        # Build prompt: character description + angle instruction
+        # Build prompt: character description + angle instruction + aspect ratio
         char_desc = avatar.generation_prompt or "A person"
         angle_prompt = self.ANGLE_PROMPTS[slot]
         full_prompt = f"{char_desc}\n\n{angle_prompt}"
         if custom_prompt_suffix:
             full_prompt += f"\n\n{custom_prompt_suffix}"
+
+        # Add aspect ratio instruction so Gemini generates the correct shape
+        ar = avatar.default_aspect_ratio.value  # e.g. "9:16"
+        AR_DIMENSIONS = {"9:16": (1080, 1920), "16:9": (1920, 1080), "1:1": (1080, 1080)}
+        w, h = AR_DIMENSIONS.get(ar, (1080, 1920))
+        orientation = "portrait/vertical" if h > w else "landscape/horizontal" if w > h else "square"
+        full_prompt += (
+            f"\n\nIMPORTANT: Generate this image in {ar} aspect ratio "
+            f"({w}x{h} pixels, {orientation} orientation)."
+        )
 
         # Collect reference images: source reference first, then prior slots
         reference_images = []
