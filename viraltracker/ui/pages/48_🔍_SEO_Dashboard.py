@@ -969,6 +969,7 @@ with st.expander("Content Guide"):
                 st.text_input("Rule", value=tag.get("selection_rule", ""), key=f"seo_dash_tag_rule_{ti}", disabled=True)
 
     # Author selector
+    from viraltracker.core.database import get_supabase_client
     _authors = (
         get_supabase_client().table("seo_authors")
         .select("id, name")
