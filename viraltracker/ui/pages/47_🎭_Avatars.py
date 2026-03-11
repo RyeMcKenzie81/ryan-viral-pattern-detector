@@ -109,7 +109,16 @@ def get_products_for_brand(brand_id: str):
 
 def run_async(coro):
     """Run async coroutine in Streamlit."""
-    return asyncio.get_event_loop().run_until_complete(coro)
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                future = pool.submit(asyncio.run, coro)
+                return future.result(timeout=300)
+        return loop.run_until_complete(coro)
+    except RuntimeError:
+        return asyncio.run(coro)
 
 def download_image_from_storage(storage_path: str) -> bytes:
     """Download image from Supabase storage."""
