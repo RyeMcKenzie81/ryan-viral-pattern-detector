@@ -299,7 +299,7 @@ with tab_qw:
                                 icon = "+" if check.get("passed") else "-"
                                 st.markdown(f"  {icon} {check.get('name', '')} — {check.get('message', 'OK')}")
 
-                    c_col1, c_col2 = st.columns(2)
+                    c_col1, c_col2, c_col3 = st.columns(3)
                     with c_col1:
                         if st.button("Start another", key="seo_wf_restart"):
                             del st.session_state["seo_wf_active_job"]
@@ -335,6 +335,25 @@ with tab_qw:
                                     msg = msg_match.group(1) if msg_match else "Server error"
                                     err_str = f"{msg} (code {code}). Try again in a minute." if code else f"{msg}. Try again in a minute."
                                 st.error(f"Image generation failed: {err_str}")
+                    with c_col3:
+                        if article_id and st.button("Re-publish to Shopify", key="seo_wf_republish"):
+                            try:
+                                with st.spinner("Updating Shopify draft..."):
+                                    from viraltracker.services.seo_pipeline.services.cms_publisher_service import CMSPublisherService
+                                    pub_svc = CMSPublisherService()
+                                    pub_result = pub_svc.publish_article(
+                                        article_id=article_id,
+                                        brand_id=brand_id,
+                                        organization_id=org_id,
+                                        draft=True,
+                                    )
+                                admin_url = pub_result.get("admin_url", "")
+                                if admin_url:
+                                    st.success(f"Updated! [View in Shopify]({admin_url})")
+                                else:
+                                    st.success("Article updated in Shopify.")
+                            except Exception as e:
+                                st.error(f"Publish failed: {str(e)[:200]}")
 
                 elif status == "failed":
                     error = job.get("error", "Unknown error")
