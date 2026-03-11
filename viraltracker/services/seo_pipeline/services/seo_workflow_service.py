@@ -572,16 +572,30 @@ class SEOWorkflowService:
         if not markdown:
             raise ValueError("Article has no content to generate images for")
 
-        result = asyncio.run(
-            image_svc.generate_article_images(
-                article_id=article_id,
-                markdown=markdown,
-                brand_id=brand_id,
-                organization_id=organization_id,
-                keyword=keyword,
-                image_style=brand_config.get("image_style"),
-            )
-        )
+        # Streamlit already has a running event loop, so asyncio.run() fails.
+        # Use a new thread with its own event loop instead.
+        import concurrent.futures
+
+        def _run():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                return loop.run_until_complete(
+                    image_svc.generate_article_images(
+                        article_id=article_id,
+                        markdown=markdown,
+                        brand_id=brand_id,
+                        organization_id=organization_id,
+                        keyword=keyword,
+                        image_style=brand_config.get("image_style"),
+                    )
+                )
+            finally:
+                loop.close()
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(_run)
+            result = future.result(timeout=300)  # 5 min timeout
         return result or {}
 
     # =========================================================================
