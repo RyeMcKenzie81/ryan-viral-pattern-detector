@@ -315,8 +315,14 @@ with tab_qw:
                                     )
                                 hero = img_result.get("hero_image_url", "")
                                 stats = img_result.get("stats", {})
-                                generated = stats.get("generated", 0)
-                                st.success(f"Images regenerated! {generated} image(s) created." + (f" Hero: {hero}" if hero else ""))
+                                success_count = stats.get("success", 0)
+                                failed_count = stats.get("failed", 0)
+                                msg = f"Done! {success_count} image(s) generated."
+                                if failed_count:
+                                    msg += f" {failed_count} failed."
+                                if hero:
+                                    msg += f" Hero image set."
+                                st.success(msg)
                             except Exception as e:
                                 st.error(f"Image generation failed: {e}")
 

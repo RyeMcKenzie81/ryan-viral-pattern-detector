@@ -546,54 +546,104 @@ class SEOWorkflowService:
     def regenerate_images(self, article_id: str, brand_id: str, organization_id: str) -> Dict[str, Any]:
         """
         Re-run image generation for an existing article.
-        Can be called independently of the pipeline.
+
+        Handles the case where markers have already been replaced with <img> tags
+        by reconstructing markers from stored image_metadata descriptions.
 
         Returns:
-            Dict with hero_image_url and inline_images count.
+            Dict with hero_image_url, stats, image_metadata.
         """
         import asyncio
+        import concurrent.futures
         organization_id = self._resolve_org_id(organization_id, brand_id)
 
-        from viraltracker.services.seo_pipeline.services.seo_image_service import SEOImageService
-        from viraltracker.services.seo_pipeline.services.seo_brand_config_service import SEOBrandConfigService
-
+        # Load article and brand config from main thread (read-only, safe)
         sb = self.supabase
-        image_svc = SEOImageService(supabase_client=sb)
-        brand_config = SEOBrandConfigService(supabase_client=sb).get_config(brand_id)
+        brand_config_data = None
+        from viraltracker.services.seo_pipeline.services.seo_brand_config_service import SEOBrandConfigService
+        brand_config_data = SEOBrandConfigService(supabase_client=sb).get_config(brand_id)
 
-        article = sb.table("seo_articles").select("keyword, content_markdown, phase_c_output, phase_b_output, content_html").eq("id", article_id).limit(1).execute()
+        article = sb.table("seo_articles").select(
+            "keyword, content_markdown, phase_c_output, phase_b_output, image_metadata"
+        ).eq("id", article_id).limit(1).execute()
         if not article.data:
             raise ValueError(f"Article not found: {article_id}")
 
         row = article.data[0]
-        markdown = (
-            row.get("content_markdown")
-            or row.get("phase_c_output")
-            or row.get("phase_b_output")
-            or row.get("content_html")
-            or ""
-        )
         keyword = row.get("keyword", "")
+
+        # Try to find content with [IMAGE: ...] markers still intact
+        markdown = row.get("content_markdown") or ""
+
+        # If no markdown with markers, check if we can reconstruct markers
+        # from image_metadata (stored descriptions from previous generation)
+        from viraltracker.services.seo_pipeline.services.seo_image_service import SEOImageService
+        test_svc = SEOImageService()
+        if not test_svc.extract_image_markers(markdown):
+            # No markers in content_markdown. Try phase_c_output.
+            phase_c = row.get("phase_c_output") or ""
+            if test_svc.extract_image_markers(phase_c):
+                markdown = phase_c
+            else:
+                # Markers already replaced. Reconstruct from image_metadata.
+                existing_meta = row.get("image_metadata") or []
+                if existing_meta:
+                    # Rebuild markdown with [IMAGE: ...] markers from stored descriptions
+                    base_content = phase_c or row.get("phase_b_output") or ""
+                    if not base_content:
+                        raise ValueError("Article has no content to generate images for")
+
+                    # Strip existing <img> tags and re-insert markers
+                    import re
+                    base_content = re.sub(
+                        r'<img[^>]*alt="([^"]*)"[^>]*/?>',
+                        lambda m: f'[IMAGE: {m.group(1)}]',
+                        base_content,
+                    )
+                    # If no <img> tags were found, append markers at end
+                    if not test_svc.extract_image_markers(base_content):
+                        marker_lines = []
+                        for i, meta in enumerate(existing_meta):
+                            desc = meta.get("description") or meta.get("prompt") or f"Image {i+1}"
+                            img_type = meta.get("type", "inline")
+                            prefix = "HERO IMAGE" if img_type == "hero" else "IMAGE"
+                            marker_lines.append(f"[{prefix}: {desc}]")
+                        base_content = base_content + "\n\n" + "\n\n".join(marker_lines)
+                    markdown = base_content
+                else:
+                    raise ValueError(
+                        "Article has no image markers or prior image metadata. "
+                        "Run a full content generation first."
+                    )
 
         if not markdown:
             raise ValueError("Article has no content to generate images for")
 
-        # Streamlit already has a running event loop, so asyncio.run() fails.
-        # Use a new thread with its own event loop instead.
-        import concurrent.futures
+        # Run in child thread with its own event loop and Supabase client
+        # (httpx.Client is not thread-safe, so child thread needs its own)
+        _article_id = article_id
+        _markdown = markdown
+        _brand_id = brand_id
+        _org_id = organization_id
+        _keyword = keyword
+        _image_style = brand_config_data.get("image_style")
 
         def _run():
+            from viraltracker.core.database import get_supabase_client
+            child_sb = get_supabase_client()  # thread-local, gets fresh client
+            child_image_svc = SEOImageService(supabase_client=child_sb)
+
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             try:
                 return loop.run_until_complete(
-                    image_svc.generate_article_images(
-                        article_id=article_id,
-                        markdown=markdown,
-                        brand_id=brand_id,
-                        organization_id=organization_id,
-                        keyword=keyword,
-                        image_style=brand_config.get("image_style"),
+                    child_image_svc.generate_article_images(
+                        article_id=_article_id,
+                        markdown=_markdown,
+                        brand_id=_brand_id,
+                        organization_id=_org_id,
+                        keyword=_keyword,
+                        image_style=_image_style,
                     )
                 )
             finally:
@@ -601,7 +651,7 @@ class SEOWorkflowService:
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
             future = executor.submit(_run)
-            result = future.result(timeout=300)  # 5 min timeout
+            result = future.result(timeout=600)  # 10 min timeout for many images
         return result or {}
 
     # =========================================================================
