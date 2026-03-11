@@ -324,7 +324,17 @@ with tab_qw:
                                     msg += f" Hero image set."
                                 st.success(msg)
                             except Exception as e:
-                                st.error(f"Image generation failed: {e}")
+                                err_str = str(e)
+                                # Truncate HTML error pages to something readable
+                                if len(err_str) > 300 or "<html" in err_str.lower():
+                                    # Extract code/message if it's a dict-like string
+                                    import re as _re
+                                    code_match = _re.search(r"'code':\s*(\d+)", err_str)
+                                    msg_match = _re.search(r"'message':\s*'([^']+)'", err_str)
+                                    code = code_match.group(1) if code_match else ""
+                                    msg = msg_match.group(1) if msg_match else "Server error"
+                                    err_str = f"{msg} (code {code}). Try again in a minute." if code else f"{msg}. Try again in a minute."
+                                st.error(f"Image generation failed: {err_str}")
 
                 elif status == "failed":
                     error = job.get("error", "Unknown error")
