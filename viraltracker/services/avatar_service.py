@@ -559,7 +559,8 @@ Requirements:
     ANGLE_LABELS = {1: "Frontal", 2: "3/4 View", 3: "Side Profile", 4: "Full Body"}
 
     async def generate_angle_image(
-        self, avatar_id: UUID, slot: int, custom_prompt_suffix: Optional[str] = None
+        self, avatar_id: UUID, slot: int, custom_prompt_suffix: Optional[str] = None,
+        temperature: float = 0.3
     ) -> Optional[str]:
         """Generate an angle-specific reference image and save it to a slot.
 
@@ -626,12 +627,12 @@ Requirements:
         RESOLUTION_TO_SIZE = {"720p": "1K", "1080p": "2K", "4k": "4K"}
         image_size = RESOLUTION_TO_SIZE.get(avatar.default_resolution.value, "2K")
 
-        # Generate with low temperature for consistency
+        # Generate image
         try:
             image_bytes = await self.generate_avatar_image(
                 prompt=full_prompt,
                 reference_images=reference_images if reference_images else None,
-                temperature=0.3,
+                temperature=temperature,
                 image_size=image_size,
             )
         except Exception as e:

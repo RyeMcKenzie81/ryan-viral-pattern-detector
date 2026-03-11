@@ -323,15 +323,21 @@ def render_avatar_card(avatar, brand_id: str):
                 if avatar.generation_prompt:
                     # For slot 1: always available. For slots 2-4: need slot 1 at minimum.
                     can_generate = (slot == 1) or (avatar.reference_image_1 is not None)
+                    temp_val = st.slider(
+                        "Temp",
+                        min_value=0.0, max_value=1.0, value=0.3, step=0.1,
+                        key=f"temp_{avatar.id}_{slot}",
+                        help="Low = consistent with refs, High = more creative",
+                    )
                     if st.button(
                         f"Generate",
                         key=f"gen_{avatar.id}_{slot}",
                         disabled=not can_generate,
                         use_container_width=True,
                     ):
-                        async def gen_angle(s=slot):
+                        async def gen_angle(s=slot, t=temp_val):
                             service = get_avatar_service()
-                            return await service.generate_angle_image(avatar.id, s)
+                            return await service.generate_angle_image(avatar.id, s, temperature=t)
 
                         with st.spinner(f"Generating {label}..."):
                             try:
