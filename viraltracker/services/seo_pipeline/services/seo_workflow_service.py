@@ -209,13 +209,13 @@ class SEOWorkflowService:
 
             brand_config = brand_config_svc.get_config(brand_id)
 
-            # Load brand name and positioning directly (not via BrandProfileService)
-            brand_row = sb.table("brands").select("name, positioning").eq("id", brand_id).limit(1).execute()
+            # Load brand name (positioning comes from brand_config style guide)
+            brand_row = sb.table("brands").select("name, description").eq("id", brand_id).limit(1).execute()
             brand_ctx = {}
             if brand_row.data:
                 brand_ctx = {
                     "brand_name": brand_row.data[0].get("name", ""),
-                    "brand_positioning": brand_row.data[0].get("positioning", ""),
+                    "brand_positioning": brand_row.data[0].get("description", ""),
                 }
 
             # Resolve project_id
@@ -306,7 +306,7 @@ class SEOWorkflowService:
             )
 
             if step_through and "phase_a" in PAUSE_POINTS:
-                self._pause_job(job_id, "phase_a", {"outline": phase_a_result.get("output", "")[:5000]})
+                self._pause_job(job_id, "phase_a", {"outline": phase_a_result.get("content", "")[:5000]})
                 return
 
             # 6. Phase B — Write
@@ -325,7 +325,7 @@ class SEOWorkflowService:
             )
 
             if step_through and "phase_b" in PAUSE_POINTS:
-                self._pause_job(job_id, "phase_b", {"draft": phase_b_result.get("output", "")[:5000]})
+                self._pause_job(job_id, "phase_b", {"draft": phase_b_result.get("content", "")[:5000]})
                 return
 
             # 7. Phase C — Optimize + Parse Frontmatter
@@ -341,7 +341,7 @@ class SEOWorkflowService:
             )
 
             # Parse YAML frontmatter from Phase C output
-            phase_c_output = phase_c_result.get("output", "")
+            phase_c_output = phase_c_result.get("content", "")
             parsed = self._parse_frontmatter(phase_c_output)
             if parsed:
                 update_fields = {}
@@ -650,9 +650,9 @@ class SEOWorkflowService:
         sb = get_supabase_client()
 
         # Load brand context
-        brand_row = sb.table("brands").select("name, positioning").eq("id", brand_id).limit(1).execute()
+        brand_row = sb.table("brands").select("name, description").eq("id", brand_id).limit(1).execute()
         brand_name = brand_row.data[0].get("name", "") if brand_row.data else ""
-        brand_positioning = brand_row.data[0].get("positioning", "") if brand_row.data else ""
+        brand_positioning = brand_row.data[0].get("description", "") if brand_row.data else ""
 
         # Load existing articles to avoid cannibalization
         existing = sb.table("seo_articles").select("keyword").eq("brand_id", brand_id).neq("status", "discovered").limit(100).execute()
@@ -731,10 +731,10 @@ class SEOWorkflowService:
 
         cluster_data = cluster.data[0]
 
-        # Load spokes
+        # Load spokes with keyword text via join
         spokes = (
             self.supabase.table("seo_cluster_spokes")
-            .select("*")
+            .select("*, seo_keywords(keyword)")
             .eq("cluster_id", cluster_id)
             .order("priority")
             .execute()
@@ -744,7 +744,13 @@ class SEOWorkflowService:
             "cluster_id": cluster_id,
             "brand_id": brand_id,
             "pillar_keyword": cluster_data.get("pillar_keyword", ""),
-            "spokes": [{"keyword": s.get("keyword", ""), "id": s.get("id")} for s in spokes],
+            "spokes": [
+                {
+                    "keyword": (s.get("seo_keywords") or {}).get("keyword", ""),
+                    "id": s.get("id"),
+                }
+                for s in spokes
+            ],
         }
 
         try:
