@@ -445,6 +445,38 @@ class SEOProjectService:
         result = query.execute()
         return result.data[0] if result.data else None
 
+    def delete_author(
+        self,
+        author_id: str,
+        brand_id: str,
+        organization_id: str,
+    ) -> bool:
+        """
+        Delete an author. DB FKs use ON DELETE SET NULL for articles and brand config.
+
+        Args:
+            author_id: Author UUID
+            brand_id: Brand UUID
+            organization_id: Organization UUID for access control
+
+        Returns:
+            True if author was deleted, False if not found
+        """
+        query = (
+            self.supabase.table("seo_authors")
+            .delete()
+            .eq("id", author_id)
+            .eq("brand_id", brand_id)
+        )
+
+        if organization_id != "all":
+            query = query.eq("organization_id", organization_id)
+
+        result = query.execute()
+        if result.data:
+            logger.info(f"Deleted author {author_id} from brand {brand_id}")
+        return bool(result.data)
+
     def _unset_default_author(self, brand_id: str, organization_id: str) -> None:
         """Unset any existing default author for a brand."""
         query = (

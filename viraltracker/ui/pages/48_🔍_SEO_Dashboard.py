@@ -968,14 +968,10 @@ with st.expander("Content Guide"):
             with tc3:
                 st.text_input("Rule", value=tag.get("selection_rule", ""), key=f"seo_dash_tag_rule_{ti}", disabled=True)
 
-    # Author selector
-    from viraltracker.core.database import get_supabase_client
-    _authors = (
-        get_supabase_client().table("seo_authors")
-        .select("id, name")
-        .eq("brand_id", brand_id)
-        .execute()
-    ).data or []
+    # Author selector — use SEOProjectService instead of raw DB query
+    from viraltracker.services.seo_pipeline.services.seo_project_service import SEOProjectService
+    _author_svc = SEOProjectService()
+    _authors = _author_svc.list_authors(brand_id, _real_org_id)
     _author_opts = {"": "None"} | {a["id"]: a["name"] for a in _authors}
     _current_author = _brand_cfg.get("default_author_id") or ""
     _cfg_author = st.selectbox(
@@ -985,6 +981,184 @@ with st.expander("Content Guide"):
         format_func=lambda x: _author_opts[x],
         key="seo_dash_cfg_author",
     )
+
+    # -----------------------------------------------------------------
+    # Manage Authors section
+    # -----------------------------------------------------------------
+    st.divider()
+    st.markdown("**Manage Authors**")
+
+    # Initialize session state
+    if "seo_dash_author_adding" not in st.session_state:
+        st.session_state.seo_dash_author_adding = False
+    if "seo_dash_author_editing" not in st.session_state:
+        st.session_state.seo_dash_author_editing = None
+    if "seo_dash_author_confirm_delete" not in st.session_state:
+        st.session_state.seo_dash_author_confirm_delete = None
+
+    _is_adding = st.session_state.seo_dash_author_adding
+    _is_editing = st.session_state.seo_dash_author_editing
+
+    # Add Author button
+    if not _is_adding:
+        if st.button(
+            "+ Add Author",
+            key="seo_dash_author_add_btn",
+            disabled=bool(_is_editing),
+        ):
+            st.session_state.seo_dash_author_adding = True
+            st.rerun()
+    else:
+        # Inline add form
+        with st.form("seo_dash_author_add_form"):
+            st.markdown("**New Author**")
+            _add_name = st.text_input("Name *", key="seo_dash_author_add_name")
+            _add_title = st.text_input("Job Title", key="seo_dash_author_add_title")
+            _add_bio = st.text_area("Bio", height=80, key="seo_dash_author_add_bio")
+            _add_img = st.text_input("Image URL", key="seo_dash_author_add_img")
+            _add_url = st.text_input("Author URL", key="seo_dash_author_add_url")
+            _add_col1, _add_col2 = st.columns(2)
+            with _add_col1:
+                _add_submit = st.form_submit_button("Save", type="primary")
+            with _add_col2:
+                _add_cancel = st.form_submit_button("Cancel")
+
+            if _add_cancel:
+                st.session_state.seo_dash_author_adding = False
+                st.rerun()
+            if _add_submit:
+                if not _add_name or not _add_name.strip():
+                    st.error("Author name is required.")
+                else:
+                    try:
+                        _author_svc.create_author(
+                            brand_id=brand_id,
+                            organization_id=_real_org_id,
+                            name=_add_name.strip(),
+                            job_title=_add_title.strip() or None,
+                            bio=_add_bio.strip() or None,
+                            image_url=_add_img.strip() or None,
+                            author_url=_add_url.strip() or None,
+                        )
+                        st.session_state.seo_dash_author_adding = False
+                        st.rerun()
+                    except Exception as e:
+                        if "duplicate" in str(e).lower() or "unique" in str(e).lower():
+                            st.error("An author with this name already exists.")
+                        else:
+                            st.error(f"Failed to create author: {e}")
+
+    # Author cards
+    for _auth in _authors:
+        _aid = _auth["id"]
+        _a_name = _auth.get("name", "Unknown")
+        _a_title = _auth.get("job_title", "")
+        _a_default = _auth.get("is_default", False)
+        _confirming_delete = st.session_state.seo_dash_author_confirm_delete == _aid
+        _editing_this = _is_editing == _aid
+
+        with st.container(border=True):
+            # Header row: name + title + default badge
+            _label_parts = [f"**{_a_name}**"]
+            if _a_title:
+                _label_parts.append(f" · {_a_title}")
+            if _a_default:
+                _label_parts.append(" · :star: default")
+            st.markdown("".join(_label_parts))
+
+            if _editing_this:
+                # Inline edit form
+                with st.form(f"seo_dash_author_edit_form_{_aid}"):
+                    _edit_name = st.text_input(
+                        "Name *", value=_a_name,
+                        key=f"seo_dash_author_edit_name_{_aid}",
+                    )
+                    _edit_title = st.text_input(
+                        "Job Title", value=_a_title or "",
+                        key=f"seo_dash_author_edit_title_{_aid}",
+                    )
+                    _edit_bio = st.text_area(
+                        "Bio", value=_auth.get("bio") or "", height=80,
+                        key=f"seo_dash_author_edit_bio_{_aid}",
+                    )
+                    _edit_img = st.text_input(
+                        "Image URL", value=_auth.get("image_url") or "",
+                        key=f"seo_dash_author_edit_img_{_aid}",
+                    )
+                    _edit_url = st.text_input(
+                        "Author URL", value=_auth.get("author_url") or "",
+                        key=f"seo_dash_author_edit_url_{_aid}",
+                    )
+                    _ec1, _ec2 = st.columns(2)
+                    with _ec1:
+                        _edit_submit = st.form_submit_button("Save", type="primary")
+                    with _ec2:
+                        _edit_cancel = st.form_submit_button("Cancel")
+
+                    if _edit_cancel:
+                        st.session_state.seo_dash_author_editing = None
+                        st.rerun()
+                    if _edit_submit:
+                        if not _edit_name or not _edit_name.strip():
+                            st.error("Author name is required.")
+                        else:
+                            try:
+                                _author_svc.update_author(
+                                    author_id=_aid,
+                                    organization_id=_real_org_id,
+                                    name=_edit_name.strip(),
+                                    job_title=_edit_title.strip() or None,
+                                    bio=_edit_bio.strip() or None,
+                                    image_url=_edit_img.strip() or None,
+                                    author_url=_edit_url.strip() or None,
+                                )
+                                st.session_state.seo_dash_author_editing = None
+                                st.rerun()
+                            except Exception as e:
+                                if "duplicate" in str(e).lower() or "unique" in str(e).lower():
+                                    st.error("An author with this name already exists.")
+                                else:
+                                    st.error(f"Failed to update author: {e}")
+
+            elif _confirming_delete:
+                # Delete confirmation
+                if _a_default:
+                    st.warning(
+                        "This author is the default. "
+                        "Deleting will clear the default author setting."
+                    )
+                st.warning(f"Are you sure you want to delete **{_a_name}**?")
+                _dc1, _dc2 = st.columns(2)
+                with _dc1:
+                    if st.button("Yes, delete", key=f"seo_dash_author_confirm_yes_{_aid}", type="primary"):
+                        try:
+                            _author_svc.delete_author(_aid, brand_id, _real_org_id)
+                            st.session_state.seo_dash_author_confirm_delete = None
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Failed to delete author: {e}")
+                with _dc2:
+                    if st.button("No, cancel", key=f"seo_dash_author_confirm_no_{_aid}"):
+                        st.session_state.seo_dash_author_confirm_delete = None
+                        st.rerun()
+
+            else:
+                # Action buttons row
+                _btn1, _btn2, _btn3 = st.columns([1, 1, 4])
+                with _btn1:
+                    if st.button(
+                        "Edit", key=f"seo_dash_author_edit_btn_{_aid}",
+                        disabled=bool(_is_adding or _is_editing),
+                    ):
+                        st.session_state.seo_dash_author_editing = _aid
+                        st.rerun()
+                with _btn2:
+                    if st.button(
+                        "Delete", key=f"seo_dash_author_del_btn_{_aid}",
+                        disabled=bool(_is_adding or _is_editing),
+                    ):
+                        st.session_state.seo_dash_author_confirm_delete = _aid
+                        st.rerun()
 
     if st.button("Save Content Guide", key="seo_dash_cfg_save", type="primary"):
         try:

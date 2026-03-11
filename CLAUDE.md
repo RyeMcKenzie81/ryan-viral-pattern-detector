@@ -18,6 +18,15 @@ ViralTracker is a multi-tenant application. **Before building any feature**, eva
 3. **Usage tracking**: Does this call an AI/API? → Wire up `UsageTracker` and enforce limits
 4. **Session context**: Does this need org/user context? → Use `get_current_organization_id()`, `render_brand_selector()`
 5. **Superuser handling**: Does this filter data? → Handle `"all"` org mode for superusers
+6. **CRITICAL — `organization_id` UUID columns**: `"all"` is NOT a valid UUID. Any service that writes to a table with `organization_id UUID NOT NULL` **must resolve `"all"` to a real UUID** before inserting. Pattern:
+   ```python
+   def _resolve_org_id(self, organization_id: str, brand_id: str) -> str:
+       if organization_id != "all":
+           return organization_id
+       row = self.supabase.table("brands").select("organization_id").eq("id", brand_id).limit(1).execute()
+       return row.data[0]["organization_id"] if row.data else organization_id
+   ```
+   Call this at the top of any method that inserts rows with `organization_id`. The UI layer passes `"all"` for superusers — services must handle it.
 
 See [docs/MULTI_TENANT_AUTH.md](docs/MULTI_TENANT_AUTH.md) for full reference.
 

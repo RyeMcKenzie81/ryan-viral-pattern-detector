@@ -64,6 +64,15 @@ class SEOWorkflowService:
             self._supabase = get_supabase_client()
         return self._supabase
 
+    def _resolve_org_id(self, organization_id: str, brand_id: str) -> str:
+        """Resolve real UUID org_id from brand when superuser passes 'all'."""
+        if organization_id != "all":
+            return organization_id
+        row = self.supabase.table("brands").select("organization_id").eq("id", brand_id).limit(1).execute()
+        if row.data:
+            return row.data[0]["organization_id"]
+        return organization_id
+
     # =========================================================================
     # ONE-OFF PIPELINE
     # =========================================================================
@@ -87,6 +96,9 @@ class SEOWorkflowService:
 
         Raises ValueError for validation failures (duplicate job, bad keyword).
         """
+        # Resolve real org_id for superuser mode
+        organization_id = self._resolve_org_id(organization_id, brand_id)
+
         # Validate keyword
         keyword = keyword.strip()
         keyword = re.sub(r"<[^>]+>", "", keyword)  # Strip HTML
@@ -554,6 +566,9 @@ class SEOWorkflowService:
         Returns:
             Research report with cluster recommendations
         """
+        # Resolve real org_id for superuser mode
+        organization_id = self._resolve_org_id(organization_id, brand_id)
+
         from viraltracker.services.seo_pipeline.services.cluster_research_registry import ClusterResearchRegistry
 
         registry = ClusterResearchRegistry(supabase_client=self.supabase)
@@ -700,6 +715,9 @@ class SEOWorkflowService:
         organization_id: str,
     ) -> str:
         """Create batch job and process all spokes. Returns job_id."""
+        # Resolve real org_id for superuser mode
+        organization_id = self._resolve_org_id(organization_id, brand_id)
+
         # Load cluster
         cluster = (
             self.supabase.table("seo_clusters")
