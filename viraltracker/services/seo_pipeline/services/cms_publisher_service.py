@@ -593,9 +593,11 @@ class CMSPublisherService:
         author_name = self._get_author_name(article.get("author_id"))
 
         # Build article data for publisher
+        # Prefer phase_c_output — it has image tags injected by SEOImageService.
+        # content_markdown may be stale (pre-image-generation).
         content_md = (
-            article.get("content_markdown")
-            or article.get("phase_c_output")
+            article.get("phase_c_output")
+            or article.get("content_markdown")
             or article.get("phase_b_output")
             or ""
         )
