@@ -49,7 +49,7 @@ class ManualVideoService:
         prompt: str,
         avatar_id: Optional[str] = None,
         aspect_ratio: str = "9:16",
-        reference_image_bytes: Optional[bytes] = None,
+        reference_images_bytes: Optional[List[bytes]] = None,
     ) -> Dict[str, Any]:
         """
         Generate a keyframe image using Gemini with optional avatar reference.
@@ -62,7 +62,7 @@ class ManualVideoService:
             prompt: Image generation prompt
             avatar_id: Optional avatar UUID for reference consistency
             aspect_ratio: Target aspect ratio ("9:16", "16:9", "1:1")
-            reference_image_bytes: Optional raw image bytes to use as visual reference
+            reference_images_bytes: Optional list of raw image bytes (up to 4)
 
         Returns:
             Dict with id, storage_path, signed_url, prompt, created_at
@@ -81,8 +81,9 @@ class ManualVideoService:
             ref_bytes = await avatar_svc.get_reference_image_bytes(UUID(avatar_id), slot=1)
             if ref_bytes:
                 ref_images_b64.append(base64.b64encode(ref_bytes).decode("utf-8"))
-        if reference_image_bytes:
-            ref_images_b64.append(base64.b64encode(reference_image_bytes).decode("utf-8"))
+        if reference_images_bytes:
+            for rb in reference_images_bytes[:4]:
+                ref_images_b64.append(base64.b64encode(rb).decode("utf-8"))
 
         # Pass None if empty
         final_refs = ref_images_b64 if ref_images_b64 else None

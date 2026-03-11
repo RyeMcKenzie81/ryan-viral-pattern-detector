@@ -209,6 +209,8 @@ if "vs_manual_show_history" not in st.session_state:
     st.session_state.vs_manual_show_history = False
 if "vs_manual_last_saved" not in st.session_state:
     st.session_state.vs_manual_last_saved = None
+if "vs_frame_ref_images" not in st.session_state:
+    st.session_state.vs_frame_ref_images = []
 
 # Lip Sync session state
 if "vs_ls_video_bytes" not in st.session_state:
@@ -792,6 +794,7 @@ with tab_manual:
             st.session_state.vs_manual_session_id = str(uuid4())
             st.session_state.vs_manual_final_video = None
             st.session_state.vs_manual_last_saved = None
+            st.session_state.vs_frame_ref_images = []
             st.toast("Previous project saved. Starting new project.")
             st.rerun()
     with col_proj_load:
@@ -951,84 +954,152 @@ with tab_manual:
             height=120,
         )
 
-        # Collapsible reference image section
-        ref_bytes_for_frame = None
-        with st.expander("Add reference image"):
-            _gallery_for_ref = st.session_state.vs_manual_frame_gallery
-            ref_source_options = ["Upload"]
-            if _gallery_for_ref:
-                ref_source_options.append("From Gallery")
-            ref_source = st.radio(
-                "Source",
-                ref_source_options,
-                horizontal=True,
-                key="vs_frame_ref_source",
-            )
+        # ── Multi-reference image selector ──
+        MAX_REF_IMAGES = 4
+        ref_images = st.session_state.vs_frame_ref_images
+        _gallery_for_ref = st.session_state.vs_manual_frame_gallery
+        remaining_ref_slots = MAX_REF_IMAGES - len(ref_images)
 
-            if ref_source == "Upload":
-                uploaded = st.file_uploader(
-                    "Reference image",
-                    type=["png", "jpg", "jpeg", "webp"],
-                    key="vs_frame_ref_upload",
-                    help="Max 10 MB",
-                )
-                if uploaded is not None:
-                    if uploaded.size > 10 * 1024 * 1024:
-                        st.warning("File exceeds 10 MB limit.")
+        # Filter out gallery refs whose frames were deleted
+        gallery_ids = {f["id"] for f in _gallery_for_ref}
+        ref_images = [
+            r for r in ref_images
+            if r["source"] != "gallery" or (r.get("gallery_frame", {}).get("id") in gallery_ids)
+        ]
+        st.session_state.vs_frame_ref_images = ref_images
+        remaining_ref_slots = MAX_REF_IMAGES - len(ref_images)
+
+        # Reference strip (always visible, outside expander)
+        if ref_images:
+            st.markdown(f"**Reference images** ({len(ref_images)}/{MAX_REF_IMAGES})")
+            ref_cols = st.columns(min(len(ref_images), MAX_REF_IMAGES))
+            for ri, ref in enumerate(ref_images):
+                with ref_cols[ri]:
+                    if ref["source"] == "upload" and ref.get("bytes"):
+                        st.image(ref["bytes"], width=100)
+                    elif ref.get("thumbnail_url"):
+                        st.image(ref["thumbnail_url"], width=100)
+                    st.caption(ref["label"][:20])
+                    if st.button("Remove", key=f"rm_ref_{ref['id']}"):
+                        st.session_state.vs_frame_ref_images = [
+                            r for r in ref_images if r["id"] != ref["id"]
+                        ]
+                        st.rerun()
+
+        # Add sources (inside expander)
+        with st.expander("Add reference images" if remaining_ref_slots > 0 else "Reference images (full)"):
+            if remaining_ref_slots > 0:
+                col_up, col_gal = st.columns(2)
+
+                with col_up:
+                    st.markdown("**Upload**")
+                    uploaded_ref = st.file_uploader(
+                        "Upload image",
+                        type=["png", "jpg", "jpeg", "webp"],
+                        key="vs_ref_upload",
+                        help="Max 10 MB",
+                        label_visibility="collapsed",
+                    )
+                    if uploaded_ref is not None:
+                        # Dedup: skip if this file was already added (by name+size)
+                        already_added = any(
+                            r["source"] == "upload" and r["label"] == uploaded_ref.name
+                            and r.get("bytes") and len(r["bytes"]) == uploaded_ref.size
+                            for r in ref_images
+                        )
+                        if already_added:
+                            pass
+                        elif uploaded_ref.size > 10_000_000:
+                            st.warning("File exceeds 10 MB.")
+                        else:
+                            ref_images.append({
+                                "id": str(uuid4()),
+                                "source": "upload",
+                                "label": uploaded_ref.name,
+                                "bytes": uploaded_ref.getvalue(),
+                                "gallery_frame": None,
+                                "thumbnail_url": None,
+                            })
+                            st.session_state.vs_frame_ref_images = ref_images
+                            st.rerun()
+
+                with col_gal:
+                    st.markdown("**From gallery**")
+                    selected_gal_ids = {
+                        r.get("gallery_frame", {}).get("id")
+                        for r in ref_images if r["source"] == "gallery"
+                    }
+                    available_gal = [
+                        (i, f) for i, f in enumerate(_gallery_for_ref)
+                        if f["id"] not in selected_gal_ids
+                    ]
+                    if available_gal:
+                        gal_options = ["Pick a frame..."] + [
+                            f"#{i+1}: {f.get('prompt', '')[:30]}..."
+                            for i, f in available_gal
+                        ]
+                        gal_choice = st.selectbox(
+                            "Gallery",
+                            gal_options,
+                            key="vs_ref_gal_pick",
+                            label_visibility="collapsed",
+                        )
+                        if gal_choice != "Pick a frame...":
+                            choice_idx = gal_options.index(gal_choice) - 1
+                            orig_idx, frame = available_gal[choice_idx]
+                            # Guard: skip if already in ref list (selectbox persists value across rerun)
+                            if frame["id"] not in selected_gal_ids:
+                                ref_images.append({
+                                    "id": str(uuid4()),
+                                    "source": "gallery",
+                                    "label": f"#{orig_idx+1}: {frame.get('prompt', '')[:20]}",
+                                    "bytes": None,
+                                    "gallery_frame": frame,
+                                    "thumbnail_url": frame.get("signed_url", ""),
+                                })
+                                st.session_state.vs_frame_ref_images = ref_images
+                                st.rerun()
                     else:
-                        ref_bytes_for_frame = uploaded.getvalue()
-                        st.session_state.vs_manual_ref_bytes = ref_bytes_for_frame
-                elif "vs_manual_ref_bytes" in st.session_state:
-                    ref_bytes_for_frame = st.session_state.vs_manual_ref_bytes
+                        st.caption(
+                            "No gallery frames available."
+                            if not _gallery_for_ref
+                            else "All gallery frames already selected."
+                        )
 
-            elif ref_source == "From Gallery" and _gallery_for_ref:
-                ref_gallery_options = [
-                    f"#{i+1}: {f.get('prompt', '')[:30]}..."
-                    for i, f in enumerate(_gallery_for_ref)
-                ]
-                ref_gallery_idx = st.selectbox(
-                    "Gallery frame",
-                    range(len(ref_gallery_options)),
-                    format_func=lambda i: ref_gallery_options[i],
-                    key="vs_frame_ref_gallery_idx",
+                st.caption(
+                    "References guide visual consistency — style, composition, "
+                    "and background elements."
                 )
-                ref_frame = _gallery_for_ref[ref_gallery_idx]
-                ref_url = ref_frame.get("signed_url", "")
-                if ref_url:
-                    st.image(ref_url, width=120)
-                # Download bytes on generate (deferred to button handler below)
+            else:
+                st.info(f"Maximum {MAX_REF_IMAGES} references reached. Remove one to add more.")
 
-            st.caption(
-                "Reference guides visual consistency — style, composition, "
-                "and background elements."
-            )
+            if ref_images:
+                if st.button("Clear all references", key="vs_ref_clear_all"):
+                    st.session_state.vs_frame_ref_images = []
+                    st.rerun()
 
         if st.button("Generate Frame", disabled=not frame_prompt.strip()):
             with st.spinner("Generating keyframe image via Gemini..."):
                 try:
-                    # If gallery ref selected, download bytes now
-                    actual_ref_bytes = ref_bytes_for_frame
-                    if (
-                        st.session_state.get("vs_frame_ref_source") == "From Gallery"
-                        and _gallery_for_ref
-                        and actual_ref_bytes is None
-                    ):
-                        ref_idx = st.session_state.get("vs_frame_ref_gallery_idx", 0)
-                        ref_frame = _gallery_for_ref[ref_idx]
-                        svc = get_manual_video_service()
-                        actual_ref_bytes = _run_async(svc.download_frame_image(ref_frame))
-
                     svc = get_manual_video_service()
+                    # Resolve all reference image bytes
+                    all_ref_bytes = []
+                    for ref in st.session_state.vs_frame_ref_images:
+                        if ref["source"] == "upload" and ref.get("bytes"):
+                            all_ref_bytes.append(ref["bytes"])
+                        elif ref["source"] == "gallery" and ref.get("gallery_frame"):
+                            downloaded = _run_async(svc.download_frame_image(ref["gallery_frame"]))
+                            if downloaded:
+                                all_ref_bytes.append(downloaded)
+
                     result = _run_async(svc.generate_frame(
                         brand_id=brand_id,
                         prompt=frame_prompt.strip(),
                         avatar_id=manual_avatar_id,
                         aspect_ratio=manual_aspect,
-                        reference_image_bytes=actual_ref_bytes,
+                        reference_images_bytes=all_ref_bytes or None,
                     ))
                     st.session_state.vs_manual_frame_gallery.append(result)
-                    # Clear stored ref bytes
-                    st.session_state.pop("vs_manual_ref_bytes", None)
                     _auto_save_project()
                     st.success("Frame generated!")
                     st.rerun()
@@ -1206,7 +1277,7 @@ with tab_manual:
                                 prompt=quick_prompt.strip(),
                                 avatar_id=manual_avatar_id,
                                 aspect_ratio=manual_aspect,
-                                reference_image_bytes=qf_ref_bytes,
+                                reference_images_bytes=[qf_ref_bytes] if qf_ref_bytes else None,
                             ))
                             st.session_state.vs_manual_frame_gallery.append(result)
                             _auto_save_project()
