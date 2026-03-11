@@ -223,7 +223,11 @@ class HTMLSanitizer:
             html, count = self._absolutize_urls(html, page_url)
             stats["urls_absolutized"] = count
 
-        # 11. Size guard
+        # 11. Fix JS-set broken inline styles (empty aspect-ratio, height:0px)
+        html, count = self._fix_js_inline_styles(html)
+        stats["js_styles_fixed"] = count
+
+        # 12. Size guard
         if len(html) > _MAX_SANITIZED_SIZE:
             logger.warning(
                 f"Sanitized HTML exceeds {_MAX_SANITIZED_SIZE} bytes "
@@ -362,12 +366,15 @@ class HTMLSanitizer:
                     f'loading="eager">'
                 )
 
-            # Other iframes — labeled placeholder filling parent
+            # Other iframes — compact placeholder (avoid height:100%
+            # which can inherit a huge parent height and create a
+            # large black rectangle)
             label = title if title else "Embedded content"
             data_src = f' data-iframe-src="{src_url}"' if src_url else ""
             return (
                 f'<div data-was-iframe="true"{data_src} '
-                f'style="width:100%;height:100%;background:#1a1a1a;'
+                f'style="width:100%;min-height:60px;max-height:200px;'
+                f'background:#1a1a1a;'
                 f'display:flex;align-items:center;justify-content:center;'
                 f'color:#888;font-size:14px">{label}</div>'
             )
@@ -766,6 +773,50 @@ class HTMLSanitizer:
 
         return html, count
 
+    # Patterns for JS-set broken inline styles
+    _EMPTY_ASPECT_RATIO_RE = re.compile(
+        r'style="aspect-ratio:\s*"', re.IGNORECASE,
+    )
+    # Only strip height:0px on elements that look like JS-collapsed containers
+    # (swiper wrappers, carousel containers, etc.) — NOT generic elements.
+    _SWIPER_HEIGHT_0_RE = re.compile(
+        r'(<[^>]*class="[^"]*(?:swiper|carousel|slider)[^"]*"[^>]*?)style="([^"]*?)height:\s*0px\s*;?\s*([^"]*?)"',
+        re.IGNORECASE,
+    )
+
+    def _fix_js_inline_styles(self, html: str) -> Tuple[str, int]:
+        """Fix inline styles broken by JS frameworks.
+
+        Empty aspect-ratio values come from Shopify template hydration
+        and cause elements to collapse to 0 height in standalone renders.
+        height:0px removal is limited to swiper/carousel/slider elements
+        where JS was expected to calculate the real height.
+        """
+        count = 0
+
+        # Remove empty aspect-ratio styles entirely
+        html, n = self._EMPTY_ASPECT_RATIO_RE.subn('', html)
+        count += n
+
+        # Remove height:0px only from swiper/carousel/slider containers
+        def _fix_swiper_height(m: re.Match) -> str:
+            nonlocal count
+            tag_before = m.group(1)
+            style_before = m.group(2)
+            style_after = m.group(3)
+            remaining = (style_before + style_after).strip().rstrip(';').strip()
+            count += 1
+            if remaining:
+                return f'{tag_before}style="{remaining}"'
+            return tag_before.rstrip()
+
+        html = self._SWIPER_HEIGHT_0_RE.sub(_fix_swiper_height, html)
+
+        # Clean up leftover empty style attributes
+        html = re.sub(r'\s*style="\s*"', '', html)
+
+        return html, count
+
     def _absolutize_urls(self, html: str, page_url: str) -> Tuple[str, int]:
         """Absolutize all relative URLs against page_url."""
         count = 0
@@ -778,7 +829,12 @@ class HTMLSanitizer:
 
             if not value or value.startswith(("#", "javascript:", "data:", "mailto:", "tel:")):
                 return match.group(0)
-            if value.startswith(("http://", "https://", "//")):
+            # Protocol-relative URLs (//domain.com/...) need https: prefix
+            # to work in standalone HTML renders
+            if value.startswith("//"):
+                count += 1
+                return f'{attr_name}={quote}https:{value}{quote}'
+            if value.startswith(("http://", "https://")):
                 return match.group(0)
 
             resolved = urljoin(page_url, value)
@@ -806,7 +862,10 @@ class HTMLSanitizer:
                 if not entry:
                     continue
                 tokens = entry.split()
-                if tokens and not tokens[0].startswith(("http://", "https://", "//", "data:")):
+                if tokens and tokens[0].startswith("//"):
+                    tokens[0] = f"https:{tokens[0]}"
+                    count += 1
+                elif tokens and not tokens[0].startswith(("http://", "https://", "data:")):
                     tokens[0] = urljoin(page_url, tokens[0])
                     count += 1
                 parts.append(" ".join(tokens))
@@ -825,9 +884,12 @@ class HTMLSanitizer:
             nonlocal count
             url_val = match.group(1).strip().strip("'\"")
             if not url_val or url_val.startswith(
-                ("#", "data:", "http://", "https://", "//")
+                ("#", "data:", "http://", "https://")
             ):
                 return match.group(0)
+            if url_val.startswith("//"):
+                count += 1
+                return f'url("https:{url_val}")'
             resolved = urljoin(page_url, url_val)
             count += 1
             return f'url("{resolved}")'

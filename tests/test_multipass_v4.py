@@ -5945,6 +5945,47 @@ class TestHTMLSanitizer:
         assert 'href="https://example.com/about"' in result
         assert stats["urls_absolutized"] >= 2
 
+    def test_absolutizes_protocol_relative_urls(self):
+        """Protocol-relative URLs (//domain.com/...) get https: prepended."""
+        from viraltracker.services.landing_page_analysis.multipass.surgery.sanitizer import (
+            HTMLSanitizer,
+        )
+        html = (
+            '<body>'
+            '<img src="//cdn.shopify.com/hero.jpg" />'
+            '<img srcset="//cdn.shopify.com/sm.jpg 300w, //cdn.shopify.com/lg.jpg 800w" />'
+            '<a href="//example.com/page">Link</a>'
+            '</body>'
+        )
+        result, stats = HTMLSanitizer().sanitize(html, page_url="https://example.com")
+        assert 'src="https://cdn.shopify.com/hero.jpg"' in result
+        assert 'href="https://example.com/page"' in result
+        assert 'https://cdn.shopify.com/sm.jpg' in result
+        assert 'https://cdn.shopify.com/lg.jpg' in result
+        assert stats["urls_absolutized"] >= 4
+
+    def test_fix_js_inline_styles_empty_aspect_ratio(self):
+        """Empty aspect-ratio: styles should be removed to prevent element collapse."""
+        from viraltracker.services.landing_page_analysis.multipass.surgery.sanitizer import (
+            HTMLSanitizer,
+        )
+        html = (
+            '<body>'
+            '<div style="aspect-ratio: "><img src="https://example.com/hero.jpg" /></div>'
+            '<div class="swiper-wrapper" style="height: 0px; width: 100%;">Content</div>'
+            '<div style="color: red; height: 0px;">More</div>'
+            '</body>'
+        )
+        result, stats = HTMLSanitizer().sanitize(html, page_url="https://example.com")
+        # Empty aspect-ratio attribute should be stripped entirely
+        assert 'aspect-ratio' not in result
+        # height: 0px on swiper elements should be stripped, other props kept
+        assert 'swiper-wrapper' in result
+        assert 'width: 100%' in result
+        # height: 0px on generic divs should be KEPT (not a swiper/carousel)
+        assert 'color: red; height: 0px;' in result
+        assert stats["js_styles_fixed"] >= 2
+
     def test_strips_tracking_pixels(self):
         from viraltracker.services.landing_page_analysis.multipass.surgery.sanitizer import (
             HTMLSanitizer,
