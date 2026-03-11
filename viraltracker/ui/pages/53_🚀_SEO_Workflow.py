@@ -307,14 +307,16 @@ with tab_qw:
                     with c_col2:
                         if article_id and st.button("Retry Images", key="seo_wf_retry_images"):
                             try:
-                                with st.spinner("Generating images..."):
-                                    workflow_svc.regenerate_images(
+                                with st.spinner("Generating images... this may take 1-2 minutes per image."):
+                                    img_result = workflow_svc.regenerate_images(
                                         article_id=article_id,
                                         brand_id=brand_id,
                                         organization_id=org_id,
                                     )
-                                st.success("Images regenerated!")
-                                st.rerun()
+                                hero = img_result.get("hero_image_url", "")
+                                stats = img_result.get("stats", {})
+                                generated = stats.get("generated", 0)
+                                st.success(f"Images regenerated! {generated} image(s) created." + (f" Hero: {hero}" if hero else ""))
                             except Exception as e:
                                 st.error(f"Image generation failed: {e}")
 

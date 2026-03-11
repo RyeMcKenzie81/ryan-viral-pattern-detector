@@ -561,12 +561,18 @@ class SEOWorkflowService:
         image_svc = SEOImageService(supabase_client=sb)
         brand_config = SEOBrandConfigService(supabase_client=sb).get_config(brand_id)
 
-        article = sb.table("seo_articles").select("keyword, content_markdown, phase_c_output").eq("id", article_id).limit(1).execute()
+        article = sb.table("seo_articles").select("keyword, content_markdown, phase_c_output, phase_b_output, content_html").eq("id", article_id).limit(1).execute()
         if not article.data:
             raise ValueError(f"Article not found: {article_id}")
 
         row = article.data[0]
-        markdown = row.get("content_markdown") or row.get("phase_c_output") or ""
+        markdown = (
+            row.get("content_markdown")
+            or row.get("phase_c_output")
+            or row.get("phase_b_output")
+            or row.get("content_html")
+            or ""
+        )
         keyword = row.get("keyword", "")
 
         if not markdown:
