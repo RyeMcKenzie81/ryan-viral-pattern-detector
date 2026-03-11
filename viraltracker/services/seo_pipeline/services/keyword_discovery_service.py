@@ -294,6 +294,31 @@ class KeywordDiscoveryService:
             logger.error(f"Error saving keyword '{kw_data['keyword']}': {e}")
             return False
 
+    def create_keyword(self, project_id: str, keyword: str) -> Dict[str, Any]:
+        """
+        Create a single keyword record for the workflow pipeline.
+
+        Args:
+            project_id: SEO project UUID
+            keyword: Keyword string
+
+        Returns:
+            Created keyword record with id
+        """
+        word_count = len(keyword.split())
+        result = self.supabase.table("seo_keywords").insert({
+            "project_id": project_id,
+            "keyword": keyword,
+            "word_count": word_count,
+            "seed_keyword": keyword,
+            "found_in_seeds": 1,
+            "status": "in_progress",
+        }).execute()
+        if result.data:
+            logger.info(f"Created keyword '{keyword}' in project {project_id}")
+            return result.data[0]
+        raise ValueError(f"Failed to create keyword record for '{keyword}'")
+
     def get_keywords(
         self,
         project_id: str,

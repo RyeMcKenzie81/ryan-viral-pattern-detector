@@ -919,6 +919,89 @@ if connected_integrations:
 
 
 # =============================================================================
+# CONTENT GUIDE
+# =============================================================================
+
+with st.expander("Content Guide"):
+    from viraltracker.services.seo_pipeline.services.seo_brand_config_service import SEOBrandConfigService
+    _brand_cfg_svc = SEOBrandConfigService()
+    _brand_cfg = _brand_cfg_svc.get_config(brand_id)
+
+    _cfg_style = st.text_area(
+        "Content Style Guide",
+        value=_brand_cfg.get("content_style_guide", ""),
+        height=200,
+        placeholder="Write voice/tone instructions with GOOD/BAD examples...",
+        key="seo_dash_cfg_style",
+    )
+    _cfg_product_rules = st.text_area(
+        "Product Mention Rules",
+        value=_brand_cfg.get("product_mention_rules", ""),
+        height=100,
+        placeholder="Max mentions, GOOD/BAD examples...",
+        key="seo_dash_cfg_product_rules",
+    )
+    _cfg_image_style = st.text_input(
+        "Image Style",
+        value=_brand_cfg.get("image_style", ""),
+        placeholder="e.g. Shot on iPhone, natural lighting...",
+        key="seo_dash_cfg_image_style",
+    )
+    _cfg_max_mentions = st.number_input(
+        "Max Product Mentions",
+        value=_brand_cfg.get("max_product_mentions", 2),
+        min_value=0, max_value=20,
+        key="seo_dash_cfg_max_mentions",
+    )
+
+    # Tags editor
+    st.markdown("**Available Tags**")
+    _cfg_tags = _brand_cfg.get("available_tags") or []
+    _tag_container = st.container()
+    with _tag_container:
+        for ti, tag in enumerate(_cfg_tags):
+            tc1, tc2, tc3 = st.columns([1, 2, 2])
+            with tc1:
+                st.text_input("Name", value=tag.get("name", ""), key=f"seo_dash_tag_name_{ti}", disabled=True)
+            with tc2:
+                st.text_input("Slug", value=tag.get("slug", ""), key=f"seo_dash_tag_slug_{ti}", disabled=True)
+            with tc3:
+                st.text_input("Rule", value=tag.get("selection_rule", ""), key=f"seo_dash_tag_rule_{ti}", disabled=True)
+
+    # Author selector
+    _authors = (
+        get_supabase_client().table("seo_authors")
+        .select("id, name")
+        .eq("brand_id", brand_id)
+        .execute()
+    ).data or []
+    _author_opts = {"": "None"} | {a["id"]: a["name"] for a in _authors}
+    _current_author = _brand_cfg.get("default_author_id") or ""
+    _cfg_author = st.selectbox(
+        "Default Author",
+        options=list(_author_opts.keys()),
+        index=list(_author_opts.keys()).index(_current_author) if _current_author in _author_opts else 0,
+        format_func=lambda x: _author_opts[x],
+        key="seo_dash_cfg_author",
+    )
+
+    if st.button("Save Content Guide", key="seo_dash_cfg_save", type="primary"):
+        try:
+            _brand_cfg_svc.upsert_config(
+                brand_id=brand_id,
+                organization_id=_real_org_id,
+                content_style_guide=_cfg_style,
+                product_mention_rules=_cfg_product_rules,
+                image_style=_cfg_image_style,
+                max_product_mentions=int(_cfg_max_mentions),
+                default_author_id=_cfg_author or None,
+            )
+            st.success("Content Guide saved!")
+        except Exception as e:
+            st.error(f"Failed to save: {e}")
+
+
+# =============================================================================
 # ARTICLES TABLE
 # =============================================================================
 
@@ -938,6 +1021,21 @@ if articles:
     st.dataframe(table_data, use_container_width=True)
 else:
     st.info("No articles yet.")
+
+# "Write about this" for discovered pages
+if discovered_articles:
+    with st.expander("Discovered Pages (GSC)"):
+        st.caption("Pages found in Google Search Console that aren't tracked articles.")
+        for da in discovered_articles[:20]:
+            da_kw = da.get("keyword", "unknown")
+            da_url = da.get("published_url", "")
+            dc1, dc2 = st.columns([3, 1])
+            with dc1:
+                st.markdown(f"**{da_kw}** — {da_url}")
+            with dc2:
+                if st.button("Write about this", key=f"seo_dash_write_{da['id'][:8]}"):
+                    st.session_state["seo_prefill_keyword"] = da_kw
+                    st.switch_page("pages/53_🚀_SEO_Workflow.py")
 
 # Import from Shopify
 if "shopify" in connected_integrations:

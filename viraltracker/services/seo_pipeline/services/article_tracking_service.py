@@ -34,6 +34,7 @@ VALID_TRANSITIONS = {
     ArticleStatus.OPTIMIZED.value: [
         ArticleStatus.QA_PENDING.value,
         ArticleStatus.DRAFT_COMPLETE.value,
+        ArticleStatus.PUBLISHING.value,
     ],
     ArticleStatus.QA_PENDING.value: [
         ArticleStatus.QA_PASSED.value,

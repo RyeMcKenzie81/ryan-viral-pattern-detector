@@ -611,6 +611,7 @@ class CMSPublisherService:
             "schema_markup": article.get("schema_markup"),
             "hero_image_url": article.get("hero_image_url"),
             "summary_html": article.get("summary_html", ""),
+            "tags": ", ".join(article.get("tags") or []),
         }
 
         # Check if already published (update vs create)
@@ -746,6 +747,11 @@ class CMSPublisherService:
             "cms_article_id": result.get("cms_article_id"),
             "published_url": result.get("published_url"),
         }
+
+        # Save rendered body_html to content_html (needed for interlinking)
+        body_html = result.get("body_html")
+        if body_html:
+            update_data["content_html"] = body_html
 
         if not draft:
             update_data["status"] = ArticleStatus.PUBLISHED.value

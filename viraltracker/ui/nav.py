@@ -160,6 +160,7 @@ def _get_org_features_cached(org_id: str) -> Dict[str, bool]:
             FeatureKey.SEO_ARTICLE_WRITER: True,
             FeatureKey.SEO_ARTICLE_PUBLISHER: True,
             FeatureKey.SEO_CLUSTER_MANAGER: True,
+            FeatureKey.SEO_WORKFLOW: True,
             # Video Tools pages
             FeatureKey.SECTION_VIDEO_TOOLS: True,
             FeatureKey.INSTAGRAM_CONTENT: True,
@@ -348,6 +349,8 @@ def build_navigation_pages() -> Dict[str, List[st.Page]]:
         content.append(st.Page("pages/51_📤_Article_Publisher.py", title="Article Publisher", icon="📤"))
     if visible(SK_CONTENT, "seo_cluster_manager"):
         content.append(st.Page("pages/52_🗂️_SEO_Clusters.py", title="SEO Clusters", icon="🗂️"))
+    if visible(SK_CONTENT, "seo_workflow"):
+        content.append(st.Page("pages/53_🚀_SEO_Workflow.py", title="SEO Workflow", icon="🚀"))
     if content:
         pages["Content"] = content
 

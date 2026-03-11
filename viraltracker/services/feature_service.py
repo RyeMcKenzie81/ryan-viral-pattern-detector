@@ -94,6 +94,7 @@ class FeatureKey:
     SEO_ARTICLE_WRITER = "seo_article_writer"
     SEO_ARTICLE_PUBLISHER = "seo_article_publisher"
     SEO_CLUSTER_MANAGER = "seo_cluster_manager"
+    SEO_WORKFLOW = "seo_workflow"
     # Video Tools
     SECTION_VIDEO_TOOLS = "section_video_tools"
     INSTAGRAM_CONTENT = "instagram_content"
@@ -274,6 +275,7 @@ class FeatureService:
             FeatureKey.SEO_ARTICLE_WRITER,
             FeatureKey.SEO_ARTICLE_PUBLISHER,
             FeatureKey.SEO_CLUSTER_MANAGER,
+            FeatureKey.SEO_WORKFLOW,
             # Video Tools pages
             FeatureKey.SECTION_VIDEO_TOOLS,
             FeatureKey.INSTAGRAM_CONTENT,

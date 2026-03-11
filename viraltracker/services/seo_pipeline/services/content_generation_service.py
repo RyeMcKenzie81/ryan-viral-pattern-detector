@@ -25,6 +25,13 @@ logger = logging.getLogger(__name__)
 PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
 
 
+def _escape_for_format(text: str) -> str:
+    """Escape braces in user-provided text so str.format() doesn't interpret them."""
+    if not text:
+        return ""
+    return text.replace("{", "{{").replace("}", "}}")
+
+
 class ContentGenerationService:
     """Service for 3-phase SEO article generation."""
 
@@ -69,13 +76,16 @@ class ContentGenerationService:
     def generate_phase_a(
         self,
         article_id: str,
-        keyword: str,
+        keyword: str = "",
         competitor_data: Optional[Dict[str, Any]] = None,
         brand_context: Optional[Dict[str, Any]] = None,
         author_id: Optional[str] = None,
         mode: str = "api",
         organization_id: Optional[str] = None,
         model: str = "claude-opus-4-20250514",
+        brand_config: Optional[Dict[str, Any]] = None,
+        cluster_context: Optional[str] = None,
+        keyword_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Run Phase A: Research & Outline.
@@ -93,8 +103,16 @@ class ContentGenerationService:
         Returns:
             Dict with phase output, mode info, and metadata
         """
+        # Auto-load keyword from article if not provided
+        if not keyword:
+            article = self.supabase.table("seo_articles").select("keyword").eq("id", article_id).limit(1).execute()
+            keyword = article.data[0].get("keyword", "") if article.data else ""
+
         author_ctx = self._load_author_context(author_id)
-        prompt = self._build_phase_a_prompt(keyword, competitor_data, brand_context, author_ctx)
+        prompt = self._build_phase_a_prompt(
+            keyword, competitor_data, brand_context, author_ctx,
+            brand_config=brand_config, cluster_context=cluster_context,
+        )
 
         if mode == "cli":
             return self._handle_cli_mode(article_id, "a", prompt, keyword)
@@ -106,13 +124,17 @@ class ContentGenerationService:
     def generate_phase_b(
         self,
         article_id: str,
-        keyword: str,
-        phase_a_output: str,
+        keyword: str = "",
+        phase_a_output: str = "",
         brand_context: Optional[Dict[str, Any]] = None,
         author_id: Optional[str] = None,
         mode: str = "api",
         organization_id: Optional[str] = None,
         model: str = "claude-opus-4-20250514",
+        brand_config: Optional[Dict[str, Any]] = None,
+        cluster_context: Optional[str] = None,
+        content_fingerprints: Optional[str] = None,
+        article_role: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Run Phase B: Write (Freedom Mode).
@@ -130,8 +152,19 @@ class ContentGenerationService:
         Returns:
             Dict with phase output, mode info, and metadata
         """
+        # Auto-load keyword and phase_a_output from article if not provided
+        if not keyword or not phase_a_output:
+            article = self.supabase.table("seo_articles").select("keyword, phase_a_output").eq("id", article_id).limit(1).execute()
+            if article.data:
+                keyword = keyword or article.data[0].get("keyword", "")
+                phase_a_output = phase_a_output or article.data[0].get("phase_a_output", "")
+
         author_ctx = self._load_author_context(author_id)
-        prompt = self._build_phase_b_prompt(keyword, phase_a_output, brand_context, author_ctx)
+        prompt = self._build_phase_b_prompt(
+            keyword, phase_a_output, brand_context, author_ctx,
+            brand_config=brand_config, cluster_context=cluster_context,
+            content_fingerprints=content_fingerprints, article_role=article_role,
+        )
 
         if mode == "cli":
             return self._handle_cli_mode(article_id, "b", prompt, keyword)
@@ -143,8 +176,8 @@ class ContentGenerationService:
     def generate_phase_c(
         self,
         article_id: str,
-        keyword: str,
-        phase_b_output: str,
+        keyword: str = "",
+        phase_b_output: str = "",
         competitor_data: Optional[Dict[str, Any]] = None,
         existing_articles: Optional[List[Dict[str, Any]]] = None,
         brand_context: Optional[Dict[str, Any]] = None,
@@ -152,6 +185,7 @@ class ContentGenerationService:
         mode: str = "api",
         organization_id: Optional[str] = None,
         model: str = "claude-opus-4-20250514",
+        brand_config: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Run Phase C: SEO Optimization.
@@ -171,10 +205,17 @@ class ContentGenerationService:
         Returns:
             Dict with phase output, mode info, and metadata
         """
+        # Auto-load keyword and phase_b_output from article if not provided
+        if not keyword or not phase_b_output:
+            article = self.supabase.table("seo_articles").select("keyword, phase_b_output").eq("id", article_id).limit(1).execute()
+            if article.data:
+                keyword = keyword or article.data[0].get("keyword", "")
+                phase_b_output = phase_b_output or article.data[0].get("phase_b_output", "")
+
         author_ctx = self._load_author_context(author_id)
         prompt = self._build_phase_c_prompt(
             keyword, phase_b_output, competitor_data, existing_articles,
-            brand_context, author_ctx
+            brand_context, author_ctx, brand_config=brand_config,
         )
 
         if mode == "cli":
@@ -318,9 +359,12 @@ class ContentGenerationService:
         competitor_data: Optional[Dict[str, Any]],
         brand_context: Optional[Dict[str, Any]],
         author_ctx: Dict[str, Any],
+        brand_config: Optional[Dict[str, Any]] = None,
+        cluster_context: Optional[str] = None,
     ) -> str:
         """Build Phase A prompt from template."""
         template = self._load_template("phase_a_research.txt")
+        brand_config = brand_config or {}
 
         # Format competitor data
         comp_text = "No competitor data available."
@@ -342,10 +386,13 @@ class ContentGenerationService:
             AUTHOR_NAME=author_ctx.get("name", "Author"),
             BRAND_NAME=self._get_brand_name(brand_context),
             KEYWORD=keyword,
-            SEARCH_INTENT=f"Users searching for '{keyword}' want practical, actionable information.",
+            SEARCH_INTENT=self._infer_search_intent(keyword),
             BRAND_POSITIONING=self._get_brand_positioning(brand_context),
             AUTHOR_VOICE=author_ctx.get("voice", "Write in a conversational, authentic tone."),
             COMPETITOR_DATA=comp_text,
+            CONTENT_STYLE_GUIDE=_escape_for_format(brand_config.get("content_style_guide", "")),
+            PRODUCT_MENTION_RULES=_escape_for_format(brand_config.get("product_mention_rules", "")),
+            CLUSTER_CONTEXT=_escape_for_format(cluster_context or ""),
         )
 
     def _build_phase_b_prompt(
@@ -354,9 +401,25 @@ class ContentGenerationService:
         phase_a_output: str,
         brand_context: Optional[Dict[str, Any]],
         author_ctx: Dict[str, Any],
+        brand_config: Optional[Dict[str, Any]] = None,
+        cluster_context: Optional[str] = None,
+        content_fingerprints: Optional[str] = None,
+        article_role: Optional[str] = None,
     ) -> str:
         """Build Phase B prompt from template."""
         template = self._load_template("phase_b_write.txt")
+        brand_config = brand_config or {}
+
+        # Role-based length guidance
+        if article_role == "pillar":
+            length_guidance = "This is a PILLAR article — write a broad, comprehensive overview (2000+ words)."
+            role_text = "This is a PILLAR article: broad overview that serves as the topical anchor for related articles."
+        elif article_role == "spoke":
+            length_guidance = "This is a SPOKE article — write a focused deep-dive (800-1500 words)."
+            role_text = "This is a SPOKE article: focused deep-dive on one specific aspect of a broader topic."
+        else:
+            length_guidance = "Write until the topic is fully covered. Could be 800 words. Could be 2000. Quality > hitting a number."
+            role_text = ""
 
         return template.format(
             AUTHOR_NAME=author_ctx.get("name", "Author"),
@@ -366,6 +429,11 @@ class ContentGenerationService:
             AUTHOR_VOICE=author_ctx.get("voice", "Write in a conversational, authentic tone."),
             PHASE_A_OUTPUT=phase_a_output,
             PRODUCT_MENTIONS=self._get_product_mentions(brand_context),
+            CONTENT_STYLE_GUIDE=_escape_for_format(brand_config.get("content_style_guide", "")),
+            CLUSTER_CONTEXT=_escape_for_format(cluster_context or ""),
+            CONTENT_FINGERPRINTS=_escape_for_format(content_fingerprints or ""),
+            ARTICLE_ROLE=_escape_for_format(role_text),
+            LENGTH_GUIDANCE=length_guidance,
         )
 
     def _build_phase_c_prompt(
@@ -376,9 +444,11 @@ class ContentGenerationService:
         existing_articles: Optional[List[Dict[str, Any]]],
         brand_context: Optional[Dict[str, Any]],
         author_ctx: Dict[str, Any],
+        brand_config: Optional[Dict[str, Any]] = None,
     ) -> str:
         """Build Phase C prompt from template."""
         template = self._load_template("phase_c_optimize.txt")
+        brand_config = brand_config or {}
 
         # Format competitor stats
         comp_stats = "No competitor data available."
@@ -405,17 +475,39 @@ class ContentGenerationService:
                     lines.append(f"- {title} (not yet published)")
             links_ctx = "Published articles available for internal linking:\n" + "\n".join(lines)
 
+        # Format available tags for prompt
+        tags = brand_config.get("available_tags") or []
+        if tags:
+            tag_lines = [f"- {t['slug']}: {t.get('name', '')} — {t.get('description', '')}" for t in tags]
+            tags_text = "\n".join(tag_lines)
+        else:
+            tags_text = "[auto-select appropriate tags]"
+
+        tag_rules = (
+            "Select ONE primary tag and optionally ONE secondary tag "
+            "(if article substantially covers another category, >30% of content). "
+            "Include in frontmatter as `tags: [slug1, slug2]`"
+        )
+
+        # Image style
+        image_style = brand_config.get("image_style", "")
+        if image_style:
+            image_style_text = f"Photography style: {image_style}"
+        else:
+            image_style_text = ""
+
         return template.format(
             KEYWORD=keyword,
             PHASE_B_OUTPUT=phase_b_output,
             COMPETITOR_STATS=comp_stats,
             AUTHOR_NAME=author_ctx.get("name", "Author"),
-            AUTHOR_URL=author_ctx.get("author_url", ""),
-            AUTHOR_IMAGE_URL=author_ctx.get("image_url", ""),
-            AUTHOR_JOB_TITLE=author_ctx.get("job_title", ""),
             AUTHOR_BIO=author_ctx.get("bio", f"Written by {author_ctx.get('name', 'Author')}."),
             BRAND_NAME=self._get_brand_name(brand_context),
             INTERNAL_LINKS_CONTEXT=links_ctx,
+            CONTENT_STYLE_GUIDE=_escape_for_format(brand_config.get("content_style_guide", "")),
+            AVAILABLE_TAGS=_escape_for_format(tags_text),
+            TAG_SELECTION_RULES=tag_rules,
+            IMAGE_STYLE=_escape_for_format(image_style_text),
         )
 
     # =========================================================================
@@ -515,6 +607,22 @@ class ContentGenerationService:
     # =========================================================================
     # HELPERS
     # =========================================================================
+
+    @staticmethod
+    def _infer_search_intent(keyword: str) -> str:
+        """Infer search intent from keyword modifiers."""
+        kw = keyword.lower().strip()
+        if any(kw.startswith(p) for p in ("how to ", "how do ", "ways to ", "steps to ", "guide to ")):
+            return f"Users searching for '{keyword}' want step-by-step, actionable instructions."
+        if any(kw.startswith(p) for p in ("best ", "top ", "vs ", "compare ")):
+            return f"Users searching for '{keyword}' are comparing options and want recommendations."
+        if any(kw.startswith(p) for p in ("what is ", "what are ", "why ", "when ", "who ")):
+            return f"Users searching for '{keyword}' want clear, educational explanations."
+        if any(kw.startswith(p) for p in ("buy ", "price ", "cost ", "cheap ", "deal ")):
+            return f"Users searching for '{keyword}' are ready to purchase and want pricing/availability."
+        if any(kw.startswith(p) for p in ("review ", "reviews ")):
+            return f"Users searching for '{keyword}' want honest opinions and real experiences."
+        return f"Users searching for '{keyword}' want practical, actionable information."
 
     def _load_template(self, filename: str) -> str:
         """Load a prompt template file."""

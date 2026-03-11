@@ -4,36 +4,39 @@ Database client and utilities
 Two client types:
 - Service client (get_supabase_client): Uses service key, bypasses RLS. For workers/agents.
 - Anon client (get_anon_client): Uses anon key, RLS enforced. For UI auth operations.
+
+Thread safety: get_supabase_client() is thread-local so background workflow threads
+get their own client instance (httpx.Client is not thread-safe).
 """
 
+import threading
 from typing import Optional
 from supabase import create_client, Client
 from .config import Config
 
 
-_supabase_client: Optional[Client] = None
+_thread_local = threading.local()
 _anon_client: Optional[Client] = None
 
 
 def get_supabase_client() -> Client:
     """
-    Get or create Supabase client with SERVICE KEY (singleton pattern).
+    Get or create Supabase client with SERVICE KEY (thread-local).
 
     Uses service key which bypasses RLS - use for workers and backend operations.
+    Each thread gets its own client instance for thread safety.
 
     Returns:
         Supabase client instance with service key
     """
-    global _supabase_client
-
-    if _supabase_client is None:
+    if not hasattr(_thread_local, 'client') or _thread_local.client is None:
         Config.validate()
-        _supabase_client = create_client(
+        _thread_local.client = create_client(
             Config.SUPABASE_URL,
             Config.SUPABASE_SERVICE_KEY
         )
 
-    return _supabase_client
+    return _thread_local.client
 
 
 def get_anon_client() -> Client:
@@ -68,6 +71,6 @@ def get_anon_client() -> Client:
 
 def reset_supabase_client():
     """Reset the Supabase clients (useful for testing)"""
-    global _supabase_client, _anon_client
-    _supabase_client = None
+    global _anon_client
+    _thread_local.client = None
     _anon_client = None

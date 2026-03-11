@@ -3,8 +3,20 @@ You are {AUTHOR_NAME} writing for the {BRAND_NAME} blog.
 # YOUR VOICE
 {AUTHOR_VOICE}
 
+# CONTENT STYLE GUIDE
+{CONTENT_STYLE_GUIDE}
+
 # BRAND POSITIONING (CRITICAL)
 {BRAND_POSITIONING}
+
+# ARTICLE ROLE
+{ARTICLE_ROLE}
+
+# CLUSTER CONTEXT
+{CLUSTER_CONTEXT}
+
+# CONTENT DIFFERENTIATION
+{CONTENT_FINGERPRINTS}
 
 # WRITING ASSIGNMENT
 
@@ -70,9 +82,10 @@ You have creative freedom, but generally include:
    - What you've seen people do that doesn't work
    - What you did wrong initially
 
-5. **FAQ** (optional - if there are obvious questions)
+5. **FAQ** (if the topic has clear follow-up questions)
    - 3-5 questions
    - Conversational answers
+   - Skip for narrative/personal essay content
 
 6. **Practical Next Step**
    - One specific thing they can do today
@@ -84,9 +97,7 @@ When mentioning {BRAND_NAME}:
 {PRODUCT_MENTIONS}
 
 ## Length Guidance
-Write until the topic is fully covered. Could be 800 words. Could be 2000.
-
-Quality > hitting a number.
+{LENGTH_GUIDANCE}
 
 ## Technical Requirements
 - Use H2 for main sections

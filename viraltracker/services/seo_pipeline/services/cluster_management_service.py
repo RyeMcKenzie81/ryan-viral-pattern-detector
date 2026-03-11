@@ -855,7 +855,12 @@ class ClusterManagementService:
     # PRE-WRITE CHECK
     # =========================================================================
 
-    def pre_write_check(self, keyword: str, project_id: str) -> Dict[str, Any]:
+    def pre_write_check(
+        self,
+        keyword: str,
+        project_id: Optional[str] = None,
+        brand_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """
         Check for content overlap before writing a new article.
 
@@ -868,20 +873,27 @@ class ClusterManagementService:
 
         Args:
             keyword: Keyword to check
-            project_id: Project UUID
+            project_id: Project UUID (checks project-scoped articles)
+            brand_id: Brand UUID (checks ALL brand articles — broader scope)
 
         Returns:
             Dict with risk_level, overlapping_articles, link_candidates, recommendation
         """
         from viraltracker.services.seo_pipeline.services.interlinking_service import InterlinkingService
 
-        # Get all articles in the project
-        articles_result = (
+        if not project_id and not brand_id:
+            raise ValueError("Either project_id or brand_id must be provided")
+
+        # Get articles — brand-wide if brand_id provided, else project-scoped
+        query = (
             self.supabase.table("seo_articles")
             .select("id, keyword, title, status, published_url")
-            .eq("project_id", project_id)
-            .execute()
         )
+        if brand_id:
+            query = query.eq("brand_id", brand_id)
+        else:
+            query = query.eq("project_id", project_id)
+        articles_result = query.execute()
         articles = articles_result.data or []
 
         overlapping = []

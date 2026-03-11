@@ -150,6 +150,7 @@ class SEOImageService:
         organization_id: str,
         keyword: str,
         progress_callback: Optional[Callable] = None,
+        image_style: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Generate all images for an article.
@@ -198,6 +199,7 @@ class SEOImageService:
                 slug=slug,
                 image_type=marker["type"],
                 index=idx,
+                image_style=image_style,
             )
 
             image_metadata.append(result)
@@ -309,6 +311,7 @@ class SEOImageService:
         slug: str,
         image_type: str,
         index: int,
+        image_style: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Generate a single image and upload to storage."""
         filename = self._generate_filename(slug, image_type, index)
@@ -327,7 +330,7 @@ class SEOImageService:
         }
 
         try:
-            prompt = self._enhance_prompt(description)
+            prompt = self._enhance_prompt(description, image_style=image_style)
             start_ms = time.time()
 
             image_base64 = await self.gemini.generate_image(
@@ -370,9 +373,10 @@ class SEOImageService:
 
         return entry
 
-    def _enhance_prompt(self, description: str) -> str:
+    def _enhance_prompt(self, description: str, image_style: Optional[str] = None) -> str:
         """Add photography style to prompt."""
-        return f"{description}. {PHOTOGRAPHY_STYLE}"
+        style = image_style or PHOTOGRAPHY_STYLE
+        return f"{description}. {style}"
 
     @staticmethod
     def _generate_slug(keyword: str) -> str:

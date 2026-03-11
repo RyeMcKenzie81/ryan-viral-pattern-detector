@@ -14,6 +14,15 @@ Deeply analyze this topic and create a winning content strategy.
 ## Author Voice
 {AUTHOR_VOICE}
 
+## Content Style Guide
+{CONTENT_STYLE_GUIDE}
+
+## Product Mention Rules
+{PRODUCT_MENTION_RULES}
+
+## Cluster Context
+{CLUSTER_CONTEXT}
+
 ## COMPETITOR ANALYSIS
 Here are the top-ranking articles and their metrics:
 
