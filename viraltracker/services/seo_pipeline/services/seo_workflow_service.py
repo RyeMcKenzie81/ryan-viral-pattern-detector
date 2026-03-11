@@ -423,8 +423,10 @@ class SEOWorkflowService:
                 return
 
             published_url = ""
+            admin_url = ""
             if publish_result:
                 published_url = publish_result.get("published_url", "")
+                admin_url = publish_result.get("admin_url", "")
 
             schema = self._build_schema_markup(
                 article_id=article_id,
@@ -460,7 +462,7 @@ class SEOWorkflowService:
                 result={
                     "article_id": article_id,
                     "keyword": keyword,
-                    "published_url": published_url,
+                    "published_url": admin_url or published_url,
                     "checklist": checklist_result,
                 },
             )

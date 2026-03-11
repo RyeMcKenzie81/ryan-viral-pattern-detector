@@ -100,6 +100,7 @@ When mentioning {BRAND_NAME}:
 {LENGTH_GUIDANCE}
 
 ## Technical Requirements
+- Do NOT start with an H1 title — the CMS renders the title automatically as the page H1. Start directly with the opening hook content.
 - Use H2 for main sections
 - Use H3 for subsections
 - Include specific examples
