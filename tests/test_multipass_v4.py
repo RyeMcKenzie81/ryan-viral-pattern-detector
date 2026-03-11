@@ -6001,6 +6001,53 @@ class TestHTMLSanitizer:
         assert '<button' in result
         assert 'Go' in result
 
+    def test_resolves_data_thumb_lazy_attr(self):
+        """Expanded _LAZY_ATTRS: data-thumb should resolve to src."""
+        from viraltracker.services.landing_page_analysis.multipass.surgery.sanitizer import (
+            HTMLSanitizer,
+        )
+        html = '<body><img data-thumb="https://cdn.example.com/thumb.jpg" src="data:image/gif;base64,R0lGOD" /></body>'
+        result, stats = HTMLSanitizer().sanitize(html)
+        assert 'src="https://cdn.example.com/thumb.jpg"' in result
+        assert stats["lazy_images_resolved"] >= 1
+
+    def test_resolves_data_full_src_lazy_attr(self):
+        """Expanded _LAZY_ATTRS: data-full-src should resolve to src."""
+        from viraltracker.services.landing_page_analysis.multipass.surgery.sanitizer import (
+            HTMLSanitizer,
+        )
+        html = '<body><img data-full-src="https://cdn.example.com/full.jpg" /></body>'
+        result, stats = HTMLSanitizer().sanitize(html)
+        assert 'src="https://cdn.example.com/full.jpg"' in result
+        assert stats["lazy_images_resolved"] >= 1
+
+    def test_populate_src_from_srcset(self):
+        """srcset→src population: picks largest width from srcset when src is empty."""
+        from viraltracker.services.landing_page_analysis.multipass.surgery.sanitizer import (
+            HTMLSanitizer,
+        )
+        html = '<body><img src="" srcset="small.jpg 300w, large.jpg 1200w, medium.jpg 800w" /></body>'
+        result, stats = HTMLSanitizer().sanitize(html)
+        assert 'src="large.jpg"' in result or 'src="https://' in result
+
+    def test_populate_src_from_srcset_no_overwrite(self):
+        """srcset→src population: does NOT overwrite existing valid src."""
+        from viraltracker.services.landing_page_analysis.multipass.surgery.sanitizer import (
+            HTMLSanitizer,
+        )
+        html = '<body><img src="https://real.com/img.jpg" srcset="other.jpg 300w" /></body>'
+        result, stats = HTMLSanitizer().sanitize(html)
+        assert 'src="https://real.com/img.jpg"' in result
+
+    def test_populate_src_from_srcset_missing_src(self):
+        """srcset→src population: adds src when attr is completely missing."""
+        from viraltracker.services.landing_page_analysis.multipass.surgery.sanitizer import (
+            HTMLSanitizer,
+        )
+        html = '<body><img srcset="only.jpg 600w" /></body>'
+        result, stats = HTMLSanitizer().sanitize(html)
+        assert 'src="only.jpg"' in result or 'src="https://' in result
+
 
 # ===========================================================================
 # B27: Surgery pipeline — CSSScoper
@@ -6789,7 +6836,7 @@ class TestFetchAllExternal:
     @patch(
         "viraltracker.services.landing_page_analysis.multipass.html_extractor._safe_fetch_css"
     )
-    def test_fetch_all_external_max_10(self, mock_fetch):
+    def test_fetch_all_external_max_20(self, mock_fetch):
         from viraltracker.services.landing_page_analysis.multipass.html_extractor import (
             CSSExtractor,
         )
@@ -6797,10 +6844,28 @@ class TestFetchAllExternal:
         mock_fetch.return_value = ".x { color: red; }"
         html = ''.join(
             f'<link rel="stylesheet" href="https://cdn{i}.example.com/s{i}.css">'
-            for i in range(15)
+            for i in range(25)
         )
         CSSExtractor.extract(html, "https://example.com", fetch_all_external=True)
-        assert mock_fetch.call_count == 10
+        assert mock_fetch.call_count == 20
+
+    @patch(
+        "viraltracker.services.landing_page_analysis.multipass.html_extractor._safe_fetch_css"
+    )
+    def test_fetch_all_discovers_preload_stylesheets(self, mock_fetch):
+        """<link rel="preload" as="style"> should be discovered and fetched."""
+        from viraltracker.services.landing_page_analysis.multipass.html_extractor import (
+            CSSExtractor,
+        )
+
+        mock_fetch.return_value = ".preload { color: blue; }"
+        html = (
+            '<link rel="preload" as="style" href="https://cdn.example.com/preload.css">'
+            '<link rel="stylesheet" href="https://cdn.example.com/main.css">'
+        )
+        result = CSSExtractor.extract(html, "https://example.com", fetch_all_external=True)
+        assert mock_fetch.call_count == 2
+        assert ".preload" in result.base_rules
 
     @patch(
         "viraltracker.services.landing_page_analysis.multipass.html_extractor._safe_fetch_css"

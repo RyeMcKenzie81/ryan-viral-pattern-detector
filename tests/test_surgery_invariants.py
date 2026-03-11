@@ -418,3 +418,63 @@ class TestNewElementSlots:
         assert 'data-slot="body-1"' in result
         assert 'data-slot="cta-1"' in result
         assert 'data-slot="cta-2"' in result
+
+
+# --------------------------------------------------------------------------
+# PDP product element slot assignment: price, select, input
+# --------------------------------------------------------------------------
+
+
+class TestProductElementSlots:
+    """Tests for PDP product element slot tagging (Fix 10)."""
+
+    def test_price_class_gets_slot(self):
+        """Span with price-related class gets data-slot='price-N'."""
+        classifier = ElementClassifier()
+        html = '<span class="price">$29.99</span>'
+        result, stats = classifier._deterministic_classify(html)
+        assert 'data-slot="price-1"' in result
+
+    def test_sale_price_class_gets_slot(self):
+        """Span with sale-price class gets a price slot."""
+        classifier = ElementClassifier()
+        html = '<span class="sale-price">$19.99</span><span class="compare-price">$29.99</span>'
+        result, stats = classifier._deterministic_classify(html)
+        assert 'data-slot="price-1"' in result
+        assert 'data-slot="price-2"' in result
+
+    def test_select_gets_slot(self):
+        """<select> element gets data-slot='select-N'."""
+        classifier = ElementClassifier()
+        html = '<select class="variant"><option>Small</option><option>Large</option></select>'
+        result, stats = classifier._deterministic_classify(html)
+        assert 'data-slot="select-1"' in result
+
+    def test_visible_input_gets_slot(self):
+        """Visible <input> gets data-slot='input-N'."""
+        classifier = ElementClassifier()
+        html = '<input type="number" class="quantity" value="1">'
+        result, stats = classifier._deterministic_classify(html)
+        assert 'data-slot="input-1"' in result
+
+    def test_hidden_input_no_slot(self):
+        """<input type='hidden'> does NOT get a slot."""
+        classifier = ElementClassifier()
+        html = '<input type="hidden" name="product_id" value="123">'
+        result, stats = classifier._deterministic_classify(html)
+        assert 'data-slot="input-' not in result
+
+    def test_hidden_price_no_slot(self):
+        """Hidden price element does NOT get a slot."""
+        classifier = ElementClassifier()
+        html = '<span class="price" style="display:none">$29.99</span>'
+        result, stats = classifier._deterministic_classify(html)
+        assert 'data-slot="price-' not in result
+
+    def test_already_slotted_price_unchanged(self):
+        """Price element with existing data-slot is not re-slotted."""
+        classifier = ElementClassifier()
+        html = '<span class="price" data-slot="existing-1">$29.99</span>'
+        result, stats = classifier._deterministic_classify(html)
+        assert 'data-slot="existing-1"' in result
+        assert 'data-slot="price-' not in result

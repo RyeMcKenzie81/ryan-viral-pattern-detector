@@ -262,6 +262,9 @@ class ElementClassifier:
             flags=re.IGNORECASE,
         )
 
+        # Product-specific element slots (price, select, form inputs)
+        html = self._slot_product_elements(html)
+
         # Also check for class-name heuristic slots
         html = self._class_heuristic_slots(html)
 
@@ -341,6 +344,98 @@ class ElementClassifier:
 
         parts.append(html[last_end:])
         return ''.join(parts)
+
+    # Class patterns for price display elements
+    _CLASS_PRICE_RE = re.compile(
+        r'\b(price|pricing|cost|amount|sale[-_]?price|compare[-_]?price)\b',
+        re.IGNORECASE,
+    )
+
+    # Class patterns for product form/variant elements
+    _CLASS_PRODUCT_RE = re.compile(
+        r'\b(variant|option|selector|swatch|quantity)\b',
+        re.IGNORECASE,
+    )
+
+    def _slot_product_elements(self, html: str) -> str:
+        """Add slots for product-specific elements: prices, selects, forms.
+
+        PDP pages have interactive elements (variant selectors, quantity
+        inputs, price displays) that the base classifier misses. This
+        pass adds descriptive data-slot attributes so these elements
+        are represented in the slot map.
+        """
+        price_counter = 0
+        select_counter = 0
+        input_counter = 0
+
+        # 1. Tag price elements: <span class="price">$29.99</span>
+        def _slot_price(match: re.Match) -> str:
+            nonlocal price_counter
+            tag_name = match.group(1)
+            attrs = match.group(2) or ""
+            close = match.group(3)
+            if 'data-slot=' in attrs:
+                return match.group(0)
+            if _is_visually_hidden(attrs):
+                return match.group(0)
+            class_match = re.search(
+                r'class\s*=\s*["\']([^"\']*)["\']', attrs, re.IGNORECASE
+            )
+            if class_match and self._CLASS_PRICE_RE.search(class_match.group(1)):
+                price_counter += 1
+                return f'<{tag_name}{attrs} data-slot="price-{price_counter}"{close}'
+            return match.group(0)
+
+        html = re.sub(
+            r'<(span|div|p|s|del)\b([^>]*)(>)',
+            _slot_price,
+            html,
+            flags=re.IGNORECASE,
+        )
+
+        # 2. Tag <select> elements (variant selectors)
+        def _slot_select(match: re.Match) -> str:
+            nonlocal select_counter
+            attrs = match.group(1) or ""
+            close = match.group(2)
+            if 'data-slot=' in attrs:
+                return match.group(0)
+            if _is_visually_hidden(attrs):
+                return match.group(0)
+            select_counter += 1
+            return f'<select{attrs} data-slot="select-{select_counter}"{close}'
+
+        html = re.sub(
+            r'<select\b([^>]*)(>)',
+            _slot_select,
+            html,
+            flags=re.IGNORECASE,
+        )
+
+        # 3. Tag visible <input> elements (quantity, text inputs — not hidden)
+        def _slot_input(match: re.Match) -> str:
+            nonlocal input_counter
+            attrs = match.group(1) or ""
+            if 'data-slot=' in attrs:
+                return match.group(0)
+            # Skip hidden inputs
+            type_match = re.search(
+                r'type\s*=\s*["\']([^"\']*)["\']', attrs, re.IGNORECASE
+            )
+            input_type = type_match.group(1).lower() if type_match else "text"
+            if input_type == "hidden":
+                return match.group(0)
+            if _is_visually_hidden(attrs):
+                return match.group(0)
+            input_counter += 1
+            return f'<input{attrs} data-slot="input-{input_counter}">'
+
+        html = re.sub(
+            r'<input\b([^>]*)/?>', _slot_input, html, flags=re.IGNORECASE
+        )
+
+        return html
 
     def _class_heuristic_slots(self, html: str) -> str:
         """Add slots based on class-name heuristics."""

@@ -60,7 +60,7 @@ _CSS_URL_RE = re.compile(
 )
 _CSS_EXPRESSION_RE = re.compile(r'\bexpression\s*\(', re.IGNORECASE)
 _CSS_MOZ_BINDING_RE = re.compile(r'-moz-binding\s*:', re.IGNORECASE)
-_CSS_BEHAVIOR_RE = re.compile(r'\bbehavior\s*:', re.IGNORECASE)
+_CSS_BEHAVIOR_RE = re.compile(r'(?<![a-zA-Z-])behavior\s*:', re.IGNORECASE)
 
 
 def _sanitize_css_block(raw_css: str, is_surgery_mode: bool = False) -> str:
@@ -107,7 +107,7 @@ def _sanitize_css_block(raw_css: str, is_surgery_mode: bool = False) -> str:
             logger.warning("CSS block rejected: contains HTML tag pattern")
             return ""
 
-    # STRIP dangerous at-rules
+    # STRIP dangerous at-rules — do FIRST pass before url() stripping
     css = _CSS_IMPORT_RE.sub('', raw_css)
     css = _CSS_CHARSET_RE.sub('', css)
 
@@ -120,6 +120,11 @@ def _sanitize_css_block(raw_css: str, is_surgery_mode: bool = False) -> str:
             if new_css == css:
                 break
             css = new_css
+
+    # STRIP any orphaned @import fragments left after url() stripping.
+    # e.g. @import url('...') becomes @import /* url-stripped */ which the
+    # first-pass regex may not have caught. Clean up the full statement.
+    css = _CSS_IMPORT_RE.sub('', css)
 
     # STRIP legacy JS vectors
     css = _CSS_EXPRESSION_RE.sub('/* expression-stripped */ (', css)

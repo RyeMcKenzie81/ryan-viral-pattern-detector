@@ -85,6 +85,11 @@ _LAZY_ATTRS = {
     "data-srcset": "srcset",
     "data-lazy-src": "src",
     "data-original": "src",
+    "data-bg": "src",
+    "data-image": "src",
+    "data-thumb": "src",
+    "data-full-src": "src",
+    "data-hi-res-src": "src",
 }
 
 # Known tracker domains (1x1 pixel images)
@@ -194,6 +199,10 @@ class HTMLSanitizer:
         # 5. Resolve lazy-loaded images
         html, count = self._resolve_lazy_images(html)
         stats["lazy_images_resolved"] = count
+
+        # 5b. Populate empty src from srcset (Shopify pattern)
+        html, count = self._populate_src_from_srcset(html)
+        stats["srcset_populated"] = count
 
         # 6. Remove inline event handlers
         html, count = self._strip_event_handlers(html)
@@ -616,6 +625,81 @@ class HTMLSanitizer:
         )
         return html, count
 
+    def _populate_src_from_srcset(self, html: str) -> Tuple[str, int]:
+        """Populate empty/missing src from srcset on <img> tags.
+
+        Shopify PDPs often use srcset as the primary image source with
+        an empty src="". Extract the largest image URL from srcset and
+        set it as the src for reliable rendering in static HTML.
+        """
+        count = 0
+
+        def _fix_empty_src(match: re.Match) -> str:
+            nonlocal count
+            tag = match.group(0)
+
+            # Check if src is empty or missing
+            src_match = re.search(
+                r'(?<![a-zA-Z-])src\s*=\s*["\']([^"\']*)["\']',
+                tag, re.IGNORECASE,
+            )
+            has_real_src = (
+                src_match and src_match.group(1) and
+                not src_match.group(1).startswith("data:") and
+                "blank" not in src_match.group(1).lower() and
+                "placeholder" not in src_match.group(1).lower()
+            )
+            if has_real_src:
+                return tag  # Already has a real src
+
+            # Try to extract from srcset
+            srcset_match = re.search(
+                r'srcset\s*=\s*["\']([^"\']+)["\']',
+                tag, re.IGNORECASE,
+            )
+            if not srcset_match:
+                return tag
+
+            # Parse srcset and pick the largest image
+            srcset_val = srcset_match.group(1)
+            best_url = ""
+            best_width = 0
+            for entry in srcset_val.split(","):
+                entry = entry.strip()
+                if not entry:
+                    continue
+                tokens = entry.split()
+                if not tokens:
+                    continue
+                url = tokens[0]
+                width = 0
+                if len(tokens) > 1:
+                    w_match = re.match(r'(\d+)w', tokens[1])
+                    if w_match:
+                        width = int(w_match.group(1))
+                if width > best_width or (not best_url and url):
+                    best_url = url
+                    best_width = width
+
+            if best_url:
+                count += 1
+                if src_match:
+                    # Replace empty src with best srcset URL
+                    tag = tag[:src_match.start(1)] + best_url + tag[src_match.end(1):]
+                else:
+                    # Add src attribute
+                    tag = tag.replace("<img", f'<img src="{best_url}"', 1)
+
+            return tag
+
+        html = re.sub(
+            r'<img\b[^>]*/?\s*>',
+            _fix_empty_src,
+            html,
+            flags=re.IGNORECASE,
+        )
+        return html, count
+
     def _strip_event_handlers(self, html: str) -> Tuple[str, int]:
         """Remove inline event handlers (onclick, onload, etc.)."""
         count = len(_EVENT_HANDLER_RE.findall(html))
@@ -800,3 +884,159 @@ class _VisibleTextExtractor(HTMLParser):
 
     def get_text(self) -> str:
         return " ".join(self._parts)
+
+
+# ---------------------------------------------------------------------------
+# Image S3 proxy: download external images and rewrite to Supabase storage
+# ---------------------------------------------------------------------------
+
+# Max image download size (5MB per image)
+_MAX_IMAGE_BYTES = 5 * 1024 * 1024
+
+# Image extensions we'll proxy
+_IMAGE_EXTENSIONS = frozenset([
+    ".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".avif",
+])
+
+# Max number of images to proxy per page (avoid runaway costs)
+_MAX_IMAGES_TO_PROXY = 100
+
+
+def proxy_images_to_storage(
+    html: str,
+    supabase_client,
+    storage_bucket: str = "lp-images",
+    storage_prefix: str = "",
+    timeout: float = 10.0,
+) -> Tuple[str, dict]:
+    """Download external images and upload to Supabase storage, rewriting URLs.
+
+    Ensures images survive even if the original site blocks hotlinking
+    or goes offline. Only proxies images with HTTPS URLs from external
+    domains. Skips data: URIs, already-proxied URLs, and oversized images.
+
+    Args:
+        html: HTML document with external image URLs.
+        supabase_client: Supabase client instance with storage access.
+        storage_bucket: Storage bucket name for uploaded images.
+        storage_prefix: Path prefix for stored images (e.g. "org_id/analysis_id/").
+        timeout: HTTP timeout per image download in seconds.
+
+    Returns:
+        (html_with_proxied_urls, stats) where stats contains counts
+        of proxied, skipped, and failed images.
+    """
+    import hashlib
+    import httpx
+    from urllib.parse import urlparse
+
+    stats = {
+        "total_images": 0,
+        "proxied": 0,
+        "skipped": 0,
+        "failed": 0,
+    }
+
+    # Extract all image src URLs
+    img_src_re = re.compile(
+        r'(<img\b[^>]*?)(?<![a-zA-Z-])src\s*=\s*["\']([^"\']+)["\']',
+        re.IGNORECASE,
+    )
+
+    # Collect unique URLs to avoid downloading the same image twice
+    url_to_storage: dict = {}
+    urls_to_process: List[Tuple[str, str]] = []  # (original_url, hash_key)
+
+    for match in img_src_re.finditer(html):
+        url = match.group(2)
+        if not url or not url.startswith("https://"):
+            continue
+
+        # Skip data URIs and already-proxied URLs
+        parsed = urlparse(url)
+        if parsed.hostname and "supabase" in parsed.hostname:
+            continue
+
+        # Check extension
+        path_lower = parsed.path.lower()
+        has_img_ext = any(path_lower.endswith(ext) or ext + "?" in path_lower
+                         for ext in _IMAGE_EXTENSIONS)
+        # Also accept Shopify CDN URLs without extension
+        is_cdn = "cdn.shopify.com" in (parsed.hostname or "")
+        if not has_img_ext and not is_cdn:
+            continue
+
+        # Create deterministic hash for filename
+        url_hash = hashlib.sha256(url.encode()).hexdigest()[:16]
+        ext = ".webp"  # default
+        for e in _IMAGE_EXTENSIONS:
+            if e in path_lower:
+                ext = e
+                break
+
+        if url not in url_to_storage:
+            urls_to_process.append((url, f"{url_hash}{ext}"))
+        stats["total_images"] += 1
+
+    if not urls_to_process:
+        return html, stats
+
+    # Limit to prevent runaway
+    if len(urls_to_process) > _MAX_IMAGES_TO_PROXY:
+        logger.warning(
+            f"Image proxy: capping at {_MAX_IMAGES_TO_PROXY} images "
+            f"(found {len(urls_to_process)})"
+        )
+        urls_to_process = urls_to_process[:_MAX_IMAGES_TO_PROXY]
+
+    # Download and upload images
+    bucket = supabase_client.storage.from_(storage_bucket)
+    client = httpx.Client(timeout=timeout, follow_redirects=True)
+
+    try:
+        for original_url, filename in urls_to_process:
+            storage_path = f"{storage_prefix}{filename}"
+            try:
+                resp = client.get(original_url)
+                if resp.status_code != 200:
+                    stats["failed"] += 1
+                    continue
+                if len(resp.content) > _MAX_IMAGE_BYTES:
+                    stats["skipped"] += 1
+                    continue
+                if len(resp.content) < 100:
+                    stats["skipped"] += 1
+                    continue
+
+                content_type = resp.headers.get("content-type", "image/jpeg")
+                if ";" in content_type:
+                    content_type = content_type.split(";")[0].strip()
+
+                bucket.upload(
+                    storage_path,
+                    resp.content,
+                    {"content-type": content_type, "upsert": "true"},
+                )
+
+                # Get public URL
+                public_url = bucket.get_public_url(storage_path)
+                url_to_storage[original_url] = public_url
+                stats["proxied"] += 1
+
+            except Exception as e:
+                logger.debug(f"Image proxy failed for {original_url}: {e}")
+                stats["failed"] += 1
+    finally:
+        client.close()
+
+    # Rewrite URLs in HTML
+    if url_to_storage:
+        for original_url, proxied_url in url_to_storage.items():
+            html = html.replace(original_url, proxied_url)
+
+    logger.info(
+        f"Image proxy: {stats['proxied']} proxied, "
+        f"{stats['failed']} failed, {stats['skipped']} skipped"
+    )
+
+    return html, stats

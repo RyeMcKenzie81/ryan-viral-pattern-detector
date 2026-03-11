@@ -133,6 +133,95 @@ _REMOVE_HIDDEN_AND_SPRITES_JS = """(() => {
     return removed;
 })()"""
 
+# JS snippet to force-show JS-hidden content for static capture.
+# JS frameworks (Alpine.js x-show, React, Vue v-show) hide product
+# galleries, variant selectors, tabs etc. by default. We force these
+# visible so the static HTML snapshot captures the actual content.
+# ONLY targets elements inside the main content area — avoids showing
+# drawers, modals, cart sidebars, and off-canvas navigation.
+_FORCE_SHOW_JS_HIDDEN_JS = """(() => {
+    let shown = 0;
+
+    // Selectors for containers that should STAY hidden (not product content)
+    const KEEP_HIDDEN_PATTERNS = [
+        'cart', 'drawer', 'sidebar', 'modal', 'popup', 'overlay',
+        'menu', 'dropdown', 'mega-menu', 'off-canvas', 'offcanvas',
+        'tooltip', 'toast', 'notification', 'banner',
+        'cookie', 'consent', 'newsletter', 'exit-intent',
+        'search-modal', 'quick-view', 'mini-cart',
+    ];
+
+    function shouldKeepHidden(el) {
+        const id = (el.id || '').toLowerCase();
+        const cls = (el.className || '').toString().toLowerCase();
+        const role = (el.getAttribute('role') || '').toLowerCase();
+        // Check if element or any ancestor is a drawer/modal/cart
+        let check = el;
+        for (let i = 0; i < 5 && check && check !== document.body; i++) {
+            const cId = (check.id || '').toLowerCase();
+            const cCls = (check.className || '').toString().toLowerCase();
+            const cRole = (check.getAttribute('role') || '').toLowerCase();
+            if (cRole === 'dialog' || cRole === 'alertdialog') return true;
+            if (check.tagName === 'DIALOG') return true;
+            for (const pat of KEEP_HIDDEN_PATTERNS) {
+                if (cId.includes(pat) || cCls.includes(pat)) return true;
+            }
+            check = check.parentElement;
+        }
+        return false;
+    }
+
+    // 1. Force-show elements hidden by JS frameworks inside main content
+    //    Target: elements with x-show, v-show, x-bind:class, :class, data-state
+    //    that are display:none but contain images or substantial text
+    const jsAttrSelectors = [
+        '[x-show]', '[x-bind\\\\:class]', '[\\\\:class]',
+        '[v-show]', '[v-if]',
+        '[data-state]', '[data-active]', '[data-visible]',
+    ].join(',');
+
+    document.querySelectorAll(jsAttrSelectors).forEach(el => {
+        const style = window.getComputedStyle(el);
+        if (style.display === 'none' && !shouldKeepHidden(el)) {
+            el.style.setProperty('display', '', 'important');
+            // If still hidden after removing display, force block
+            const recheck = window.getComputedStyle(el);
+            if (recheck.display === 'none') {
+                el.style.setProperty('display', 'block', 'important');
+            }
+            shown++;
+        }
+    });
+
+    // 2. Force-show Tailwind 'hidden' class elements inside main/product areas
+    //    The 'hidden' class is often toggled by Alpine.js x-show
+    document.querySelectorAll('.hidden').forEach(el => {
+        // Only force-show if it has meaningful content (images, swiper, gallery)
+        const hasImages = el.querySelector('img, picture, video, [data-src]');
+        const hasSwiper = el.querySelector('.swiper, .splide, .glide, .slick');
+        const hasProduct = el.querySelector(
+            '[class*="product"], [class*="gallery"], [class*="carousel"], ' +
+            '[class*="media"], [class*="variant"], [class*="option"]'
+        );
+        if ((hasImages || hasSwiper || hasProduct) && !shouldKeepHidden(el)) {
+            el.classList.remove('hidden');
+            el.style.setProperty('display', '', 'important');
+            shown++;
+        }
+    });
+
+    // 3. Force-show elements with visibility:hidden that contain product content
+    document.querySelectorAll('[class*="product"], [class*="gallery"], [class*="media"]').forEach(el => {
+        const style = window.getComputedStyle(el);
+        if (style.visibility === 'hidden' && !shouldKeepHidden(el)) {
+            el.style.setProperty('visibility', 'visible', 'important');
+            shown++;
+        }
+    });
+
+    return shown;
+})()"""
+
 # JS snippet to remove anti-scraping overlay divs.
 # These are full-page overlays with extreme z-index and transparent text,
 # injected by Shopify themes to block content scrapers. They render as
@@ -248,6 +337,14 @@ def capture_rendered_page(
         if chrome_removed:
             logger.info(f"Removed {chrome_removed} navigation chrome elements")
 
+        # Force-show JS-hidden product content (Alpine.js x-show, Tailwind
+        # 'hidden' class, Vue v-show, etc.) BEFORE removing hidden elements.
+        # This ensures product galleries, variant selectors, and carousels
+        # that are hidden by default JS state become visible for capture.
+        js_shown = page.evaluate(_FORCE_SHOW_JS_HIDDEN_JS)
+        if js_shown:
+            logger.info(f"Force-showed {js_shown} JS-hidden content element(s)")
+
         # Remove SVG sprites and elements hidden via computed style
         hidden_removed = page.evaluate(_REMOVE_HIDDEN_AND_SPRITES_JS)
         if hidden_removed:
@@ -277,6 +374,9 @@ def capture_rendered_page(
             "(sels) => { const els = document.querySelectorAll(sels); els.forEach(el => el.remove()); return els.length; }",
             _OVERLAY_SELECTORS,
         )
+        # Force-show any newly-rendered JS-hidden content (scrolling may
+        # have triggered lazy component initialization)
+        page.evaluate(_FORCE_SHOW_JS_HIDDEN_JS)
         late_hidden = page.evaluate(_REMOVE_HIDDEN_AND_SPRITES_JS)
         late_anti_scrape = page.evaluate(_REMOVE_ANTI_SCRAPE_OVERLAYS_JS)
         if late_chrome or late_overlays or late_hidden or late_anti_scrape:

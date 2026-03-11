@@ -43,9 +43,11 @@ class SurgeryPipeline:
         self,
         gemini_service: GeminiService,
         progress_callback: Optional[Callable] = None,
+        supabase_client=None,
     ):
         self._gemini = gemini_service
         self._progress = progress_callback
+        self._supabase = supabase_client
         self._start_time = 0.0
         #: Phase snapshots for debugging/eval
         self.phase_snapshots: Dict[str, str] = {}
@@ -108,6 +110,29 @@ class SurgeryPipeline:
                 "S0: Visible text < 500 chars — falling back to reconstruction"
             )
             return ""
+
+        # ------------------------------------------------------------------
+        # S0.5: Image Proxy (optional — uploads images to Supabase storage)
+        # ------------------------------------------------------------------
+        try:
+            from .sanitizer import proxy_images_to_storage
+            from viraltracker.core.database import get_supabase_client
+
+            supabase = self._supabase or get_supabase_client()
+            import hashlib
+            url_hash = hashlib.sha256(page_url.encode()).hexdigest()[:12]
+            sanitized_html, proxy_stats = proxy_images_to_storage(
+                sanitized_html,
+                supabase,
+                storage_prefix=f"surgery/{url_hash}/",
+            )
+            self.phase_snapshots["_s0_proxy_stats"] = _wrap_json(proxy_stats)
+            logger.info(
+                f"S0.5 Proxy: {proxy_stats['proxied']} images proxied, "
+                f"{proxy_stats['failed']} failed"
+            )
+        except Exception as e:
+            logger.warning(f"S0.5: Image proxy skipped: {e}")
 
         # ------------------------------------------------------------------
         # S1: Section Segmentation

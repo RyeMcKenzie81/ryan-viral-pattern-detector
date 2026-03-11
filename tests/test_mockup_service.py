@@ -1780,6 +1780,20 @@ class TestSanitizeCssBlock:
         result = _sanitize_css_block(css)
         assert "behavior:" not in result.lower() or "behavior-stripped" in result.lower()
 
+    def test_scroll_behavior_preserved(self):
+        """scroll-behavior: should NOT be stripped (false positive fix)."""
+        css = "html { scroll-behavior: smooth; }"
+        result = _sanitize_css_block(css)
+        assert "scroll-behavior" in result
+        assert "smooth" in result
+
+    def test_import_orphan_after_url_stripping(self):
+        """@import orphaned after url() stripping should be cleaned up."""
+        css = '@import url("evil.css"); .x { color: red; }'
+        result = _sanitize_css_block(css)
+        assert "@import" not in result
+        assert "color: red" in result
+
     def test_gradient_preserved(self):
         """linear-gradient() is NOT a url() call and should survive."""
         css = ".hero { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); }"

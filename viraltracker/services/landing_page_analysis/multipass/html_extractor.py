@@ -14,7 +14,7 @@ import re
 import socket
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 from urllib.parse import urljoin, urlparse
 
 from ._url_validator import _MARKDOWN_IMAGE_RE, validate_image_url
@@ -183,7 +183,7 @@ class ResponsiveCSS:
 
 MAX_CSS_RESPONSE_BYTES = 2 * 1024 * 1024  # 2MB per external stylesheet
 _MAX_EXTERNAL_CSS_FETCHES = 3
-_MAX_EXTERNAL_CSS_FETCHES_ALL = 10  # When fetching all external (surgery path)
+_MAX_EXTERNAL_CSS_FETCHES_ALL = 20  # When fetching all external (surgery path)
 
 # Platform-specific asset CDNs that serve page-specific CSS.
 # These are NOT generic library CDNs — they host first-party stylesheets
@@ -244,6 +244,12 @@ class CSSExtractor:
 
         for css_url in link_urls:
             if fetched >= _MAX_EXTERNAL_CSS_FETCHES_ALL:
+                remaining = len(link_urls) - fetched
+                if remaining > 0:
+                    logger.warning(
+                        f"CSS fetch limit reached ({_MAX_EXTERNAL_CSS_FETCHES_ALL}), "
+                        f"skipping {remaining} remaining stylesheet(s)"
+                    )
                 break
             parsed = urlparse(css_url)
             css_host = (parsed.hostname or "").lower()
@@ -898,8 +904,17 @@ def _clean_font_face(block: str) -> str:
 
 
 def _extract_stylesheet_urls(html: str, page_url: str) -> List[str]:
-    """Extract <link rel="stylesheet"> href URLs from HTML."""
+    """Extract stylesheet URLs from HTML.
+
+    Discovers stylesheets from:
+    - ``<link rel="stylesheet">`` — standard stylesheet links
+    - ``<link rel="preload" as="style">`` — preloaded stylesheets (common
+      Shopify pattern for deferred CSS loading)
+    """
     urls: List[str] = []
+    seen: Set[str] = set()
+
+    # Pattern 1: <link rel="stylesheet">
     for match in re.finditer(
         r'<link\b[^>]*rel=["\']stylesheet["\'][^>]*>', html, re.IGNORECASE
     ):
@@ -908,7 +923,27 @@ def _extract_stylesheet_urls(html: str, page_url: str) -> List[str]:
             href = href_match.group(1)
             if page_url and not href.startswith(('http://', 'https://')):
                 href = urljoin(page_url, href)
-            urls.append(href)
+            if href not in seen:
+                urls.append(href)
+                seen.add(href)
+
+    # Pattern 2: <link rel="preload" as="style"> — Shopify deferred CSS
+    for match in re.finditer(
+        r'<link\b[^>]*rel=["\']preload["\'][^>]*>', html, re.IGNORECASE
+    ):
+        tag = match.group(0)
+        as_match = re.search(r'as=["\']style["\']', tag, re.IGNORECASE)
+        if not as_match:
+            continue
+        href_match = re.search(r'href=["\']([^"\']+)["\']', tag)
+        if href_match:
+            href = href_match.group(1)
+            if page_url and not href.startswith(('http://', 'https://')):
+                href = urljoin(page_url, href)
+            if href not in seen:
+                urls.append(href)
+                seen.add(href)
+
     return urls
 
 
