@@ -257,6 +257,10 @@ def render_avatar_card(avatar, brand_id: str):
             if avatar.generation_prompt:
                 st.markdown(f"**Generation Prompt:** {avatar.generation_prompt[:200]}{'...' if len(avatar.generation_prompt or '') > 200 else ''}")
             st.markdown(f"**Default Settings:** {avatar.default_aspect_ratio.value} / {avatar.default_resolution.value} / {avatar.default_duration_seconds}s")
+            if avatar.source_reference_image:
+                src_url = get_signed_url(avatar.source_reference_image)
+                if src_url:
+                    st.image(src_url, width=80, caption="Source ref")
 
         with col_actions:
             if st.button("Select for Video", key=f"select_{avatar.id}"):

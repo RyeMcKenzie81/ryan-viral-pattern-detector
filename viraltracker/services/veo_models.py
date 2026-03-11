@@ -124,6 +124,9 @@ class BrandAvatar(BaseModel):
     reference_image_3: Optional[str] = Field(None, description="Side profile reference image storage path")
     reference_image_4: Optional[str] = Field(None, description="Full body reference image storage path")
 
+    # Source reference image (user-uploaded photo to guide AI generation of angle shots)
+    source_reference_image: Optional[str] = Field(None, description="Storage path for user-uploaded source reference photo")
+
     # Kling element ID for character consistency in video generation
     kling_element_id: Optional[str] = Field(None, description="Kling AI element ID for this avatar")
     kling_voice_id: Optional[str] = Field(None, description="Kling AI voice ID from element_voice_info")

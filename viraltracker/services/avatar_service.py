@@ -81,7 +81,9 @@ class AvatarService:
 
         Args:
             data: Avatar creation data
-            reference_images: Optional list of reference image bytes (up to 4)
+            reference_images: Optional list of reference image bytes.
+                The first image is stored as a source reference photo that
+                guides AI generation of angle shots (not as a slot image).
 
         Returns:
             Created BrandAvatar
@@ -89,13 +91,12 @@ class AvatarService:
         avatar_id = uuid.uuid4()
         now = datetime.utcnow()
 
-        # Upload reference images if provided
-        ref_paths = [None, None, None, None]
-        if reference_images:
-            for i, img_bytes in enumerate(reference_images[:4]):
-                path = f"{data.brand_id}/{avatar_id}/ref{i+1}.png"
-                await self._upload_image(path, img_bytes)
-                ref_paths[i] = f"{self.STORAGE_BUCKET}/{path}"
+        # Upload source reference image if provided (guides angle generation)
+        source_ref_path = None
+        if reference_images and len(reference_images) > 0:
+            path = f"{data.brand_id}/{avatar_id}/source_reference.png"
+            await self._upload_image(path, reference_images[0])
+            source_ref_path = f"{self.STORAGE_BUCKET}/{path}"
 
         # Insert into database
         record = {
@@ -103,10 +104,7 @@ class AvatarService:
             "brand_id": str(data.brand_id),
             "name": data.name,
             "description": data.description,
-            "reference_image_1": ref_paths[0],
-            "reference_image_2": ref_paths[1],
-            "reference_image_3": ref_paths[2],
-            "reference_image_4": ref_paths[3],
+            "source_reference_image": source_ref_path,
             "generation_prompt": data.generation_prompt,
             "default_negative_prompt": data.default_negative_prompt,
             "default_aspect_ratio": data.default_aspect_ratio.value,
@@ -126,10 +124,7 @@ class AvatarService:
             brand_id=data.brand_id,
             name=data.name,
             description=data.description,
-            reference_image_1=ref_paths[0],
-            reference_image_2=ref_paths[1],
-            reference_image_3=ref_paths[2],
-            reference_image_4=ref_paths[3],
+            source_reference_image=source_ref_path,
             generation_prompt=data.generation_prompt,
             default_negative_prompt=data.default_negative_prompt,
             default_aspect_ratio=data.default_aspect_ratio,
@@ -592,8 +587,14 @@ Requirements:
         if custom_prompt_suffix:
             full_prompt += f"\n\n{custom_prompt_suffix}"
 
-        # Collect prior slot images as references for consistency
+        # Collect reference images: source reference first, then prior slots
         reference_images = []
+        if avatar.source_reference_image:
+            try:
+                src_bytes = await self._download_image(avatar.source_reference_image)
+                reference_images.append(src_bytes)
+            except Exception as e:
+                logger.warning(f"Failed to load source reference for avatar {avatar_id}: {e}")
         for prior_slot in range(1, slot):
             ref_path = getattr(avatar, f"reference_image_{prior_slot}")
             if ref_path:
@@ -1343,12 +1344,12 @@ Requirements:
     # =========================================================================
 
     async def _upload_image(self, path: str, data: bytes) -> None:
-        """Upload image to storage."""
+        """Upload image to storage (upserts if exists)."""
         await asyncio.to_thread(
             lambda: self.supabase.storage.from_(self.STORAGE_BUCKET).upload(
                 path,
                 data,
-                {"content-type": "image/png"}
+                {"content-type": "image/png", "upsert": "true"}
             )
         )
 
@@ -1373,6 +1374,7 @@ Requirements:
             reference_image_2=row.get("reference_image_2"),
             reference_image_3=row.get("reference_image_3"),
             reference_image_4=row.get("reference_image_4"),
+            source_reference_image=row.get("source_reference_image"),
             kling_element_id=row.get("kling_element_id"),
             kling_voice_id=row.get("kling_voice_id"),
             calibration_video_path=row.get("calibration_video_path"),
