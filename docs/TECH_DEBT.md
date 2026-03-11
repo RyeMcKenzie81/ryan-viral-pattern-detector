@@ -169,13 +169,16 @@ This document tracks technical debt and planned future enhancements that aren't 
 
 ---
 
-### 9. Centralized Notification System
+### 9. Activity Feed & Notification Inbox
 
-**Priority**: Medium
+**Priority**: Medium-High
 **Complexity**: Medium
 **Added**: 2026-02-03
+**Updated**: 2026-03-11
 
-**Context**: Background operations (asset downloads, sync jobs, scheduled tasks) complete silently or show a toast that disappears on page refresh. Users have no way to see the history of what happened, forcing them to check Logfire manually.
+**Context**: Background operations (asset downloads, sync jobs, scheduled tasks) complete silently or show a toast that disappears on page refresh. Users have no way to see the history of what happened, forcing them to check Logfire manually. When a recurring schedule fails at 3am, there's zero visibility — it just silently doesn't produce output.
+
+**Vision**: An activity feed that greets you on login, showing a scrollable history of everything that happened since you last checked — successes, failures, and things that need attention. Like a personal ops dashboard.
 
 **What's needed**:
 1. Database table for notifications:
@@ -185,10 +188,10 @@ This document tracks technical debt and planned future enhancements that aren't 
        organization_id UUID REFERENCES organizations(id),
        user_id UUID REFERENCES auth.users(id),  -- NULL = org-wide
        type TEXT NOT NULL,  -- 'success', 'error', 'warning', 'info'
-       category TEXT,  -- 'asset_download', 'sync', 'scheduler', etc.
+       category TEXT,  -- 'asset_download', 'sync', 'scheduler', 'ad_creation', etc.
        title TEXT NOT NULL,
        message TEXT,
-       metadata JSONB,  -- Additional context (counts, IDs, etc.)
+       metadata JSONB,  -- Additional context (counts, IDs, job_id, error traceback, etc.)
        read_at TIMESTAMPTZ,
        created_at TIMESTAMPTZ DEFAULT now()
    );
@@ -200,19 +203,31 @@ This document tracks technical debt and planned future enhancements that aren't 
    - `get_notifications(org_id, user_id, limit, include_read)`
    - `mark_read(notification_id)` / `mark_all_read()`
 
-3. UI Component:
-   - Bell icon in sidebar/header with unread count badge
-   - Dropdown/panel showing recent notifications
-   - "View all" link to full notification history page
-   - Click notification to see details + navigate to relevant page
+3. Activity Feed UI (primary experience):
+   - Dedicated page or prominent sidebar section shown on login
+   - Scrollable timeline of recent events, newest first
+   - Color-coded by type: green (success), red (failure), yellow (needs attention)
+   - Filter by category (scheduler, sync, ad creation, etc.)
+   - Each entry shows: timestamp, category icon, title, brief message
+   - Expandable detail view with full error messages, metadata, links to related pages
+   - "Since your last visit" divider to highlight what's new
 
-4. Integration points:
+4. Bell icon (secondary):
+   - Unread count badge in sidebar
+   - Quick dropdown showing top 5 unread items
+   - Link to full activity feed
+
+5. Integration points (scheduler is the most critical):
+   - Scheduler job success → notification with output summary (e.g., "Created 3 ads for Brand X")
+   - Scheduler job failure → notification with error details + link to job config
+   - Recurring schedule failure → highlighted as "needs attention" with retry info
+   - Meta sync completion → notification with ad counts synced
    - Asset download completion → notification with counts
-   - Sync job completion → notification with summary
-   - Scheduler job results → notification with success/failure
-   - Error conditions → notification with error details
+   - Ad creation pipeline results → notification with success/failure per ad
 
-**Benefit**: Users can see what happened without checking logs, and have a history of all background operations.
+**Benefit**: No more silent failures. Users see a clear history of what the system did overnight, what succeeded, what failed, and what needs their attention — without digging through Logfire.
+
+**See also**: Item #34 (Scheduler Failure Retry) — the retry mechanism and the notification inbox work hand-in-hand.
 
 ---
 
@@ -802,3 +817,59 @@ The current permissive RLS policy (`FOR ALL TO authenticated USING (true)`) mean
 - `viraltracker/ui/pages/02_🏢_Brand_Manager.py` — Read-only font display
 - `viraltracker/pipelines/ad_creation_v2/services/generation_service.py` — Consumes `brand_fonts`
 - `viraltracker/pipelines/ad_creation_v2/nodes/fetch_context.py` — Loads fonts from DB
+
+---
+
+### 34. Scheduler — Failure Retry for Recurring Jobs
+
+**Priority**: Medium-High
+**Complexity**: Medium
+**Added**: 2026-03-11
+
+**Context**: When a recurring scheduled job fails (e.g., nightly ad creation, daily meta sync), the scheduler currently marks it as failed and moves on. The next execution happens at the normal next interval (e.g., tomorrow at 2am). But the failed run's work is simply lost — there's no retry, no backfill, and no notification. For one-time jobs it's even worse: they fail silently and never run again.
+
+**Current behavior**:
+- `_reschedule_after_failure()` sets `status='failed'`, increments `failure_count`, computes `next_run_at` using normal cron/interval logic
+- No retry of the failed execution itself
+- No distinction between transient errors (API timeout, rate limit) and permanent errors (bad config)
+- No visibility to the user that a failure occurred (see item #9)
+
+**What's needed**:
+
+1. **Automatic retry with backoff** — On failure, schedule a retry before the next regular run:
+   - 1st retry: 15 minutes after failure
+   - 2nd retry: 1 hour after failure
+   - 3rd retry: next day (or next regular interval, whichever is sooner)
+   - Track `retry_count` separately from `failure_count` (retry resets on success, failure accumulates)
+   - After max retries exhausted, mark as `failed` and flag for user attention
+
+2. **Schema additions**:
+   ```sql
+   ALTER TABLE scheduled_jobs
+       ADD COLUMN IF NOT EXISTS retry_count INT DEFAULT 0,
+       ADD COLUMN IF NOT EXISTS max_retries INT DEFAULT 3,
+       ADD COLUMN IF NOT EXISTS last_error TEXT,
+       ADD COLUMN IF NOT EXISTS needs_attention BOOLEAN DEFAULT FALSE;
+   ```
+
+3. **Worker changes** (`scheduler_worker.py`):
+   - `_reschedule_after_failure()` → check `retry_count < max_retries`, if so schedule retry with backoff instead of jumping to next regular interval
+   - On retry success, reset `retry_count` to 0 and resume normal schedule
+   - On max retries exhausted, set `needs_attention = TRUE`
+
+4. **Notification integration** (depends on item #9):
+   - On first failure: create info notification ("Job X failed, retrying in 15 min")
+   - On max retries exhausted: create error notification ("Job X failed 3 times, needs attention")
+   - On retry success after failure: create success notification ("Job X recovered after retry")
+
+5. **UI visibility**:
+   - Show `needs_attention` jobs prominently in Pipeline Manager / Ad Scheduler
+   - "Retry Now" button for failed jobs
+   - Show `last_error` in job detail view
+
+**Related files**:
+- `viraltracker/worker/scheduler_worker.py` — `_reschedule_after_failure()`, `_update_job_next_run()`
+- `viraltracker/ui/pages/24_📅_Ad_Scheduler.py` — Job management UI
+- `viraltracker/ui/pages/60_⚙️_Pipeline_Manager.py` — Platform schedules
+
+**See also**: Item #9 (Activity Feed & Notification Inbox) — retry notifications feed into the activity feed.
