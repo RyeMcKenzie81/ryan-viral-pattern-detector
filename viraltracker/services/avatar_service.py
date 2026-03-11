@@ -614,12 +614,17 @@ Requirements:
                 except Exception as e:
                     logger.warning(f"Failed to load ref slot {prior_slot}: {e}")
 
+        # Map avatar resolution to Gemini image_size
+        RESOLUTION_TO_SIZE = {"720p": "1K", "1080p": "2K", "4k": "4K"}
+        image_size = RESOLUTION_TO_SIZE.get(avatar.default_resolution.value, "2K")
+
         # Generate with low temperature for consistency
         try:
             image_bytes = await self.generate_avatar_image(
                 prompt=full_prompt,
                 reference_images=reference_images if reference_images else None,
                 temperature=0.3,
+                image_size=image_size,
             )
         except Exception as e:
             # Check for safety filter errors
