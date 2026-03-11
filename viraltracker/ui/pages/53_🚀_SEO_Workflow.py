@@ -345,18 +345,26 @@ with tab_qw:
     recent = workflow_svc.get_recent_jobs(brand_id, limit=10)
     if recent:
         for job in recent:
+            _jid = job.get("id")
             config = job.get("config", {})
             kw = config.get("keyword", "unknown")
-            status = job.get("status", "?")
+            j_status = job.get("status", "?")
             created = job.get("created_at", "")[:16]
             result = job.get("result", {})
             url = result.get("published_url", "")
 
-            status_icon = {"completed": "+", "failed": "!", "cancelled": "x", "running": "~", "paused": "||"}.get(status, "?")
-            line = f"[{status_icon}] **{kw}** — {status} — {created}"
-            if url:
-                line += f" — [View]({url})"
-            st.markdown(line)
+            status_icon = {"completed": "+", "failed": "!", "cancelled": "x", "running": "~", "paused": "||"}.get(j_status, "?")
+
+            rc1, rc2, rc3 = st.columns([4, 1, 1])
+            with rc1:
+                st.markdown(f"[{status_icon}] **{kw}** — {j_status} — {created}")
+            with rc2:
+                if url:
+                    st.markdown(f"[View]({url})")
+            with rc3:
+                if j_status in ("completed", "failed") and st.button("Load", key=f"seo_wf_load_{_jid}"):
+                    st.session_state["seo_wf_active_job"] = _jid
+                    st.rerun()
     else:
         st.caption("No recent jobs for this brand.")
 
