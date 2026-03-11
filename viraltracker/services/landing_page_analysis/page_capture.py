@@ -51,13 +51,15 @@ _OVERLAY_SELECTORS = (
 # Shopify section wrappers, so avoid broad class-based selectors like
 # [class*='primary-logo'] which can catch visible content.
 _CHROME_SELECTORS = (
-    "header, nav, footer, "
-    "[id*='shopify-section-header'], [id*='shopify-section-footer'], "
+    # NOTE: We intentionally keep <header>, <nav>, and announcement bars.
+    # These are visually important for page fidelity. Only remove elements
+    # that are overlays, drawers, or non-visual chrome.
+    "footer, "
+    "[id*='shopify-section-footer'], "
     "[class*='cart-drawer'], [class*='cart-sidebar'], [class*='CartDrawer'], "
     "[class*='drawer'][class*='cart'], [class*='ajax-cart'], [class*='theme-ajax-cart'], "
-    "[class*='site-header'], [class*='site-footer'], "
-    "[class*='main-nav'], [class*='main_nav'], "
-    "[class*='announcement-bar'], [class*='promo-bar'], "
+    "[class*='mini__cart'], [class*='mini-cart'], [class*='minicart'], "
+    "[class*='site-footer'], "
     # Mega menus (Shopify theme dropdown navigation panels)
     "[id*='mega-menu'], [id*='mega_menu'], [class*='mega-menu'], [class*='megamenu'], "
     "[id*='shopify-section-mega'], "
@@ -146,7 +148,7 @@ _FORCE_SHOW_JS_HIDDEN_JS = """(() => {
     const KEEP_HIDDEN_PATTERNS = [
         'cart', 'drawer', 'sidebar', 'modal', 'popup', 'overlay',
         'menu', 'dropdown', 'mega-menu', 'off-canvas', 'offcanvas',
-        'tooltip', 'toast', 'notification', 'banner',
+        'tooltip', 'toast', 'notification',
         'cookie', 'consent', 'newsletter', 'exit-intent',
         'search-modal', 'quick-view', 'mini-cart',
     ];
@@ -171,9 +173,32 @@ _FORCE_SHOW_JS_HIDDEN_JS = """(() => {
         return false;
     }
 
-    // 1. Force-show elements hidden by JS frameworks inside main content
-    //    Target: elements with x-show, v-show, x-bind:class, :class, data-state
-    //    that are display:none but contain images or substantial text
+    // 1. Force-show elements hidden by JS frameworks inside main content.
+    //    ONLY force-show elements that contain product media (images, video,
+    //    galleries, carousels). Skip UI toggles like tabs, accordions,
+    //    pricing switches — these create duplicate/zombie content.
+    function hasProductMedia(el) {
+        return el.querySelector(
+            'img, picture, video, [data-src], ' +
+            '.swiper, .splide, .glide, .slick, ' +
+            '[class*="gallery"], [class*="carousel"], [class*="slider"]'
+        );
+    }
+
+    // Patterns indicating UI toggle elements (not product content)
+    function isUIToggle(el) {
+        const xShow = (el.getAttribute('x-show') || '').toLowerCase();
+        // x-show expressions referencing state toggles: tab, accordion, plan, faq
+        if (/\\b(tab|accordion|faq|activeplan|showmore|expanded|open)\\b/i.test(xShow)) {
+            return true;
+        }
+        const attrs = el.getAttributeNames();
+        if (attrs.some(a => a.startsWith('x-collapse'))) return true;
+        const style = window.getComputedStyle(el);
+        if (style.height === '0px' && style.overflow === 'hidden') return true;
+        return false;
+    }
+
     const jsAttrSelectors = [
         '[x-show]', '[x-bind\\\\:class]', '[\\\\:class]',
         '[v-show]', '[v-if]',
@@ -183,6 +208,11 @@ _FORCE_SHOW_JS_HIDDEN_JS = """(() => {
     document.querySelectorAll(jsAttrSelectors).forEach(el => {
         const style = window.getComputedStyle(el);
         if (style.display === 'none' && !shouldKeepHidden(el)) {
+            // Skip UI toggle elements (tabs, accordions, pricing)
+            if (isUIToggle(el)) return;
+            // Only force-show if element contains product media content
+            if (!hasProductMedia(el)) return;
+
             el.style.setProperty('display', '', 'important');
             // If still hidden after removing display, force block
             const recheck = window.getComputedStyle(el);
@@ -193,8 +223,11 @@ _FORCE_SHOW_JS_HIDDEN_JS = """(() => {
         }
     });
 
-    // 2. Force-show Tailwind 'hidden' class elements inside main/product areas
-    //    The 'hidden' class is often toggled by Alpine.js x-show
+    // 2. Force-show Tailwind 'hidden' class elements inside main/product areas.
+    //    The 'hidden' class is often toggled by Alpine.js x-show.
+    //    IMPORTANT: Skip responsive duplicates — elements hidden for desktop
+    //    viewports (e.g., mobile gallery alongside desktop gallery). Showing
+    //    these breaks grid/flex layouts by adding unexpected children.
     document.querySelectorAll('.hidden').forEach(el => {
         // Only force-show if it has meaningful content (images, swiper, gallery)
         const hasImages = el.querySelector('img, picture, video, [data-src]');
@@ -204,6 +237,25 @@ _FORCE_SHOW_JS_HIDDEN_JS = """(() => {
             '[class*="media"], [class*="variant"], [class*="option"]'
         );
         if ((hasImages || hasSwiper || hasProduct) && !shouldKeepHidden(el)) {
+            // Responsive duplicate check: skip if a visible sibling of
+            // this element (or any ancestor up to 3 levels) already has
+            // the same type of media content. This prevents showing
+            // mobile/desktop gallery variants simultaneously.
+            let skip = false;
+            let check = el;
+            for (let depth = 0; depth < 3 && check.parentElement; depth++) {
+                const par = check.parentElement;
+                const hasSiblingMedia = Array.from(par.children).some(sib => {
+                    if (sib === check) return false;
+                    if (window.getComputedStyle(sib).display === 'none') return false;
+                    return sib.querySelector(
+                        'img, picture, video, .swiper, .splide, .glide, .slick'
+                    );
+                });
+                if (hasSiblingMedia) { skip = true; break; }
+                check = par;
+            }
+            if (skip) return;  // skip responsive duplicate
             el.classList.remove('hidden');
             el.style.setProperty('display', '', 'important');
             shown++;
@@ -272,8 +324,8 @@ def _convert_lazy_to_eager(html: str) -> str:
 
 def capture_rendered_page(
     url: str,
-    viewport_width: int = 1280,
-    viewport_height: int = 800,
+    viewport_width: int = 1440,
+    viewport_height: int = 900,
     capture_screenshot: bool = False,
     scroll_to_load: bool = True,
     timeout_ms: int = 30000,
@@ -288,8 +340,9 @@ def capture_rendered_page(
 
     Args:
         url: Page URL to capture.
-        viewport_width: Browser viewport width (default 1280, matches html_renderer).
-        viewport_height: Browser viewport height (default 800, matches html_renderer).
+        viewport_width: Browser viewport width (default 1440). Uses 1440 to
+            clear custom Tailwind xl breakpoints (some themes set xl=1440px).
+        viewport_height: Browser viewport height (default 900).
         capture_screenshot: Whether to capture a full-page PNG screenshot.
         scroll_to_load: Whether to auto-scroll to trigger lazy loading.
         timeout_ms: Navigation timeout in milliseconds.
@@ -312,15 +365,28 @@ def capture_rendered_page(
             viewport={"width": viewport_width, "height": viewport_height}
         )
 
-        # Freeze animations before navigation for deterministic rendering
-        page.add_style_tag(
-            content="* { animation: none !important; transition: none !important; }"
-        )
-
         # Navigate — use domcontentloaded then wait, since networkidle
         # can hang on pages with persistent connections (analytics, etc.)
         page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
-        page.wait_for_timeout(2000)  # allow JS hydration
+
+        # Wait for CSS to fully load before any DOM manipulation.
+        # domcontentloaded fires when HTML is parsed but external CSS
+        # may still be loading. Without CSS, getComputedStyle() returns
+        # wrong values (e.g., display:none for elements that should be
+        # visible at the xl breakpoint).
+        try:
+            page.wait_for_load_state("load", timeout=8000)
+        except Exception:
+            logger.debug("Timed out waiting for full load, proceeding with domcontentloaded")
+
+        page.wait_for_timeout(3000)  # allow JS hydration + Swiper init
+
+        # Freeze animations AFTER hydration. Must come after the wait so
+        # that CSS transitions (e.g., announcement bar opacity fade-in)
+        # have time to complete before we freeze them.
+        page.add_style_tag(
+            content="* { animation: none !important; transition: none !important; }"
+        )
 
         # Remove overlay/popup elements via DOM removal (deterministic)
         page.evaluate(
@@ -328,8 +394,7 @@ def capture_rendered_page(
             _OVERLAY_SELECTORS,
         )
 
-        # Remove navigation chrome (header, nav, footer, cart drawers)
-        # Mirrors Firecrawl's only_main_content=True behavior
+        # Remove non-visual chrome (footer, cart drawers, mega menus)
         chrome_removed = page.evaluate(
             "(sels) => { const els = document.querySelectorAll(sels); els.forEach(el => el.remove()); return els.length; }",
             _CHROME_SELECTORS,
@@ -364,6 +429,29 @@ def capture_rendered_page(
             page.evaluate("window.scrollTo(0, 0)")
             page.wait_for_timeout(500)
 
+        # Cycle through Swiper slides to force lazy-loaded images to render.
+        # Swiper only populates slide content when slides become active.
+        swiper_slides_loaded = page.evaluate("""(() => {
+            let loaded = 0;
+            // Find all Swiper instances on the page
+            document.querySelectorAll('.swiper').forEach(container => {
+                const swiper = container.swiper;
+                if (!swiper || !swiper.slides || swiper.slides.length <= 1) return;
+                const original = swiper.activeIndex;
+                // Click through each slide to trigger lazy loading
+                for (let i = 0; i < swiper.slides.length; i++) {
+                    try { swiper.slideTo(i, 0); } catch(e) {}
+                }
+                // Return to original slide
+                try { swiper.slideTo(original, 0); } catch(e) {}
+                loaded += swiper.slides.length;
+            });
+            return loaded;
+        })()""")
+        if swiper_slides_loaded:
+            logger.info(f"Cycled through {swiper_slides_loaded} Swiper slides for lazy loading")
+            page.wait_for_timeout(1000)  # allow images to load
+
         # Second cleanup pass — catch elements injected by scripts triggered
         # during scrolling (e.g. Alia popups, late-loaded cart widgets)
         late_chrome = page.evaluate(
@@ -386,6 +474,30 @@ def capture_rendered_page(
                 f"{late_anti_scrape} anti-scrape"
             )
 
+        # Restore header/nav visibility after scroll. Scroll-triggered JS
+        # can hide announcement bars (opacity:0) and collapse sticky headers
+        # (height:0) when scrolling down. Even after scrolling back to top,
+        # these JS handlers may not restore the original state.
+        header_restored = page.evaluate("""(() => {
+            let fixed = 0;
+            const sels = 'header, nav, [id*="announcement"], [id*="header"], [class*="announcement"], [class*="promo-bar"]';
+            document.querySelectorAll(sels).forEach(el => {
+                const style = window.getComputedStyle(el);
+                if (style.opacity === '0') {
+                    el.style.setProperty('opacity', '1', 'important');
+                    fixed++;
+                }
+                if (style.height === '0px' && el.scrollHeight > 0) {
+                    el.style.setProperty('height', 'auto', 'important');
+                    el.style.setProperty('overflow', 'visible', 'important');
+                    fixed++;
+                }
+            });
+            return fixed;
+        })()""")
+        if header_restored:
+            logger.info(f"Restored {header_restored} header/nav element(s) hidden by scroll")
+
         # Quality check: visible text length
         visible_text_len = page.evaluate("document.body.innerText.length")
         if visible_text_len < 200:
@@ -394,6 +506,48 @@ def capture_rendered_page(
                 f"visible chars (CAPTCHA, blank page, or bot detection)"
             )
             return None
+
+        # Unwrap <template> tags so their content survives the sanitizer's
+        # template-stripping step.  Two patterns:
+        # 1. Templates inside carousel/gallery slides (Shopify Swiper lazy content)
+        # 2. Alpine.js x-if/x-for templates (conditionally rendered product content)
+        # For Alpine templates, template.content may be empty — fall back to
+        # reading innerHTML directly.
+        templates_unwrapped = page.evaluate("""(() => {
+            let count = 0;
+
+            // Carousel templates (broad selectors)
+            const carouselSels = '.swiper-slide template, .carousel-slide template, '
+                + '.gallery template, .product-gallery template, .product-media template, '
+                + '.product__media template';
+
+            // Alpine.js conditional templates
+            const alpineSels = 'template[x-if], template[x-for]';
+
+            const all = new Set([
+                ...document.querySelectorAll(carouselSels),
+                ...document.querySelectorAll(alpineSels),
+            ]);
+
+            all.forEach(t => {
+                // Try standard template.content first
+                const frag = t.content.cloneNode(true);
+                if (frag.childNodes.length > 0) {
+                    t.parentNode.replaceChild(frag, t);
+                    count++;
+                } else if (t.innerHTML.trim()) {
+                    // Alpine x-if: content lives in innerHTML, not .content
+                    const div = document.createElement('div');
+                    div.innerHTML = t.innerHTML;
+                    while (div.firstChild) t.parentNode.insertBefore(div.firstChild, t);
+                    t.remove();
+                    count++;
+                }
+            });
+            return count;
+        })()""")
+        if templates_unwrapped:
+            logger.info(f"Unwrapped {templates_unwrapped} <template> tags in carousel/Alpine slides")
 
         # Capture DOM
         dom_html = page.content()

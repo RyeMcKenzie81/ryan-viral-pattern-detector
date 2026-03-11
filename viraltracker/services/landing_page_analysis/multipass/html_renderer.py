@@ -13,8 +13,8 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 # Canonical render settings — shared with eval_multipass.py and visual_fidelity_check.py
-RENDER_VIEWPORT_WIDTH = 1280
-RENDER_VIEWPORT_HEIGHT = 800
+RENDER_VIEWPORT_WIDTH = 1440
+RENDER_VIEWPORT_HEIGHT = 900
 FREEZE_ANIMATIONS_CSS = (
     "<style>* { animation: none !important; transition: none !important; }</style>"
 )

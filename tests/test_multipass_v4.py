@@ -4665,8 +4665,8 @@ class TestHtmlRenderer:
             RENDER_VIEWPORT_HEIGHT,
             FREEZE_ANIMATIONS_CSS,
         )
-        assert RENDER_VIEWPORT_WIDTH == 1280
-        assert RENDER_VIEWPORT_HEIGHT == 800
+        assert RENDER_VIEWPORT_WIDTH == 1440
+        assert RENDER_VIEWPORT_HEIGHT == 900
         assert "animation: none" in FREEZE_ANIMATIONS_CSS
         assert "transition: none" in FREEZE_ANIMATIONS_CSS
 
@@ -5986,6 +5986,51 @@ class TestHTMLSanitizer:
         assert 'color: red; height: 0px;' in result
         assert stats["js_styles_fixed"] >= 2
 
+    def test_strip_swiper_js_inline_styles(self):
+        """Swiper wrapper transform/transition stripped, slide width/margin kept."""
+        from viraltracker.services.landing_page_analysis.multipass.surgery.sanitizer import (
+            HTMLSanitizer,
+        )
+        html = (
+            '<body>'
+            '<div class="swiper-wrapper logosSwiperWrapper" '
+            'style="transition-duration: 5000ms; transform: translate3d(-647px, 0px, 0px);">'
+            '<div class="swiper-slide" style="margin-right: 100px; width: 200px;">Logo</div>'
+            '<div class="swiper-slide" style="margin-right: 100px; width: 200px;">Logo2</div>'
+            '</div>'
+            '</body>'
+        )
+        result, stats = HTMLSanitizer().sanitize(html, page_url="https://example.com")
+        # Wrapper: transform and transition stripped
+        assert 'translate3d' not in result
+        assert 'transition-duration' not in result
+        # Slide: width and margin-right KEPT (needed for multi-slide carousels)
+        assert 'margin-right: 100px' in result
+        assert 'width: 200px' in result
+        assert 'Logo' in result
+        assert 'Logo2' in result
+        assert stats["js_styles_fixed"] >= 2
+
+    def test_unwrap_alpine_templates(self):
+        """Alpine x-if templates with images should be unwrapped, not stripped."""
+        from viraltracker.services.landing_page_analysis.multipass.surgery.sanitizer import (
+            HTMLSanitizer,
+        )
+        html = (
+            '<body>'
+            '<div class="swiper-slide">'
+            '<template x-if="selected"><img src="https://example.com/product.jpg" /></template>'
+            '</div>'
+            '<template id="js-scaffold"><span>framework junk</span></template>'
+            '</body>'
+        )
+        result, stats = HTMLSanitizer().sanitize(html, page_url="https://example.com")
+        # Alpine template with image should be unwrapped — image survives
+        assert 'src="https://example.com/product.jpg"' in result
+        # Framework scaffold template should be stripped
+        assert 'framework junk' not in result
+        assert stats["templates_unwrapped"] >= 1
+
     def test_strips_tracking_pixels(self):
         from viraltracker.services.landing_page_analysis.multipass.surgery.sanitizer import (
             HTMLSanitizer,
@@ -6592,12 +6637,13 @@ class TestPageCapture:
     def test_chrome_selectors_constant(self):
         from viraltracker.services.landing_page_analysis.page_capture import _CHROME_SELECTORS
 
-        # Should target navigation chrome elements
-        assert "header" in _CHROME_SELECTORS
-        assert "nav" in _CHROME_SELECTORS
+        # Should target cart drawers, footer, mega menus — NOT header/nav
         assert "footer" in _CHROME_SELECTORS
         assert "cart" in _CHROME_SELECTORS.lower()
-        assert "announcement" in _CHROME_SELECTORS
+        # header/nav kept for visual fidelity (announcement bar, navigation)
+        assert "header," not in _CHROME_SELECTORS
+        assert "nav," not in _CHROME_SELECTORS
+        assert "announcement" not in _CHROME_SELECTORS
 
 
 # ===========================================================================

@@ -59,11 +59,12 @@ _POPUP_PATTERNS = re.compile(
     re.IGNORECASE,
 )
 
-# Navigation chrome: Shopify section IDs containing header/footer/mega-menu.
+# Navigation chrome: Shopify section IDs containing footer/mega-menu.
+# We keep header sections for visual fidelity (announcement bar, nav).
 # Safety net for elements that survive Playwright DOM removal (e.g. Firecrawl
 # fallback path, or JS-injected elements after capture).
 _SHOPIFY_CHROME_ID_PATTERN = re.compile(
-    r'shopify-section[-_].*?(header|footer|mega[-_]?menu|announcement)',
+    r'shopify-section[-_].*?(footer|mega[-_]?menu)',
     re.IGNORECASE,
 )
 
@@ -163,7 +164,16 @@ class HTMLSanitizer:
             "svg_elements_stripped": 0,
         }
 
+        # 0. Unwrap Alpine.js/carousel <template> tags BEFORE stripping.
+        # Alpine x-if/x-for and Swiper lazy templates contain product
+        # images that would be destroyed by _strip_tags_with_content.
+        # Unwrap = keep children, remove the <template> wrapper.
+        html, unwrapped = self._unwrap_content_templates(html)
+        stats["templates_unwrapped"] = unwrapped
+
         # 1. Strip tags with content (script, noscript, template, audio)
+        # Remaining <template> tags (framework scaffolding, not content)
+        # are stripped here.
         html, count = self._strip_tags_with_content(html)
         stats["scripts_removed"] = count
 
@@ -227,7 +237,24 @@ class HTMLSanitizer:
         html, count = self._fix_js_inline_styles(html)
         stats["js_styles_fixed"] = count
 
-        # 12. Size guard
+        # 12. Inject Swiper/carousel fallback CSS so renders are
+        # self-contained even if the external swiper-bundle.css fails to load.
+        # height:auto!important overrides swiper-bundle's height:100% on
+        # .swiper-wrapper and .swiper-slide, which without JS causes
+        # containers to inflate to viewport height (800px gap bug).
+        if ".swiper" in html or "swiper-wrapper" in html:
+            swiper_fallback = (
+                '<style data-sanitizer="swiper-fallback">'
+                '.swiper{overflow:hidden;position:relative}'
+                '.swiper-wrapper{display:flex;box-sizing:content-box;'
+                'transform:translate3d(0,0,0);height:auto!important}'
+                '.swiper-slide{flex-shrink:0;box-sizing:border-box;'
+                'max-width:100%;height:auto!important}'
+                '</style>'
+            )
+            html = html.replace('</head>', swiper_fallback + '</head>', 1)
+
+        # 13. Size guard
         if len(html) > _MAX_SANITIZED_SIZE:
             logger.warning(
                 f"Sanitized HTML exceeds {_MAX_SANITIZED_SIZE} bytes "
@@ -559,10 +586,10 @@ class HTMLSanitizer:
                 result = result[:start] + result[end:]
                 count += 1
 
-        # Pass 2: Remove bare semantic chrome tags (<header>, <nav>, <footer>)
-        # These should have been removed by Playwright but may survive via
-        # Firecrawl fallback or dynamic injection.
-        for tag in ("header", "nav", "footer"):
+        # Pass 2: Remove bare semantic chrome tags (<footer> only).
+        # We keep <header> and <nav> for visual fidelity (announcement bar,
+        # navigation). Footer is still removed as it's rarely content.
+        for tag in ("footer",):
             pattern = re.compile(rf'<{tag}\b[^>]*>', re.IGNORECASE)
             removals = []
             for m in pattern.finditer(result):
@@ -749,6 +776,53 @@ class HTMLSanitizer:
         """Unwrap <shopify-section> custom elements, keeping children."""
         return _SHOPIFY_SECTION_RE.sub(r'\1', html)
 
+    # Templates that contain renderable content (Alpine.js, carousel lazy)
+    # vs framework scaffolding.  Match <template> tags that either:
+    # 1. Have Alpine directives (x-if, x-for, x-show)
+    # 2. Are inside a swiper/carousel/gallery/product container
+    _CONTENT_TEMPLATE_RE = re.compile(
+        r'<template\b([^>]*?)>(.*?)</template\s*>',
+        re.DOTALL | re.IGNORECASE,
+    )
+    _ALPINE_ATTR_RE = re.compile(r'x-(?:if|for|show)\s*=', re.IGNORECASE)
+    _CAROUSEL_PARENT_RE = re.compile(
+        r'(?:swiper|carousel|gallery|product-media|product__media)',
+        re.IGNORECASE,
+    )
+
+    def _unwrap_content_templates(self, html: str) -> Tuple[str, int]:
+        """Unwrap <template> tags that contain renderable content.
+
+        Alpine.js x-if/x-for and Swiper lazy templates hold product
+        images and content.  Unwrap them (keep inner HTML, drop the
+        <template> wrapper) so the content survives the subsequent
+        _strip_tags_with_content step.  Framework-scaffolding templates
+        (no Alpine attrs, not inside a carousel) are left for stripping.
+        """
+        count = 0
+
+        def _maybe_unwrap(m: re.Match) -> str:
+            nonlocal count
+            attrs = m.group(1)
+            inner = m.group(2)
+
+            # Always unwrap if Alpine directive present
+            if self._ALPINE_ATTR_RE.search(attrs):
+                count += 1
+                return inner
+
+            # Check if the template contains img/picture/video — likely
+            # product content worth keeping
+            if re.search(r'<(?:img|picture|video)\b', inner, re.IGNORECASE):
+                count += 1
+                return inner
+
+            # Leave other templates for stripping
+            return m.group(0)
+
+        html = self._CONTENT_TEMPLATE_RE.sub(_maybe_unwrap, html)
+        return html, count
+
     def _strip_dangerous_svg(self, html: str) -> Tuple[str, int]:
         """Strip dangerous elements from within <svg> subtrees."""
         count = 0
@@ -784,13 +858,55 @@ class HTMLSanitizer:
         re.IGNORECASE,
     )
 
+    # Regex to strip specific CSS properties from inline style attributes
+    # on elements whose class matches a pattern.  Groups:
+    #   1 = tag prefix up to and including class="..."
+    #   2 = style attribute value (the CSS text between quotes)
+    @staticmethod
+    def _strip_inline_props(html: str, class_kw: str,
+                            props: list[str]) -> Tuple[str, int]:
+        """Strip specific CSS properties from inline styles on elements
+        whose class contains *class_kw*.
+
+        General-purpose helper: works for any carousel/framework that
+        sets JS-computed values as inline styles at runtime.
+        """
+        # Build pattern: opening tag with class containing keyword AND a style attr
+        tag_re = re.compile(
+            rf'(<[^>]*class="[^"]*{re.escape(class_kw)}[^"]*"[^>]*?)style="([^"]*)"',
+            re.IGNORECASE,
+        )
+        # Build prop-stripping patterns
+        prop_patterns = [
+            re.compile(
+                rf'{re.escape(p)}\s*:\s*[^;"]+(;|\s*(?="))',
+                re.IGNORECASE,
+            )
+            for p in props
+        ]
+        count = 0
+
+        def _clean(m: re.Match) -> str:
+            nonlocal count
+            prefix = m.group(1)
+            style_val = m.group(2)
+            for pp in prop_patterns:
+                style_val, n = pp.subn('', style_val)
+                count += n
+            style_val = style_val.strip().rstrip(';').strip()
+            if style_val:
+                return f'{prefix}style="{style_val}"'
+            return prefix.rstrip()
+
+        return tag_re.sub(_clean, html), count
+
     def _fix_js_inline_styles(self, html: str) -> Tuple[str, int]:
         """Fix inline styles broken by JS frameworks.
 
-        Empty aspect-ratio values come from Shopify template hydration
-        and cause elements to collapse to 0 height in standalone renders.
-        height:0px removal is limited to swiper/carousel/slider elements
-        where JS was expected to calculate the real height.
+        Handles:
+        - Empty aspect-ratio from Shopify template hydration
+        - Swiper JS runtime styles (transform, transition, margin, width)
+          that break static rendering of carousels
         """
         count = 0
 
@@ -811,6 +927,22 @@ class HTMLSanitizer:
             return tag_before.rstrip()
 
         html = self._SWIPER_HEIGHT_0_RE.sub(_fix_swiper_height, html)
+
+        # Strip Swiper JS-set inline styles that break static rendering.
+        # Swiper sets transform:translate3d() for slide position,
+        # transition-duration for animations, and these are meaningless
+        # (or harmful) in static HTML.
+        html, n = self._strip_inline_props(
+            html, class_kw='swiper-wrapper',
+            props=['transform', 'transition-duration', 'transition-delay'],
+        )
+        count += n
+
+        # NOTE: We intentionally keep width and margin-right on .swiper-slide.
+        # These JS-computed values are correct (slidesPerView, spaceBetween)
+        # and stripping them makes multi-slide carousels break catastrophically
+        # (slides expand to 100% width). overflow:hidden on .swiper handles
+        # any overflow from extra slides.
 
         # Clean up leftover empty style attributes
         html = re.sub(r'\s*style="\s*"', '', html)

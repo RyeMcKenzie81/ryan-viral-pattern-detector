@@ -581,10 +581,10 @@ class LandingPageAnalysisService:
 
         img = Image.open(io.BytesIO(image_bytes))
 
-        # Always scale down width to 1280px max (matches Playwright viewport width)
-        if img.width > 1280:
-            ratio = 1280 / img.width
-            img = img.resize((1280, int(img.height * ratio)), Image.Resampling.LANCZOS)
+        # Always scale down width to 1440px max (matches Playwright viewport width)
+        if img.width > 1440:
+            ratio = 1440 / img.width
+            img = img.resize((1440, int(img.height * ratio)), Image.Resampling.LANCZOS)
 
         # Try PNG with optimize first
         buf = io.BytesIO()
