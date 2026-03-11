@@ -268,15 +268,19 @@ class LandingPageAnalysisService:
             except Exception as e:
                 logger.warning(f"Failed to store screenshot for {analysis_id}: {e}")
 
+        # Resize screenshot for Gemini API calls (full-page Playwright
+        # screenshots can be 10-20MB which exceeds Gemini's inline limit)
+        gemini_screenshot_b64 = self._resize_screenshot_for_gemini(screenshot_b64)
+
         try:
             # --- Skill 1: Page Classifier ---
             _progress(1, "Classifying page (awareness, sophistication, architecture)...")
-            classification = await self._run_page_classifier(page_content, screenshot_b64)
+            classification = await self._run_page_classifier(page_content, gemini_screenshot_b64)
             self._save_partial(analysis_id, classification=classification, status="processing")
 
             # --- Skill 2: Element Detector ---
             _progress(2, "Detecting elements (34 elements across 6 sections)...")
-            elements = await self._run_element_detector(page_content, classification, screenshot_b64)
+            elements = await self._run_element_detector(page_content, classification, gemini_screenshot_b64)
             self._save_partial(analysis_id, elements=elements)
 
             # --- Skills 3 + 4 in parallel ---
@@ -356,12 +360,18 @@ class LandingPageAnalysisService:
         from .prompts.page_classifier import PAGE_CLASSIFIER_SYSTEM_PROMPT
 
         if screenshot_b64:
-            return await self._run_gemini_multimodal(
-                PAGE_CLASSIFIER_SYSTEM_PROMPT,
-                content,
-                screenshot_b64,
-                operation="page_classifier",
-            )
+            try:
+                return await self._run_gemini_multimodal(
+                    PAGE_CLASSIFIER_SYSTEM_PROMPT,
+                    content,
+                    screenshot_b64,
+                    operation="page_classifier",
+                )
+            except Exception as e:
+                if "Unable to process input image" in str(e):
+                    logger.warning(f"Gemini rejected screenshot, falling back to text-only: {e}")
+                else:
+                    raise
 
         return await self._run_text_agent(
             PAGE_CLASSIFIER_SYSTEM_PROMPT,
@@ -386,12 +396,18 @@ class LandingPageAnalysisService:
         )
 
         if screenshot_b64:
-            return await self._run_gemini_multimodal(
-                ELEMENT_DETECTOR_SYSTEM_PROMPT,
-                context,
-                screenshot_b64,
-                operation="element_detector",
-            )
+            try:
+                return await self._run_gemini_multimodal(
+                    ELEMENT_DETECTOR_SYSTEM_PROMPT,
+                    context,
+                    screenshot_b64,
+                    operation="element_detector",
+                )
+            except Exception as e:
+                if "Unable to process input image" in str(e):
+                    logger.warning(f"Gemini rejected screenshot, falling back to text-only: {e}")
+                else:
+                    raise
 
         return await self._run_text_agent(
             ELEMENT_DETECTOR_SYSTEM_PROMPT,
@@ -522,6 +538,32 @@ class LandingPageAnalysisService:
 
         logger.info(f"Stored screenshot: {self.SCREENSHOT_BUCKET}/{storage_path}")
         return storage_path
+
+    def _resize_screenshot_for_gemini(self, screenshot_b64: Optional[str]) -> Optional[str]:
+        """Resize screenshot to fit Gemini's inline image limits.
+
+        Full-page Playwright screenshots can be 10-20MB+ which exceeds
+        Gemini's 20MB total request limit. This resizes to max 4MB
+        (same as storage) and re-encodes as base64.
+
+        Returns None if input is None or resizing fails.
+        """
+        if not screenshot_b64:
+            return None
+        try:
+            import base64 as b64
+            raw_bytes = b64.b64decode(screenshot_b64)
+            resized_bytes, fmt = self._prepare_screenshot(raw_bytes, max_bytes=4_000_000)
+            result_b64 = b64.b64encode(resized_bytes).decode()
+            if len(resized_bytes) != len(raw_bytes):
+                logger.info(
+                    f"Resized screenshot for Gemini: "
+                    f"{len(raw_bytes):,} → {len(resized_bytes):,} bytes ({fmt})"
+                )
+            return result_b64
+        except Exception as e:
+            logger.warning(f"Screenshot resize failed, using original: {e}")
+            return screenshot_b64
 
     def _prepare_screenshot(self, image_bytes: bytes, max_bytes: int = 4_000_000) -> tuple:
         """Resize/compress screenshot to fit within max_bytes.
