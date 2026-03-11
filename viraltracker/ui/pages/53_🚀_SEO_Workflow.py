@@ -299,9 +299,24 @@ with tab_qw:
                                 icon = "+" if check.get("passed") else "-"
                                 st.markdown(f"  {icon} {check.get('name', '')} — {check.get('message', 'OK')}")
 
-                    if st.button("Start another", key="seo_wf_restart"):
-                        del st.session_state["seo_wf_active_job"]
-                        st.rerun()
+                    c_col1, c_col2 = st.columns(2)
+                    with c_col1:
+                        if st.button("Start another", key="seo_wf_restart"):
+                            del st.session_state["seo_wf_active_job"]
+                            st.rerun()
+                    with c_col2:
+                        if article_id and st.button("Retry Images", key="seo_wf_retry_images"):
+                            try:
+                                with st.spinner("Generating images..."):
+                                    workflow_svc.regenerate_images(
+                                        article_id=article_id,
+                                        brand_id=brand_id,
+                                        organization_id=org_id,
+                                    )
+                                st.success("Images regenerated!")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Image generation failed: {e}")
 
                 elif status == "failed":
                     error = job.get("error", "Unknown error")

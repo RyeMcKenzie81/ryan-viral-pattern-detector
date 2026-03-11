@@ -543,6 +543,47 @@ class SEOWorkflowService:
         self._update_job(job_id, status="cancelled")
         logger.info(f"Cancelled job {job_id}")
 
+    def regenerate_images(self, article_id: str, brand_id: str, organization_id: str) -> Dict[str, Any]:
+        """
+        Re-run image generation for an existing article.
+        Can be called independently of the pipeline.
+
+        Returns:
+            Dict with hero_image_url and inline_images count.
+        """
+        import asyncio
+        organization_id = self._resolve_org_id(organization_id, brand_id)
+
+        from viraltracker.services.seo_pipeline.services.seo_image_service import SEOImageService
+        from viraltracker.services.seo_pipeline.services.seo_brand_config_service import SEOBrandConfigService
+
+        sb = self.supabase
+        image_svc = SEOImageService(supabase_client=sb)
+        brand_config = SEOBrandConfigService(supabase_client=sb).get_config(brand_id)
+
+        article = sb.table("seo_articles").select("keyword, content_markdown, phase_c_output").eq("id", article_id).limit(1).execute()
+        if not article.data:
+            raise ValueError(f"Article not found: {article_id}")
+
+        row = article.data[0]
+        markdown = row.get("content_markdown") or row.get("phase_c_output") or ""
+        keyword = row.get("keyword", "")
+
+        if not markdown:
+            raise ValueError("Article has no content to generate images for")
+
+        result = asyncio.run(
+            image_svc.generate_article_images(
+                article_id=article_id,
+                markdown=markdown,
+                brand_id=brand_id,
+                organization_id=organization_id,
+                keyword=keyword,
+                image_style=brand_config.get("image_style"),
+            )
+        )
+        return result or {}
+
     # =========================================================================
     # CLUSTER RESEARCH
     # =========================================================================
