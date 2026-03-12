@@ -708,6 +708,10 @@ def _render_per_winner(brand_id: str, org_id: str):
                     median = comp.get("median", 0)
                     p75 = comp.get("p75", 0)
                     verdict_icon = {"excellent": "🟢", "above_average": "🟡", "below_average": "🟠", "poor": "🔴"}.get(verdict, "⚪")
+                    val = val if val is not None else 0
+                    p25 = p25 if p25 is not None else 0
+                    median = median if median is not None else 0
+                    p75 = p75 if p75 is not None else 0
                     st.markdown(
                         f"- **{METRIC_LABELS.get(metric, metric)}**: {val:.4f} "
                         f"(p25: {p25:.4f} | median: {median:.4f} | p75: {p75:.4f}) {verdict_icon} {verdict}"

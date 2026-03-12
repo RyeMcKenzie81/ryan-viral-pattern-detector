@@ -792,7 +792,7 @@ class IterationOpportunityDetector:
                     "meta_ad_id, ad_name, date, spend, impressions, "
                     "link_clicks, link_ctr, link_cpc, "
                     "purchases, purchase_value, roas, "
-                    "video_p25_watched, video_thruplay_watched_actions"
+                    "video_p25_watched, video_thruplay"
                 )
                 .eq("brand_id", brand_id)
                 .gte("date", cutoff)
@@ -831,7 +831,7 @@ class IterationOpportunityDetector:
             agg["purchases"] += int(row.get("purchases") or 0)
             agg["purchase_value"] += float(row.get("purchase_value") or 0)
             agg["video_p25_watched"] += int(row.get("video_p25_watched") or 0)
-            agg["video_thruplay"] += int(row.get("video_thruplay_watched_actions") or 0)
+            agg["video_thruplay"] += int(row.get("video_thruplay") or 0)
             if row.get("date"):
                 agg["dates"].add(row["date"])
 
