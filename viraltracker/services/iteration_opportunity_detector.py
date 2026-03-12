@@ -849,10 +849,10 @@ class IterationOpportunityDetector:
                 "spend": agg["spend"],
                 "impressions": imps,
                 "days_active": days_active,
-                "ctr": (clicks / imps * 100) if imps > 0 else 0,
+                "ctr": (clicks / imps) if imps > 0 else 0,  # Decimal, matches baseline
                 "cpc": (agg["spend"] / clicks) if clicks > 0 else 0,
                 "roas": (agg["purchase_value"] / agg["spend"]) if agg["spend"] > 0 else 0,
-                "conversion_rate": (agg["purchases"] / clicks * 100) if clicks > 0 else 0,
+                "conversion_rate": (agg["purchases"] / clicks) if clicks > 0 else 0,  # Decimal
             }
 
             # Video metrics (only if video data exists)

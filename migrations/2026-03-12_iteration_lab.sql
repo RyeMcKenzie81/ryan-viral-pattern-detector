@@ -156,5 +156,12 @@ ADD CONSTRAINT scheduled_jobs_job_type_check
 CHECK (job_type IN (
     'ad_creation', 'meta_sync', 'scorecard', 'template_scrape',
     'template_approval', 'congruence_reanalysis', 'ad_classification',
-    'asset_download', 'iteration_auto_run'
+    'asset_download', 'competitor_scrape', 'reddit_scrape',
+    'amazon_review_scrape',
+    'ad_creation_v2',
+    'creative_genome_update', 'genome_validation',
+    'quality_calibration',
+    'winner_evolution', 'experiment_analysis',
+    'ad_intelligence_analysis',
+    'iteration_auto_run'
 ));
