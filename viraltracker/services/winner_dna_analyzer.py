@@ -607,17 +607,43 @@ class WinnerDNAAnalyzer:
         return winners
 
     def _find_common_elements(self, dnas: List[WinnerDNA]) -> Dict[str, Any]:
-        """Find elements common across winners (>=70% frequency)."""
+        """Find elements common across winners (>=70% frequency).
+
+        Uses both genome element_scores AND messaging properties from
+        classifications, so non-generated ads still contribute patterns.
+        """
         n = len(dnas)
         element_counter: Dict[str, Counter] = {}
 
         for dna in dnas:
+            # From genome element_scores (generated ads only)
             for score in dna.element_scores:
                 elem = score["element"]
                 val = score["value"]
                 if elem not in element_counter:
                     element_counter[elem] = Counter()
                 element_counter[elem][val] += 1
+
+            # From messaging profile (all ads — derived from classifications)
+            messaging = dna.messaging or {}
+            messaging_fields = {
+                "hook_type": "Hook Style",
+                "awareness_level": "Audience Awareness",
+                "creative_format": "Creative Format",
+                "creative_angle": "Creative Angle",
+            }
+            for field_key, display_name in messaging_fields.items():
+                val = messaging.get(field_key)
+                if val and field_key not in element_counter.get(field_key, Counter()):
+                    # Only add from messaging if not already counted from element_scores
+                    if field_key not in element_counter:
+                        element_counter[field_key] = Counter()
+                    # Check we haven't already counted this dna via element_scores
+                    already_counted = any(
+                        s["element"] == field_key for s in dna.element_scores
+                    )
+                    if not already_counted:
+                        element_counter[field_key][val] += 1
 
         common = {}
         for elem, counter in element_counter.items():
@@ -626,7 +652,7 @@ class WinnerDNAAnalyzer:
                 if freq >= COMMON_ELEMENT_THRESHOLD:
                     common[f"{elem}:{val}"] = {
                         "element": elem,
-                        "display_name": ELEMENT_DISPLAY_NAMES.get(elem, elem),
+                        "display_name": ELEMENT_DISPLAY_NAMES.get(elem, elem.replace("_", " ").title()),
                         "value": val,
                         "frequency": round(freq, 2),
                         "count": count,
