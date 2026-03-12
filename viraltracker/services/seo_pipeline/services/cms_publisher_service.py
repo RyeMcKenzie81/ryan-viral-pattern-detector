@@ -358,8 +358,9 @@ class ShopifyPublisher(CMSPublisher):
         # Hero <img> tags have loading="eager" (inline ones have loading="lazy").
         content = re.sub(r'<img[^>]*loading="eager"[^>]*/?>[\s]*', '', content)
 
-        # Strip YAML frontmatter (may not be at start if markers were prepended)
-        content = re.sub(r'---\n[\s\S]+?\n---\n', '', content, count=1)
+        # Strip YAML frontmatter
+        content = content.lstrip()
+        content = re.sub(r'^---\n[\s\S]+?\n---\n', '', content)
 
         # Remove schema markup sections (kept in metafields, not body)
         content = re.sub(r'<!--[\s\S]*?SCHEMA MARKUP[\s\S]*?-->\s*```json\s*[\s\S]*?\s*```', '', content)
@@ -609,7 +610,7 @@ class CMSPublisherService:
         article_data = {
             "title": article.get("title") or article.get("seo_title") or article.get("keyword", "Untitled"),
             "content_markdown": content_md,
-            "body_html": article.get("content_html", ""),
+            "body_html": "",  # Always re-render from markdown to pick up image changes
             "author": author_name,
             "seo_title": article.get("seo_title", ""),
             "meta_description": article.get("meta_description", ""),
