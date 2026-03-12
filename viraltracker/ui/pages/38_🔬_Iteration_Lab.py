@@ -304,16 +304,24 @@ def _render_opportunity_card(opp: dict, idx: int, brand_id: str, product_id: Opt
     strong_label = METRIC_LABELS.get(strong_metric, strong_metric)
     weak_label = METRIC_LABELS.get(weak_metric, weak_metric)
 
+    thumbnail_url = _get_field(opp, "thumbnail_url", "")
+    ad_name = _get_field(opp, "ad_name", "")
+
     # Level 1: Collapsed summary
     with st.container(border=True):
-        cols = st.columns([1, 5, 2])
+        cols = st.columns([1, 4, 2])
         with cols[0]:
-            st.markdown(f"**{format_badge}**")
+            if thumbnail_url:
+                st.image(thumbnail_url, width=100)
+            else:
+                st.markdown(f"**{format_badge}**")
         with cols[1]:
             st.markdown(
                 f"**{pattern_label}** &nbsp; "
                 f":{conf_color}[{conf_label}]"
             )
+            if ad_name:
+                st.caption(f"**{ad_name}**")
             st.caption(
                 f"{strong_label} {_format_metric(strong_metric, strong_value)} ({strong_pct}) "
                 f"but {weak_label} only {_format_metric(weak_metric, weak_value)} ({weak_pct})"

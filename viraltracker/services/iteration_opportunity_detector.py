@@ -99,6 +99,7 @@ class IterationOpportunity:
     # Populated from ad data
     ad_name: str = ""
     creative_format: str = ""
+    thumbnail_url: str = ""
     spend: float = 0.0
     impressions: int = 0
 
@@ -531,6 +532,7 @@ class IterationOpportunityDetector:
             evolution_mode=pattern_def.get("evolution_mode"),
             ad_name=ad.get("ad_name", ""),
             creative_format=classification.get("creative_format", ""),
+            thumbnail_url=ad.get("thumbnail_url", ""),
             spend=ad.get("spend", 0),
             impressions=ad.get("impressions", 0),
         )
@@ -619,6 +621,7 @@ class IterationOpportunityDetector:
             evolution_mode="cross_size_expansion",
             ad_name=ad.get("ad_name", ""),
             creative_format=classification.get("creative_format", ""),
+            thumbnail_url=ad.get("thumbnail_url", ""),
             spend=ad.get("spend", 0),
             impressions=ad.get("impressions", 0),
         )
@@ -706,6 +709,7 @@ class IterationOpportunityDetector:
             evolution_mode="anti_fatigue_refresh",
             ad_name=ad.get("ad_name", ""),
             creative_format="",
+            thumbnail_url=ad.get("thumbnail_url", ""),
             spend=ad.get("spend", 0),
             impressions=ad.get("impressions", 0),
         )
@@ -789,7 +793,7 @@ class IterationOpportunityDetector:
             result = (
                 self.supabase.table("meta_ads_performance")
                 .select(
-                    "meta_ad_id, ad_name, date, spend, impressions, "
+                    "meta_ad_id, ad_name, thumbnail_url, date, spend, impressions, "
                     "link_clicks, link_ctr, link_cpc, "
                     "purchases, purchase_value, roas, "
                     "video_p25_watched, video_thruplay"
@@ -813,6 +817,7 @@ class IterationOpportunityDetector:
                 ad_map[ad_id] = {
                     "meta_ad_id": ad_id,
                     "ad_name": row.get("ad_name", ""),
+                    "thumbnail_url": row.get("thumbnail_url", ""),
                     "brand_id": brand_id,
                     "spend": 0,
                     "impressions": 0,
@@ -824,6 +829,9 @@ class IterationOpportunityDetector:
                     "video_p25_watched": 0,
                     "video_thruplay": 0,
                 }
+            # Keep the most recent non-empty thumbnail
+            if row.get("thumbnail_url") and not ad_map[ad_id].get("thumbnail_url"):
+                ad_map[ad_id]["thumbnail_url"] = row["thumbnail_url"]
             agg = ad_map[ad_id]
             agg["spend"] += float(row.get("spend") or 0)
             agg["impressions"] += int(row.get("impressions") or 0)
@@ -845,6 +853,7 @@ class IterationOpportunityDetector:
             ad = {
                 "meta_ad_id": ad_id,
                 "ad_name": agg["ad_name"],
+                "thumbnail_url": agg.get("thumbnail_url", ""),
                 "brand_id": brand_id,
                 "spend": agg["spend"],
                 "impressions": imps,
