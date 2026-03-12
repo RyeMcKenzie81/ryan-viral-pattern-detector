@@ -299,44 +299,119 @@ with tab_qw:
                                 icon = "+" if check.get("passed") else "-"
                                 st.markdown(f"  {icon} {check.get('name', '')} — {check.get('message', 'OK')}")
 
-                    c_col1, c_col2, c_col3 = st.columns(3)
-                    with c_col1:
-                        if st.button("Start another", key="seo_wf_restart"):
-                            del st.session_state["seo_wf_active_job"]
-                            st.rerun()
-                    with c_col2:
-                        if article_id and st.button("Retry Images", key="seo_wf_retry_images"):
-                            try:
-                                with st.spinner("Generating images... this may take 1-2 minutes per image."):
-                                    img_result = workflow_svc.regenerate_images(
-                                        article_id=article_id,
-                                        brand_id=brand_id,
-                                        organization_id=org_id,
-                                    )
-                                hero = img_result.get("hero_image_url", "")
-                                stats = img_result.get("stats", {})
-                                success_count = stats.get("success", 0)
-                                failed_count = stats.get("failed", 0)
-                                msg = f"Done! {success_count} image(s) generated."
-                                if failed_count:
-                                    msg += f" {failed_count} failed."
-                                if hero:
-                                    msg += f" Hero image set."
-                                st.success(msg)
-                            except Exception as e:
-                                err_str = str(e)
-                                # Truncate HTML error pages to something readable
-                                if len(err_str) > 300 or "<html" in err_str.lower():
-                                    # Extract code/message if it's a dict-like string
-                                    import re as _re
-                                    code_match = _re.search(r"'code':\s*(\d+)", err_str)
-                                    msg_match = _re.search(r"'message':\s*'([^']+)'", err_str)
-                                    code = code_match.group(1) if code_match else ""
-                                    msg = msg_match.group(1) if msg_match else "Server error"
-                                    err_str = f"{msg} (code {code}). Try again in a minute." if code else f"{msg}. Try again in a minute."
-                                st.error(f"Image generation failed: {err_str}")
-                    with c_col3:
-                        if article_id and st.button("Re-publish to Shopify", key="seo_wf_republish"):
+                    # Image Management & Publish Tabs
+                    img_tab, pub_tab = st.tabs(["Images", "Publish"])
+
+                    with img_tab:
+                        if article_id:
+                            # Load image data (cached per article to avoid re-fetching on every rerun)
+                            cache_key = f"seo_wf_image_data_{article_id}"
+                            if cache_key not in st.session_state:
+                                st.session_state[cache_key] = workflow_svc.get_article_images(article_id)
+                            img_data = st.session_state[cache_key]
+                            images = img_data.get("image_metadata") or []
+
+                            if not images:
+                                st.info("No images found for this article.")
+                            else:
+                                st.caption(f"{len(images)} image(s)")
+
+                                for i, img in enumerate(images):
+                                    with st.container(border=True):
+                                        img_left, img_right = st.columns([2, 1])
+
+                                        with img_left:
+                                            cdn_url = img.get("cdn_url")
+                                            if cdn_url and img.get("status") == "success":
+                                                # Cache-bust URL after regeneration
+                                                bust = st.session_state.get(f"seo_img_bust_{article_id}_{i}", "")
+                                                display_url = f"{cdn_url}?t={bust}" if bust else cdn_url
+                                                st.image(display_url, use_container_width=True)
+                                            else:
+                                                err = img.get("error", "Generation failed")
+                                                st.warning(f"Image unavailable: {err}")
+
+                                        with img_right:
+                                            img_type = img.get("type", "inline")
+                                            badge = "Hero" if img_type == "hero" else f"Inline #{i}"
+                                            st.markdown(f"**{badge}**")
+
+                                            original_desc = img.get("description", "")
+                                            prompt_val = st.text_area(
+                                                "Prompt",
+                                                value=original_desc,
+                                                height=100,
+                                                key=f"seo_img_{i}_prompt",
+                                                label_visibility="collapsed",
+                                            )
+
+                                            btn_col1, btn_col2 = st.columns(2)
+                                            with btn_col1:
+                                                if st.button("Regenerate", key=f"seo_img_{i}_regen", use_container_width=True):
+                                                    # Use whatever is in the text_area (may be edited)
+                                                    regen_prompt = prompt_val.strip()
+                                                    custom = regen_prompt if regen_prompt != original_desc else None
+                                                    try:
+                                                        with st.spinner(f"Regenerating {badge.lower()}..."):
+                                                            workflow_svc.regenerate_single_image(
+                                                                article_id=article_id,
+                                                                image_index=i,
+                                                                brand_id=brand_id,
+                                                                organization_id=org_id,
+                                                                custom_prompt=custom,
+                                                            )
+                                                        # Bust cache and refresh
+                                                        st.session_state[f"seo_img_bust_{article_id}_{i}"] = str(int(time.time()))
+                                                        if cache_key in st.session_state:
+                                                            del st.session_state[cache_key]
+                                                        st.rerun()
+                                                    except Exception as e:
+                                                        _err = str(e)
+                                                        if len(_err) > 200:
+                                                            _err = _err[:200] + "..."
+                                                        st.error(f"Failed: {_err}")
+
+                                            with btn_col2:
+                                                st.caption(f"Edit prompt above, then click Regenerate")
+
+                            # Retry All Images button
+                            st.divider()
+                            if st.button("Retry All Images", key="seo_wf_retry_images"):
+                                try:
+                                    with st.spinner("Generating all images... this may take 1-2 minutes per image."):
+                                        img_result = workflow_svc.regenerate_images(
+                                            article_id=article_id,
+                                            brand_id=brand_id,
+                                            organization_id=org_id,
+                                        )
+                                    stats = img_result.get("stats", {})
+                                    success_count = stats.get("success", 0)
+                                    failed_count = stats.get("failed", 0)
+                                    msg = f"Done! {success_count} image(s) generated."
+                                    if failed_count:
+                                        msg += f" {failed_count} failed."
+                                    if img_result.get("hero_image_url"):
+                                        msg += " Hero image set."
+                                    st.success(msg)
+                                    # Clear cached image data
+                                    if cache_key in st.session_state:
+                                        del st.session_state[cache_key]
+                                    st.rerun()
+                                except Exception as e:
+                                    err_str = str(e)
+                                    if len(err_str) > 300 or "<html" in err_str.lower():
+                                        import re as _re
+                                        code_match = _re.search(r"'code':\s*(\d+)", err_str)
+                                        msg_match = _re.search(r"'message':\s*'([^']+)'", err_str)
+                                        code = code_match.group(1) if code_match else ""
+                                        msg = msg_match.group(1) if msg_match else "Server error"
+                                        err_str = f"{msg} (code {code}). Try again in a minute." if code else f"{msg}. Try again in a minute."
+                                    st.error(f"Image generation failed: {err_str}")
+                        else:
+                            st.info("No article ID available.")
+
+                    with pub_tab:
+                        if article_id and st.button("Re-publish to Shopify", key="seo_wf_republish", type="primary"):
                             try:
                                 with st.spinner("Updating Shopify draft..."):
                                     from viraltracker.services.seo_pipeline.services.cms_publisher_service import CMSPublisherService
@@ -354,6 +429,19 @@ with tab_qw:
                                     st.success("Article updated in Shopify.")
                             except Exception as e:
                                 st.error(f"Publish failed: {str(e)[:200]}")
+                        elif not article_id:
+                            st.info("No article ID available.")
+
+                    # Bottom action row
+                    st.divider()
+                    if st.button("Start another", key="seo_wf_restart"):
+                        # Clear image cache for this article
+                        if article_id:
+                            _img_cache_key = f"seo_wf_image_data_{article_id}"
+                            if _img_cache_key in st.session_state:
+                                del st.session_state[_img_cache_key]
+                        del st.session_state["seo_wf_active_job"]
+                        st.rerun()
 
                 elif status == "failed":
                     error = job.get("error", "Unknown error")

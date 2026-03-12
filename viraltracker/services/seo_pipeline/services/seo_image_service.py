@@ -242,6 +242,7 @@ class SEOImageService:
         brand_id: str,
         organization_id: str,
         custom_prompt: Optional[str] = None,
+        image_style: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Regenerate a specific image by index.
@@ -252,6 +253,7 @@ class SEOImageService:
             brand_id: Brand UUID
             organization_id: Org UUID
             custom_prompt: Optional custom prompt (overrides original description)
+            image_style: Optional brand image style (overrides default photography style)
 
         Returns:
             Updated image metadata entry
@@ -276,6 +278,7 @@ class SEOImageService:
             slug=slug,
             image_type=old_entry.get("type", "inline"),
             index=image_index,
+            image_style=image_style,
         )
 
         # Update metadata

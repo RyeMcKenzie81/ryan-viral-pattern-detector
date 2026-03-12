@@ -655,6 +655,97 @@ class SEOWorkflowService:
             result = future.result(timeout=600)  # 10 min timeout for many images
         return result or {}
 
+    def regenerate_single_image(
+        self,
+        article_id: str,
+        image_index: int,
+        brand_id: str,
+        organization_id: str,
+        custom_prompt: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Re-generate a single image by index for an existing article.
+
+        Uses a child thread with its own event loop and Supabase client
+        for Streamlit thread safety (same pattern as regenerate_images).
+
+        Args:
+            article_id: Article UUID
+            image_index: Index in image_metadata array
+            brand_id: Brand UUID
+            organization_id: Org UUID (resolves 'all' for superusers)
+            custom_prompt: Optional custom prompt (overrides original description)
+
+        Returns:
+            Updated image metadata entry dict
+        """
+        import concurrent.futures
+        organization_id = self._resolve_org_id(organization_id, brand_id)
+
+        # Load brand config from main thread (read-only, safe)
+        sb = self.supabase
+        from viraltracker.services.seo_pipeline.services.seo_brand_config_service import SEOBrandConfigService
+        brand_config_data = SEOBrandConfigService(supabase_client=sb).get_config(brand_id)
+        image_style = brand_config_data.get("image_style")
+
+        # Capture for closure
+        _article_id = article_id
+        _image_index = image_index
+        _brand_id = brand_id
+        _org_id = organization_id
+        _custom_prompt = custom_prompt
+        _image_style = image_style
+
+        def _run():
+            from viraltracker.core.database import get_supabase_client
+            child_sb = get_supabase_client()
+            from viraltracker.services.seo_pipeline.services.seo_image_service import SEOImageService
+            child_image_svc = SEOImageService(supabase_client=child_sb)
+
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                return loop.run_until_complete(
+                    child_image_svc.regenerate_image(
+                        article_id=_article_id,
+                        image_index=_image_index,
+                        brand_id=_brand_id,
+                        organization_id=_org_id,
+                        custom_prompt=_custom_prompt,
+                        image_style=_image_style,
+                    )
+                )
+            finally:
+                loop.close()
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(_run)
+            result = future.result(timeout=120)
+        return result or {}
+
+    def get_article_images(self, article_id: str) -> Dict[str, Any]:
+        """
+        Load image data for an article from the DB.
+
+        Returns:
+            Dict with image_metadata, hero_image_url, keyword
+        """
+        result = (
+            self.supabase.table("seo_articles")
+            .select("image_metadata, hero_image_url, keyword")
+            .eq("id", article_id)
+            .limit(1)
+            .execute()
+        )
+        if not result.data:
+            return {"image_metadata": [], "hero_image_url": None, "keyword": ""}
+        row = result.data[0]
+        return {
+            "image_metadata": row.get("image_metadata") or [],
+            "hero_image_url": row.get("hero_image_url"),
+            "keyword": row.get("keyword", ""),
+        }
+
     @staticmethod
     def _inject_image_markers(content: str, keyword: str) -> str:
         """
