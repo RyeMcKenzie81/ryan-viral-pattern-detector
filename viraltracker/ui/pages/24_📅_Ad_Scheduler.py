@@ -1749,6 +1749,233 @@ def _render_ad_classification_form(existing_job, is_edit):
             st.rerun()
 
 
+def _render_iteration_auto_run_form(existing_job, is_edit):
+    """Render the iteration auto-run job creation form."""
+
+    # ========================================================================
+    # Section 1: Brand Selection
+    # ========================================================================
+    st.subheader("1. Select Brand")
+
+    brands = get_brands()
+    if not brands:
+        st.error("No brands found")
+        return
+
+    brand_options = {b['name']: b['id'] for b in brands}
+    brand_names = list(brand_options.keys())
+
+    default_index = 0
+    if existing_job:
+        for i, b in enumerate(brands):
+            if b['id'] == existing_job['brand_id']:
+                default_index = i
+                break
+    else:
+        cookie_brand = _get_brand_from_cookie()
+        if cookie_brand:
+            for i, name in enumerate(brand_names):
+                if brand_options[name] == cookie_brand:
+                    default_index = i
+                    break
+
+    selected_brand_name = st.selectbox(
+        "Brand",
+        options=brand_names,
+        index=default_index,
+        help="Select the brand to run iteration detection for",
+        key="iter_auto_brand_selector"
+    )
+    selected_brand_id = brand_options[selected_brand_name]
+    _save_brand_to_cookie(selected_brand_id)
+
+    st.divider()
+
+    # ========================================================================
+    # Section 2: Job Name
+    # ========================================================================
+    st.subheader("2. Job Name")
+
+    existing_params = existing_job.get('parameters', {}) if existing_job else {}
+
+    job_name = st.text_input(
+        "Name for this schedule",
+        value=existing_job.get('name', '') if existing_job else f"Weekly Iteration Auto-Run — {selected_brand_name}",
+        placeholder="e.g., Weekly Iteration Auto-Run",
+        key="iter_auto_job_name"
+    )
+
+    st.divider()
+
+    # ========================================================================
+    # Section 3: Iteration Settings
+    # ========================================================================
+    st.subheader("3. Iteration Settings")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        top_n = st.slider(
+            "Max opportunities to iterate on",
+            min_value=1, max_value=20,
+            value=existing_params.get('top_n', 10),
+            help="How many top opportunities to attempt per run",
+            key="iter_auto_top_n"
+        )
+        days_back = st.selectbox(
+            "Performance lookback (days)",
+            options=[7, 14, 30, 60],
+            index=[7, 14, 30, 60].index(existing_params.get('days_back', 14)),
+            key="iter_auto_days_back"
+        )
+
+    with col2:
+        min_confidence = st.slider(
+            "Minimum confidence",
+            min_value=0.3, max_value=0.9, step=0.1,
+            value=existing_params.get('min_confidence', 0.6),
+            help="Skip low-confidence opportunities",
+            key="iter_auto_min_conf"
+        )
+        max_ads_per_run = st.number_input(
+            "Hard cap per run",
+            min_value=1, max_value=20,
+            value=min(existing_params.get('max_ads_per_run', 20), 20),
+            help="Safety guardrail: max iterations in one run",
+            key="iter_auto_max_ads"
+        )
+
+    st.divider()
+
+    # ========================================================================
+    # Section 4: Schedule
+    # ========================================================================
+    st.subheader("4. Schedule")
+
+    current_time = datetime.now(PST)
+    st.info(f"Current time: **{current_time.strftime('%I:%M %p PST')}**")
+
+    schedule_type = st.radio(
+        "Schedule Type",
+        options=['recurring', 'one_time'],
+        index=0 if not existing_job or existing_job.get('schedule_type') == 'recurring' else 1,
+        format_func=lambda x: "Recurring" if x == 'recurring' else "One-time",
+        horizontal=True,
+        key="iter_auto_schedule_type"
+    )
+
+    cron_expression = None
+    scheduled_at = None
+
+    if schedule_type == 'recurring':
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            day_of_week = st.selectbox(
+                "Day of Week",
+                options=[0, 1, 2, 3, 4, 5, 6],
+                index=0,
+                format_func=lambda x: ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'][x],
+                key="iter_auto_day"
+            )
+        with col2:
+            run_hour = st.number_input("Hour (PST, 0-23)", min_value=0, max_value=23, value=9, key="iter_auto_hour")
+        with col3:
+            run_minute = st.number_input("Minute", min_value=0, max_value=59, value=0, step=15, key="iter_auto_minute")
+
+        cron_expression = f"{run_minute} {run_hour} * * {day_of_week}"
+    else:
+        col1, col2 = st.columns(2)
+        with col1:
+            run_date = st.date_input("Run date", value=current_time.date(), key="iter_auto_date")
+        with col2:
+            run_time = st.time_input("Run time (PST)", value=current_time.time(), key="iter_auto_time")
+
+        scheduled_at = PST.localize(datetime.combine(run_date, run_time))
+
+    st.divider()
+
+    # ========================================================================
+    # Section 5: Save & Run Now
+    # ========================================================================
+    st.subheader("5. Save Schedule")
+
+    parameters = {
+        'top_n': top_n,
+        'days_back': days_back,
+        'min_confidence': min_confidence,
+        'max_ads_per_run': max_ads_per_run,
+    }
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        if st.button("Save Schedule", use_container_width=True, key="save_iter_auto"):
+            if not job_name:
+                st.error("Please enter a job name")
+                st.stop()
+
+            if is_edit:
+                job_id = existing_job['id']
+                update_job(job_id, {
+                    'name': job_name,
+                    'brand_id': selected_brand_id,
+                    'schedule_type': schedule_type,
+                    'cron_expression': cron_expression,
+                    'parameters': parameters,
+                })
+                st.success("Schedule updated!")
+            else:
+                next_run = None
+                if schedule_type == 'recurring' and cron_expression:
+                    next_run = calculate_next_run(cron_expression)
+                    if next_run:
+                        next_run = next_run.isoformat()
+                elif scheduled_at:
+                    next_run = scheduled_at.isoformat()
+
+                job_data = {
+                    'job_type': 'iteration_auto_run',
+                    'product_id': None,
+                    'brand_id': selected_brand_id,
+                    'name': job_name,
+                    'schedule_type': schedule_type,
+                    'cron_expression': cron_expression,
+                    'scheduled_at': scheduled_at.isoformat() if scheduled_at else None,
+                    'next_run_at': next_run,
+                    'max_runs': None,
+                    'parameters': parameters,
+                }
+                job_id = create_scheduled_job(job_data)
+                if job_id:
+                    st.success("Schedule created!")
+                    st.session_state.scheduler_view = 'list'
+                    st.rerun()
+
+    with col2:
+        if st.button("Run Now", use_container_width=True, key="run_iter_auto_now"):
+            if not job_name:
+                st.error("Please enter a job name")
+                st.stop()
+
+            run_now_time = datetime.now(PST) + timedelta(minutes=1)
+            job_data = {
+                'job_type': 'iteration_auto_run',
+                'product_id': None,
+                'brand_id': selected_brand_id,
+                'name': job_name,
+                'schedule_type': 'one_time',
+                'cron_expression': None,
+                'scheduled_at': run_now_time.isoformat(),
+                'next_run_at': run_now_time.isoformat(),
+                'max_runs': None,
+                'parameters': parameters,
+            }
+            job_id = create_scheduled_job(job_data)
+            if job_id:
+                st.success("Job scheduled to run in ~1 minute!")
+                st.session_state.scheduler_view = 'list'
+                st.rerun()
+
+
 def _render_asset_download_form(existing_job, is_edit):
     """Render the asset download job creation form."""
 
@@ -2081,7 +2308,7 @@ def render_create_schedule():
         st.subheader("Job Type")
         job_type = st.radio(
             "What type of job do you want to schedule?",
-            options=['ad_creation', 'template_scrape', 'template_approval', 'ad_classification', 'asset_download'],
+            options=['ad_creation', 'template_scrape', 'template_approval', 'ad_classification', 'asset_download', 'iteration_auto_run'],
             index=0,
             format_func=lambda x: {
                 'ad_creation': '🎨 Ad Creation - Generate ads from templates',
@@ -2089,6 +2316,7 @@ def render_create_schedule():
                 'template_approval': '✅ Template Approval - Batch AI analysis of pending queue items',
                 'ad_classification': '🔬 Ad Classification - Pre-compute ad awareness classifications',
                 'asset_download': '📦 Asset Download - Download ad images & videos from Meta',
+                'iteration_auto_run': '🔬 Iteration Auto-Run - Auto-detect and iterate on mixed-signal ads',
             }.get(x, x),
             horizontal=True,
             key="job_type_selector"
@@ -2123,6 +2351,13 @@ def render_create_schedule():
     # ========================================================================
     if job_type == 'asset_download':
         _render_asset_download_form(existing_job, is_edit)
+        return
+
+    # ========================================================================
+    # ITERATION AUTO-RUN JOB FORM
+    # ========================================================================
+    if job_type == 'iteration_auto_run':
+        _render_iteration_auto_run_form(existing_job, is_edit)
         return
 
     # ========================================================================

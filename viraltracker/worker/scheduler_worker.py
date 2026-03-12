@@ -618,6 +618,8 @@ async def execute_job(job: Dict) -> Dict[str, Any]:
         return await execute_ad_intelligence_analysis_job(job)
     elif job_type == 'analytics_sync':
         return await execute_analytics_sync_job(job)
+    elif job_type == 'iteration_auto_run':
+        return await execute_iteration_auto_run_job(job)
     else:
         # Hard-fail on unknown job types — never silently fall through to V1
         logger.error(f"Unknown job_type '{job_type}' for job {job_id} ({job_name}). "
@@ -4213,6 +4215,161 @@ async def execute_quality_calibration_job(job: Dict) -> Dict[str, Any]:
         })
         _reschedule_after_failure(job, job_id, get_run_attempt_number(run_id))
         return {"success": False, "error": str(e)}
+
+
+async def execute_iteration_auto_run_job(job: Dict) -> Dict[str, Any]:
+    """Execute an iteration auto-run job: detect opportunities and iterate on image ads.
+
+    Parameters (from job['parameters']):
+        top_n: int - Max opportunities to iterate on (default 10)
+        days_back: int - Performance window for detection (default 14)
+        min_confidence: float - Minimum confidence threshold (default 0.6)
+        pattern_filter: str|None - Only specific pattern types
+        max_ads_per_run: int - Hard cap on iterations (default 20)
+    """
+    job_id = job['id']
+    job_name = job['name']
+    brand_id = job.get('brand_id')
+    brand_info = job.get('brands') or {}
+    brand_name = brand_info.get('name', 'Unknown')
+    params = job.get('parameters') or {}
+
+    logger.info(f"Starting iteration_auto_run job: {job_name} for brand {brand_name}")
+
+    # Prevent duplicate execution
+    update_job(job_id, {"next_run_at": None})
+
+    # Create job run record
+    run_id = create_job_run(job_id)
+    if not run_id:
+        logger.error(f"Failed to create run record for job {job_id}")
+        return {"success": False, "error": "Failed to create run record"}
+
+    logs = []
+
+    try:
+        from viraltracker.core.database import get_supabase_client
+        from viraltracker.services.iteration_opportunity_detector import IterationOpportunityDetector
+
+        supabase = get_supabase_client()
+        detector = IterationOpportunityDetector(supabase)
+
+        top_n = params.get('top_n', 10)
+        days_back = params.get('days_back', 14)
+        min_confidence = params.get('min_confidence', 0.6)
+        max_ads_per_run = min(params.get('max_ads_per_run', 20), 20)
+
+        # Get org_id from brand
+        org_row = supabase.table("brands").select("organization_id").eq("id", brand_id).limit(1).execute()
+        org_id = org_row.data[0]["organization_id"] if org_row.data else "all"
+
+        # Get product_id (use first product for brand)
+        prod_row = supabase.table("products").select("id").eq("brand_id", brand_id).limit(1).execute()
+        product_id = prod_row.data[0]["id"] if prod_row.data else None
+
+        if not product_id:
+            raise ValueError(f"No products found for brand {brand_id}")
+
+        # Step 1: Detect opportunities
+        logs.append(f"Detecting opportunities (days_back={days_back}, min_confidence={min_confidence})")
+        opportunities = await detector.detect_opportunities(
+            brand_id=brand_id,
+            org_id=org_id,
+            days_back=days_back,
+            min_confidence=min_confidence,
+        )
+        logs.append(f"Detected {len(opportunities)} opportunities")
+
+        # Step 2: Filter to image ads only (skip video)
+        image_opps = []
+        for opp in opportunities:
+            opp_dict = opp.__dict__ if hasattr(opp, '__dict__') else opp
+            creative_format = opp_dict.get("creative_format", "")
+            if creative_format.startswith("video_"):
+                logs.append(f"  SKIP (video): {opp_dict.get('meta_ad_id')} — {opp_dict.get('pattern_label')}")
+                continue
+            evolution_mode = opp_dict.get("evolution_mode")
+            if not evolution_mode:
+                logs.append(f"  SKIP (no evolution): {opp_dict.get('meta_ad_id')} — budget recommendation")
+                continue
+            image_opps.append(opp_dict)
+
+        logs.append(f"Filtered to {len(image_opps)} image ads with evolution modes")
+
+        # Step 3: Take top N
+        selected = image_opps[:min(top_n, max_ads_per_run)]
+        logs.append(f"Selected top {len(selected)} for iteration")
+
+        evolved_count = 0
+        skipped_count = 0
+        failed_count = 0
+
+        # Step 4: Non-fatal loop: iterate on each
+        for opp_dict in selected:
+            meta_ad_id = opp_dict.get("meta_ad_id", "?")
+            pattern_label = opp_dict.get("pattern_label", "?")
+            opp_id = opp_dict.get("id", "")
+            confidence = opp_dict.get("confidence", 0)
+
+            try:
+                result = await detector.action_opportunity(
+                    opportunity_id=opp_id,
+                    brand_id=brand_id,
+                    product_id=product_id,
+                    org_id=org_id,
+                )
+                if result.get("success"):
+                    child_id = result.get("child_ad_id", "?")
+                    logs.append(f"  OK: {meta_ad_id} — {pattern_label} (conf: {confidence:.2f}) → {child_id}")
+                    evolved_count += 1
+                else:
+                    error = result.get("error", "Unknown")
+                    logs.append(f"  FAIL: {meta_ad_id} — {pattern_label} — {error}")
+                    failed_count += 1
+            except Exception as e:
+                logs.append(f"  FAIL: {meta_ad_id} — {pattern_label} — {e}")
+                failed_count += 1
+
+        video_count = len(opportunities) - len(image_opps)
+        summary = (
+            f"Iteration auto-run complete: {evolved_count} evolved, "
+            f"{video_count} skipped (video), {failed_count} failed"
+        )
+        logs.append(summary)
+        logger.info(f"Job {job_name}: {summary}")
+
+        # Mark job run as completed
+        update_job_run(run_id, {
+            "status": "completed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "logs": "\n".join(logs),
+        })
+
+        _update_job_next_run(job, job_id)
+
+        return {
+            "success": True,
+            "evolved": evolved_count,
+            "skipped_video": video_count,
+            "failed": failed_count,
+            "details": summary,
+        }
+
+    except Exception as e:
+        error_msg = str(e)
+        logs.append(f"Job failed: {error_msg}")
+        logger.error(f"Job {job_name} failed: {error_msg}")
+
+        update_job_run(run_id, {
+            "status": "failed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "error_message": error_msg,
+            "logs": "\n".join(logs),
+        })
+
+        _reschedule_after_failure(job, job_id, get_run_attempt_number(run_id))
+
+        return {"success": False, "error": error_msg}
 
 
 def main():

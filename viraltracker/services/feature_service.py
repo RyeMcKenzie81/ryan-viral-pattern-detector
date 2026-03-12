@@ -80,6 +80,7 @@ class FeatureKey:
     TEMPLATE_RECOMMENDATIONS = "template_recommendations"
     PUBLIC_GALLERY = "public_gallery"
     AD_EXPORT = "ad_export"
+    ITERATION_LAB = "iteration_lab"
     # Content
     CONTENT_PIPELINE = "content_pipeline"
     COMIC_VIDEO = "comic_video"

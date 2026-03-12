@@ -146,6 +146,7 @@ def _get_org_features_cached(org_id: str) -> Dict[str, bool]:
             FeatureKey.TEMPLATE_RECOMMENDATIONS: True,
             FeatureKey.PUBLIC_GALLERY: True,
             FeatureKey.AD_EXPORT: True,
+            FeatureKey.ITERATION_LAB: True,
             # Content pages
             FeatureKey.CONTENT_PIPELINE: True,
             FeatureKey.COMIC_VIDEO: True,
@@ -315,6 +316,8 @@ def build_navigation_pages() -> Dict[str, List[st.Page]]:
         ads.append(st.Page("pages/36_🧪_Experiments.py", title="Experiments", icon="🧪"))
     if visible(SK_ADS, "video_buckets"):
         ads.append(st.Page("pages/37_📦_Content_Buckets.py", title="Content Buckets", icon="📦"))
+    if visible(SK_ADS, "iteration_lab"):
+        ads.append(st.Page("pages/38_🔬_Iteration_Lab.py", title="Iteration Lab", icon="🔬"))
     if visible(SK_ADS, "public_gallery"):
         ads.append(st.Page("pages/66_🌐_Public_Gallery.py", title="Public Gallery", icon="🌐"))
     if ads:
