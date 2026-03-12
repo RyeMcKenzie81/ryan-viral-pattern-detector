@@ -345,7 +345,16 @@ class LipSyncService:
                 clip_audio_duration_ms = await asyncio.to_thread(
                     ffmpeg.get_duration_ms, clip_audio_path
                 )
-                sound_end_time = min(clip_audio_duration_ms, clip_video_duration_ms)
+                # Subtract 100ms safety margin — Kling may re-encode the video
+                # with a slightly different duration than what ffprobe reports,
+                # causing "audio end timestamp > video duration" errors.
+                sound_end_time = min(clip_audio_duration_ms, clip_video_duration_ms) - 100
+                sound_end_time = max(sound_end_time, 0)
+
+                logger.info(
+                    f"Clip {clip_index}: video={clip_video_duration_ms}ms, "
+                    f"audio={clip_audio_duration_ms}ms, sound_end_time={sound_end_time}ms"
+                )
 
                 # Step B: Apply lip-sync
                 ls_result = await kling.apply_lip_sync(

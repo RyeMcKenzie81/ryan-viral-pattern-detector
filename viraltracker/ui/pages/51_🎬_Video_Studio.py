@@ -1793,11 +1793,22 @@ with tab_lipsync:
                         norm_video_path = work_dir / "normalized.mp4"
                         norm_video_path.write_bytes(norm_bytes)
 
-                        # Extract audio for clip processing
+                        # Use replacement audio if provided, otherwise extract from video
                         full_audio_path = work_dir / "full_audio.m4a"
-                        ffmpeg_svc.clip_audio(
-                            norm_video_path, 0, video_info["duration_ms"], full_audio_path
-                        )
+                        if st.session_state.vs_ls_audio_bytes:
+                            # Write replacement audio to temp file
+                            replacement_audio = work_dir / "replacement_audio_raw"
+                            replacement_audio.write_bytes(st.session_state.vs_ls_audio_bytes)
+                            # Convert to m4a for consistent downstream handling
+                            ffmpeg_svc.clip_audio(
+                                replacement_audio, 0,
+                                video_info["duration_ms"],  # cap at video length
+                                full_audio_path,
+                            )
+                        else:
+                            ffmpeg_svc.clip_audio(
+                                norm_video_path, 0, video_info["duration_ms"], full_audio_path
+                            )
 
                         # Process face clips
                         face_results = []
