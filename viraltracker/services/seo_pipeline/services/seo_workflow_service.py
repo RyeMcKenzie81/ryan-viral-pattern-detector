@@ -372,7 +372,7 @@ class SEOWorkflowService:
                 article_fresh = sb.table("seo_articles").select("phase_c_output, content_markdown").eq("id", article_id).limit(1).execute()
                 markdown = ""
                 if article_fresh.data:
-                    markdown = article_fresh.data[0].get("content_markdown") or article_fresh.data[0].get("phase_c_output") or ""
+                    markdown = article_fresh.data[0].get("phase_c_output") or article_fresh.data[0].get("content_markdown") or ""
 
                 if markdown:
                     await image_svc.generate_article_images(
@@ -751,28 +751,54 @@ class SEOWorkflowService:
         """
         Generate image markers from article content when none exist.
 
-        Inserts a HERO IMAGE marker before the first paragraph and an
-        IMAGE marker after each H2 heading, using the heading text as
-        the image description contextualized with the keyword.
+        Scales image count with article length:
+        - <1500 words: hero + 2 inline
+        - 1500-3000 words: hero + 4 inline
+        - 3000+ words: hero + up to 7 inline (one per ~500 words)
+
+        Distributes evenly across H2 headings. If more H2s than desired
+        images, selects evenly spaced headings.
 
         Returns content with markers inserted.
         """
         lines = content.split("\n")
+        word_count = len(content.split())
+
+        # Scale inline image count with article length
+        if word_count < 1500:
+            max_inline = 2
+        elif word_count < 3000:
+            max_inline = 4
+        else:
+            max_inline = min(7, max(4, word_count // 500))
+
+        # Collect all H2 positions
+        h2_indices = []
+        for i, line in enumerate(lines):
+            if line.strip().startswith("## "):
+                h2_indices.append(i)
+
+        # Select evenly spaced H2s if we have more than we need
+        if len(h2_indices) > max_inline:
+            selected = []
+            for j in range(max_inline):
+                idx = round(j * (len(h2_indices) - 1) / (max_inline - 1))
+                selected.append(h2_indices[idx])
+            h2_set = set(selected)
+        else:
+            h2_set = set(h2_indices)
+
+        # Build output with hero at top and inline after selected H2s
         result_lines = [f"[HERO IMAGE: {keyword} - featured image]", ""]
-        marker_count = 0
-        max_inline = 4  # Cap inline images to avoid excessive generation
 
-        for line in lines:
+        for i, line in enumerate(lines):
             result_lines.append(line)
-            stripped = line.strip()
 
-            # Insert inline marker after each H2 heading
-            if stripped.startswith("## ") and marker_count < max_inline:
-                heading_text = re.sub(r'^#+\s*', '', stripped).strip() or keyword
+            if i in h2_set:
+                heading_text = re.sub(r'^#+\s*', '', line.strip()).strip() or keyword
                 result_lines.append("")
                 result_lines.append(f"[IMAGE: {heading_text} - {keyword}]")
                 result_lines.append("")
-                marker_count += 1
 
         return "\n".join(result_lines)
 

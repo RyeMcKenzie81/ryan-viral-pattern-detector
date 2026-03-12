@@ -61,13 +61,21 @@ tags: {AVAILABLE_TAGS}
 - Use natural anchor text (not "click here")
 - Don't break the reading flow
 
-### 3. Image Suggestions
+### 3. Image Markers (INLINE)
 {IMAGE_STYLE}
 
-Suggest 6-8 images with:
-- Placement in article (after which section)
-- Description of what to show
-- Alt text: Describe what the image depicts for accessibility. Include target keyword only if it naturally describes the image content. Never force keywords into alt text.
+Place image markers DIRECTLY in the article body where each image should appear.
+Use this exact format:
+
+- `[HERO IMAGE: descriptive scene for featured image]` — place ONE at the very top, before the first paragraph
+- `[IMAGE: descriptive scene for this section]` — place 5-7 throughout the article, distributed evenly
+
+**Rules:**
+- Distribute images evenly across the full article (not just the top half)
+- For long articles (3000+ words), aim for one image every 400-600 words
+- Each description should be a specific, visual scene (not generic). Describe what the camera sees.
+- Each marker doubles as alt text, so describe the image content accessibly. Include the target keyword only if it naturally describes what's shown.
+- Place markers between paragraphs, not inside them
 
 ### 4. Keyword Check
 Verify target keyword appears naturally in:
@@ -115,7 +123,7 @@ Return the article with:
 1. Meta tags at top (YAML frontmatter)
 2. Optimized content (minimal changes to voice)
 3. Internal link suggestions marked [LINK: anchor](url)
-4. Image suggestions marked [IMAGE: description]
+4. Image markers placed INLINE in the body: [HERO IMAGE: ...] at top, [IMAGE: ...] distributed throughout
 5. Author bio at bottom
 
 ---
@@ -131,10 +139,3 @@ Before finalizing, confirm:
 
 **Remember:** SEO is the packaging, not the product. Keep the article quality intact.
 
----
-
-## CRITICAL: Image Metadata Placement
-
-**DO NOT include image descriptions in the article markdown body.**
-
-Image descriptions and placement instructions should be in a SEPARATE section at the end, clearly labeled as image metadata. The article markdown should be clean and publishable.

@@ -338,6 +338,48 @@ class ShopifyPublisher(CMSPublisher):
                 "type": "json",
             })
 
+        # Author metafields (for themes with rich author display)
+        author_name = article_data.get("author", "")
+        if author_name:
+            metafields.append({
+                "namespace": "article",
+                "key": "author_name",
+                "value": author_name,
+                "type": "single_line_text_field",
+            })
+        author_bio = article_data.get("author_bio", "")
+        if author_bio:
+            metafields.append({
+                "namespace": "article",
+                "key": "author_bio",
+                "value": author_bio,
+                "type": "multi_line_text_field",
+            })
+        author_image = article_data.get("author_image_url", "")
+        if author_image:
+            metafields.append({
+                "namespace": "article",
+                "key": "author_image",
+                "value": author_image,
+                "type": "single_line_text_field",
+            })
+        author_title = article_data.get("author_job_title", "")
+        if author_title:
+            metafields.append({
+                "namespace": "article",
+                "key": "author_title",
+                "value": author_title,
+                "type": "single_line_text_field",
+            })
+        author_url = article_data.get("author_url", "")
+        if author_url:
+            metafields.append({
+                "namespace": "article",
+                "key": "author_url",
+                "value": author_url,
+                "type": "single_line_text_field",
+            })
+
         return metafields
 
     # =========================================================================
@@ -594,8 +636,9 @@ class CMSPublisherService:
         if not article:
             raise ValueError(f"Article not found: {article_id}")
 
-        # Load author name
-        author_name = self._get_author_name(article.get("author_id"))
+        # Load author data
+        author_data = self._get_author_data(article.get("author_id"))
+        author_name = author_data.get("name", "")
 
         # Build article data for publisher
         # Prefer phase_c_output — it has image tags injected by SEOImageService.
@@ -612,6 +655,10 @@ class CMSPublisherService:
             "content_markdown": content_md,
             "body_html": "",  # Always re-render from markdown to pick up image changes
             "author": author_name,
+            "author_bio": author_data.get("bio", ""),
+            "author_image_url": author_data.get("image_url", ""),
+            "author_job_title": author_data.get("job_title", ""),
+            "author_url": author_data.get("author_url", ""),
             "seo_title": article.get("seo_title", ""),
             "meta_description": article.get("meta_description", ""),
             "keyword": article.get("keyword", ""),
@@ -724,22 +771,22 @@ class CMSPublisherService:
         )
         return result.data[0] if result.data else None
 
-    def _get_author_name(self, author_id: Optional[str]) -> str:
-        """Get author name from seo_authors table."""
+    def _get_author_data(self, author_id: Optional[str]) -> Dict[str, Any]:
+        """Get full author data from seo_authors table."""
         if not author_id:
-            return ""
+            return {}
         try:
             result = (
                 self.supabase.table("seo_authors")
-                .select("name")
+                .select("name, bio, image_url, job_title, author_url")
                 .eq("id", author_id)
                 .execute()
             )
             if result.data:
-                return result.data[0].get("name", "")
+                return result.data[0]
         except Exception as e:
             logger.warning(f"Failed to load author {author_id}: {e}")
-        return ""
+        return {}
 
     def _update_article_cms_data(
         self,
