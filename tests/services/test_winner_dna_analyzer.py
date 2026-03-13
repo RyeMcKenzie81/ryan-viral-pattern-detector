@@ -42,7 +42,7 @@ def _make_dna(
         top_elements=(element_scores or [])[:3],
         weak_elements=(element_scores or [])[-3:] if element_scores and len(element_scores) >= 6 else [],
         visual_properties=visual_properties,
-        messaging=messaging or {"hook_type": "curiosity", "awareness_level": "problem_aware"},
+        messaging=messaging if messaging is not None else {"hook_type": "curiosity", "awareness_level": "problem_aware"},
         cohort_comparison={},
         active_synergies=synergies or [],
         active_conflicts=conflicts or [],
@@ -110,7 +110,7 @@ class TestBuildActionBrief:
 
 class TestFindCommonElements:
     def test_above_threshold(self, analyzer):
-        """3/4 winners with same element passes 70% threshold."""
+        """3/4 winners with same element passes 50% threshold."""
         dnas = [
             _make_dna("ad_1", element_scores=[{"element": "hook_type", "value": "curiosity"}]),
             _make_dna("ad_2", element_scores=[{"element": "hook_type", "value": "curiosity"}]),
@@ -121,8 +121,8 @@ class TestFindCommonElements:
         assert "hook_type:curiosity" in common
         assert common["hook_type:curiosity"]["frequency"] == 0.75
 
-    def test_below_threshold(self, analyzer):
-        """2/4 winners = 50% does NOT pass 70% threshold."""
+    def test_at_threshold(self, analyzer):
+        """2/4 winners = 50% passes 50% threshold."""
         dnas = [
             _make_dna("ad_1", element_scores=[{"element": "hook_type", "value": "curiosity"}]),
             _make_dna("ad_2", element_scores=[{"element": "hook_type", "value": "curiosity"}]),
@@ -130,8 +130,19 @@ class TestFindCommonElements:
             _make_dna("ad_4", element_scores=[{"element": "hook_type", "value": "direct_benefit"}]),
         ]
         common = analyzer._find_common_elements(dnas)
-        assert "hook_type:curiosity" not in common
-        assert "hook_type:direct_benefit" not in common
+        assert "hook_type:curiosity" in common  # 2/4 = 50% = threshold
+        assert "hook_type:direct_benefit" in common
+
+    def test_below_threshold(self, analyzer):
+        """1/4 winners = 25% does NOT pass 50% threshold."""
+        dnas = [
+            _make_dna("ad_1", element_scores=[{"element": "hook_type", "value": "curiosity"}], messaging={}),
+            _make_dna("ad_2", element_scores=[{"element": "hook_type", "value": "direct_benefit"}], messaging={}),
+            _make_dna("ad_3", element_scores=[{"element": "hook_type", "value": "social_proof"}], messaging={}),
+            _make_dna("ad_4", element_scores=[{"element": "hook_type", "value": "urgency"}], messaging={}),
+        ]
+        common = analyzer._find_common_elements(dnas)
+        assert len(common) == 0
 
     def test_multiple_elements(self, analyzer):
         """Multiple elements can be common independently."""
@@ -151,7 +162,7 @@ class TestFindCommonElements:
         ]
         common = analyzer._find_common_elements(dnas)
         assert "hook_type:curiosity" in common  # 3/3 = 100%
-        assert "color_mode:complementary" not in common  # 2/3 = 67% < 70%
+        assert "color_mode:complementary" in common  # 2/3 = 67% >= 50%
 
 
 # ============================================================================

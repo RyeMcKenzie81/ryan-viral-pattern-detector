@@ -26,16 +26,20 @@ logger = logging.getLogger(__name__)
 ELEMENT_DISPLAY_NAMES = {
     "hook_type": "Hook Style",
     "awareness_stage": "Audience Awareness",
+    "awareness_level": "Audience Awareness",
     "color_mode": "Color Strategy",
     "template_category": "Layout Style",
     "canvas_size": "Ad Size",
     "content_source": "Content Source",
     "creative_direction": "Creative Direction",
     "visual_style": "Visual Style",
+    "creative_format": "Ad Format",
+    "creative_angle": "Creative Angle",
+    "primary_cta": "Call to Action",
 }
 
-# Minimum frequency for cross-winner common elements (70%)
-COMMON_ELEMENT_THRESHOLD = 0.7
+# Minimum frequency for cross-winner common elements (50% = majority)
+COMMON_ELEMENT_THRESHOLD = 0.5
 
 
 @dataclass
@@ -456,13 +460,15 @@ class WinnerDNAAnalyzer:
         self, classification: Dict, element_tags: Dict
     ) -> Dict[str, Any]:
         """Build messaging profile from classification and element tags."""
-        return {
+        profile = {
             "hook_type": element_tags.get("hook_type") or classification.get("hook_type"),
             "awareness_level": classification.get("creative_awareness_level"),
             "creative_angle": classification.get("creative_angle"),
             "primary_cta": classification.get("primary_cta"),
             "creative_format": classification.get("creative_format"),
         }
+        # Strip None values
+        return {k: v for k, v in profile.items() if v}
 
     async def _compute_cohort_comparison(
         self, meta_ad_id: str, brand_id: str, metrics: Dict
@@ -607,7 +613,7 @@ class WinnerDNAAnalyzer:
         return winners
 
     def _find_common_elements(self, dnas: List[WinnerDNA]) -> Dict[str, Any]:
-        """Find elements common across winners (>=70% frequency).
+        """Find elements common across winners (>=50% frequency).
 
         Uses both genome element_scores AND messaging properties from
         classifications, so non-generated ads still contribute patterns.
@@ -616,6 +622,9 @@ class WinnerDNAAnalyzer:
         element_counter: Dict[str, Counter] = {}
 
         for dna in dnas:
+            # Track which element keys this DNA has already contributed
+            seen_keys: set = set()
+
             # From genome element_scores (generated ads only)
             for score in dna.element_scores:
                 elem = score["element"]
@@ -623,27 +632,20 @@ class WinnerDNAAnalyzer:
                 if elem not in element_counter:
                     element_counter[elem] = Counter()
                 element_counter[elem][val] += 1
+                seen_keys.add(elem)
 
             # From messaging profile (all ads — derived from classifications)
+            # Only add if not already counted from element_scores for this DNA
             messaging = dna.messaging or {}
-            messaging_fields = {
-                "hook_type": "Hook Style",
-                "awareness_level": "Audience Awareness",
-                "creative_format": "Creative Format",
-                "creative_angle": "Creative Angle",
-            }
-            for field_key, display_name in messaging_fields.items():
+            for field_key in ("hook_type", "awareness_level", "creative_format",
+                              "creative_angle", "primary_cta"):
+                if field_key in seen_keys:
+                    continue
                 val = messaging.get(field_key)
-                if val and field_key not in element_counter.get(field_key, Counter()):
-                    # Only add from messaging if not already counted from element_scores
+                if val:
                     if field_key not in element_counter:
                         element_counter[field_key] = Counter()
-                    # Check we haven't already counted this dna via element_scores
-                    already_counted = any(
-                        s["element"] == field_key for s in dna.element_scores
-                    )
-                    if not already_counted:
-                        element_counter[field_key][val] += 1
+                    element_counter[field_key][val] += 1
 
         common = {}
         for elem, counter in element_counter.items():
