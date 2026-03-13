@@ -662,8 +662,16 @@ with tab_cluster:
                         key="seo_wf_smart_research_mode",
                     )
 
+                    MAX_SEEDS_FOR_RESEARCH = 20
+                    capped = len(checked_seeds) > MAX_SEEDS_FOR_RESEARCH
+                    seeds_to_run = checked_seeds[:MAX_SEEDS_FOR_RESEARCH]
+                    btn_label = f"Run Cluster Research ({len(seeds_to_run)} of {len(checked_seeds)} seeds)" if capped else f"Run Cluster Research ({len(checked_seeds)} seeds)"
+
+                    if capped:
+                        st.caption(f"Capped at {MAX_SEEDS_FOR_RESEARCH} seeds to keep research time reasonable. Uncheck lower-priority seeds to control which are used.")
+
                     if st.button(
-                        f"Run Cluster Research ({len(checked_seeds)} seeds)",
+                        btn_label,
                         type="primary",
                         key="seo_wf_smart_run_btn",
                     ):
@@ -679,7 +687,7 @@ with tab_cluster:
                                         workflow_svc.start_cluster_research(
                                             brand_id=brand_id,
                                             organization_id=org_id,
-                                            seed_keywords=checked_seeds,
+                                            seed_keywords=seeds_to_run,
                                             sources=smart_sources,
                                             research_mode=mode,
                                         )
@@ -689,7 +697,7 @@ with tab_cluster:
 
                             try:
                                 with ThreadPoolExecutor(max_workers=1) as pool:
-                                    report = pool.submit(_run_smart_research).result(timeout=120)
+                                    report = pool.submit(_run_smart_research).result(timeout=600)
                                 st.session_state["seo_wf_cluster_report"] = report
                             except Exception as e:
                                 st.error(f"Research failed: {e}")
