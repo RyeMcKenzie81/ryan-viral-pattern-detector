@@ -542,21 +542,186 @@ with tab_cluster:
 
         with st.spinner("Researching clusters..."):
             import asyncio
-            try:
-                report = asyncio.run(
-                    workflow_svc.start_cluster_research(
-                        brand_id=brand_id,
-                        organization_id=org_id,
-                        seed_keywords=seeds,
-                        sources=selected_sources,
-                        research_mode=mode,
+            from concurrent.futures import ThreadPoolExecutor
+
+            def _run_research():
+                loop = asyncio.new_event_loop()
+                try:
+                    return loop.run_until_complete(
+                        workflow_svc.start_cluster_research(
+                            brand_id=brand_id,
+                            organization_id=org_id,
+                            seed_keywords=seeds,
+                            sources=selected_sources,
+                            research_mode=mode,
+                        )
                     )
-                )
+                finally:
+                    loop.close()
+
+            try:
+                with ThreadPoolExecutor(max_workers=1) as pool:
+                    report = pool.submit(_run_research).result(timeout=120)
                 st.session_state["seo_wf_cluster_report"] = report
             except Exception as e:
                 st.error(f"Research failed: {e}")
 
-    # Show research report
+    # ---- Batch Progress Panel (check for active batch job) ----
+    batch_job_id = st.session_state.get("seo_wf_batch_job")
+    if batch_job_id:
+        st.divider()
+        batch_job = workflow_svc.get_job_status(batch_job_id)
+        if batch_job:
+            b_status = batch_job.get("status", "unknown")
+            b_progress = batch_job.get("progress", {})
+            b_config = batch_job.get("config", {})
+            b_pct = b_progress.get("percent", 0)
+            b_label = b_progress.get("current_step_label", "")
+            per_article = b_progress.get("per_article_results", [])
+
+            with st.container(border=True):
+                st.markdown(f"**Batch: {b_config.get('pillar_keyword', '')}**")
+                total_articles = b_progress.get("total_articles", 0)
+                completed_so_far = sum(1 for r in per_article if r.get("status") == "completed")
+                st.progress(b_pct / 100, text=f"{b_label} ({completed_so_far}/{total_articles} articles)")
+
+                # Per-article status
+                if per_article:
+                    for ar in per_article:
+                        icon = "+" if ar.get("status") == "completed" else "!"
+                        role_badge = "Pillar" if ar.get("role") == "pillar" else "Spoke"
+                        url = ar.get("published_url", "")
+                        link = f" — [View]({url})" if url else ""
+                        st.markdown(f"  [{icon}] **{role_badge}**: {ar.get('keyword', '')}{link}")
+
+                if b_status == "running":
+                    col_bc, _ = st.columns([1, 3])
+                    with col_bc:
+                        if st.button("Cancel Batch", key="seo_wf_batch_cancel"):
+                            workflow_svc.cancel_job(batch_job_id)
+                            st.info("Cancelling...")
+                            st.rerun()
+                    time.sleep(5)
+                    st.rerun()
+
+                elif b_status == "completed":
+                    b_result = batch_job.get("result", {})
+                    completed_count = b_result.get("completed", 0)
+                    failed_count = b_result.get("failed", 0)
+                    st.success(f"Batch complete! {completed_count} articles generated, {failed_count} failed.")
+
+                    # Per-article results with image management
+                    final_articles = b_result.get("per_article_results", per_article)
+                    for ar_idx, ar in enumerate(final_articles):
+                        if ar.get("status") != "completed" or not ar.get("article_id"):
+                            continue
+                        ar_id = ar["article_id"]
+                        ar_kw = ar.get("keyword", "")
+                        ar_role = "Pillar" if ar.get("role") == "pillar" else "Spoke"
+                        ar_url = ar.get("published_url", "")
+
+                        with st.expander(f"{ar_role}: {ar_kw}", expanded=ar_idx == 0):
+                            if ar_url:
+                                st.markdown(f"[View Shopify Draft]({ar_url})")
+
+                            # Image management (same pattern as Quick Write)
+                            b_img_tab, b_pub_tab = st.tabs(["Images", "Publish"])
+
+                            with b_img_tab:
+                                b_cache_key = f"seo_wf_image_data_{ar_id}"
+                                if b_cache_key not in st.session_state:
+                                    st.session_state[b_cache_key] = workflow_svc.get_article_images(ar_id)
+                                b_img_data = st.session_state[b_cache_key]
+                                b_images = b_img_data.get("image_metadata") or []
+
+                                if not b_images:
+                                    st.info("No images found.")
+                                else:
+                                    st.caption(f"{len(b_images)} image(s)")
+                                    for bi, bimg in enumerate(b_images):
+                                        with st.container(border=True):
+                                            bi_left, bi_right = st.columns([2, 1])
+                                            with bi_left:
+                                                cdn = bimg.get("cdn_url")
+                                                if cdn and bimg.get("status") == "success":
+                                                    bust = st.session_state.get(f"seo_img_bust_{ar_id}_{bi}", "")
+                                                    d_url = f"{cdn}?t={bust}" if bust else cdn
+                                                    st.image(d_url, use_container_width=True)
+                                                else:
+                                                    st.warning(f"Image unavailable: {bimg.get('error', 'Failed')}")
+                                            with bi_right:
+                                                badge = "Hero" if bimg.get("type") == "hero" else f"Inline #{bi}"
+                                                st.markdown(f"**{badge}**")
+                                                orig_desc = bimg.get("description", "")
+                                                p_val = st.text_area(
+                                                    "Prompt", value=orig_desc, height=80,
+                                                    key=f"seo_batch_{ar_idx}_{bi}_prompt",
+                                                    label_visibility="collapsed",
+                                                )
+                                                if st.button("Regenerate", key=f"seo_batch_{ar_idx}_{bi}_regen", use_container_width=True):
+                                                    custom = p_val.strip() if p_val.strip() != orig_desc else None
+                                                    try:
+                                                        with st.spinner(f"Regenerating {badge.lower()}..."):
+                                                            workflow_svc.regenerate_single_image(
+                                                                article_id=ar_id, image_index=bi,
+                                                                brand_id=brand_id, organization_id=org_id,
+                                                                custom_prompt=custom,
+                                                            )
+                                                        st.session_state[f"seo_img_bust_{ar_id}_{bi}"] = str(int(time.time()))
+                                                        if b_cache_key in st.session_state:
+                                                            del st.session_state[b_cache_key]
+                                                        st.rerun()
+                                                    except Exception as e:
+                                                        st.error(f"Failed: {str(e)[:200]}")
+
+                            with b_pub_tab:
+                                if st.button("Re-publish to Shopify", key=f"seo_batch_{ar_idx}_republish", type="primary"):
+                                    try:
+                                        with st.spinner("Updating Shopify draft..."):
+                                            from viraltracker.services.seo_pipeline.services.cms_publisher_service import CMSPublisherService
+                                            pub_svc = CMSPublisherService()
+                                            pub_result = pub_svc.publish_article(
+                                                article_id=ar_id, brand_id=brand_id,
+                                                organization_id=org_id, draft=True,
+                                            )
+                                        admin_url = pub_result.get("admin_url", "")
+                                        if admin_url:
+                                            st.success(f"Updated! [View in Shopify]({admin_url})")
+                                        else:
+                                            st.success("Article updated in Shopify.")
+                                    except Exception as e:
+                                        st.error(f"Publish failed: {str(e)[:200]}")
+
+                    st.divider()
+                    if st.button("Clear batch", key="seo_wf_batch_clear"):
+                        # Clear image caches for all batch articles
+                        for ar in final_articles:
+                            _aid = ar.get("article_id")
+                            if _aid:
+                                _ck = f"seo_wf_image_data_{_aid}"
+                                if _ck in st.session_state:
+                                    del st.session_state[_ck]
+                        del st.session_state["seo_wf_batch_job"]
+                        st.rerun()
+
+                elif b_status == "failed":
+                    st.error(f"Batch failed: {batch_job.get('error', 'Unknown error')}")
+                    if per_article:
+                        st.markdown("**Completed before failure:**")
+                        for ar in per_article:
+                            if ar.get("status") == "completed":
+                                st.markdown(f"  [+] {ar.get('keyword', '')} — [View]({ar.get('published_url', '')})")
+                    if st.button("Dismiss", key="seo_wf_batch_dismiss"):
+                        del st.session_state["seo_wf_batch_job"]
+                        st.rerun()
+
+                elif b_status == "cancelled":
+                    st.info("Batch cancelled.")
+                    if st.button("Dismiss", key="seo_wf_batch_dismiss_cancel"):
+                        del st.session_state["seo_wf_batch_job"]
+                        st.rerun()
+
+    # ---- Research Report ----
     report = st.session_state.get("seo_wf_cluster_report")
     if report:
         st.subheader("Cluster Recommendations")
@@ -569,7 +734,8 @@ with tab_cluster:
             for i, cluster in enumerate(clusters):
                 with st.container(border=True):
                     score = cluster.get("opportunity_score", 0)
-                    st.markdown(f"### {cluster.get('pillar_keyword', 'Unknown')}")
+                    pillar_kw = cluster.get("pillar_keyword", "Unknown")
+                    st.markdown(f"### {pillar_kw}")
                     st.markdown(f"**Score:** {score:.1f} | **Summary:** {cluster.get('topic_summary', '')}")
 
                     if cluster.get("reasoning"):
@@ -577,13 +743,72 @@ with tab_cluster:
 
                     spokes = cluster.get("spokes", [])
                     if spokes:
-                        st.markdown("**Spokes:**")
+                        st.markdown(f"**Spokes ({len(spokes)}):**")
                         for spoke in spokes:
                             angle = spoke.get("angle", "")
                             diff = spoke.get("estimated_difficulty", "")
                             st.markdown(f"- {spoke.get('keyword', '')} {f'— {angle}' if angle else ''} {f'({diff})' if diff else ''}")
 
+                    # Generate button
+                    total_articles = 1 + len(spokes)
+                    if st.button(
+                        f"Generate Cluster ({total_articles} articles)",
+                        key=f"seo_wf_gen_cluster_{i}",
+                        type="primary",
+                        disabled=batch_job_id is not None,
+                    ):
+                        try:
+                            cluster_id = workflow_svc.save_cluster_from_research(
+                                cluster_data=cluster,
+                                brand_id=brand_id,
+                                organization_id=org_id,
+                            )
+                            job_id = workflow_svc.start_cluster_batch(
+                                cluster_id=cluster_id,
+                                brand_id=brand_id,
+                                organization_id=org_id,
+                            )
+                            st.session_state["seo_wf_batch_job"] = job_id
+                            st.success("Batch started! Monitoring progress...")
+                            st.rerun()
+                        except ValueError as e:
+                            st.error(str(e))
+                        except Exception as e:
+                            st.error(f"Failed to start batch: {str(e)[:300]}")
+
             st.info(
                 "For best indexing results, publish 1-2 articles per day "
                 "rather than all at once."
             )
+
+    # ---- Recent Batch Jobs ----
+    st.divider()
+    st.subheader("Recent Batches")
+    recent_batches = [
+        j for j in workflow_svc.get_recent_jobs(brand_id, limit=10)
+        if j.get("job_type") == "cluster_batch"
+    ]
+    if recent_batches:
+        for bj in recent_batches:
+            _bjid = bj.get("id")
+            bc = bj.get("config", {})
+            bj_status = bj.get("status", "?")
+            bj_created = bj.get("created_at", "")[:16]
+            bj_result = bj.get("result", {})
+            bj_completed = bj_result.get("completed", 0)
+            bj_total = bj_result.get("total", 0)
+
+            icon = {"completed": "+", "failed": "!", "cancelled": "x", "running": "~"}.get(bj_status, "?")
+
+            bc1, bc2 = st.columns([4, 1])
+            with bc1:
+                st.markdown(
+                    f"[{icon}] **{bc.get('pillar_keyword', '?')}** — "
+                    f"{bj_status} ({bj_completed}/{bj_total} articles) — {bj_created}"
+                )
+            with bc2:
+                if bj_status in ("completed", "failed") and st.button("Load", key=f"seo_wf_load_batch_{_bjid}"):
+                    st.session_state["seo_wf_batch_job"] = _bjid
+                    st.rerun()
+    else:
+        st.caption("No recent batch jobs for this brand.")

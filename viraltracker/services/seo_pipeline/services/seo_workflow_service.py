@@ -969,6 +969,80 @@ class SEOWorkflowService:
     # CLUSTER BATCH PIPELINE
     # =========================================================================
 
+    def save_cluster_from_research(
+        self,
+        cluster_data: Dict[str, Any],
+        brand_id: str,
+        organization_id: str,
+    ) -> str:
+        """
+        Persist a cluster from a research report to the database.
+
+        Creates keyword records, a cluster, and spokes so the cluster
+        can be used with start_cluster_batch().
+
+        Args:
+            cluster_data: Single cluster from research report
+                (pillar_keyword, spokes, topic_summary, etc.)
+            brand_id: Brand UUID
+            organization_id: Organization UUID
+
+        Returns:
+            Created cluster ID
+        """
+        organization_id = self._resolve_org_id(organization_id, brand_id)
+        project_id = self._resolve_project(brand_id, organization_id)
+
+        from viraltracker.services.seo_pipeline.services.keyword_discovery_service import KeywordDiscoveryService
+        from viraltracker.services.seo_pipeline.services.cluster_management_service import ClusterManagementService
+        from viraltracker.core.database import get_supabase_client
+
+        sb = get_supabase_client()
+        kw_svc = KeywordDiscoveryService(supabase_client=sb)
+        cluster_svc = ClusterManagementService(supabase_client=sb)
+
+        pillar_keyword = cluster_data.get("pillar_keyword", "")
+        spokes = cluster_data.get("spokes", [])
+
+        # Create cluster record
+        cluster = cluster_svc.create_cluster(
+            project_id=project_id,
+            name=pillar_keyword,
+            pillar_keyword=pillar_keyword,
+            intent=cluster_data.get("intent", "informational"),
+            description=cluster_data.get("topic_summary", ""),
+            target_spoke_count=len(spokes),
+        )
+        cluster_id = cluster["id"]
+
+        # Create pillar keyword + spoke
+        pillar_kw_record = kw_svc.create_keyword(project_id, pillar_keyword)
+        cluster_svc.add_spoke(
+            cluster_id=cluster_id,
+            keyword_id=pillar_kw_record["id"],
+            role="pillar",
+            priority=1,
+        )
+
+        # Create spoke keywords + spokes
+        for i, spoke in enumerate(spokes):
+            spoke_keyword = spoke.get("keyword", "")
+            if not spoke_keyword:
+                continue
+            spoke_kw_record = kw_svc.create_keyword(project_id, spoke_keyword)
+            cluster_svc.add_spoke(
+                cluster_id=cluster_id,
+                keyword_id=spoke_kw_record["id"],
+                role="spoke",
+                priority=spoke.get("priority", i + 2),
+            )
+
+        logger.info(
+            f"Saved cluster '{pillar_keyword}' with {len(spokes)} spokes "
+            f"(cluster_id={cluster_id})"
+        )
+        return cluster_id
+
     def start_cluster_batch(
         self,
         cluster_id: str,
@@ -1001,6 +1075,12 @@ class SEOWorkflowService:
             .execute()
         ).data or []
 
+        # Filter out the pillar spoke (generated separately)
+        spoke_only = [
+            s for s in spokes
+            if s.get("role") != "pillar"
+        ]
+
         config = {
             "cluster_id": cluster_id,
             "brand_id": brand_id,
@@ -1010,7 +1090,7 @@ class SEOWorkflowService:
                     "keyword": (s.get("seo_keywords") or {}).get("keyword", ""),
                     "id": s.get("id"),
                 }
-                for s in spokes
+                for s in spoke_only
             ],
         }
 
@@ -1023,9 +1103,10 @@ class SEOWorkflowService:
                 "config": config,
                 "progress": {
                     "current_step": "validate",
-                    "total_steps": 2 + len(spokes),  # pillar + spokes + linking
+                    "current_step_label": "Starting batch...",
+                    "total_steps": 2 + len(spoke_only),  # pillar + spokes + linking
                     "current_article_index": 0,
-                    "total_articles": 1 + len(spokes),
+                    "total_articles": 1 + len(spoke_only),
                     "per_article_results": [],
                     "percent": 0,
                 },
@@ -1079,6 +1160,10 @@ class SEOWorkflowService:
         # 1. Generate pillar article
         pillar_result = None
         try:
+            self._update_batch_progress(
+                job_id, 0, 1 + len(spokes), [],
+                label=f"Generating pillar: {pillar_keyword}",
+            )
             pillar_job_id = self.start_one_off(
                 keyword=pillar_keyword,
                 brand_id=brand_id,
@@ -1096,9 +1181,11 @@ class SEOWorkflowService:
             return
 
         pillar_article_id = (pillar_result.get("result") or {}).get("article_id", "")
+        pillar_url = (pillar_result.get("result") or {}).get("published_url", "")
         per_article_results = [{
             "keyword": pillar_keyword,
             "article_id": pillar_article_id,
+            "published_url": pillar_url,
             "role": "pillar",
             "status": "completed",
         }]
@@ -1112,7 +1199,10 @@ class SEOWorkflowService:
                 return
 
             spoke_kw = spoke.get("keyword", "")
-            self._update_batch_progress(job_id, i + 1, len(spokes) + 1, per_article_results)
+            self._update_batch_progress(
+                job_id, i + 1, len(spokes) + 1, per_article_results,
+                label=f"Generating spoke {i + 1}/{len(spokes)}: {spoke_kw}",
+            )
 
             cluster_ctx = (
                 f"This is part of a topic cluster. Pillar article: '{pillar_keyword}'. "
@@ -1132,11 +1222,13 @@ class SEOWorkflowService:
                 )
                 spoke_result = await self._wait_for_job(spoke_job_id, timeout=600)
                 spoke_article_id = (spoke_result.get("result") or {}).get("article_id", "")
+                spoke_url = (spoke_result.get("result") or {}).get("published_url", "")
 
                 if spoke_result and spoke_result.get("status") == "completed":
                     per_article_results.append({
                         "keyword": spoke_kw,
                         "article_id": spoke_article_id,
+                        "published_url": spoke_url,
                         "role": "spoke",
                         "status": "completed",
                     })
@@ -1157,6 +1249,10 @@ class SEOWorkflowService:
                 })
 
         # 3. Cross-cluster interlinking
+        self._update_batch_progress(
+            job_id, len(spokes) + 1, len(spokes) + 1, per_article_results,
+            label="Cross-linking articles...",
+        )
         try:
             from viraltracker.services.seo_pipeline.services.interlinking_service import InterlinkingService
             from viraltracker.core.database import get_supabase_client
@@ -1386,14 +1482,18 @@ class SEOWorkflowService:
         current_index: int,
         total: int,
         per_article_results: List[Dict],
+        label: str = "",
     ) -> None:
         """Update batch progress."""
         pct = int(current_index / total * 100) if total else 0
-        self._update_job(job_id, progress_update={
+        update = {
             "current_article_index": current_index,
             "per_article_results": per_article_results,
             "percent": pct,
-        })
+        }
+        if label:
+            update["current_step_label"] = label
+        self._update_job(job_id, progress_update=update)
 
     async def _wait_for_job(self, child_job_id: str, timeout: int = 600) -> Optional[Dict]:
         """Wait for a child job to complete (for batch pipeline)."""
