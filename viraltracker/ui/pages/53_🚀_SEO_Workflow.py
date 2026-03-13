@@ -624,7 +624,15 @@ with tab_cluster:
                 for topic, seeds in seed_result.seeds_by_topic.items():
                     if not seeds:
                         continue
-                    st.markdown(f"**{topic}** ({len(seeds)} seeds)")
+                    topic_col, toggle_col = st.columns([4, 1])
+                    with topic_col:
+                        st.markdown(f"**{topic}** ({len(seeds)} seeds)")
+                    with toggle_col:
+                        topic_on = st.checkbox(
+                            "All", value=True,
+                            key=f"seo_wf_topic_toggle_{topic}",
+                            label_visibility="collapsed",
+                        )
                     for si, seed in enumerate(seeds):
                         intent_icon = {"commercial": "💰", "comparison": "⚖️"}.get(
                             seed.intent, "ℹ️"
@@ -633,7 +641,7 @@ with tab_cluster:
                         if seed.rationale:
                             label += f" — _{seed.rationale}_"
                         if st.checkbox(
-                            label, value=True,
+                            label, value=topic_on,
                             key=f"seo_wf_seed_chk_{topic}_{si}",
                         ):
                             checked_seeds.append(seed.keyword)
