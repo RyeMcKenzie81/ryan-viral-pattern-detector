@@ -6644,6 +6644,8 @@ class TestPageCapture:
         assert "header," not in _CHROME_SELECTORS
         assert "nav," not in _CHROME_SELECTORS
         assert "announcement" not in _CHROME_SELECTORS
+        # Hidden dialogs removed (nav drawers inside <dialog> wrappers)
+        assert "dialog:not([open])" in _CHROME_SELECTORS
 
 
 # ===========================================================================
@@ -7008,3 +7010,161 @@ class TestFetchAllExternal:
         assert _is_css_content_type("text/plain") is True
         assert _is_css_content_type("text/html") is False
         assert _is_css_content_type("application/javascript") is False
+
+
+class TestBalanceCSSBraces:
+    """Brace balancing prevents one broken CSS file from poisoning later CSS."""
+
+    def test_balanced_css_unchanged(self):
+        from viraltracker.services.landing_page_analysis.multipass.html_extractor import (
+            _balance_css_braces,
+        )
+        css = ".a { color: red; } @media (max-width: 800px) { .b { color: blue; } }"
+        assert _balance_css_braces(css) == css
+
+    def test_unclosed_brace_gets_closed(self):
+        from viraltracker.services.landing_page_analysis.multipass.html_extractor import (
+            _balance_css_braces,
+        )
+        # Missing closing brace on @keyframes
+        css = "@keyframes spin { from { transform: rotate(0) } to { transform: rotate(360deg) }"
+        result = _balance_css_braces(css)
+        assert result.endswith("}")
+        assert result.count("{") == result.count("}")
+
+    def test_extra_close_brace_gets_opened(self):
+        from viraltracker.services.landing_page_analysis.multipass.html_extractor import (
+            _balance_css_braces,
+        )
+        css = ".a { color: red; } }"
+        result = _balance_css_braces(css)
+        assert result.count("{") == result.count("}")
+
+    def test_braces_inside_strings_ignored(self):
+        from viraltracker.services.landing_page_analysis.multipass.html_extractor import (
+            _balance_css_braces,
+        )
+        css = '.a { content: "}{}{"; color: red; }'
+        assert _balance_css_braces(css) == css
+
+    def test_multiple_unclosed(self):
+        from viraltracker.services.landing_page_analysis.multipass.html_extractor import (
+            _balance_css_braces,
+        )
+        css = "@media (max-width: 800px) { @supports (display: grid) { .a { color: red; }"
+        result = _balance_css_braces(css)
+        # Should append 2 closing braces
+        assert result.count("{") == result.count("}")
+
+
+class TestFirstPartyCSSPriority:
+    """First-party CSS is fetched before third-party to prevent budget exhaustion."""
+
+    @patch(
+        "viraltracker.services.landing_page_analysis.multipass.html_extractor._safe_fetch_css"
+    )
+    def test_first_party_fetched_before_third_party(self, mock_fetch):
+        """Theme CSS at link #26 should be fetched even when 16 third-party
+        links appear earlier in the DOM (e.g. Okendo review widget CSS)."""
+        from viraltracker.services.landing_page_analysis.multipass.html_extractor import (
+            CSSExtractor,
+        )
+
+        # Track which URLs are fetched and in what order
+        fetched_urls = []
+
+        def side_effect(url, hostname, first_party_only=False):
+            fetched_urls.append(url)
+            return f"/* {url} */"
+
+        mock_fetch.side_effect = side_effect
+
+        # Simulate moonbrew-like scenario: 16 third-party CSS files from a
+        # review widget CDN, then 5 more third-party, then the critical
+        # Shopify theme CSS at link #26
+        links = []
+        for i in range(16):
+            links.append(
+                f'<link rel="stylesheet" href="https://d3hw6dc1ow8pp2.cloudfront.net/widget{i}.css">'
+            )
+        for i in range(5):
+            links.append(
+                f'<link rel="stylesheet" href="https://other-cdn{i}.example.com/lib{i}.css">'
+            )
+        # Critical theme CSS (would be at position 21+ in DOM order)
+        links.append(
+            '<link rel="stylesheet" href="https://cdn.shopify.com/s/files/theme/main-product.css">'
+        )
+        links.append(
+            '<link rel="stylesheet" href="https://cdn.shopify.com/s/files/theme/section-footer.css">'
+        )
+
+        html = "\n".join(links)
+        result = CSSExtractor.fetch_raw_external_css(html, "https://moonbrew.co/pages/gummies")
+
+        # First-party (Shopify CDN) CSS must be in the fetched set
+        shopify_fetched = [u for u in fetched_urls if "cdn.shopify.com" in u]
+        assert len(shopify_fetched) == 2, (
+            f"Both Shopify theme CSS files should be fetched, got {len(shopify_fetched)}"
+        )
+
+        # The output should contain the Shopify CSS
+        assert "main-product.css" in result
+        assert "section-footer.css" in result
+
+    @patch(
+        "viraltracker.services.landing_page_analysis.multipass.html_extractor._safe_fetch_css"
+    )
+    def test_cascade_order_preserved_in_output(self, mock_fetch):
+        """Even though first-party is fetched first, output must preserve
+        DOM order so the CSS cascade is correct."""
+        from viraltracker.services.landing_page_analysis.multipass.html_extractor import (
+            CSSExtractor,
+        )
+
+        def side_effect(url, hostname, first_party_only=False):
+            if "third-party" in url:
+                return ".third { color: red; }"
+            return ".first { color: blue; }"
+
+        mock_fetch.side_effect = side_effect
+
+        html = (
+            '<link rel="stylesheet" href="https://third-party.example.com/a.css">'
+            '<link rel="stylesheet" href="https://cdn.shopify.com/theme.css">'
+            '<link rel="stylesheet" href="https://third-party.example.com/b.css">'
+        )
+        result = CSSExtractor.fetch_raw_external_css(html, "https://mystore.com")
+
+        # Output should be in DOM order: third-party-a, shopify, third-party-b
+        third_pos = result.index(".third")
+        first_pos = result.index(".first")
+        # The third-party CSS (DOM pos 0) should appear before first-party (DOM pos 1)
+        assert third_pos < first_pos
+
+    @patch(
+        "viraltracker.services.landing_page_analysis.multipass.html_extractor._safe_fetch_css"
+    )
+    def test_limit_still_enforced(self, mock_fetch):
+        """Total fetches must still respect _MAX_EXTERNAL_CSS_FETCHES_ALL."""
+        from viraltracker.services.landing_page_analysis.multipass.html_extractor import (
+            CSSExtractor,
+        )
+
+        mock_fetch.return_value = ".x { color: red; }"
+
+        # 15 first-party + 15 third-party = 30 total, limit is 20
+        links = []
+        for i in range(15):
+            links.append(
+                f'<link rel="stylesheet" href="https://cdn.shopify.com/fp{i}.css">'
+            )
+        for i in range(15):
+            links.append(
+                f'<link rel="stylesheet" href="https://cdn{i}.widgets.io/tp{i}.css">'
+            )
+        html = "\n".join(links)
+        CSSExtractor.fetch_raw_external_css(html, "https://mystore.com")
+
+        # All 15 first-party + 5 third-party = 20 (the limit)
+        assert mock_fetch.call_count == 20

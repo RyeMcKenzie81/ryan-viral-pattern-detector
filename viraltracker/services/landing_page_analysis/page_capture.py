@@ -82,7 +82,11 @@ _CHROME_SELECTORS = (
     # Shopify infrastructure elements (analytics, CSS lockdown, pixel sandbox)
     "[id='web-pixels-manager-sandbox-container'], [id*='polaris-css'], "
     # Modal dialogs (catches generic popups/overlays including Alia)
-    "[aria-modal='true']"
+    "[aria-modal='true'], "
+    # Dialog elements without [open] — always display:none by spec.
+    # If bleach strips the <dialog> tag, children become visible (e.g.,
+    # mobile nav drawers rendered inside <dialog> wrappers).
+    "dialog:not([open])"
 )
 
 # JS snippet to remove hidden elements, SVG sprites, fixed widgets, and
@@ -296,6 +300,53 @@ _REMOVE_ANTI_SCRAPE_OVERLAYS_JS = """(() => {
     return removed;
 })()"""
 
+# JS snippet to remove non-active product variant containers.
+# E-commerce sites (Shopify themes) show different product galleries per
+# variant (color/size/subscription). JS toggles an "active" class on the
+# current variant wrapper. Without JS, ALL variants display, creating
+# massive duplicate galleries. This finds sibling groups where one has
+# "active" class and removes the non-active ones.
+_REMOVE_INACTIVE_VARIANTS_JS = """(() => {
+    let removed = 0;
+    // Find all elements with the "active" class
+    const actives = document.querySelectorAll('.active');
+    const processed = new Set();
+
+    actives.forEach(active => {
+        const parent = active.parentElement;
+        if (!parent || processed.has(parent)) return;
+
+        // Get active element's base classes (excluding state classes)
+        const stateClasses = new Set(['active', 'is-active', 'current', 'selected', 'visible', 'show']);
+        const baseClasses = Array.from(active.classList).filter(c => !stateClasses.has(c));
+        if (baseClasses.length === 0) return;
+
+        // Find siblings sharing the same tag AND at least one base class
+        const siblings = Array.from(parent.children).filter(sib => {
+            if (sib === active) return false;
+            if (sib.tagName !== active.tagName) return false;
+            if (sib.classList.contains('active')) return false;
+            // Must share at least one base class
+            return baseClasses.some(cls => sib.classList.contains(cls));
+        });
+
+        // Only process if there are non-active siblings (variant pattern)
+        // AND they contain media content (avoids removing text tabs/navs)
+        if (siblings.length === 0) return;
+        const hasMedia = siblings.some(sib =>
+            sib.querySelector('img, picture, video, .swiper, .splide, .glide')
+        );
+        if (!hasMedia) return;
+
+        processed.add(parent);
+        siblings.forEach(sib => {
+            sib.remove();
+            removed++;
+        });
+    });
+    return removed;
+})()"""
+
 # Regex to strip <script> tag contents while preserving the tags
 _SCRIPT_CONTENT_RE = re.compile(
     r"(<script\b[^>]*>)(.*?)(</script>)",
@@ -419,6 +470,12 @@ def capture_rendered_page(
         anti_scrape_removed = page.evaluate(_REMOVE_ANTI_SCRAPE_OVERLAYS_JS)
         if anti_scrape_removed:
             logger.info(f"Removed {anti_scrape_removed} anti-scraping overlay(s)")
+
+        # Remove non-active product variant containers (e.g., subscription
+        # vs one-time galleries where JS toggles "active" class)
+        inactive_removed = page.evaluate(_REMOVE_INACTIVE_VARIANTS_JS)
+        if inactive_removed:
+            logger.info(f"Removed {inactive_removed} inactive variant container(s)")
 
         # Auto-scroll to trigger lazy loading
         if scroll_to_load:

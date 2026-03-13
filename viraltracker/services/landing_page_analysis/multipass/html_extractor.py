@@ -211,6 +211,78 @@ _FONT_ONLY_DOMAINS = frozenset([
 ])
 
 
+# Marker injected between CSS files so the CSSScoper can re-balance
+# each file independently when combining external + inline CSS.
+_CSS_FILE_BOUNDARY = "\n/* __CSS_FILE_BOUNDARY__ */\n"
+
+
+def _balance_css_braces(css_text: str) -> str:
+    """Ensure braces are balanced so one broken file can't poison later CSS.
+
+    Two repairs are applied:
+
+    1. **Stray ``}``** — if a ``}`` would push depth below zero it is
+       removed.  This prevents an extra closing brace in one CSS file
+       from closing blocks in subsequent files.
+    2. **Unclosed blocks** — any remaining open blocks at the end are
+       closed with ``}``.
+
+    String literals (``"..."`` / ``'...'``) are skipped so that brace
+    characters inside ``content:`` values are not miscounted.
+    """
+    result: List[str] = []
+    depth = 0
+    in_string: Optional[str] = None
+    escape = False
+    removed = 0
+
+    for ch in css_text:
+        if escape:
+            escape = False
+            result.append(ch)
+            continue
+        if ch == '\\':
+            escape = True
+            result.append(ch)
+            continue
+        if in_string:
+            if ch == in_string:
+                in_string = None
+            result.append(ch)
+            continue
+        if ch in ('"', "'"):
+            in_string = ch
+            result.append(ch)
+            continue
+
+        if ch == '{':
+            depth += 1
+            result.append(ch)
+        elif ch == '}':
+            if depth > 0:
+                depth -= 1
+                result.append(ch)
+            else:
+                # Stray closing brace — drop it to prevent cascading
+                removed += 1
+        else:
+            result.append(ch)
+
+    css_out = ''.join(result)
+
+    # Close any remaining open blocks
+    if depth > 0:
+        css_out += '\n' + ('}' * depth)
+
+    if removed or depth > 0:
+        logger.debug(
+            f"CSS brace fix: removed {removed} stray }}, "
+            f"appended {depth} closing }}"
+        )
+
+    return css_out
+
+
 class CSSExtractor:
     """Extract responsive CSS from original page HTML."""
 
@@ -223,6 +295,11 @@ class CSSExtractor:
         Unlike ``extract()``, this does NOT parse/categorize CSS — it returns
         the raw CSS exactly as the CDN serves it, preserving cascade order.
         Used by surgery pipeline where CSS ordering matters.
+
+        First-party and platform CDN stylesheets are fetched before third-party
+        CSS.  This ensures critical theme CSS (e.g. Shopify product layouts) is
+        never dropped when third-party widget CSS (reviews, popups) consumes
+        the fetch budget.
 
         Args:
             original_html: Full page HTML (to find ``<link>`` tags).
@@ -239,28 +316,44 @@ class CSSExtractor:
             return ""
 
         link_urls = _extract_stylesheet_urls(original_html, page_url)
-        css_parts: List[str] = []
+
+        # Partition into first-party and third-party while preserving DOM
+        # order within each group.  First-party CSS (same domain + platform
+        # CDNs like cdn.shopify.com) is fetched first so theme CSS is
+        # guaranteed even when third-party widgets load many stylesheets.
+        first_party_urls: List[Tuple[int, str]] = []  # (dom_index, url)
+        third_party_urls: List[Tuple[int, str]] = []
+
+        for idx, css_url in enumerate(link_urls):
+            parsed = urlparse(css_url)
+            css_host = (parsed.hostname or "").lower()
+
+            # Skip font-only CDNs (browser loads at render time)
+            if css_host in _FONT_ONLY_DOMAINS:
+                continue
+            # SSRF safety check
+            if not _is_safe_css_url(css_url):
+                continue
+
+            if _is_first_party(css_host, page_hostname):
+                first_party_urls.append((idx, css_url))
+            else:
+                third_party_urls.append((idx, css_url))
+
+        # Fetch first-party first, then third-party up to the limit
+        ordered = first_party_urls + third_party_urls
+        css_results: List[Tuple[int, str]] = []  # (dom_index, css_text)
         fetched = 0
 
-        for css_url in link_urls:
+        for dom_idx, css_url in ordered:
             if fetched >= _MAX_EXTERNAL_CSS_FETCHES_ALL:
-                remaining = len(link_urls) - fetched
+                remaining = len(ordered) - fetched
                 if remaining > 0:
                     logger.warning(
                         f"CSS fetch limit reached ({_MAX_EXTERNAL_CSS_FETCHES_ALL}), "
                         f"skipping {remaining} remaining stylesheet(s)"
                     )
                 break
-            parsed = urlparse(css_url)
-            css_host = (parsed.hostname or "").lower()
-
-            # Skip font-only CDNs
-            if css_host in _FONT_ONLY_DOMAINS:
-                continue
-
-            # SSRF safety check
-            if not _is_safe_css_url(css_url):
-                continue
 
             try:
                 css_text = _safe_fetch_css(
@@ -268,7 +361,10 @@ class CSSExtractor:
                 )
                 if css_text:
                     css_text = _rewrite_css_urls(css_text, css_url)
-                    css_parts.append(css_text)
+                    css_text = _balance_css_braces(css_text)
+                    # Mark file boundary so CSSScoper can re-balance
+                    # per-file after combining with inline styles.
+                    css_results.append((dom_idx, _CSS_FILE_BOUNDARY + css_text))
                     fetched += 1
                     logger.info(
                         f"Fetched external CSS: {css_url[:80]}... "
@@ -277,7 +373,16 @@ class CSSExtractor:
             except Exception as e:
                 logger.debug(f"External CSS fetch failed: {e}")
 
-        return "\n\n".join(css_parts)
+        if first_party_urls:
+            logger.info(
+                f"CSS fetch priority: {len(first_party_urls)} first-party, "
+                f"{len(third_party_urls)} third-party, "
+                f"{fetched} fetched (limit {_MAX_EXTERNAL_CSS_FETCHES_ALL})"
+            )
+
+        # Re-sort by original DOM index to preserve cascade order in output
+        css_results.sort(key=lambda x: x[0])
+        return "\n\n".join(text for _, text in css_results)
 
     @classmethod
     def extract(

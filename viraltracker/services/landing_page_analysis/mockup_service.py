@@ -307,7 +307,7 @@ _ALLOWED_TAGS = [
     "ellipse", "text", "tspan", "defs", "clipPath", "clippath", "mask",
     "symbol", "title",
     # Interactive / Disclosure
-    "a", "button", "details", "summary",
+    "a", "button", "details", "summary", "dialog",
     # Forms (display only)
     "input", "label", "select", "option", "textarea", "form",
     # External resources (font CDN links preserved by surgery pipeline)
@@ -3854,7 +3854,13 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
             sanitized = _sanitize_css_block(content, self.is_surgery_mode)
             if sanitized.strip():
                 sanitized_parts.append(sanitized)
-        sanitized_css = '\n'.join(sanitized_parts)
+        # Join with file boundary markers to preserve per-file isolation.
+        # _wrap_mockup() splits on these markers and emits separate <style>
+        # blocks, preventing brace errors in one stylesheet from cascading.
+        from viraltracker.services.landing_page_analysis.multipass.html_extractor import (
+            _CSS_FILE_BOUNDARY,
+        )
+        sanitized_css = _CSS_FILE_BOUNDARY.join(sanitized_parts)
 
         # Strip all <style> blocks from HTML (atomically with extraction)
         html_without_styles = re.sub(
@@ -3876,11 +3882,17 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
             r'<style[^>]*class=["\'][^"\']*\bpage-css\b[^"\']*["\'][^>]*>(.*?)</style>',
             wrapped_html, flags=re.IGNORECASE | re.DOTALL,
         )
-        page_css = '\n'.join(css_matches) if css_matches else ""
+        # Join with file boundary markers to preserve per-file isolation
+        from viraltracker.services.landing_page_analysis.multipass.html_extractor import (
+            _CSS_FILE_BOUNDARY,
+        )
+        page_css = _CSS_FILE_BOUNDARY.join(css_matches) if css_matches else ""
 
-        # 2. Re-sanitize CSS (defense-in-depth: DB rows may be old/pre-sanitization)
+        # 2. Re-sanitize each CSS segment (defense-in-depth: DB rows may be old/pre-sanitization)
         if page_css:
-            page_css = _sanitize_css_block(page_css, self.is_surgery_mode)
+            segments = [s.strip() for s in page_css.split(_CSS_FILE_BOUNDARY) if s.strip()]
+            sanitized = [_sanitize_css_block(seg, self.is_surgery_mode) for seg in segments]
+            page_css = _CSS_FILE_BOUNDARY.join(s for s in sanitized if s.strip())
 
         # 3. Strip wrapper normally
         body = self._strip_mockup_wrapper(wrapped_html)
@@ -4829,12 +4841,18 @@ OUTPUT: Return ONLY the rewritten HTML. No explanations, no code fences, no wrap
             pa_display = _html_module.escape(pa.replace("_", " ").title())
             arch_html = f'<span><strong>Architecture:</strong> {pa_display}</span>'
 
-        # Build page CSS block if present
+        # Build page CSS block(s) — split on file boundaries to emit
+        # separate <style> blocks, preventing brace errors in one
+        # stylesheet from cascading into subsequent stylesheets.
         page_css_block = ""
         if page_css and page_css.strip():
-            page_css_block = f"""<style class="page-css">
-{page_css}
-</style>"""
+            from viraltracker.services.landing_page_analysis.multipass.html_extractor import (
+                _CSS_FILE_BOUNDARY,
+            )
+            css_segments = [s.strip() for s in page_css.split(_CSS_FILE_BOUNDARY) if s.strip()]
+            page_css_block = "\n".join(
+                f'<style class="page-css">\n{seg}\n</style>' for seg in css_segments
+            )
 
         return f"""<!DOCTYPE html>
 <html lang="en">

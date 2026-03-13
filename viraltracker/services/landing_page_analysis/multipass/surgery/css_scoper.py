@@ -14,9 +14,11 @@ from typing import List, Tuple
 
 logger = logging.getLogger(__name__)
 
-# Animation/transition property patterns to strip
+# Animation/transition property patterns to strip.
+# [^;{}]* prevents matching across rule boundaries (} or {).
+# ;? makes the trailing semicolon optional (last property in a rule may omit it).
 _ANIMATION_PROPS_RE = re.compile(
-    r'(?:animation|transition)(?:-[a-z-]+)?\s*:[^;]*;',
+    r'(?:animation|transition)(?:-[a-z-]+)?\s*:[^;{}]*;?',
     re.IGNORECASE,
 )
 
@@ -89,46 +91,73 @@ class CSSScoper:
         #    Preserve font-only CDN links (Google Fonts) for browser loading.
         html_no_styles = self._remove_css_link_tags(html_no_styles, stats)
 
-        # 3. Combine all CSS: external FIRST, then inline overrides
-        #    This matches the original cascade: <link> loads framework CSS,
-        #    then <style> blocks provide page-specific overrides.
-        all_css_parts = []
+        # 3. Collect CSS segments: external FIRST, then inline overrides.
+        #    Each segment is kept separate so it can be emitted in its own
+        #    <style> block.  This prevents brace errors in one third-party
+        #    stylesheet (e.g. Okendo's unclosed @media blocks) from
+        #    cascading into and breaking subsequent CSS (e.g. Shopify
+        #    product layout rules).
+        from viraltracker.services.landing_page_analysis.multipass.html_extractor import (
+            _CSS_FILE_BOUNDARY,
+        )
+
+        css_segments: List[str] = []
         if external_css:
-            all_css_parts.append(external_css)
-        all_css_parts.extend(style_parts)
+            # Split on file boundary markers injected by fetch_raw_external_css
+            for segment in external_css.split(_CSS_FILE_BOUNDARY):
+                segment = segment.strip()
+                if segment:
+                    css_segments.append(segment)
+        css_segments.extend(style_parts)
 
-        all_css = "\n".join(all_css_parts)
+        # 4. Process each segment: extract @imports, strip animations,
+        #    add scroll override, and escape for XSS.
+        import_statements: List[str] = []
+        processed_segments: List[str] = []
+        total_css_chars = 0
 
-        # 4. Extract @import statements (must appear before all other rules)
-        import_statements = _IMPORT_RE.findall(all_css)
-        css_no_imports = _IMPORT_RE.sub("", all_css)
+        for seg in css_segments:
+            # Extract @import statements (will be emitted first)
+            seg_imports = _IMPORT_RE.findall(seg)
+            if seg_imports:
+                import_statements.extend(seg_imports)
+            seg = _IMPORT_RE.sub("", seg)
+
+            # Strip animation/transition properties
+            seg = _ANIMATION_PROPS_RE.sub("", seg)
+
+            # Escape </ sequences (XSS defense)
+            seg = seg.replace('</', '<\\/')
+
+            seg = seg.strip()
+            if seg:
+                processed_segments.append(seg)
+                total_css_chars += len(seg)
 
         if import_statements:
             stats["import_statements_preserved"] = len(import_statements)
 
-        # 5. Strip animation/transition properties for deterministic rendering
-        final_css = _ANIMATION_PROPS_RE.sub("", css_no_imports)
+        # Append scroll override to the last segment
+        if processed_segments:
+            processed_segments[-1] += _SCROLL_OVERRIDE_CSS
+        else:
+            processed_segments.append(_SCROLL_OVERRIDE_CSS)
 
-        # 6. Append scroll override (third-party CSS often sets body{overflow:hidden})
-        final_css += _SCROLL_OVERRIDE_CSS
+        stats["css_total_chars"] = total_css_chars
+        stats["css_segments"] = len(processed_segments)
 
-        # 7. Escape </ sequences to prevent style breakout (XSS defense)
-        final_css = final_css.replace('</', '<\\/')
-
-        stats["css_total_chars"] = len(final_css)
-
-        # 8. Extract body classes, content, and <head> extras (meta, title, font links)
+        # 5. Extract body classes, content, and <head> extras
         body_classes = self._extract_body_classes(html_no_styles)
         body_content = self._extract_body_content(html_no_styles)
         head_extras = self._extract_head_extras(html_no_styles)
 
-        # 9. Build complete standalone HTML document
+        # 6. Build complete standalone HTML document with per-file <style> blocks
         result = self._build_document(
             body_content=body_content,
             body_classes=body_classes,
             head_extras=head_extras,
             import_statements=import_statements,
-            css=final_css,
+            css_segments=processed_segments,
         )
 
         stats["body_wrapped"] = True
@@ -165,9 +194,14 @@ class CSSScoper:
         body_classes: str,
         head_extras: str,
         import_statements: List[str],
-        css: str,
+        css_segments: List[str],
     ) -> str:
-        """Build a complete HTML document with consolidated CSS."""
+        """Build a complete HTML document with per-file CSS isolation.
+
+        Each CSS segment is emitted in its own ``<style>`` block so the
+        browser parses them independently.  This prevents brace errors in
+        one stylesheet from cascading into subsequent stylesheets.
+        """
         parts = ['<!DOCTYPE html>', '<html>', '<head>',
                  '<meta charset="utf-8">',
                  '<meta name="viewport" content="width=device-width, initial-scale=1">']
@@ -180,8 +214,8 @@ class CSSScoper:
             imports_css = "\n".join(import_statements)
             parts.append(f"<style>\n{imports_css}\n</style>")
 
-        if css:
-            parts.append(f"<style>\n{css}\n</style>")
+        for seg in css_segments:
+            parts.append(f"<style>\n{seg}\n</style>")
 
         parts.append('</head>')
 
