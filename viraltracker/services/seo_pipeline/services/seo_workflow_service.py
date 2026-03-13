@@ -929,11 +929,18 @@ class SEOWorkflowService:
             + "\n".join(f"- {kw}" for kw in existing_keywords[:50])
             + "\n\nFor each cluster, identify:\n"
             "1. A pillar keyword (broad topic)\n"
-            "2. Spoke keywords (specific subtopics)\n"
+            "2. 6-12 spoke keywords (specific subtopics) — this is the sweet spot for launch\n"
             "3. Unique angle for each spoke\n"
             "4. Opportunity score (0-1) based on specificity and brand relevance\n"
             "5. Recommended generation order\n\n"
-            "Exclude keywords that would cannibalize existing articles.\n\n"
+            "CLUSTER SIZING RULES:\n"
+            "- Target 6-12 spokes per pillar. Fewer than 6 makes the pillar feel thin. "
+            "For broad/competitive topics, 10-20 spokes is the mature range.\n"
+            "- Prefer FEWER clusters with MORE spokes over many small clusters. "
+            "Combine related subtopics into one authoritative cluster rather than splitting into 3-4 article micro-clusters.\n"
+            "- Every spoke MUST target a distinct search intent. If two spokes chase nearly the same intent, "
+            "merge them into one or drop the weaker one. Overlapping spokes cause cannibalization.\n"
+            "- Exclude keywords that would cannibalize existing articles.\n\n"
             "Return as JSON:\n"
             '{"clusters": [{"pillar_keyword": "...", "topic_summary": "...", '
             '"opportunity_score": 0.8, "reasoning": "...", '
