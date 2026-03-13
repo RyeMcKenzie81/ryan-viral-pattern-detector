@@ -504,67 +504,263 @@ with tab_cluster:
         "then batch-generate all articles."
     )
 
-    with st.form("cluster_research_form"):
-        seeds_text = st.text_area(
-            "Seed keywords",
-            height=100,
-            help="One keyword per line. These are starting points for cluster research.",
-            key="seo_wf_seeds",
-        )
+    sub_smart, sub_manual = st.tabs(["Smart Research", "Manual Research"])
 
-        # Research sources
-        from viraltracker.services.seo_pipeline.services.cluster_research_registry import ClusterResearchRegistry
-        registry = ClusterResearchRegistry()
-        available_sources = registry.get_sources()
-        source_names = [s["name"] for s in available_sources]
+    # ------------------------------------------------------------------
+    # SMART RESEARCH SUB-TAB
+    # ------------------------------------------------------------------
+    with sub_smart:
+        def _get_seed_generator():
+            from viraltracker.services.seo_pipeline.services.brand_seed_generator_service import (
+                BrandSeedGeneratorService,
+            )
+            return BrandSeedGeneratorService()
 
-        selected_sources = st.multiselect(
-            "Research sources",
-            options=source_names,
-            default=source_names,
-            format_func=lambda x: next((s["description"] for s in available_sources if s["name"] == x), x),
-            key="seo_wf_sources",
-        )
+        # State 1: Discover Topics
+        if st.button("Discover Topics from Brand Data", type="primary", key="seo_wf_discover_btn"):
+            with st.spinner("Analyzing brand data and discovering topics (10-15s)..."):
+                svc = _get_seed_generator()
+                result = svc.discover_topics(brand_id=brand_id, organization_id=org_id)
+                # Cache context for reuse in seed generation
+                st.session_state["seo_wf_brand_context"] = svc.last_brand_context
+                st.session_state["seo_wf_smart_topics"] = result
+                # Clear downstream state
+                st.session_state.pop("seo_wf_smart_seeds", None)
+                st.session_state.pop("seo_wf_custom_topics", None)
+            st.rerun()
 
-        research_mode = st.radio(
-            "Research mode",
-            ["Quick (algorithmic)", "Deep (AI-powered)"],
-            index=1,
-            horizontal=True,
-            key="seo_wf_research_mode",
-        )
+        # State 2: Topic Review
+        topic_result = st.session_state.get("seo_wf_smart_topics")
+        if topic_result:
+            if topic_result.warnings:
+                for w in topic_result.warnings:
+                    st.warning(w)
 
-        research_submitted = st.form_submit_button("Research", type="primary")
+            if topic_result.topics:
+                st.subheader("Discovered Topics")
+                if topic_result.brand_context_summary:
+                    st.caption(topic_result.brand_context_summary)
 
-    if research_submitted and seeds_text.strip():
-        seeds = [s.strip() for s in seeds_text.strip().split("\n") if s.strip()]
-        mode = "quick" if "Quick" in research_mode else "deep"
-
-        with st.spinner("Researching clusters..."):
-            import asyncio
-            from concurrent.futures import ThreadPoolExecutor
-
-            def _run_research():
-                loop = asyncio.new_event_loop()
-                try:
-                    return loop.run_until_complete(
-                        workflow_svc.start_cluster_research(
-                            brand_id=brand_id,
-                            organization_id=org_id,
-                            seed_keywords=seeds,
-                            sources=selected_sources,
-                            research_mode=mode,
-                        )
+                # Checkboxes for each topic
+                selected_topics = []
+                for i, t in enumerate(topic_result.topics):
+                    gap_badge = " `GAP`" if t.gap else ""
+                    sources_str = ", ".join(t.sources[:3]) if t.sources else ""
+                    label = f"**{t.topic}**{gap_badge} — {t.rationale}"
+                    if sources_str:
+                        label += f" _{sources_str}_"
+                    checked = st.checkbox(
+                        label,
+                        value=True,
+                        key=f"seo_wf_topic_chk_{i}",
                     )
-                finally:
-                    loop.close()
+                    if checked:
+                        selected_topics.append(t.topic)
 
-            try:
-                with ThreadPoolExecutor(max_workers=1) as pool:
-                    report = pool.submit(_run_research).result(timeout=120)
-                st.session_state["seo_wf_cluster_report"] = report
-            except Exception as e:
-                st.error(f"Research failed: {e}")
+                # Custom topic input
+                custom_topics = st.session_state.get("seo_wf_custom_topics", [])
+                for ci, ct in enumerate(custom_topics):
+                    if st.checkbox(f"**{ct}** _(custom)_", value=True, key=f"seo_wf_custom_chk_{ci}"):
+                        selected_topics.append(ct)
+
+                col_add, col_clear = st.columns([3, 1])
+                with col_add:
+                    new_topic = st.text_input(
+                        "Add a custom topic",
+                        key="seo_wf_add_topic_input",
+                        placeholder="e.g. gut health for athletes",
+                    )
+                    if st.button("Add Topic", key="seo_wf_add_topic_btn") and new_topic.strip():
+                        existing = st.session_state.get("seo_wf_custom_topics", [])
+                        existing.append(new_topic.strip())
+                        st.session_state["seo_wf_custom_topics"] = existing
+                        st.rerun()
+                with col_clear:
+                    if st.button("Clear Topics", key="seo_wf_clear_topics"):
+                        st.session_state.pop("seo_wf_smart_topics", None)
+                        st.session_state.pop("seo_wf_smart_seeds", None)
+                        st.session_state.pop("seo_wf_custom_topics", None)
+                        st.rerun()
+
+                # Generate Seeds button
+                if selected_topics:
+                    if st.button(
+                        f"Generate Seeds for {len(selected_topics)} Topic(s)",
+                        type="primary",
+                        key="seo_wf_gen_seeds_btn",
+                    ):
+                        brand_ctx = st.session_state.get("seo_wf_brand_context")
+                        if not brand_ctx:
+                            svc = _get_seed_generator()
+                            brand_ctx = svc._gather_brand_context(brand_id)
+                            st.session_state["seo_wf_brand_context"] = brand_ctx
+
+                        with st.spinner("Generating long-tail seed phrases (10-15s)..."):
+                            svc = _get_seed_generator()
+                            seed_result = svc.generate_seeds_for_topics(
+                                topics=selected_topics,
+                                brand_context=brand_ctx,
+                                organization_id=org_id,
+                            )
+                            st.session_state["seo_wf_smart_seeds"] = seed_result
+                        st.rerun()
+                else:
+                    st.info("Select at least one topic to generate seeds.")
+            elif not topic_result.warnings:
+                st.info("No topics discovered. Try adding more brand data.")
+
+        # State 3: Seed Review
+        seed_result = st.session_state.get("seo_wf_smart_seeds")
+        if seed_result:
+            if seed_result.warnings:
+                for w in seed_result.warnings:
+                    st.warning(w)
+
+            if seed_result.seeds_by_topic:
+                st.subheader("Generated Seeds")
+                st.caption(f"{seed_result.total_seeds} seeds across {len(seed_result.seeds_by_topic)} topics")
+
+                checked_seeds = []
+                for topic, seeds in seed_result.seeds_by_topic.items():
+                    if not seeds:
+                        continue
+                    st.markdown(f"**{topic}** ({len(seeds)} seeds)")
+                    for si, seed in enumerate(seeds):
+                        intent_icon = {"commercial": "💰", "comparison": "⚖️"}.get(
+                            seed.intent, "ℹ️"
+                        )
+                        label = f"{intent_icon} {seed.keyword}"
+                        if seed.rationale:
+                            label += f" — _{seed.rationale}_"
+                        if st.checkbox(
+                            label, value=True,
+                            key=f"seo_wf_seed_chk_{topic}_{si}",
+                        ):
+                            checked_seeds.append(seed.keyword)
+
+                if checked_seeds:
+                    # Research sources + mode (shared with manual)
+                    from viraltracker.services.seo_pipeline.services.cluster_research_registry import ClusterResearchRegistry
+                    registry = ClusterResearchRegistry()
+                    available_sources = registry.get_sources()
+                    source_names = [s["name"] for s in available_sources]
+
+                    smart_sources = st.multiselect(
+                        "Research sources",
+                        options=source_names,
+                        default=source_names,
+                        format_func=lambda x: next(
+                            (s["description"] for s in available_sources if s["name"] == x), x
+                        ),
+                        key="seo_wf_smart_sources",
+                    )
+                    smart_mode = st.radio(
+                        "Research mode",
+                        ["Quick (algorithmic)", "Deep (AI-powered)"],
+                        index=1,
+                        horizontal=True,
+                        key="seo_wf_smart_research_mode",
+                    )
+
+                    if st.button(
+                        f"Run Cluster Research ({len(checked_seeds)} seeds)",
+                        type="primary",
+                        key="seo_wf_smart_run_btn",
+                    ):
+                        mode = "quick" if "Quick" in smart_mode else "deep"
+                        with st.spinner("Researching clusters..."):
+                            import asyncio
+                            from concurrent.futures import ThreadPoolExecutor
+
+                            def _run_smart_research():
+                                loop = asyncio.new_event_loop()
+                                try:
+                                    return loop.run_until_complete(
+                                        workflow_svc.start_cluster_research(
+                                            brand_id=brand_id,
+                                            organization_id=org_id,
+                                            seed_keywords=checked_seeds,
+                                            sources=smart_sources,
+                                            research_mode=mode,
+                                        )
+                                    )
+                                finally:
+                                    loop.close()
+
+                            try:
+                                with ThreadPoolExecutor(max_workers=1) as pool:
+                                    report = pool.submit(_run_smart_research).result(timeout=120)
+                                st.session_state["seo_wf_cluster_report"] = report
+                            except Exception as e:
+                                st.error(f"Research failed: {e}")
+                else:
+                    st.info("Select at least one seed to run research.")
+
+    # ------------------------------------------------------------------
+    # MANUAL RESEARCH SUB-TAB
+    # ------------------------------------------------------------------
+    with sub_manual:
+        with st.form("cluster_research_form"):
+            seeds_text = st.text_area(
+                "Seed keywords",
+                height=100,
+                help="One keyword per line. These are starting points for cluster research.",
+                key="seo_wf_seeds",
+            )
+
+            # Research sources
+            from viraltracker.services.seo_pipeline.services.cluster_research_registry import ClusterResearchRegistry
+            registry = ClusterResearchRegistry()
+            available_sources = registry.get_sources()
+            source_names = [s["name"] for s in available_sources]
+
+            selected_sources = st.multiselect(
+                "Research sources",
+                options=source_names,
+                default=source_names,
+                format_func=lambda x: next((s["description"] for s in available_sources if s["name"] == x), x),
+                key="seo_wf_sources",
+            )
+
+            research_mode = st.radio(
+                "Research mode",
+                ["Quick (algorithmic)", "Deep (AI-powered)"],
+                index=1,
+                horizontal=True,
+                key="seo_wf_research_mode",
+            )
+
+            research_submitted = st.form_submit_button("Research", type="primary")
+
+        if research_submitted and seeds_text.strip():
+            seeds = [s.strip() for s in seeds_text.strip().split("\n") if s.strip()]
+            mode = "quick" if "Quick" in research_mode else "deep"
+
+            with st.spinner("Researching clusters..."):
+                import asyncio
+                from concurrent.futures import ThreadPoolExecutor
+
+                def _run_research():
+                    loop = asyncio.new_event_loop()
+                    try:
+                        return loop.run_until_complete(
+                            workflow_svc.start_cluster_research(
+                                brand_id=brand_id,
+                                organization_id=org_id,
+                                seed_keywords=seeds,
+                                sources=selected_sources,
+                                research_mode=mode,
+                            )
+                        )
+                    finally:
+                        loop.close()
+
+                try:
+                    with ThreadPoolExecutor(max_workers=1) as pool:
+                        report = pool.submit(_run_research).result(timeout=120)
+                    st.session_state["seo_wf_cluster_report"] = report
+                except Exception as e:
+                    st.error(f"Research failed: {e}")
 
     # ---- Batch Progress Panel (check for active batch job) ----
     batch_job_id = st.session_state.get("seo_wf_batch_job")
