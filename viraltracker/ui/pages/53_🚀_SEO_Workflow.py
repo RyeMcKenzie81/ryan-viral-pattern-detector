@@ -620,7 +620,14 @@ with tab_cluster:
                 st.subheader("Generated Seeds")
                 st.caption(f"{seed_result.total_seeds} seeds across {len(seed_result.seeds_by_topic)} topics")
 
-                # Sync group toggles → individual checkboxes via session state
+                # Initialize seed checkboxes to True on first render
+                for topic, seeds in seed_result.seeds_by_topic.items():
+                    for si in range(len(seeds)):
+                        chk_key = f"seo_wf_seed_chk_{topic}_{si}"
+                        if chk_key not in st.session_state:
+                            st.session_state[chk_key] = True
+
+                # Sync group toggles → individual checkboxes
                 for topic, seeds in seed_result.seeds_by_topic.items():
                     toggle_key = f"seo_wf_topic_toggle_{topic}"
                     if toggle_key in st.session_state:
@@ -637,7 +644,7 @@ with tab_cluster:
                         st.markdown(f"**{topic}** ({len(seeds)} seeds)")
                     with toggle_col:
                         st.checkbox(
-                            "All", value=True,
+                            "All",
                             key=f"seo_wf_topic_toggle_{topic}",
                             label_visibility="collapsed",
                         )
@@ -649,7 +656,7 @@ with tab_cluster:
                         if seed.rationale:
                             label += f" — _{seed.rationale}_"
                         if st.checkbox(
-                            label, value=True,
+                            label,
                             key=f"seo_wf_seed_chk_{topic}_{si}",
                         ):
                             checked_seeds.append(seed.keyword)
