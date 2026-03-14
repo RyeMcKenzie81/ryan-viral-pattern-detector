@@ -514,6 +514,20 @@ with tab_qw:
     # Recent jobs
     st.divider()
     st.subheader("Recent Jobs")
+
+    # Sync article statuses from Shopify (once per page load per brand)
+    _sync_key = f"seo_wf_status_synced_{brand_id}"
+    if _sync_key not in st.session_state:
+        try:
+            from viraltracker.services.seo_pipeline.services.cms_publisher_service import CMSPublisherService
+            _cms_svc = CMSPublisherService()
+            _sync_result = _cms_svc.sync_article_statuses(brand_id, org_id)
+            if _sync_result.get("synced", 0) > 0:
+                logger.info(f"Synced {_sync_result['synced']} article statuses from Shopify")
+        except Exception as e:
+            logger.warning(f"Shopify status sync failed (non-fatal): {e}")
+        st.session_state[_sync_key] = True
+
     recent = workflow_svc.get_recent_jobs(brand_id, limit=20)
     if recent:
         # Batch-fetch Shopify status for completed jobs

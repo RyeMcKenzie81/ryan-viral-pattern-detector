@@ -807,6 +807,72 @@ class CMSPublisherService:
             raise
 
     # =========================================================================
+    # SYNC STATUS FROM CMS
+    # =========================================================================
+
+    def sync_article_statuses(
+        self,
+        brand_id: str,
+        organization_id: str,
+    ) -> Dict[str, Any]:
+        """
+        Sync article published/draft status from Shopify into seo_articles.
+
+        Fetches all Shopify articles, checks published_at, and updates
+        our DB status for any mismatches. Handles articles manually
+        flipped to visible/hidden in Shopify admin.
+
+        Returns:
+            Dict with synced count and total checked
+        """
+        publisher = self.get_publisher(brand_id, organization_id)
+        if not publisher:
+            return {"synced": 0, "total": 0, "error": "No CMS integration configured"}
+
+        from viraltracker.services.seo_pipeline.models import ArticleStatus
+
+        # Fetch all Shopify articles (one API call)
+        shopify_articles = publisher.list_articles()
+        if not shopify_articles:
+            return {"synced": 0, "total": 0}
+
+        # Build lookup: cms_article_id → is_published
+        shopify_status = {}
+        for sa in shopify_articles:
+            sid = str(sa.get("id", ""))
+            shopify_status[sid] = bool(sa.get("published_at"))
+
+        # Get our articles that have cms_article_ids
+        our_articles = (
+            self.supabase.table("seo_articles")
+            .select("id, cms_article_id, status")
+            .eq("brand_id", brand_id)
+            .not_.is_("cms_article_id", "null")
+            .execute()
+        )
+
+        synced = 0
+        for row in (our_articles.data or []):
+            cms_id = row.get("cms_article_id", "")
+            current_status = row.get("status", "")
+            is_live = shopify_status.get(cms_id)
+
+            if is_live is None:
+                continue  # Article not found in Shopify
+
+            expected = ArticleStatus.PUBLISHED.value if is_live else ArticleStatus.PUBLISHING.value
+            if current_status != expected:
+                self.supabase.table("seo_articles").update(
+                    {"status": expected}
+                ).eq("id", row["id"]).execute()
+                synced += 1
+                logger.info(
+                    f"Synced article {row['id']} status: {current_status} → {expected}"
+                )
+
+        return {"synced": synced, "total": len(our_articles.data or [])}
+
+    # =========================================================================
     # IMPORT FROM CMS
     # =========================================================================
 
