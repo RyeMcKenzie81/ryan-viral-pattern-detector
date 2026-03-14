@@ -1334,7 +1334,7 @@ class SEOWorkflowService:
         """
         article = (
             self.supabase.table("seo_articles")
-            .select("id, phase_c_output, content_markdown, keyword, seo_title, meta_description, tags")
+            .select("id, phase_c_output, content_markdown, phase_b_output, content_html, keyword, seo_title, meta_description, tags")
             .eq("id", article_id)
             .limit(1)
             .execute()
@@ -1343,9 +1343,25 @@ class SEOWorkflowService:
             return {"error": "Article not found", "fixed": []}
 
         a = article.data[0]
-        content = a.get("phase_c_output") or a.get("content_markdown") or ""
+        content = (
+            a.get("phase_c_output")
+            or a.get("content_markdown")
+            or a.get("phase_b_output")
+            or ""
+        )
+        logger.info(
+            f"Repair metadata for {article_id}: "
+            f"phase_c_output={'yes' if a.get('phase_c_output') else 'no'}, "
+            f"content_markdown={'yes' if a.get('content_markdown') else 'no'}, "
+            f"phase_b_output={'yes' if a.get('phase_b_output') else 'no'}, "
+            f"content_html={'yes' if a.get('content_html') else 'no'}, "
+            f"content_len={len(content)}"
+        )
         if not content:
-            return {"error": "No content to parse", "fixed": []}
+            # Last resort: try HTML content
+            content = a.get("content_html") or ""
+            if not content:
+                return {"error": "No content to parse", "fixed": []}
 
         fixed = []
         update_fields = {}
@@ -1372,24 +1388,30 @@ class SEOWorkflowService:
         stripped = re.sub(r'^---\n[\s\S]+?\n---\n', '', stripped.lstrip())
 
         if "seo_title" not in update_fields and not a.get("seo_title"):
-            # Extract first H1 or H2, or fall back to keyword
+            # Extract first H1 or H2 (markdown or HTML), or fall back to keyword
             h_match = re.search(r'^#{1,2}\s+(.+)', stripped, re.MULTILINE)
+            if not h_match:
+                h_match = re.search(r'<h[12][^>]*>(.+?)</h[12]>', stripped, re.IGNORECASE)
             title = h_match.group(1).strip() if h_match else a.get("keyword", "")
+            # Clean any remaining HTML tags from title
+            title = re.sub(r'<[^>]+>', '', title).strip()
             if title:
                 update_fields["seo_title"] = title[:200]
                 fixed.append("seo_title")
 
         if "meta_description" not in update_fields and not a.get("meta_description"):
-            # Extract first non-heading paragraph
+            # Extract first non-heading paragraph (markdown or HTML)
             for line in stripped.split("\n"):
                 line = line.strip()
-                if line and not line.startswith("#") and not line.startswith("!") and len(line) > 50:
-                    # Clean markdown
+                if line and not line.startswith("#") and not line.startswith("!") and not line.startswith("<h") and len(line) > 50:
+                    # Clean markdown and HTML
                     desc = re.sub(r'\*\*(.+?)\*\*', r'\1', line)
                     desc = re.sub(r'\[(.+?)\]\(.+?\)', r'\1', desc)
-                    update_fields["meta_description"] = desc[:500]
-                    fixed.append("meta_description")
-                    break
+                    desc = re.sub(r'<[^>]+>', '', desc).strip()
+                    if len(desc) > 30:
+                        update_fields["meta_description"] = desc[:500]
+                        fixed.append("meta_description")
+                        break
 
         if update_fields:
             self.supabase.table("seo_articles").update(update_fields).eq("id", article_id).execute()
