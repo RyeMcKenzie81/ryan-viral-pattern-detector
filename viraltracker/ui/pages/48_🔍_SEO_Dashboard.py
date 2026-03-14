@@ -1185,10 +1185,17 @@ st.subheader("Articles")
 
 if articles:
     table_data = []
+    _CMS_STATUS_MAP = {
+        "published": "Live",
+        "publishing": "Draft",
+    }
     for a in articles:
+        status = a.get("status", "")
+        cms_status = _CMS_STATUS_MAP.get(status, "—") if a.get("cms_article_id") else "—"
         table_data.append({
             "Keyword": a.get("keyword", "—"),
             "Status": a.get("status", "—"),
+            "Shopify": cms_status,
             "Phase": (a.get("phase") or "—").upper(),
             "CMS ID": (a.get("cms_article_id") or "—")[:12],
             "Published URL": a.get("published_url") or "—",
