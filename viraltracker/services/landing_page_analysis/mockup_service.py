@@ -40,7 +40,7 @@ _CSS_MAX_SIZE_SURGERY = 2_500_000  # 2.5MB cap for surgery pipeline (preserves o
 _SURGERY_CRITICAL_CSS = """
 /* Surgery pipeline layout safety net */
 html, body { max-width: 100vw !important; overflow-x: hidden !important; }
-img, video, iframe { max-width: 100% !important; }
+img, video, iframe { max-width: 100%; }
 """
 
 # Patterns for dangerous CSS constructs
