@@ -1318,6 +1318,140 @@ class SEOWorkflowService:
         )
         return result.data or []
 
+    # =========================================================================
+    # ARTICLE REPAIR METHODS
+    # =========================================================================
+
+    def repair_article_metadata(self, article_id: str) -> Dict[str, Any]:
+        """
+        Re-extract seo_title, meta_description, and tags from existing Phase C output.
+
+        Tries frontmatter parsing first. Falls back to extracting from content
+        (first H1 for title, first paragraph for description).
+
+        Returns:
+            Dict with repaired fields and what was fixed.
+        """
+        article = (
+            self.supabase.table("seo_articles")
+            .select("id, phase_c_output, content_markdown, keyword, seo_title, meta_description, tags")
+            .eq("id", article_id)
+            .limit(1)
+            .execute()
+        )
+        if not article.data:
+            return {"error": "Article not found", "fixed": []}
+
+        a = article.data[0]
+        content = a.get("phase_c_output") or a.get("content_markdown") or ""
+        if not content:
+            return {"error": "No content to parse", "fixed": []}
+
+        fixed = []
+        update_fields = {}
+
+        # Try frontmatter parsing first
+        parsed = self._parse_frontmatter(content)
+        if parsed:
+            if parsed.get("title") and not a.get("seo_title"):
+                update_fields["seo_title"] = parsed["title"][:200]
+                fixed.append("seo_title")
+            if parsed.get("description") and not a.get("meta_description"):
+                update_fields["meta_description"] = parsed["description"][:500]
+                fixed.append("meta_description")
+            if parsed.get("tags") and not a.get("tags"):
+                update_fields["tags"] = parsed["tags"]
+                fixed.append("tags")
+
+        # Fallback: extract from content if frontmatter didn't have what we need
+        # Strip code fences
+        stripped = content.strip()
+        stripped = re.sub(r'^```\w*\n', '', stripped)
+        stripped = re.sub(r'\n```\s*$', '', stripped)
+        # Strip frontmatter
+        stripped = re.sub(r'^---\n[\s\S]+?\n---\n', '', stripped.lstrip())
+
+        if "seo_title" not in update_fields and not a.get("seo_title"):
+            # Extract first H1 or H2, or fall back to keyword
+            h_match = re.search(r'^#{1,2}\s+(.+)', stripped, re.MULTILINE)
+            title = h_match.group(1).strip() if h_match else a.get("keyword", "")
+            if title:
+                update_fields["seo_title"] = title[:200]
+                fixed.append("seo_title")
+
+        if "meta_description" not in update_fields and not a.get("meta_description"):
+            # Extract first non-heading paragraph
+            for line in stripped.split("\n"):
+                line = line.strip()
+                if line and not line.startswith("#") and not line.startswith("!") and len(line) > 50:
+                    # Clean markdown
+                    desc = re.sub(r'\*\*(.+?)\*\*', r'\1', line)
+                    desc = re.sub(r'\[(.+?)\]\(.+?\)', r'\1', desc)
+                    update_fields["meta_description"] = desc[:500]
+                    fixed.append("meta_description")
+                    break
+
+        if update_fields:
+            self.supabase.table("seo_articles").update(update_fields).eq("id", article_id).execute()
+            logger.info(f"Repaired metadata for article {article_id}: {fixed}")
+
+        return {"fixed": fixed, "fields": update_fields}
+
+    def rerun_phase_c(
+        self,
+        article_id: str,
+        brand_id: str,
+        organization_id: str,
+    ) -> Dict[str, Any]:
+        """
+        Re-run Phase C on an existing article and re-parse metadata.
+
+        Returns:
+            Dict with phase_c result and repaired fields.
+        """
+        # Load brand config
+        from viraltracker.services.seo_pipeline.services.seo_brand_config_service import SEOBrandConfigService
+        from viraltracker.services.seo_pipeline.services.content_generation_service import ContentGenerationService
+
+        config_svc = SEOBrandConfigService(supabase_client=self.supabase)
+        brand_config = config_svc.get_config(brand_id) or {}
+
+        # Get author_id from article
+        article = (
+            self.supabase.table("seo_articles")
+            .select("author_id")
+            .eq("id", article_id)
+            .limit(1)
+            .execute()
+        )
+        author_id = article.data[0].get("author_id") if article.data else None
+
+        content_svc = ContentGenerationService(supabase_client=self.supabase)
+        result = content_svc.generate_phase_c(
+            article_id,
+            author_id=author_id,
+            brand_config=brand_config,
+        )
+
+        # Parse frontmatter from new output and update DB
+        phase_c_output = result.get("content", "")
+        parsed = self._parse_frontmatter(phase_c_output)
+        if parsed:
+            update_fields = {}
+            if parsed.get("title"):
+                update_fields["seo_title"] = parsed["title"][:200]
+            if parsed.get("description"):
+                update_fields["meta_description"] = parsed["description"][:500]
+            if parsed.get("tags"):
+                valid_slugs = {t["slug"] for t in (brand_config.get("available_tags") or [])}
+                matched = [t for t in parsed["tags"] if t in valid_slugs] if valid_slugs else parsed["tags"]
+                if matched:
+                    update_fields["tags"] = matched
+            if update_fields:
+                self.supabase.table("seo_articles").update(update_fields).eq("id", article_id).execute()
+
+        return {"phase_c": "complete", "parsed_fields": list((parsed or {}).keys())}
+
     def cleanup_stale_jobs(self) -> int:
         """Cancel jobs paused >24 hours or running with no update for >30 minutes."""
         now = datetime.now(timezone.utc)

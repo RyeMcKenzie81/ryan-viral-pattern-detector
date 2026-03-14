@@ -293,11 +293,56 @@ with tab_qw:
                     checklist = result.get("checklist", {})
                     if checklist:
                         with st.expander("Pre-publish checklist"):
-                            passed = checklist.get("passed", False)
-                            st.markdown(f"**Result: {'PASSED' if passed else 'FAILED'}**")
-                            for check in checklist.get("checks", []):
+                            all_checks = checklist.get("checks", [])
+                            passed_count = sum(1 for c in all_checks if c.get("passed"))
+                            total_count = len(all_checks)
+                            st.markdown(f"**Passed {passed_count}/{total_count} checks**")
+                            for check in all_checks:
                                 icon = "+" if check.get("passed") else "-"
                                 st.markdown(f"  {icon} {check.get('name', '')} — {check.get('message', 'OK')}")
+
+                            # Repair actions
+                            if passed_count < total_count and article_id:
+                                st.divider()
+                                repair_col1, repair_col2, repair_col3 = st.columns(3)
+                                with repair_col1:
+                                    if st.button("Repair Metadata", key="seo_wf_repair_meta"):
+                                        with st.spinner("Re-parsing metadata from content..."):
+                                            repair_result = workflow_svc.repair_article_metadata(article_id)
+                                        fixed = repair_result.get("fixed", [])
+                                        if fixed:
+                                            st.success(f"Fixed: {', '.join(fixed)}")
+                                        else:
+                                            st.warning("No metadata could be extracted. Try Re-run Phase C.")
+                                with repair_col2:
+                                    if st.button("Re-run Phase C", key="seo_wf_rerun_phase_c"):
+                                        with st.spinner("Re-running Phase C (30-60s)..."):
+                                            try:
+                                                pc_result = workflow_svc.rerun_phase_c(
+                                                    article_id=article_id,
+                                                    brand_id=brand_id,
+                                                    organization_id=org_id,
+                                                )
+                                                parsed_fields = pc_result.get("parsed_fields", [])
+                                                st.success(f"Phase C complete. Parsed: {', '.join(parsed_fields) or 'none'}")
+                                            except Exception as e:
+                                                st.error(f"Phase C failed: {str(e)[:200]}")
+                                with repair_col3:
+                                    if st.button("Re-run Checklist", key="seo_wf_rerun_checklist"):
+                                        with st.spinner("Running checklist..."):
+                                            from viraltracker.services.seo_pipeline.services.pre_publish_checklist_service import PrePublishChecklistService
+                                            from viraltracker.services.seo_pipeline.services.seo_brand_config_service import SEOBrandConfigService
+                                            _cl_svc = PrePublishChecklistService()
+                                            _bc_svc = SEOBrandConfigService()
+                                            _bc = _bc_svc.get_config(brand_id) or {}
+                                            new_checklist = _cl_svc.run_checklist(article_id, _bc)
+                                            # Update job result with new checklist
+                                            _job_result = job.get("result", {})
+                                            _job_result["checklist"] = new_checklist
+                                            workflow_svc.supabase.table("seo_workflow_jobs").update(
+                                                {"result": _job_result}
+                                            ).eq("id", active_job_id).execute()
+                                            st.rerun()
 
                     # Image status badge
                     _img_status_row = None
