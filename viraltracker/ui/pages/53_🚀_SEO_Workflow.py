@@ -516,6 +516,26 @@ with tab_qw:
     st.subheader("Recent Jobs")
     recent = workflow_svc.get_recent_jobs(brand_id, limit=10)
     if recent:
+        # Batch-fetch Shopify status for completed jobs
+        _article_ids = [
+            (j.get("result") or {}).get("article_id")
+            for j in recent if (j.get("result") or {}).get("article_id")
+        ]
+        _shopify_map = {}
+        if _article_ids:
+            try:
+                from viraltracker.core.database import get_supabase_client
+                _sb = get_supabase_client()
+                _rows = _sb.table("seo_articles").select(
+                    "id, status, cms_article_id"
+                ).in_("id", _article_ids).execute()
+                _CMS_LABELS = {"published": "Live", "publishing": "Draft"}
+                for r in (_rows.data or []):
+                    if r.get("cms_article_id"):
+                        _shopify_map[r["id"]] = _CMS_LABELS.get(r.get("status", ""), "")
+            except Exception:
+                pass
+
         for job in recent:
             _jid = job.get("id")
             config = job.get("config", {})
@@ -524,12 +544,15 @@ with tab_qw:
             created = job.get("created_at", "")[:16]
             result = job.get("result", {})
             url = result.get("published_url", "")
+            article_id = result.get("article_id", "")
 
             status_icon = {"completed": "+", "failed": "!", "cancelled": "x", "running": "~", "paused": "||"}.get(j_status, "?")
+            shopify_label = _shopify_map.get(article_id, "")
+            shopify_tag = f" · **{shopify_label}**" if shopify_label else ""
 
             rc1, rc2, rc3 = st.columns([4, 1, 1])
             with rc1:
-                st.markdown(f"[{status_icon}] **{kw}** — {j_status} — {created}")
+                st.markdown(f"[{status_icon}] **{kw}** — {j_status}{shopify_tag} — {created}")
             with rc2:
                 if url:
                     st.markdown(f"[View]({url})")
