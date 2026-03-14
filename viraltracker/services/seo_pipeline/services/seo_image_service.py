@@ -344,17 +344,24 @@ class SEOImageService:
 
             duration_ms = int((time.time() - start_ms) * 1000)
 
-            # Decode base64 to bytes
+            # Decode base64 to bytes and convert to WebP
             if isinstance(image_base64, dict):
                 image_base64 = image_base64.get("image_base64", image_base64)
-            image_bytes = base64.b64decode(image_base64)
+            png_bytes = base64.b64decode(image_base64)
+
+            from io import BytesIO
+            from PIL import Image
+            with Image.open(BytesIO(png_bytes)) as img:
+                webp_buf = BytesIO()
+                img.save(webp_buf, format="WEBP", quality=85)
+                image_bytes = webp_buf.getvalue()
 
             # Upload to Supabase Storage
             await asyncio.to_thread(
                 lambda: self.supabase.storage.from_(BUCKET_NAME).upload(
                     storage_path,
                     image_bytes,
-                    {"content-type": "image/png", "upsert": "true"},
+                    {"content-type": "image/webp", "upsert": "true"},
                 )
             )
 
@@ -393,8 +400,8 @@ class SEOImageService:
     def _generate_filename(slug: str, image_type: str, index: int) -> str:
         """Generate filename for storage."""
         if image_type == "hero":
-            return f"{slug}-hero.png"
-        return f"{slug}-inline-{index}.png"
+            return f"{slug}-hero.webp"
+        return f"{slug}-inline-{index}.webp"
 
     @staticmethod
     def _storage_path(brand_id: str, slug: str, filename: str) -> str:

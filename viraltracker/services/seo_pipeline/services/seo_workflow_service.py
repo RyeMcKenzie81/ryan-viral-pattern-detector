@@ -1696,7 +1696,11 @@ class SEOWorkflowService:
     @staticmethod
     def _parse_frontmatter(text: str) -> Optional[Dict[str, Any]]:
         """Parse YAML frontmatter from Phase C output."""
-        match = re.search(r"^---\s*\n(.*?)\n---", text, re.DOTALL)
+        # Strip LLM code fence wrapper (```markdown ... ```)
+        stripped = text.strip()
+        stripped = re.sub(r'^```\w*\n', '', stripped)
+        stripped = stripped.lstrip('\n')
+        match = re.search(r"^---\s*\n(.*?)\n---", stripped, re.DOTALL)
         if not match:
             return None
 

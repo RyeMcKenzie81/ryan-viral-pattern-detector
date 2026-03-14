@@ -396,6 +396,13 @@ class ShopifyPublisher(CMSPublisher):
         """
         content = markdown_text
 
+        # Strip LLM code fence wrapper (Claude sometimes wraps output in ```markdown ... ```)
+        content = content.strip()
+        before = content
+        content = re.sub(r'^```\w*\n', '', content)
+        if content != before:
+            content = re.sub(r'\n```\s*$', '', content)
+
         # Strip hero image from body — it's already the Shopify featured image.
         # Hero <img> tags have loading="eager" (inline ones have loading="lazy").
         content = re.sub(r'<img[^>]*loading="eager"[^>]*/?>[\s]*', '', content)
@@ -409,6 +416,7 @@ class ShopifyPublisher(CMSPublisher):
         content = re.sub(r'## Schema Markup[\s\S]*?(?=##|$)', '', content)
 
         # Remove metadata sections that shouldn't be in article body
+        content = re.sub(r'## Related Articles[\s\S]*?(?=##|$)', '', content)
         content = re.sub(r'## Internal Links to Add[\s\S]*?(?=##|$)', '', content)
         content = re.sub(r'## Images Needed[\s\S]*?(?=##|$)', '', content)
         content = re.sub(r'### Hero Image[\s\S]*?(?=###|##|$)', '', content)
