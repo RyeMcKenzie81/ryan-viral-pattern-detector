@@ -514,7 +514,7 @@ with tab_qw:
     # Recent jobs
     st.divider()
     st.subheader("Recent Jobs")
-    recent = workflow_svc.get_recent_jobs(brand_id, limit=10)
+    recent = workflow_svc.get_recent_jobs(brand_id, limit=20)
     if recent:
         # Batch-fetch Shopify status for completed jobs
         _article_ids = [

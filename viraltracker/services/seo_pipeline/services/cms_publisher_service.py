@@ -787,7 +787,12 @@ class CMSPublisherService:
         if body_html:
             update_data["content_html"] = body_html
 
-        if not draft:
+        # Use Shopify's actual status (based on published_at) as source of truth.
+        # This handles articles manually flipped to visible in Shopify admin.
+        cms_status = result.get("status", "")
+        if cms_status == "published":
+            update_data["status"] = ArticleStatus.PUBLISHED.value
+        elif not draft:
             update_data["status"] = ArticleStatus.PUBLISHED.value
         else:
             update_data["status"] = ArticleStatus.PUBLISHING.value
