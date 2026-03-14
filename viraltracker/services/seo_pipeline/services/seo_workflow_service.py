@@ -419,8 +419,8 @@ class SEOWorkflowService:
                 brand_ctx=brand_ctx,
                 sb=sb,
             )
-            if schema:
-                sb.table("seo_articles").update({"schema_markup": schema}).eq("id", article_id).execute()
+            # Always update — None clears old Article schema from DB
+            sb.table("seo_articles").update({"schema_markup": schema}).eq("id", article_id).execute()
 
             # Update status to publishing
             await asyncio.to_thread(tracking_svc.update_status, article_id, "publishing", True)
@@ -1729,50 +1729,76 @@ class SEOWorkflowService:
         brand_ctx: Dict[str, Any],
         sb,
     ) -> Optional[Dict[str, Any]]:
-        """Build Article schema JSON-LD programmatically."""
+        """Build FAQPage schema from article FAQ section, if present.
+
+        The Shopify theme already outputs Article schema (author, publisher,
+        dates), so we only generate FAQPage schema for rich snippets.
+        Returns None if the article has no FAQ section.
+        """
         article = sb.table("seo_articles").select(
-            "seo_title, title, keyword, meta_description, hero_image_url, created_at"
+            "phase_c_output, content_markdown"
         ).eq("id", article_id).limit(1).execute()
         if not article.data:
             return None
 
-        a = article.data[0]
-        headline = a.get("seo_title") or a.get("title") or a.get("keyword", "")
-        now = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        content = (
+            article.data[0].get("phase_c_output")
+            or article.data[0].get("content_markdown")
+            or ""
+        )
 
-        publisher = brand_config.get("schema_publisher") or {}
-        brand_name = brand_ctx.get("brand_name", "")
+        # Strip code fence wrapper
+        content = content.strip()
+        content = re.sub(r'^```\w*\n', '', content)
+        content = re.sub(r'\n```\s*$', '', content)
 
-        schema = {
+        # Find FAQ section
+        faq_match = re.search(
+            r'##\s+(?:FAQ|Frequently Asked Questions?|Common Questions)\s*\n([\s\S]*?)(?=\n## [^#]|\Z)',
+            content, re.IGNORECASE,
+        )
+        if not faq_match:
+            return None
+
+        faq_text = faq_match.group(1)
+
+        # Extract Q&A pairs — expects ### or **bold** questions followed by answer text
+        qa_pairs = []
+        # Pattern 1: ### Question\nAnswer text
+        for m in re.finditer(r'###\s+(.+?)\n([\s\S]*?)(?=\n###|\Z)', faq_text):
+            q = m.group(1).strip().strip('*')
+            a = m.group(2).strip()
+            if q and a:
+                # Clean markdown from answer
+                a = re.sub(r'\*\*(.+?)\*\*', r'\1', a)
+                a = re.sub(r'\[(.+?)\]\(.+?\)', r'\1', a)
+                qa_pairs.append({"q": q, "a": a})
+
+        # Pattern 2: **Question**\nAnswer text (if no ### found)
+        if not qa_pairs:
+            for m in re.finditer(r'\*\*(.+?)\*\*\s*\n([\s\S]*?)(?=\n\*\*|\Z)', faq_text):
+                q = m.group(1).strip()
+                a = m.group(2).strip()
+                if q and a and '?' in q:
+                    a = re.sub(r'\*\*(.+?)\*\*', r'\1', a)
+                    a = re.sub(r'\[(.+?)\]\(.+?\)', r'\1', a)
+                    qa_pairs.append({"q": q, "a": a})
+
+        if not qa_pairs:
+            return None
+
+        return {
             "@context": "https://schema.org",
-            "@type": "Article",
-            "headline": headline,
-            "mainEntityOfPage": {
-                "@type": "WebPage",
-                "@id": published_url or "",
-            },
-            "author": {
-                "@type": "Person",
-                "name": author_ctx.get("name", ""),
-            },
-            "datePublished": a.get("created_at", now)[:10],
-            "dateModified": now,
-            "publisher": {
-                "@type": "Organization",
-                "name": publisher.get("name") or brand_name,
-            },
+            "@type": "FAQPage",
+            "mainEntity": [
+                {
+                    "@type": "Question",
+                    "name": pair["q"],
+                    "acceptedAnswer": {
+                        "@type": "Answer",
+                        "text": pair["a"],
+                    },
+                }
+                for pair in qa_pairs
+            ],
         }
-
-        if a.get("hero_image_url"):
-            schema["image"] = a["hero_image_url"]
-        if a.get("meta_description"):
-            schema["description"] = a["meta_description"]
-        if author_ctx.get("author_url"):
-            schema["author"]["url"] = author_ctx["author_url"]
-        if publisher.get("logo_url"):
-            schema["publisher"]["logo"] = {
-                "@type": "ImageObject",
-                "url": publisher["logo_url"],
-            }
-
-        return schema

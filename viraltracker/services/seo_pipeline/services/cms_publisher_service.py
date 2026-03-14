@@ -328,56 +328,28 @@ class ShopifyPublisher(CMSPublisher):
                 "type": "single_line_text_field",
             })
 
+        # Schema markup — always include to clear stale values on re-publish
         schema = article_data.get("schema_markup")
-        if schema:
-            schema_value = schema if isinstance(schema, str) else json.dumps(schema)
-            metafields.append({
-                "namespace": "seo",
-                "key": "schema_json",
-                "value": schema_value,
-                "type": "json",
-            })
+        schema_value = (
+            (schema if isinstance(schema, str) else json.dumps(schema))
+            if schema
+            else "{}"
+        )
+        metafields.append({
+            "namespace": "seo",
+            "key": "schema_json",
+            "value": schema_value,
+            "type": "json",
+        })
 
-        # Author metafields (for themes with rich author display)
-        author_name = article_data.get("author", "")
-        if author_name:
+        # Author metaobject reference (theme reads author data from the metaobject)
+        author_metaobject_gid = article_data.get("author_metaobject_gid", "")
+        if author_metaobject_gid:
             metafields.append({
-                "namespace": "article",
-                "key": "author_name",
-                "value": author_name,
-                "type": "single_line_text_field",
-            })
-        author_bio = article_data.get("author_bio", "")
-        if author_bio:
-            metafields.append({
-                "namespace": "article",
-                "key": "author_bio",
-                "value": author_bio,
-                "type": "multi_line_text_field",
-            })
-        author_image = article_data.get("author_image_url", "")
-        if author_image:
-            metafields.append({
-                "namespace": "article",
-                "key": "author_image",
-                "value": author_image,
-                "type": "single_line_text_field",
-            })
-        author_title = article_data.get("author_job_title", "")
-        if author_title:
-            metafields.append({
-                "namespace": "article",
-                "key": "author_title",
-                "value": author_title,
-                "type": "single_line_text_field",
-            })
-        author_url = article_data.get("author_url", "")
-        if author_url:
-            metafields.append({
-                "namespace": "article",
-                "key": "author_url",
-                "value": author_url,
-                "type": "single_line_text_field",
+                "namespace": "custom",
+                "key": "author",
+                "value": author_metaobject_gid,
+                "type": "metaobject_reference",
             })
 
         return metafields
@@ -666,16 +638,13 @@ class CMSPublisherService:
             "content_markdown": content_md,
             "body_html": "",  # Always re-render from markdown to pick up image changes
             "author": author_name,
-            "author_bio": author_data.get("bio", ""),
-            "author_image_url": author_data.get("image_url", ""),
-            "author_job_title": author_data.get("job_title", ""),
-            "author_url": author_data.get("author_url", ""),
+            "author_metaobject_gid": author_data.get("shopify_metaobject_gid", ""),
             "seo_title": article.get("seo_title", ""),
             "meta_description": article.get("meta_description", ""),
             "keyword": article.get("keyword", ""),
             "schema_markup": article.get("schema_markup"),
             "hero_image_url": article.get("hero_image_url"),
-            "summary_html": article.get("summary_html", ""),
+            "summary_html": article.get("meta_description", ""),
             "tags": ", ".join(article.get("tags") or []),
         }
 
@@ -789,7 +758,7 @@ class CMSPublisherService:
         try:
             result = (
                 self.supabase.table("seo_authors")
-                .select("name, bio, image_url, job_title, author_url")
+                .select("name, bio, image_url, job_title, author_url, shopify_metaobject_gid")
                 .eq("id", author_id)
                 .execute()
             )
