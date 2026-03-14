@@ -299,6 +299,38 @@ with tab_qw:
                                 icon = "+" if check.get("passed") else "-"
                                 st.markdown(f"  {icon} {check.get('name', '')} — {check.get('message', 'OK')}")
 
+                    # Image status badge
+                    _img_status_row = None
+                    if article_id:
+                        _img_status_row = (
+                            workflow_svc.supabase.table("seo_articles")
+                            .select("image_status")
+                            .eq("id", article_id)
+                            .limit(1)
+                            .execute()
+                        )
+                    _img_status = (_img_status_row.data[0].get("image_status", "none") if _img_status_row and _img_status_row.data else "none")
+
+                    if _img_status in ("pending", "processing"):
+                        st.info("Images generating in background...")
+                    elif _img_status == "failed":
+                        _warn_col, _retry_col = st.columns([3, 1])
+                        with _warn_col:
+                            st.warning("Image generation failed.")
+                        with _retry_col:
+                            if st.button("Retry Images", key="seo_wf_retry_deferred_images"):
+                                try:
+                                    workflow_svc.retry_deferred_images(
+                                        article_id=article_id,
+                                        brand_id=brand_id,
+                                        organization_id=org_id,
+                                    )
+                                    st.rerun()
+                                except Exception as e:
+                                    st.error(f"Retry failed: {str(e)[:200]}")
+                    elif _img_status == "complete":
+                        st.caption("Images: complete")
+
                     # Image Management & Publish Tabs
                     img_tab, pub_tab = st.tabs(["Images", "Publish"])
 
@@ -306,13 +338,20 @@ with tab_qw:
                         if article_id:
                             # Load image data (cached per article to avoid re-fetching on every rerun)
                             cache_key = f"seo_wf_image_data_{article_id}"
+                            if _img_status in ("pending", "processing"):
+                                # Clear cache so fresh data loads on next poll
+                                if cache_key in st.session_state:
+                                    del st.session_state[cache_key]
                             if cache_key not in st.session_state:
                                 st.session_state[cache_key] = workflow_svc.get_article_images(article_id)
                             img_data = st.session_state[cache_key]
                             images = img_data.get("image_metadata") or []
 
                             if not images:
-                                st.info("No images found for this article.")
+                                if _img_status in ("pending", "processing"):
+                                    st.info("Images are generating in the background. They will appear here when complete.")
+                                else:
+                                    st.info("No images found for this article.")
                             else:
                                 st.caption(f"{len(images)} image(s)")
 
@@ -376,7 +415,10 @@ with tab_qw:
 
                             # Retry All Images button
                             st.divider()
-                            if st.button("Retry All Images", key="seo_wf_retry_images"):
+                            if _img_status in ("pending", "processing"):
+                                st.button("Retry All Images", key="seo_wf_retry_images", disabled=True)
+                                st.caption("Images are generating in the background...")
+                            elif st.button("Retry All Images", key="seo_wf_retry_images"):
                                 try:
                                     with st.spinner("Generating all images... this may take 1-2 minutes per image."):
                                         img_result = workflow_svc.regenerate_images(
@@ -431,6 +473,11 @@ with tab_qw:
                                 st.error(f"Publish failed: {str(e)[:200]}")
                         elif not article_id:
                             st.info("No article ID available.")
+
+                    # Auto-poll while images generating
+                    if _img_status in ("pending", "processing"):
+                        time.sleep(10)
+                        st.rerun()
 
                     # Bottom action row
                     st.divider()
@@ -839,6 +886,7 @@ with tab_cluster:
 
                     # Per-article results with image management
                     final_articles = b_result.get("per_article_results", per_article)
+                    _batch_img_statuses = []  # Collect statuses to avoid re-querying for auto-poll
                     for ar_idx, ar in enumerate(final_articles):
                         if ar.get("status") != "completed" or not ar.get("article_id"):
                             continue
@@ -851,18 +899,55 @@ with tab_cluster:
                             if ar_url:
                                 st.markdown(f"[View Shopify Draft]({ar_url})")
 
+                            # Image status badge
+                            _b_img_st_row = (
+                                workflow_svc.supabase.table("seo_articles")
+                                .select("image_status")
+                                .eq("id", ar_id)
+                                .limit(1)
+                                .execute()
+                            )
+                            _b_img_st = (_b_img_st_row.data[0].get("image_status", "none") if _b_img_st_row.data else "none")
+                            _batch_img_statuses.append(_b_img_st)
+
+                            if _b_img_st in ("pending", "processing"):
+                                st.info("Images generating in background...")
+                            elif _b_img_st == "failed":
+                                _bw_col, _br_col = st.columns([3, 1])
+                                with _bw_col:
+                                    st.warning("Image generation failed.")
+                                with _br_col:
+                                    if st.button("Retry Images", key=f"seo_batch_{ar_idx}_retry_deferred"):
+                                        try:
+                                            workflow_svc.retry_deferred_images(
+                                                article_id=ar_id,
+                                                brand_id=brand_id,
+                                                organization_id=org_id,
+                                            )
+                                            st.rerun()
+                                        except Exception as e:
+                                            st.error(f"Retry failed: {str(e)[:200]}")
+                            elif _b_img_st == "complete":
+                                st.caption("Images: complete")
+
                             # Image management (same pattern as Quick Write)
                             b_img_tab, b_pub_tab = st.tabs(["Images", "Publish"])
 
                             with b_img_tab:
                                 b_cache_key = f"seo_wf_image_data_{ar_id}"
+                                if _b_img_st in ("pending", "processing"):
+                                    if b_cache_key in st.session_state:
+                                        del st.session_state[b_cache_key]
                                 if b_cache_key not in st.session_state:
                                     st.session_state[b_cache_key] = workflow_svc.get_article_images(ar_id)
                                 b_img_data = st.session_state[b_cache_key]
                                 b_images = b_img_data.get("image_metadata") or []
 
                                 if not b_images:
-                                    st.info("No images found.")
+                                    if _b_img_st in ("pending", "processing"):
+                                        st.info("Images are generating in the background.")
+                                    else:
+                                        st.info("No images found.")
                                 else:
                                     st.caption(f"{len(b_images)} image(s)")
                                     for bi, bimg in enumerate(b_images):
@@ -918,6 +1003,11 @@ with tab_cluster:
                                             st.success("Article updated in Shopify.")
                                     except Exception as e:
                                         st.error(f"Publish failed: {str(e)[:200]}")
+
+                    # Auto-poll while any batch article images are still generating
+                    if any(s in ("pending", "processing") for s in _batch_img_statuses):
+                        time.sleep(10)
+                        st.rerun()
 
                     st.divider()
                     if st.button("Clear batch", key="seo_wf_batch_clear"):

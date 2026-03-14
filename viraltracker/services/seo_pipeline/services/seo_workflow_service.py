@@ -21,6 +21,7 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 _job_semaphore = threading.Semaphore(3)
+_image_semaphore = threading.Semaphore(2)  # Max 2 concurrent Gemini image threads
 
 # Pipeline step definitions
 ONE_OFF_STEPS = [
@@ -39,7 +40,7 @@ STEP_LABELS = {
     "phase_a": "Phase A — Research & Outline",
     "phase_b": "Phase B — Writing",
     "phase_c": "Phase C — SEO Optimization",
-    "image_generation": "Generating images",
+    "image_generation": "Queuing image generation",
     "pre_publish_checklist": "Running pre-publish checks",
     "publish": "Publishing to Shopify",
     "build_schema": "Building schema markup",
@@ -361,30 +362,12 @@ class SEOWorkflowService:
             # Update article status to optimized
             await asyncio.to_thread(tracking_svc.update_status, article_id, "optimized", True)
 
-            # 8. Image generation
+            # 8. Image generation (deferred to background thread after completion)
             self._advance_step(job_id, "image_generation")
             if self._is_cancelled(job_id):
                 return
 
-            try:
-                from viraltracker.services.seo_pipeline.services.seo_image_service import SEOImageService
-                image_svc = SEOImageService(supabase_client=sb)
-                article_fresh = sb.table("seo_articles").select("phase_c_output, content_markdown").eq("id", article_id).limit(1).execute()
-                markdown = ""
-                if article_fresh.data:
-                    markdown = article_fresh.data[0].get("phase_c_output") or article_fresh.data[0].get("content_markdown") or ""
-
-                if markdown:
-                    await image_svc.generate_article_images(
-                        article_id=article_id,
-                        markdown=markdown,
-                        brand_id=brand_id,
-                        organization_id=org_id,
-                        keyword=keyword,
-                        image_style=brand_config.get("image_style"),
-                    )
-            except Exception as e:
-                logger.warning(f"Image generation failed (non-fatal): {e}")
+            sb.table("seo_articles").update({"image_status": "pending"}).eq("id", article_id).execute()
 
             # 9. Pre-publish checklist
             self._advance_step(job_id, "pre_publish_checklist")
@@ -467,6 +450,18 @@ class SEOWorkflowService:
                 },
             )
             logger.info(f"Job {job_id} completed: article={article_id}, url={published_url}")
+
+            # Fire-and-forget: spawn background image generation (non-fatal)
+            try:
+                self._spawn_image_generation(
+                    article_id=article_id,
+                    brand_id=brand_id,
+                    organization_id=org_id,
+                    keyword=keyword,
+                    brand_config=brand_config,
+                )
+            except Exception as e:
+                logger.warning(f"Failed to spawn image generation (non-fatal): {e}")
 
         except Exception as e:
             logger.error(f"Job {job_id} failed: {e}", exc_info=True)
@@ -1178,7 +1173,7 @@ class SEOWorkflowService:
                 article_role="pillar",
             )
             # Wait for pillar to complete
-            pillar_result = await self._wait_for_job(pillar_job_id, timeout=600)
+            pillar_result = await self._wait_for_job(pillar_job_id, timeout=1200)
             if not pillar_result or pillar_result.get("status") != "completed":
                 self._update_job(job_id, status="failed",
                                  error="Pillar article generation failed — aborting batch")
@@ -1227,7 +1222,7 @@ class SEOWorkflowService:
                     cluster_context=cluster_ctx,
                     content_fingerprints=fingerprints,
                 )
-                spoke_result = await self._wait_for_job(spoke_job_id, timeout=600)
+                spoke_result = await self._wait_for_job(spoke_job_id, timeout=1200)
                 spoke_article_id = (spoke_result.get("result") or {}).get("article_id", "")
                 spoke_url = (spoke_result.get("result") or {}).get("published_url", "")
 
@@ -1356,13 +1351,199 @@ class SEOWorkflowService:
             self._update_job(job["id"], status="failed", error="Auto-failed: no progress for >30 minutes")
             cleaned += 1
 
+        # Articles stuck in image processing > 30 minutes
+        stale_images = (
+            self.supabase.table("seo_articles")
+            .select("id")
+            .eq("image_status", "processing")
+            .lt("updated_at", cutoff_running)
+            .execute()
+        ).data or []
+        for article in stale_images:
+            self.supabase.table("seo_articles").update(
+                {"image_status": "failed"}
+            ).eq("id", article["id"]).execute()
+            cleaned += 1
+
         if cleaned:
-            logger.info(f"Cleaned up {cleaned} stale workflow jobs")
+            logger.info(f"Cleaned up {cleaned} stale workflow jobs/image tasks")
         return cleaned
+
+    def retry_deferred_images(
+        self,
+        article_id: str,
+        brand_id: str,
+        organization_id: str,
+    ) -> None:
+        """
+        Retry deferred image generation for a failed/pending article.
+
+        Args:
+            article_id: Article UUID
+            brand_id: Brand UUID
+            organization_id: Org UUID
+        """
+        # Validate image_status allows retry
+        article = (
+            self.supabase.table("seo_articles")
+            .select("image_status, keyword")
+            .eq("id", article_id)
+            .limit(1)
+            .execute()
+        )
+        if not article.data:
+            raise ValueError(f"Article not found: {article_id}")
+
+        status = article.data[0].get("image_status", "none")
+        if status not in ("failed", "pending", "none"):
+            raise ValueError(f"Cannot retry images: status is '{status}'")
+
+        keyword = article.data[0].get("keyword", "")
+
+        # Resolve org_id for superuser mode
+        organization_id = self._resolve_org_id(organization_id, brand_id)
+
+        # Load brand config
+        from viraltracker.services.seo_pipeline.services.seo_brand_config_service import SEOBrandConfigService
+        brand_config = SEOBrandConfigService(supabase_client=self.supabase).get_config(brand_id)
+
+        self._spawn_image_generation(
+            article_id=article_id,
+            brand_id=brand_id,
+            organization_id=organization_id,
+            keyword=keyword,
+            brand_config=brand_config,
+        )
 
     # =========================================================================
     # PRIVATE HELPERS
     # =========================================================================
+
+    def _spawn_image_generation(
+        self,
+        article_id: str,
+        brand_id: str,
+        organization_id: str,
+        keyword: str,
+        brand_config: Dict[str, Any],
+    ) -> None:
+        """
+        Spawn a daemon thread that generates images for an article and
+        re-publishes the Shopify draft with them.
+
+        Guards against concurrent runs via image_status check.
+        Uses _image_semaphore to limit Gemini concurrency to 2.
+        """
+        # Guard: atomically set processing only if not already processing
+        guard_result = (
+            self.supabase.table("seo_articles")
+            .update({"image_status": "processing"})
+            .eq("id", article_id)
+            .neq("image_status", "processing")
+            .execute()
+        )
+        if not guard_result.data:
+            logger.info(f"Image generation already processing for article {article_id}, skipping")
+            return
+
+        def _image_thread():
+            acquired = _image_semaphore.acquire(timeout=1800)  # 30 min queue timeout
+            if not acquired:
+                logger.warning(f"Image semaphore timeout for article {article_id}")
+                # Reset status since we never started
+                try:
+                    from viraltracker.core.database import get_supabase_client
+                    get_supabase_client().table("seo_articles").update(
+                        {"image_status": "failed"}
+                    ).eq("id", article_id).execute()
+                except Exception:
+                    pass
+                return
+            try:
+                from viraltracker.core.database import get_supabase_client
+                sb = get_supabase_client()
+
+                # Read phase_c_output (still has [IMAGE: ...] markers)
+                article_row = (
+                    sb.table("seo_articles")
+                    .select("phase_c_output, content_markdown")
+                    .eq("id", article_id)
+                    .limit(1)
+                    .execute()
+                )
+                markdown = ""
+                if article_row.data:
+                    markdown = (
+                        article_row.data[0].get("phase_c_output")
+                        or article_row.data[0].get("content_markdown")
+                        or ""
+                    )
+
+                if not markdown:
+                    logger.warning(f"No content for image generation: article {article_id}")
+                    sb.table("seo_articles").update(
+                        {"image_status": "failed"}
+                    ).eq("id", article_id).execute()
+                    return
+
+                # Generate images
+                from viraltracker.services.seo_pipeline.services.seo_image_service import SEOImageService
+                image_svc = SEOImageService(supabase_client=sb)
+
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    loop.run_until_complete(
+                        image_svc.generate_article_images(
+                            article_id=article_id,
+                            markdown=markdown,
+                            brand_id=brand_id,
+                            organization_id=organization_id,
+                            keyword=keyword,
+                            image_style=brand_config.get("image_style"),
+                        )
+                    )
+                finally:
+                    loop.close()
+
+                # Re-publish to Shopify with images
+                try:
+                    from viraltracker.services.seo_pipeline.services.cms_publisher_service import CMSPublisherService
+                    cms_svc = CMSPublisherService(supabase_client=sb)
+                    cms_svc.publish_article(
+                        article_id=article_id,
+                        brand_id=brand_id,
+                        organization_id=organization_id,
+                        draft=True,
+                    )
+                except Exception as e:
+                    logger.warning(f"Re-publish after images failed (non-fatal): {e}")
+
+                sb.table("seo_articles").update(
+                    {"image_status": "complete"}
+                ).eq("id", article_id).execute()
+                logger.info(f"Background image generation complete for article {article_id}")
+
+            except Exception as e:
+                logger.error(f"Background image generation failed for article {article_id}: {e}")
+                try:
+                    from viraltracker.core.database import get_supabase_client
+                    sb_err = get_supabase_client()
+                    sb_err.table("seo_articles").update(
+                        {"image_status": "failed"}
+                    ).eq("id", article_id).execute()
+                except Exception:
+                    pass
+            finally:
+                _image_semaphore.release()
+
+        t = threading.Thread(
+            target=_image_thread,
+            daemon=True,
+            name=f"seo-images-{article_id[:8]}",
+        )
+        t.start()
+        logger.info(f"Spawned image generation thread for article {article_id}")
 
     def _load_job(self, job_id: str) -> Optional[Dict[str, Any]]:
         result = (

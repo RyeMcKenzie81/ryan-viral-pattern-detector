@@ -416,6 +416,9 @@ class ShopifyPublisher(CMSPublisher):
         content = re.sub(r'<!--[\s\S]*?-->', '', content)
         content = re.sub(r'```json[\s\S]*?```', '', content)
 
+        # Strip [IMAGE: ...] and [HERO IMAGE: ...] markers (left by deferred image gen)
+        content = re.sub(r'\[(?:HERO )?IMAGE:\s*[^\]]*\]', '', content, flags=re.IGNORECASE)
+
         # Remove author bio if present (added via template)
         content = re.sub(r'---\s*\n\s*\*\*About the Author:[\s\S]*$', '', content)
         content = re.sub(r'\*\*Last Updated:\*\*.*$', '', content, flags=re.MULTILINE)
