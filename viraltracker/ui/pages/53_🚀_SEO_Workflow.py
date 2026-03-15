@@ -627,9 +627,20 @@ with tab_qw:
             shopify_label = _shopify_map.get(article_id, "")
             shopify_tag = f" · **{shopify_label}**" if shopify_label else ""
 
+            # Show article role (pillar/spoke) for cluster jobs
+            role = config.get("article_role", "")
+            job_type = job.get("job_type", "")
+            role_tag = ""
+            if role == "pillar":
+                role_tag = " · :blue[Pillar]"
+            elif role == "spoke":
+                role_tag = " · Spoke"
+            elif job_type == "batch":
+                role_tag = " · :violet[Cluster]"
+
             rc1, rc2, rc3 = st.columns([4, 1, 1])
             with rc1:
-                st.markdown(f"[{status_icon}] **{kw}** — {j_status}{shopify_tag} — {created}")
+                st.markdown(f"[{status_icon}] **{kw}** — {j_status}{shopify_tag}{role_tag} — {created}")
             with rc2:
                 if url:
                     st.markdown(f"[View]({url})")
