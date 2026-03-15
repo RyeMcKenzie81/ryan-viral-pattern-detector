@@ -1473,6 +1473,50 @@ class ClusterManagementService:
         )
         return [s["article_id"] for s in (spokes_result.data or []) if s.get("article_id")]
 
+    def find_clusters_for_article(self, article_id: str) -> List[Dict[str, Any]]:
+        """
+        Find all clusters that an article belongs to.
+
+        Args:
+            article_id: Article UUID
+
+        Returns:
+            List of dicts with cluster_id, cluster_name, role, pillar_article_id
+        """
+        spokes_result = (
+            self.supabase.table("seo_cluster_spokes")
+            .select("cluster_id, role, seo_clusters(id, name, pillar_keyword)")
+            .eq("article_id", article_id)
+            .execute()
+        )
+
+        clusters = []
+        for spoke in (spokes_result.data or []):
+            cluster_data = spoke.get("seo_clusters") or {}
+            cluster_id = spoke.get("cluster_id")
+
+            # Find pillar article_id for this cluster
+            pillar_result = (
+                self.supabase.table("seo_cluster_spokes")
+                .select("article_id")
+                .eq("cluster_id", cluster_id)
+                .eq("role", SpokeRole.PILLAR.value)
+                .limit(1)
+                .execute()
+            )
+            pillar_article_id = None
+            if pillar_result.data and pillar_result.data[0].get("article_id"):
+                pillar_article_id = pillar_result.data[0]["article_id"]
+
+            clusters.append({
+                "cluster_id": cluster_id,
+                "cluster_name": cluster_data.get("name", ""),
+                "role": spoke.get("role", "spoke"),
+                "pillar_article_id": pillar_article_id,
+            })
+
+        return clusters
+
     # =========================================================================
     # HELPERS
     # =========================================================================

@@ -17,7 +17,9 @@ All results saved to seo_internal_links table.
 """
 
 import logging
+import random
 import re
+import time
 from typing import Dict, Any, Optional, List
 
 from viraltracker.services.seo_pipeline.models import (
@@ -351,6 +353,377 @@ class InterlinkingService:
         }
 
     # =========================================================================
+    # CLUSTER-AWARE INTERLINKING
+    # =========================================================================
+
+    def interlink_cluster(
+        self,
+        cluster_id: str,
+        trigger_article_id: Optional[str] = None,
+        push_to_cms: bool = False,
+        brand_id: Optional[str] = None,
+        organization_id: Optional[str] = None,
+        cms_delay: float = 1.0,
+    ) -> Dict[str, Any]:
+        """
+        Run cluster-aware interlinking for all published articles in a cluster.
+
+        Ensures pillar-spoke linking, contextual cross-links, and Related Articles
+        sections for every article in the cluster.
+
+        Args:
+            cluster_id: Cluster UUID
+            trigger_article_id: The article that triggered this (e.g., just published)
+            push_to_cms: Whether to push updated HTML to CMS
+            brand_id: Brand UUID (required if push_to_cms)
+            organization_id: Org UUID (required if push_to_cms)
+            cms_delay: Seconds between CMS pushes (Shopify rate limit: 2 req/s)
+
+        Returns:
+            Dict with articles_processed, links_added, related_sections_added, errors
+        """
+        from viraltracker.services.seo_pipeline.services.cluster_management_service import ClusterManagementService
+        cluster_svc = ClusterManagementService(self._supabase)
+
+        # Get cluster details
+        cluster = cluster_svc.get_cluster(cluster_id)
+        if not cluster:
+            raise ValueError(f"Cluster not found: {cluster_id}")
+
+        # Get all article IDs in cluster
+        all_article_ids = cluster_svc.get_cluster_spoke_article_ids(cluster_id)
+        if not all_article_ids:
+            return {"articles_processed": 0, "links_added": 0, "related_sections_added": 0, "errors": []}
+
+        # Filter to published articles with URLs
+        published_articles = []
+        for aid in all_article_ids:
+            article = self._get_article(aid)
+            if article and article.get("published_url"):
+                published_articles.append(article)
+
+        if len(published_articles) < 2:
+            return {"articles_processed": 0, "links_added": 0, "related_sections_added": 0,
+                    "errors": [{"message": "Need at least 2 published articles to interlink"}]}
+
+        # Identify pillar article
+        spokes = cluster.get("spokes", [])
+        pillar_article_id = None
+        for spoke in spokes:
+            if spoke.get("role") == "pillar" and spoke.get("article_id"):
+                pillar_article_id = spoke["article_id"]
+                break
+
+        total_links = 0
+        related_sections = 0
+        errors = []
+
+        for article in published_articles:
+            aid = article["id"]
+            try:
+                # Auto-link against all project articles (contextual links)
+                auto_result = self.auto_link_article(aid)
+                added = auto_result.get("links_added", 0)
+
+                # Save cluster link records for pillar-spoke relationships
+                if pillar_article_id:
+                    if aid != pillar_article_id:
+                        # Spoke → pillar link record
+                        self._save_link_record(
+                            source_id=aid, target_id=pillar_article_id,
+                            link_type=LinkType.CLUSTER, status=LinkStatus.IMPLEMENTED,
+                            anchor_text=self._varied_anchor(
+                                next((a.get("keyword", "") for a in published_articles if a["id"] == pillar_article_id), ""),
+                            ),
+                        )
+                    else:
+                        # Pillar → spoke link records
+                        for other in published_articles:
+                            if other["id"] != aid:
+                                self._save_link_record(
+                                    source_id=aid, target_id=other["id"],
+                                    link_type=LinkType.CLUSTER, status=LinkStatus.IMPLEMENTED,
+                                    anchor_text=self._varied_anchor(other.get("keyword", "")),
+                                )
+
+                total_links += added
+
+                # Remove old Related section, rebuild
+                self._remove_related_section(aid)
+
+                # Pick top related articles (pillar first if this is a spoke, then others)
+                related_ids = []
+                if pillar_article_id and aid != pillar_article_id:
+                    related_ids.append(pillar_article_id)
+                for other in published_articles:
+                    if other["id"] != aid and other["id"] not in related_ids:
+                        related_ids.append(other["id"])
+                related_ids = related_ids[:5]  # Cap at 5
+
+                if related_ids:
+                    self.add_related_section(aid, related_ids)
+                    related_sections += 1
+
+                # Push to CMS
+                if push_to_cms and brand_id and organization_id:
+                    # Re-read latest HTML after modifications
+                    updated = self._get_article(aid)
+                    if updated and updated.get("cms_article_id"):
+                        self._push_html_to_cms(aid, brand_id, organization_id, updated.get("content_html", ""))
+                        time.sleep(cms_delay)
+
+            except Exception as e:
+                logger.warning(f"Cluster interlink failed for article {aid}: {e}")
+                errors.append({"article_id": aid, "error": str(e)[:200]})
+
+        return {
+            "articles_processed": len(published_articles),
+            "links_added": total_links,
+            "related_sections_added": related_sections,
+            "errors": errors,
+        }
+
+    @staticmethod
+    def _varied_anchor(keyword: str) -> str:
+        """
+        Generate a varied anchor text for a keyword.
+
+        Distribution: ~20% exact, ~35% partial, ~35% semantic, ~10% natural phrase.
+        """
+        if not keyword:
+            return "(auto)"
+
+        roll = random.random()
+
+        if roll < 0.2:
+            # Exact keyword
+            return keyword
+        elif roll < 0.55:
+            # Partial match — drop a word
+            words = keyword.split()
+            if len(words) > 2:
+                drop_idx = random.randint(0, len(words) - 1)
+                return " ".join(w for i, w in enumerate(words) if i != drop_idx)
+            return keyword
+        elif roll < 0.9:
+            # Semantic variation
+            variations = [
+                keyword[0].upper() + keyword[1:] if len(keyword) > 1 else keyword,
+                f"guide to {keyword}",
+                f"everything about {keyword}",
+                f"understanding {keyword}",
+            ]
+            return random.choice(variations)
+        else:
+            # Natural phrase
+            return random.choice(["this guide", "learn more", "this article", "our full guide"])
+
+    # =========================================================================
+    # GSC LINK OPPORTUNITIES
+    # =========================================================================
+
+    def find_linking_opportunities(
+        self,
+        brand_id: str,
+        organization_id: str,
+        min_impressions: int = 10,
+        position_range: tuple = (8, 30),
+        min_wow_growth: float = 0.1,
+        max_inbound_links: int = 3,
+    ) -> Dict[str, Any]:
+        """
+        Find articles that would benefit from more internal links, based on GSC data.
+
+        Identifies articles in striking distance (position 8-30) with growing impressions
+        but few inbound internal links.
+
+        Args:
+            brand_id: Brand UUID
+            organization_id: Organization UUID
+            min_impressions: Minimum total impressions to consider
+            position_range: (min_pos, max_pos) for striking distance
+            min_wow_growth: Minimum week-over-week impression growth
+            max_inbound_links: Maximum existing inbound links to qualify
+        """
+        from datetime import datetime, timedelta, timezone
+
+        now = datetime.now(timezone.utc)
+        recent_start = (now - timedelta(days=7)).isoformat()
+        prior_start = (now - timedelta(days=14)).isoformat()
+        prior_end = (now - timedelta(days=7)).isoformat()
+
+        # Get articles for this brand with GSC analytics
+        articles_result = (
+            self.supabase.table("seo_articles")
+            .select("id, keyword, title, published_url, project_id")
+            .eq("brand_id", brand_id)
+            .not_.is_("published_url", "null")
+            .execute()
+        )
+        articles = articles_result.data or []
+        if not articles:
+            return {"opportunities": [], "total_scanned": 0}
+
+        article_map = {a["id"]: a for a in articles}
+        article_ids = list(article_map.keys())
+
+        # Get recent analytics (last 7 days)
+        recent_result = (
+            self.supabase.table("seo_article_analytics")
+            .select("article_id, impressions, average_position")
+            .in_("article_id", article_ids)
+            .eq("source", "gsc")
+            .gte("date", recent_start)
+            .execute()
+        )
+
+        # Get prior period analytics (7-14 days ago)
+        prior_result = (
+            self.supabase.table("seo_article_analytics")
+            .select("article_id, impressions")
+            .in_("article_id", article_ids)
+            .eq("source", "gsc")
+            .gte("date", prior_start)
+            .lt("date", prior_end)
+            .execute()
+        )
+
+        # Aggregate per article
+        recent_stats: Dict[str, Dict] = {}
+        for row in (recent_result.data or []):
+            aid = row["article_id"]
+            if aid not in recent_stats:
+                recent_stats[aid] = {"impressions": 0, "positions": [], "count": 0}
+            recent_stats[aid]["impressions"] += row.get("impressions", 0)
+            pos = row.get("average_position")
+            if pos:
+                recent_stats[aid]["positions"].append(pos)
+            recent_stats[aid]["count"] += 1
+
+        prior_stats: Dict[str, int] = {}
+        for row in (prior_result.data or []):
+            aid = row["article_id"]
+            prior_stats[aid] = prior_stats.get(aid, 0) + row.get("impressions", 0)
+
+        # Count inbound links
+        inbound_counts = self._batch_count_inbound_links(article_ids)
+
+        # Find opportunities
+        opportunities = []
+        for aid, stats in recent_stats.items():
+            total_impressions = stats["impressions"]
+            if total_impressions < min_impressions:
+                continue
+
+            # Absolute floor
+            if total_impressions < 50:
+                continue
+
+            avg_position = (
+                sum(stats["positions"]) / len(stats["positions"])
+                if stats["positions"] else 0
+            )
+
+            # WoW growth
+            prior_impressions = prior_stats.get(aid, 0)
+            wow_growth = (
+                (total_impressions - prior_impressions) / prior_impressions
+                if prior_impressions > 0 else 0
+            )
+
+            # Check filters
+            in_range = position_range[0] <= avg_position <= position_range[1]
+            growing = wow_growth >= min_wow_growth
+
+            if not (in_range or growing):
+                continue
+
+            inbound = inbound_counts.get(aid, 0)
+            if inbound > max_inbound_links:
+                continue
+
+            article = article_map.get(aid, {})
+
+            # Find top 5 source articles that could link to this target
+            project_id = article.get("project_id")
+            suggested_sources = []
+            if project_id:
+                project_articles = self._get_project_articles(project_id, exclude_id=aid)
+                # Exclude articles already linking to target
+                existing_sources = set()
+                try:
+                    existing = (
+                        self.supabase.table("seo_internal_links")
+                        .select("source_article_id")
+                        .eq("target_article_id", aid)
+                        .eq("status", LinkStatus.IMPLEMENTED.value)
+                        .execute()
+                    )
+                    existing_sources = {r["source_article_id"] for r in (existing.data or [])}
+                except Exception:
+                    pass
+
+                for pa in project_articles:
+                    if pa["id"] in existing_sources:
+                        continue
+                    sim = self._jaccard_similarity(article.get("keyword", ""), pa.get("keyword", ""))
+                    if sim > 0.1:
+                        suggested_sources.append({
+                            "article_id": pa["id"],
+                            "keyword": pa.get("keyword", ""),
+                            "similarity": round(sim, 3),
+                        })
+                suggested_sources.sort(key=lambda x: x["similarity"], reverse=True)
+                suggested_sources = suggested_sources[:5]
+
+            # Composite score: (1/position) * impressions * (1 + wow_growth)
+            score = (
+                (1 / avg_position if avg_position > 0 else 0)
+                * total_impressions
+                * (1 + wow_growth)
+            )
+
+            opportunities.append({
+                "article_id": aid,
+                "keyword": article.get("keyword", ""),
+                "title": article.get("title", ""),
+                "published_url": article.get("published_url", ""),
+                "avg_position": round(avg_position, 1),
+                "impressions": total_impressions,
+                "wow_growth": round(wow_growth, 3),
+                "inbound_link_count": inbound,
+                "score": round(score, 2),
+                "suggested_sources": suggested_sources,
+            })
+
+        # Sort by composite score descending, take top 20
+        opportunities.sort(key=lambda x: x["score"], reverse=True)
+        opportunities = opportunities[:20]
+
+        # Find last sync date
+        last_sync = None
+        try:
+            sync_result = (
+                self.supabase.table("seo_article_analytics")
+                .select("date")
+                .in_("article_id", article_ids[:1])
+                .eq("source", "gsc")
+                .order("date", desc=True)
+                .limit(1)
+                .execute()
+            )
+            if sync_result.data:
+                last_sync = sync_result.data[0].get("date")
+        except Exception:
+            pass
+
+        return {
+            "opportunities": opportunities,
+            "total_scanned": len(articles),
+            "last_synced_at": last_sync,
+        }
+
+    # =========================================================================
     # SIMILARITY & ANCHOR TEXT (from suggest.js)
     # =========================================================================
 
@@ -544,12 +917,13 @@ class InterlinkingService:
         project_id: str,
         exclude_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """Get all articles in a project, optionally excluding one."""
+        """Get all linkable articles in a project (published with a URL)."""
         query = (
             self.supabase.table("seo_articles")
             .select("id, keyword, title, published_url, status, content_html, project_id")
             .eq("project_id", project_id)
             .neq("status", "discovered")
+            .not_.is_("published_url", "null")
         )
         if exclude_id:
             query = query.neq("id", exclude_id)
@@ -592,9 +966,8 @@ class InterlinkingService:
                 "target_article_id": target_id,
                 "link_type": link_type.value,
                 "status": status.value,
+                "anchor_text": anchor_text or "(auto)",
             }
-            if anchor_text:
-                data["anchor_text"] = anchor_text
             if similarity:
                 data["similarity_score"] = similarity
             if placement:
@@ -605,6 +978,78 @@ class InterlinkingService:
             self.supabase.table("seo_internal_links").insert(data).execute()
         except Exception as e:
             logger.warning(f"Failed to save link record {source_id}->{target_id}: {e}")
+
+    def _remove_related_section(self, article_id: str) -> str:
+        """
+        Remove existing 'Related Articles' HTML section from an article.
+
+        Also deletes BIDIRECTIONAL link records from seo_internal_links for this article.
+
+        Returns:
+            Updated HTML with the section removed.
+        """
+        article = self._get_article(article_id)
+        if not article:
+            return ""
+
+        html = article.get("content_html", "")
+        if not html:
+            return ""
+
+        # Remove Related Articles section (h2 or h3, with optional attributes)
+        cleaned = re.sub(
+            r'<h[23][^>]*>\s*Related Articles\s*</h[23]>[\s\S]*?</ul>\s*',
+            '',
+            html,
+        )
+        # Also remove the intro paragraph if present
+        cleaned = re.sub(
+            r'<p>Looking for more\? Check out these related articles:</p>\s*',
+            '',
+            cleaned,
+        )
+
+        if cleaned != html:
+            self._update_article_html(article_id, cleaned)
+            # Delete bidirectional link records
+            try:
+                self.supabase.table("seo_internal_links").delete().eq(
+                    "source_article_id", article_id
+                ).eq("link_type", LinkType.BIDIRECTIONAL.value).execute()
+            except Exception as e:
+                logger.warning(f"Failed to delete bidirectional link records for {article_id}: {e}")
+
+        return cleaned
+
+    def _batch_count_inbound_links(self, article_ids: List[str]) -> Dict[str, int]:
+        """
+        Count implemented inbound links for a batch of articles.
+
+        Args:
+            article_ids: List of target article UUIDs
+
+        Returns:
+            Dict mapping article_id -> inbound link count
+        """
+        if not article_ids:
+            return {}
+
+        try:
+            result = (
+                self.supabase.table("seo_internal_links")
+                .select("target_article_id")
+                .in_("target_article_id", article_ids)
+                .eq("status", LinkStatus.IMPLEMENTED.value)
+                .execute()
+            )
+            counts: Dict[str, int] = {}
+            for row in (result.data or []):
+                tid = row["target_article_id"]
+                counts[tid] = counts.get(tid, 0) + 1
+            return counts
+        except Exception as e:
+            logger.warning(f"Failed to count inbound links: {e}")
+            return {}
 
     def _update_article_html(self, article_id: str, html: str) -> None:
         """Update content_html in seo_articles."""
@@ -637,7 +1082,7 @@ class InterlinkingService:
 
             publisher = self._publisher_service.get_publisher(brand_id, organization_id)
             if publisher:
-                publisher.update(cms_id, {"body_html": html, "title": article.get("title", "")})
+                publisher.update(cms_id, {"body_html": html}, body_only=True)
                 logger.info(f"Pushed updated HTML to CMS for article {article_id}")
         except Exception as e:
             logger.warning(f"Failed to push HTML to CMS for {article_id}: {e}")

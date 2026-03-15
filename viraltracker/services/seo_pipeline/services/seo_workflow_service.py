@@ -433,7 +433,13 @@ class SEOWorkflowService:
             try:
                 from viraltracker.services.seo_pipeline.services.interlinking_service import InterlinkingService
                 link_svc = InterlinkingService(supabase_client=sb)
-                await asyncio.to_thread(link_svc.auto_link_article, article_id)
+                await asyncio.to_thread(
+                    link_svc.auto_link_article,
+                    article_id,
+                    push_to_cms=True,
+                    brand_id=brand_id,
+                    organization_id=org_id,
+                )
             except Exception as e:
                 logger.warning(f"Interlinking failed (non-fatal): {e}")
 
@@ -1259,8 +1265,13 @@ class SEOWorkflowService:
             from viraltracker.services.seo_pipeline.services.interlinking_service import InterlinkingService
             from viraltracker.core.database import get_supabase_client
             link_svc = InterlinkingService(supabase_client=get_supabase_client())
-            for aid in all_article_ids:
-                await asyncio.to_thread(link_svc.auto_link_article, aid)
+            await asyncio.to_thread(
+                link_svc.interlink_cluster,
+                config.get("cluster_id", ""),
+                push_to_cms=True,
+                brand_id=brand_id,
+                organization_id=org_id,
+            )
         except Exception as e:
             logger.warning(f"Cross-cluster interlinking failed (non-fatal): {e}")
 
@@ -1478,6 +1489,69 @@ class SEOWorkflowService:
         self._reinject_images(article_id, phase_c_output)
 
         return {"phase_c": "complete", "parsed_fields": list((parsed or {}).keys())}
+
+    def rerun_interlinking(
+        self,
+        article_id: str,
+        brand_id: str,
+        organization_id: str,
+        push_to_cms: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Re-run interlinking for a single article: suggestions, auto-links, related section.
+
+        Args:
+            article_id: Article UUID
+            brand_id: Brand UUID
+            organization_id: Organization UUID
+            push_to_cms: Whether to push updated HTML to CMS
+
+        Returns:
+            Dict with suggestion_count, links_added, related_section status
+        """
+        from viraltracker.services.seo_pipeline.services.interlinking_service import InterlinkingService
+
+        link_svc = InterlinkingService(supabase_client=self.supabase)
+
+        # 1. Suggest links
+        suggestions = link_svc.suggest_links(
+            article_id, min_similarity=0.2, max_suggestions=10,
+        )
+        suggestion_count = suggestions.get("suggestion_count", 0)
+
+        # 2. Auto-link
+        auto_result = link_svc.auto_link_article(
+            article_id,
+            push_to_cms=False,  # Push once at the end
+            brand_id=brand_id,
+            organization_id=organization_id,
+        )
+        links_added = auto_result.get("links_added", 0)
+
+        # 3. Remove old Related section and rebuild with top 5 suggestions
+        link_svc._remove_related_section(article_id)
+        related_result = {"articles_linked": 0}
+        if suggestions.get("suggestions"):
+            top_ids = [
+                s["target_article_id"]
+                for s in suggestions["suggestions"][:5]
+            ]
+            related_result = link_svc.add_related_section(article_id, top_ids)
+
+        # 4. Push to CMS once
+        if push_to_cms:
+            article = link_svc._get_article(article_id)
+            if article and article.get("cms_article_id"):
+                link_svc._push_html_to_cms(
+                    article_id, brand_id, organization_id,
+                    article.get("content_html", ""),
+                )
+
+        return {
+            "suggestion_count": suggestion_count,
+            "links_added": links_added,
+            "related_articles_linked": related_result.get("articles_linked", 0),
+        }
 
     def _reinject_images(self, article_id: str, phase_c_output: str) -> None:
         """Re-inject existing images from image_metadata into new Phase C content."""

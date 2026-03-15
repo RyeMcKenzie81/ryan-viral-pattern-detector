@@ -48,18 +48,11 @@ tags: {AVAILABLE_TAGS}
 
 **Add 2-4 contextual links** where topics overlap naturally.
 
-**Add "Related Articles" section** before FAQ:
-```markdown
-## Related Articles
-
-- [Article Title 1](url-1)
-- [Article Title 2](url-2)
-```
-
 **Rules:**
 - Only link where it adds value (don't force it)
 - Use natural anchor text (not "click here")
 - Don't break the reading flow
+- Do NOT add a "Related Articles" section — this is handled automatically by the interlinking pipeline after publishing
 
 ### 3. Image Markers (INLINE)
 {IMAGE_STYLE}
@@ -102,7 +95,8 @@ Identify 2-3 places to add authority links:
 
 **Rules:**
 - Only link to support claims
-- Use rel="nofollow" for commercial sites
+- Use dofollow for legitimate authority sources (research, gov, edu, reputable publications) — Google uses outbound link quality as a trust signal
+- Only use rel="nofollow" for paid/sponsored links or user-generated content
 
 ### 7. Author Bio
 Add at the end:

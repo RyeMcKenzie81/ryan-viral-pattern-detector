@@ -644,3 +644,425 @@ class TestAddRelatedSection:
         for c in service._save_link_record.call_args_list:
             assert c.kwargs["link_type"] == LinkType.BIDIRECTIONAL
             assert c.kwargs["status"] == LinkStatus.IMPLEMENTED
+
+
+# =============================================================================
+# REMOVE RELATED SECTION
+# =============================================================================
+
+class TestRemoveRelatedSection:
+    def test_removes_h2_related_section(self, service):
+        """Removes <h2>Related Articles</h2> section from HTML."""
+        html_with_related = (
+            "<p>Great content here.</p>\n"
+            "<h2>Related Articles</h2>\n"
+            "<p>Looking for more? Check out these related articles:</p>\n"
+            "<ul>\n"
+            '<li><a href="/blogs/articles/foo">Foo</a></li>\n'
+            "</ul>\n"
+        )
+        article = {
+            "id": "art-001",
+            "content_html": html_with_related,
+        }
+        service._get_article = MagicMock(return_value=article)
+        service._update_article_html = MagicMock()
+
+        result = service._remove_related_section("art-001")
+
+        assert "<h2>Related Articles</h2>" not in result
+        assert "Looking for more?" not in result
+        assert "<ul>" not in result
+        assert "<p>Great content here.</p>" in result
+        service._update_article_html.assert_called_once()
+
+    def test_removes_h3_variant(self, service):
+        """Removes <h3>Related Articles</h3> variant from HTML."""
+        html_with_related = (
+            "<p>Content.</p>\n"
+            "<h3>Related Articles</h3>\n"
+            "<ul>\n"
+            '<li><a href="/blogs/articles/bar">Bar</a></li>\n'
+            "</ul>\n"
+        )
+        article = {
+            "id": "art-002",
+            "content_html": html_with_related,
+        }
+        service._get_article = MagicMock(return_value=article)
+        service._update_article_html = MagicMock()
+
+        result = service._remove_related_section("art-002")
+
+        assert "<h3>Related Articles</h3>" not in result
+        assert "<p>Content.</p>" in result
+
+    def test_deletes_bidirectional_link_records(self, service):
+        """Deletes BIDIRECTIONAL link records from DB when section is removed."""
+        html_with_related = (
+            "<p>Content.</p>\n"
+            "<h2>Related Articles</h2>\n"
+            "<ul>\n"
+            '<li><a href="/foo">Foo</a></li>\n'
+            "</ul>\n"
+        )
+        article = {
+            "id": "art-003",
+            "content_html": html_with_related,
+        }
+        service._get_article = MagicMock(return_value=article)
+        service._update_article_html = MagicMock()
+
+        # Set up mock chain for delete
+        mock_delete_chain = MagicMock()
+        service._supabase.table.return_value.delete.return_value.eq.return_value.eq.return_value.execute = MagicMock()
+        service._supabase.table.return_value.delete.return_value = mock_delete_chain
+        mock_delete_chain.eq.return_value.eq.return_value.execute = MagicMock()
+
+        service._remove_related_section("art-003")
+
+        # Verify delete was called on seo_internal_links table
+        service._supabase.table.assert_called_with("seo_internal_links")
+
+    def test_noop_when_no_related_section(self, service):
+        """No DB update when no Related section exists."""
+        article = {
+            "id": "art-004",
+            "content_html": "<p>Just plain content.</p>",
+        }
+        service._get_article = MagicMock(return_value=article)
+        service._update_article_html = MagicMock()
+
+        result = service._remove_related_section("art-004")
+
+        assert result == "<p>Just plain content.</p>"
+        service._update_article_html.assert_not_called()
+
+    def test_returns_empty_string_when_article_not_found(self, service):
+        """Returns empty string when article doesn't exist."""
+        service._get_article = MagicMock(return_value=None)
+
+        result = service._remove_related_section("nonexistent-id")
+
+        assert result == ""
+
+
+# =============================================================================
+# BATCH COUNT INBOUND LINKS
+# =============================================================================
+
+class TestBatchCountInboundLinks:
+    def test_counts_correctly_with_multiple_targets(self, service):
+        """Counts inbound links per target article correctly."""
+        mock_result = MagicMock()
+        mock_result.data = [
+            {"target_article_id": "art-001"},
+            {"target_article_id": "art-001"},
+            {"target_article_id": "art-001"},
+            {"target_article_id": "art-002"},
+        ]
+        service._supabase.table.return_value.select.return_value.in_.return_value.eq.return_value.execute.return_value = mock_result
+
+        counts = service._batch_count_inbound_links(["art-001", "art-002", "art-003"])
+
+        assert counts["art-001"] == 3
+        assert counts["art-002"] == 1
+        assert counts.get("art-003", 0) == 0
+
+    def test_empty_list_returns_empty_dict(self, service):
+        """Empty input list returns empty dict without DB call."""
+        result = service._batch_count_inbound_links([])
+
+        assert result == {}
+        service._supabase.table.assert_not_called()
+
+    def test_handles_db_errors_gracefully(self, service):
+        """Returns empty dict on DB error instead of raising."""
+        service._supabase.table.return_value.select.return_value.in_.return_value.eq.return_value.execute.side_effect = Exception("DB connection lost")
+
+        result = service._batch_count_inbound_links(["art-001"])
+
+        assert result == {}
+
+
+# =============================================================================
+# VARIED ANCHOR
+# =============================================================================
+
+class TestVariedAnchor:
+    def test_returns_auto_for_empty_keyword(self):
+        """Returns '(auto)' for empty keyword."""
+        result = InterlinkingService._varied_anchor("")
+        assert result == "(auto)"
+
+    def test_returns_auto_for_none_like_empty(self):
+        """Returns '(auto)' for falsy keyword."""
+        result = InterlinkingService._varied_anchor("")
+        assert result == "(auto)"
+
+    def test_always_returns_nonempty_for_valid_keyword(self):
+        """Always returns a non-empty string for valid keyword across many runs."""
+        for _ in range(50):
+            result = InterlinkingService._varied_anchor("best gaming monitor")
+            assert result
+            assert len(result) > 0
+
+    def test_returned_value_is_string(self):
+        """Return type is always a string."""
+        result = InterlinkingService._varied_anchor("how to build a pc")
+        assert isinstance(result, str)
+
+
+# =============================================================================
+# INTERLINK CLUSTER
+# =============================================================================
+
+class TestInterlinkCluster:
+    def _make_cluster_svc(self, cluster_return, spoke_ids_return):
+        """Create a mock ClusterManagementService."""
+        mock_cluster_svc = MagicMock()
+        mock_cluster_svc.get_cluster.return_value = cluster_return
+        mock_cluster_svc.get_cluster_spoke_article_ids.return_value = spoke_ids_return
+        return mock_cluster_svc
+
+    @staticmethod
+    def _cms_patch():
+        return patch(
+            "viraltracker.services.seo_pipeline.services.cluster_management_service.ClusterManagementService"
+        )
+
+    def test_raises_when_cluster_not_found(self, service):
+        """Raises ValueError when cluster doesn't exist."""
+        mock_svc = self._make_cluster_svc(None, [])
+        with self._cms_patch() as MockCMS:
+            MockCMS.return_value = mock_svc
+            with pytest.raises(ValueError, match="Cluster not found"):
+                service.interlink_cluster("nonexistent-cluster-id")
+
+    def test_returns_early_when_no_article_ids(self, service):
+        """Returns zeros when cluster has no article IDs."""
+        mock_svc = self._make_cluster_svc({"id": "cluster-001", "spokes": []}, [])
+        with self._cms_patch() as MockCMS:
+            MockCMS.return_value = mock_svc
+            result = service.interlink_cluster("cluster-001")
+
+            assert result["articles_processed"] == 0
+            assert result["links_added"] == 0
+            assert result["related_sections_added"] == 0
+
+    def test_returns_early_when_less_than_2_published(self, service):
+        """Returns early with error message when < 2 published articles."""
+        mock_svc = self._make_cluster_svc(
+            {"id": "cluster-001", "spokes": []}, ["art-001", "art-002"]
+        )
+        with self._cms_patch() as MockCMS:
+            MockCMS.return_value = mock_svc
+
+            # Only one article has a published_url
+            def mock_get(article_id):
+                if article_id == "art-001":
+                    return {"id": "art-001", "published_url": "https://example.com/a1", "content_html": "<p>Content</p>"}
+                return {"id": "art-002", "published_url": "", "content_html": "<p>Content</p>"}
+
+            service._get_article = MagicMock(side_effect=mock_get)
+
+            result = service.interlink_cluster("cluster-001")
+
+            assert result["articles_processed"] == 0
+            assert result["errors"][0]["message"] == "Need at least 2 published articles to interlink"
+
+    def test_processes_articles_adds_links_rebuilds_related(self, service):
+        """Full flow: processes articles, auto-links, removes/rebuilds related sections."""
+        mock_svc = self._make_cluster_svc(
+            {
+                "id": "cluster-001",
+                "spokes": [
+                    {"role": "pillar", "article_id": "art-001"},
+                    {"role": "spoke", "article_id": "art-002"},
+                    {"role": "spoke", "article_id": "art-003"},
+                ],
+            },
+            ["art-001", "art-002", "art-003"],
+        )
+        with self._cms_patch() as MockCMS:
+            MockCMS.return_value = mock_svc
+            mock_cluster_svc = MagicMock()
+            mock_cluster_svc.get_cluster.return_value = {
+                "id": "cluster-001",
+                "spokes": [
+                    {"role": "pillar", "article_id": "art-001"},
+                    {"role": "spoke", "article_id": "art-002"},
+                    {"role": "spoke", "article_id": "art-003"},
+                ],
+            }
+            mock_cluster_svc.get_cluster_spoke_article_ids.return_value = ["art-001", "art-002", "art-003"]
+            MockCMS.return_value = mock_cluster_svc
+
+            articles = {
+                "art-001": {"id": "art-001", "keyword": "gaming pc guide", "published_url": "https://example.com/a1", "content_html": "<p>Pillar content.</p>", "project_id": "proj-001"},
+                "art-002": {"id": "art-002", "keyword": "best gaming monitor", "published_url": "https://example.com/a2", "content_html": "<p>Spoke 1 content.</p>", "project_id": "proj-001"},
+                "art-003": {"id": "art-003", "keyword": "best graphics card", "published_url": "https://example.com/a3", "content_html": "<p>Spoke 2 content.</p>", "project_id": "proj-001"},
+            }
+            service._get_article = MagicMock(side_effect=lambda aid: articles.get(aid))
+
+            # Mock auto_link_article to return some links
+            service.auto_link_article = MagicMock(return_value={"links_added": 1, "linked_articles": []})
+            # Mock _remove_related_section
+            service._remove_related_section = MagicMock(return_value="<p>cleaned</p>")
+            # Mock add_related_section
+            service.add_related_section = MagicMock(return_value={"articles_linked": 2, "placement": "end", "related_articles": []})
+            # Mock _save_link_record
+            service._save_link_record = MagicMock()
+
+            result = service.interlink_cluster("cluster-001")
+
+            assert result["articles_processed"] == 3
+            assert result["links_added"] == 3  # 1 link per article × 3 articles
+            assert result["related_sections_added"] == 3
+            assert result["errors"] == []
+
+            # Verify auto_link was called for each article
+            assert service.auto_link_article.call_count == 3
+
+            # Verify related section was removed then rebuilt for each
+            assert service._remove_related_section.call_count == 3
+            assert service.add_related_section.call_count == 3
+
+            # Verify cluster link records were saved (pillar→spoke + spoke→pillar)
+            assert service._save_link_record.call_count > 0
+
+
+# =============================================================================
+# FIND LINKING OPPORTUNITIES
+# =============================================================================
+
+class TestFindLinkingOpportunities:
+    def test_returns_empty_when_no_articles(self, service):
+        """Returns empty opportunities when no articles exist for brand."""
+        mock_result = MagicMock()
+        mock_result.data = []
+        service._supabase.table.return_value.select.return_value.eq.return_value.not_.return_value.is_.return_value.execute.return_value = mock_result
+
+        result = service.find_linking_opportunities("brand-001", "org-001")
+
+        assert result["opportunities"] == []
+        assert result["total_scanned"] == 0
+
+    def test_filters_by_position_range(self, service):
+        """Only articles in position range are returned as opportunities."""
+        articles = [
+            {"id": "art-001", "keyword": "gaming pc", "title": "Gaming PC", "published_url": "https://example.com/a1", "project_id": "proj-001"},
+            {"id": "art-002", "keyword": "cooking tips", "title": "Cooking Tips", "published_url": "https://example.com/a2", "project_id": "proj-001"},
+        ]
+        mock_articles_result = MagicMock()
+        mock_articles_result.data = articles
+
+        # art-001: position 15 (in range 8-30), 100 impressions, growing
+        # art-002: position 3 (out of range), 100 impressions, not growing
+        recent_data = [
+            {"article_id": "art-001", "impressions": 100, "average_position": 15.0},
+            {"article_id": "art-002", "impressions": 100, "average_position": 3.0},
+        ]
+        mock_recent_result = MagicMock()
+        mock_recent_result.data = recent_data
+
+        prior_data = [
+            {"article_id": "art-001", "impressions": 80},
+            {"article_id": "art-002", "impressions": 100},
+        ]
+        mock_prior_result = MagicMock()
+        mock_prior_result.data = prior_data
+
+        # Set up the chain of calls — use side_effect for sequential calls on table()
+        mock_table = MagicMock()
+
+        call_count = {"n": 0}
+        def table_side_effect(name):
+            call_count["n"] += 1
+            mock_chain = MagicMock()
+            if name == "seo_articles":
+                mock_chain.select.return_value.eq.return_value.not_.return_value.is_.return_value.execute.return_value = mock_articles_result
+                return mock_chain
+            elif name == "seo_article_analytics":
+                # First call = recent analytics, second = prior analytics, third = last sync
+                if call_count["n"] <= 3:
+                    # Recent
+                    mock_chain.select.return_value.in_.return_value.eq.return_value.gte.return_value.execute.return_value = mock_recent_result
+                elif call_count["n"] <= 4:
+                    # Prior
+                    mock_chain.select.return_value.in_.return_value.eq.return_value.gte.return_value.lt.return_value.execute.return_value = mock_prior_result
+                else:
+                    # Last sync
+                    mock_chain.select.return_value.in_.return_value.eq.return_value.order.return_value.limit.return_value.execute.return_value = MagicMock(data=[])
+                return mock_chain
+            elif name == "seo_internal_links":
+                mock_chain.select.return_value.in_.return_value.eq.return_value.execute.return_value = MagicMock(data=[])
+                mock_chain.select.return_value.eq.return_value.eq.return_value.execute.return_value = MagicMock(data=[])
+                return mock_chain
+            return mock_chain
+
+        service._supabase.table = MagicMock(side_effect=table_side_effect)
+        service._get_project_articles = MagicMock(return_value=[])
+
+        result = service.find_linking_opportunities("brand-001", "org-001")
+
+        # Only art-001 should be in opportunities (position 15 is in range, 100 impressions >= 50 floor)
+        opp_ids = [o["article_id"] for o in result["opportunities"]]
+        assert "art-001" in opp_ids
+        # art-002 position 3 is out of range 8-30, and wow_growth=0 < 0.1 min, so filtered out
+        assert "art-002" not in opp_ids
+
+    def test_opportunities_sorted_by_score(self, service):
+        """Opportunities are sorted by composite score descending."""
+        articles = [
+            {"id": "art-001", "keyword": "gaming pc", "title": "Gaming PC", "published_url": "https://example.com/a1", "project_id": "proj-001"},
+            {"id": "art-002", "keyword": "monitor guide", "title": "Monitor Guide", "published_url": "https://example.com/a2", "project_id": "proj-001"},
+        ]
+        mock_articles_result = MagicMock()
+        mock_articles_result.data = articles
+
+        # art-001: position 10, 200 impressions (higher score)
+        # art-002: position 20, 100 impressions (lower score)
+        recent_data = [
+            {"article_id": "art-001", "impressions": 200, "average_position": 10.0},
+            {"article_id": "art-002", "impressions": 100, "average_position": 20.0},
+        ]
+        mock_recent_result = MagicMock()
+        mock_recent_result.data = recent_data
+
+        prior_data = [
+            {"article_id": "art-001", "impressions": 100},
+            {"article_id": "art-002", "impressions": 50},
+        ]
+        mock_prior_result = MagicMock()
+        mock_prior_result.data = prior_data
+
+        call_count = {"n": 0}
+        def table_side_effect(name):
+            call_count["n"] += 1
+            mock_chain = MagicMock()
+            if name == "seo_articles":
+                mock_chain.select.return_value.eq.return_value.not_.return_value.is_.return_value.execute.return_value = mock_articles_result
+                return mock_chain
+            elif name == "seo_article_analytics":
+                if call_count["n"] <= 3:
+                    mock_chain.select.return_value.in_.return_value.eq.return_value.gte.return_value.execute.return_value = mock_recent_result
+                elif call_count["n"] <= 4:
+                    mock_chain.select.return_value.in_.return_value.eq.return_value.gte.return_value.lt.return_value.execute.return_value = mock_prior_result
+                else:
+                    mock_chain.select.return_value.in_.return_value.eq.return_value.order.return_value.limit.return_value.execute.return_value = MagicMock(data=[])
+                return mock_chain
+            elif name == "seo_internal_links":
+                mock_chain.select.return_value.in_.return_value.eq.return_value.execute.return_value = MagicMock(data=[])
+                mock_chain.select.return_value.eq.return_value.eq.return_value.execute.return_value = MagicMock(data=[])
+                return mock_chain
+            return mock_chain
+
+        service._supabase.table = MagicMock(side_effect=table_side_effect)
+        service._get_project_articles = MagicMock(return_value=[])
+
+        result = service.find_linking_opportunities("brand-001", "org-001")
+
+        if len(result["opportunities"]) >= 2:
+            scores = [o["score"] for o in result["opportunities"]]
+            assert scores == sorted(scores, reverse=True)

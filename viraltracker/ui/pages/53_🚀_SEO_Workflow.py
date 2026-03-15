@@ -340,7 +340,7 @@ with tab_qw:
                             # Actions — always show all buttons
                             if article_id:
                                 st.divider()
-                                repair_col1, repair_col2, repair_col3 = st.columns(3)
+                                repair_col1, repair_col2, repair_col3, repair_col4 = st.columns(4)
                                 with repair_col1:
                                     if st.button("Repair Metadata", key="seo_wf_repair_meta"):
                                         with st.spinner("Re-parsing metadata from content..."):
@@ -380,6 +380,25 @@ with tab_qw:
                                                 {"result": _job_result}
                                             ).eq("id", active_job_id).execute()
                                             st.rerun()
+                                with repair_col4:
+                                    if st.button("Re-run Links", key="seo_wf_rerun_links"):
+                                        with st.spinner("Re-running interlinking..."):
+                                            try:
+                                                link_result = workflow_svc.rerun_interlinking(
+                                                    article_id=article_id,
+                                                    brand_id=brand_id,
+                                                    organization_id=org_id,
+                                                )
+                                                parts = []
+                                                if link_result.get("suggestion_count"):
+                                                    parts.append(f"{link_result['suggestion_count']} suggestions")
+                                                if link_result.get("links_added"):
+                                                    parts.append(f"{link_result['links_added']} auto-links")
+                                                if link_result.get("related_articles_linked"):
+                                                    parts.append(f"{link_result['related_articles_linked']} related")
+                                                st.success(f"Interlinking complete: {', '.join(parts) or 'no changes'}")
+                                            except Exception as e:
+                                                st.error(f"Interlinking failed: {str(e)[:200]}")
 
                     # Image status badge
                     _img_status_row = None

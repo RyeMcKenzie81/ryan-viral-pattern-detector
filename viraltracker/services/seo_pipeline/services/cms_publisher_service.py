@@ -183,9 +183,21 @@ class ShopifyPublisher(CMSPublisher):
         self,
         cms_article_id: str,
         article_data: Dict[str, Any],
+        body_only: bool = False,
     ) -> Dict[str, Any]:
-        """Update an existing Shopify blog article."""
-        payload = self._build_article_payload(article_data)
+        """
+        Update an existing Shopify blog article.
+
+        Args:
+            cms_article_id: The CMS-side article ID
+            article_data: Updated article data
+            body_only: If True, only send body_html (safe for interlinking updates
+                that must not overwrite published status, metafields, handle, etc.)
+        """
+        if body_only:
+            payload = {"article": {"body_html": article_data.get("body_html", "")}}
+        else:
+            payload = self._build_article_payload(article_data)
         url = f"{self._base_url}/articles/{cms_article_id}.json"
 
         response = self._api_request("PUT", url, payload)

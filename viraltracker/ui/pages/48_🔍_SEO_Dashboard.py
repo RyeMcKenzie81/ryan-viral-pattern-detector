@@ -1327,7 +1327,7 @@ st.subheader("Internal Link Tools")
 if is_brand_view:
     st.info("Select a specific project to use link tools.")
 else:
-    link_tabs = st.tabs(["Suggest Links", "Auto-Link", "Add Related"])
+    link_tabs = st.tabs(["Suggest Links", "Auto-Link", "Add Related", "GSC Opportunities"])
 
     # Tab 1: Suggest Links
     with link_tabs[0]:
@@ -1436,3 +1436,81 @@ else:
                                 )
                         except Exception as e:
                             st.error(f"Error: {e}")
+
+    # Tab 4: GSC Opportunities
+    with link_tabs[3]:
+        st.markdown("Find articles in **striking distance** (position 8-30) that need more internal links.")
+
+        gsc_col1, gsc_col2, gsc_col3 = st.columns(3)
+        with gsc_col1:
+            gsc_min_impressions = st.number_input(
+                "Min Impressions", 10, 10000, 50, key="seo_dash_gsc_min_imp",
+            )
+        with gsc_col2:
+            gsc_max_inbound = st.number_input(
+                "Max Inbound Links", 0, 20, 3, key="seo_dash_gsc_max_inbound",
+            )
+        with gsc_col3:
+            gsc_min_growth = st.slider(
+                "Min WoW Growth %", 0, 100, 10, key="seo_dash_gsc_min_growth",
+            )
+
+        if st.button("Scan for Opportunities", key="seo_dash_gsc_scan_btn"):
+            interlinking = get_interlinking_service()
+            with st.spinner("Scanning GSC data for link opportunities..."):
+                try:
+                    result = interlinking.find_linking_opportunities(
+                        brand_id=brand_id,
+                        organization_id=org_id,
+                        min_impressions=gsc_min_impressions,
+                        max_inbound_links=gsc_max_inbound,
+                        min_wow_growth=gsc_min_growth / 100.0,
+                    )
+
+                    last_sync = result.get("last_synced_at")
+                    if last_sync:
+                        from datetime import datetime, timezone
+                        try:
+                            sync_date = datetime.fromisoformat(last_sync.replace("Z", "+00:00"))
+                            days_ago = (datetime.now(timezone.utc) - sync_date).days
+                            if days_ago > 3:
+                                st.warning(f"GSC data is {days_ago} days old. Sync GSC to get fresh data.")
+                            else:
+                                st.caption(f"GSC data last synced: {last_sync[:10]}")
+                        except Exception:
+                            st.caption(f"Last synced: {last_sync}")
+                    else:
+                        st.warning("No GSC data found. Sync GSC analytics first.")
+
+                    opportunities = result.get("opportunities", [])
+                    if opportunities:
+                        st.markdown(f"**{len(opportunities)} opportunities** found (from {result.get('total_scanned', 0)} articles)")
+                        for opp in opportunities:
+                            with st.container(border=True):
+                                oc1, oc2, oc3, oc4 = st.columns([3, 1, 1, 1])
+                                with oc1:
+                                    st.markdown(f"**{opp['keyword']}**")
+                                    if opp.get("published_url"):
+                                        st.caption(opp["published_url"])
+                                with oc2:
+                                    st.metric("Position", opp["avg_position"])
+                                with oc3:
+                                    st.metric("Impressions", opp["impressions"])
+                                with oc4:
+                                    wow_pct = round(opp.get("wow_growth", 0) * 100)
+                                    st.metric("WoW Growth", f"{wow_pct}%")
+
+                                inbound = opp.get("inbound_link_count", 0)
+                                st.caption(f"Inbound links: {inbound}")
+
+                                sources = opp.get("suggested_sources", [])
+                                if sources:
+                                    st.markdown("**Suggested source articles:**")
+                                    for src in sources:
+                                        st.caption(
+                                            f"  {src['keyword']} (similarity: {src['similarity']:.0%})"
+                                        )
+                    else:
+                        st.info("No opportunities found with current filters.")
+                except Exception as e:
+                    st.error(f"Error: {e}")

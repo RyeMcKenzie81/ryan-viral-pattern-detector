@@ -71,6 +71,7 @@ class LinkType(str, Enum):
     AUTO = "auto"
     BIDIRECTIONAL = "bidirectional"
     MANUAL = "manual"
+    CLUSTER = "cluster"
 
 
 class LinkStatus(str, Enum):

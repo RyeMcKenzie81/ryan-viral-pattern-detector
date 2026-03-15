@@ -458,17 +458,41 @@ def _render_link_health(cluster_id):
                 f"(similarity: {link['similarity']:.0%})"
             )
 
-    if st.button("Run Auto-Link for Cluster", key="seo_cluster_autolink_btn"):
-        interlinking = get_interlinking_service()
-        article_ids = svc.get_cluster_spoke_article_ids(cluster_id)
-        linked_count = 0
-        for aid in article_ids:
-            try:
-                result = interlinking.auto_link_article(aid)
-                linked_count += result.get("links_added", 0)
-            except Exception as e:
-                logger.warning(f"Auto-link failed for {aid}: {e}")
-        st.success(f"Added {linked_count} link(s) across {len(article_ids)} article(s)")
+    link_col1, link_col2 = st.columns(2)
+    with link_col1:
+        if st.button("Run Auto-Link for Cluster", key="seo_cluster_autolink_btn"):
+            interlinking = get_interlinking_service()
+            article_ids = svc.get_cluster_spoke_article_ids(cluster_id)
+            linked_count = 0
+            for aid in article_ids:
+                try:
+                    result = interlinking.auto_link_article(aid)
+                    linked_count += result.get("links_added", 0)
+                except Exception as e:
+                    logger.warning(f"Auto-link failed for {aid}: {e}")
+            st.success(f"Added {linked_count} link(s) across {len(article_ids)} article(s)")
+    with link_col2:
+        push_cms = st.checkbox("Push to CMS", value=False, key="seo_cluster_interlink_push")
+        if st.button("Interlink Cluster", key="seo_cluster_interlink_btn"):
+            interlinking = get_interlinking_service()
+            with st.spinner("Interlinking cluster (pillar-first, related sections)..."):
+                try:
+                    result = interlinking.interlink_cluster(
+                        cluster_id,
+                        push_to_cms=push_cms,
+                        brand_id=brand_id,
+                        organization_id=org_id,
+                    )
+                    st.success(
+                        f"Processed {result['articles_processed']} articles: "
+                        f"{result['links_added']} links, "
+                        f"{result['related_sections_added']} related sections"
+                    )
+                    if result.get("errors"):
+                        for err in result["errors"]:
+                            st.warning(f"Error on {err.get('article_id', '?')}: {err.get('error', '')}")
+                except Exception as e:
+                    st.error(f"Cluster interlinking failed: {str(e)[:200]}")
 
 
 # =============================================================================

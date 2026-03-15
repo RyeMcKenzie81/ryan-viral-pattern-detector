@@ -101,7 +101,7 @@ class TestSearchIntent:
 
 class TestLinkEnums:
     def test_link_type_values(self):
-        expected = {"suggested", "auto", "bidirectional", "manual"}
+        expected = {"suggested", "auto", "bidirectional", "manual", "cluster"}
         assert {t.value for t in LinkType} == expected
 
     def test_link_status_values(self):
