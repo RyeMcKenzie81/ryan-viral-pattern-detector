@@ -1425,7 +1425,17 @@ class SEOWorkflowService:
             self.supabase.table("seo_articles").update(update_fields).eq("id", article_id).execute()
             logger.info(f"Repaired metadata for article {article_id}: {fixed}")
 
-        return {"fixed": fixed, "fields": update_fields}
+        # Report fields that are already populated (checklist may be stale)
+        already_populated = []
+        if not fixed:
+            if a.get("seo_title"):
+                already_populated.append("seo_title")
+            if a.get("meta_description"):
+                already_populated.append("meta_description")
+            if a.get("tags"):
+                already_populated.append("tags")
+
+        return {"fixed": fixed, "fields": update_fields, "already_populated": already_populated}
 
     def rerun_phase_c(
         self,

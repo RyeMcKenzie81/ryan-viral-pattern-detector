@@ -311,7 +311,9 @@ with tab_qw:
                                             repair_result = workflow_svc.repair_article_metadata(article_id)
                                         fixed = repair_result.get("fixed", [])
                                         if fixed:
-                                            st.success(f"Fixed: {', '.join(fixed)}")
+                                            st.success(f"Fixed: {', '.join(fixed)}. Click Re-run Checklist to verify.")
+                                        elif repair_result.get("already_populated"):
+                                            st.info(f"Metadata already populated: {', '.join(repair_result['already_populated'])}. Click Re-run Checklist to refresh.")
                                         else:
                                             st.warning("No metadata could be extracted. Try Re-run Phase C.")
                                 with repair_col2:
