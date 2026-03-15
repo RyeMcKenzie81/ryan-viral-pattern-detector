@@ -337,52 +337,35 @@ with tab_qw:
                                     else:
                                         st.markdown(f"&ensp;:red[{icon}] {label}")
 
-                            # Actions — always show Re-run Checklist; repair buttons only on failures
+                            # Actions — always show all buttons
                             if article_id:
                                 st.divider()
-                                has_failures = passed_count < total_count
-                                if has_failures:
-                                    repair_col1, repair_col2, repair_col3 = st.columns(3)
-                                    with repair_col1:
-                                        if st.button("Repair Metadata", key="seo_wf_repair_meta"):
-                                            with st.spinner("Re-parsing metadata from content..."):
-                                                repair_result = workflow_svc.repair_article_metadata(article_id)
-                                            fixed = repair_result.get("fixed", [])
-                                            if fixed:
-                                                st.success(f"Fixed: {', '.join(fixed)}. Click Re-run Checklist to verify.")
-                                            elif repair_result.get("already_populated"):
-                                                st.info(f"Metadata already populated: {', '.join(repair_result['already_populated'])}. Click Re-run Checklist to refresh.")
-                                            else:
-                                                st.warning("No metadata could be extracted. Try Re-run Phase C.")
-                                    with repair_col2:
-                                        if st.button("Re-run Phase C", key="seo_wf_rerun_phase_c"):
-                                            with st.spinner("Re-running Phase C (30-60s)..."):
-                                                try:
-                                                    pc_result = workflow_svc.rerun_phase_c(
-                                                        article_id=article_id,
-                                                        brand_id=brand_id,
-                                                        organization_id=org_id,
-                                                    )
-                                                    parsed_fields = pc_result.get("parsed_fields", [])
-                                                    st.success(f"Phase C complete. Parsed: {', '.join(parsed_fields) or 'none'}")
-                                                except Exception as e:
-                                                    st.error(f"Phase C failed: {str(e)[:200]}")
-                                    with repair_col3:
-                                        if st.button("Re-run Checklist", key="seo_wf_rerun_checklist"):
-                                            with st.spinner("Running checklist..."):
-                                                from viraltracker.services.seo_pipeline.services.pre_publish_checklist_service import PrePublishChecklistService
-                                                from viraltracker.services.seo_pipeline.services.seo_brand_config_service import SEOBrandConfigService
-                                                _cl_svc = PrePublishChecklistService()
-                                                _bc_svc = SEOBrandConfigService()
-                                                _bc = _bc_svc.get_config(brand_id) or {}
-                                                new_checklist = _cl_svc.run_checklist(article_id, _bc)
-                                                _job_result = job.get("result", {})
-                                                _job_result["checklist"] = new_checklist
-                                                workflow_svc.supabase.table("seo_workflow_jobs").update(
-                                                    {"result": _job_result}
-                                                ).eq("id", active_job_id).execute()
-                                                st.rerun()
-                                else:
+                                repair_col1, repair_col2, repair_col3 = st.columns(3)
+                                with repair_col1:
+                                    if st.button("Repair Metadata", key="seo_wf_repair_meta"):
+                                        with st.spinner("Re-parsing metadata from content..."):
+                                            repair_result = workflow_svc.repair_article_metadata(article_id)
+                                        fixed = repair_result.get("fixed", [])
+                                        if fixed:
+                                            st.success(f"Fixed: {', '.join(fixed)}. Click Re-run Checklist to verify.")
+                                        elif repair_result.get("already_populated"):
+                                            st.info(f"Metadata already populated: {', '.join(repair_result['already_populated'])}. Click Re-run Checklist to refresh.")
+                                        else:
+                                            st.warning("No metadata could be extracted. Try Re-run Phase C.")
+                                with repair_col2:
+                                    if st.button("Re-run Phase C", key="seo_wf_rerun_phase_c"):
+                                        with st.spinner("Re-running Phase C (30-60s)..."):
+                                            try:
+                                                pc_result = workflow_svc.rerun_phase_c(
+                                                    article_id=article_id,
+                                                    brand_id=brand_id,
+                                                    organization_id=org_id,
+                                                )
+                                                parsed_fields = pc_result.get("parsed_fields", [])
+                                                st.success(f"Phase C complete. Parsed: {', '.join(parsed_fields) or 'none'}")
+                                            except Exception as e:
+                                                st.error(f"Phase C failed: {str(e)[:200]}")
+                                with repair_col3:
                                     if st.button("Re-run Checklist", key="seo_wf_rerun_checklist"):
                                         with st.spinner("Running checklist..."):
                                             from viraltracker.services.seo_pipeline.services.pre_publish_checklist_service import PrePublishChecklistService
