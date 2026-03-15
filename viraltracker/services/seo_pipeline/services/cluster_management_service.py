@@ -1528,6 +1528,31 @@ class ClusterManagementService:
             return set()
         return {w for w in text.lower().split() if len(w) > 3}
 
+    def link_article_to_spoke(self, keyword_id: str, article_id: str) -> bool:
+        """
+        Find a spoke by keyword_id and link the article to it.
+
+        Called by Quick Write after creating an article so cluster status stays in sync.
+
+        Returns:
+            True if a spoke was linked, False if no matching spoke found.
+        """
+        result = (
+            self.supabase.table("seo_cluster_spokes")
+            .select("id")
+            .eq("keyword_id", keyword_id)
+            .is_("article_id", "null")
+            .limit(1)
+            .execute()
+        )
+        if not result.data:
+            return False
+
+        spoke_id = result.data[0]["id"]
+        self.assign_article_to_spoke(spoke_id, article_id)
+        logger.info(f"Linked article {article_id} to spoke {spoke_id} via keyword {keyword_id}")
+        return True
+
     def _update_spoke_count(self, cluster_id: str) -> None:
         """Recompute spoke_count on seo_clusters from the join table."""
         count_result = (

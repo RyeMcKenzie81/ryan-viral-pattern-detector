@@ -257,6 +257,12 @@ class SEOWorkflowService:
             article_result = sb.table("seo_articles").insert(article_data).execute()
             article_id = article_result.data[0]["id"]
 
+            # Link article to cluster spoke if keyword matches (non-fatal)
+            try:
+                cluster_svc.link_article_to_spoke(keyword_id, article_id)
+            except Exception as e:
+                logger.debug(f"Spoke link skipped: {e}")
+
             # Store article_id in job config for later reference
             self._update_job_config(job_id, {"article_id": article_id, "keyword_id": keyword_id, "project_id": project_id})
 

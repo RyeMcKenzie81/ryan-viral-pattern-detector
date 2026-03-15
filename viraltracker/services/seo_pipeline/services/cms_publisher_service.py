@@ -703,6 +703,14 @@ class CMSPublisherService:
         # Save CMS data back to article
         self._update_article_cms_data(article_id, result, draft)
 
+        # Update spoke status in clusters (non-fatal)
+        try:
+            from viraltracker.services.seo_pipeline.services.cluster_management_service import ClusterManagementService
+            cluster_svc = ClusterManagementService(supabase_client=self.supabase)
+            cluster_svc.mark_spokes_published_for_article(article_id)
+        except Exception as e:
+            logger.debug(f"Spoke status update skipped: {e}")
+
         return result
 
     # =========================================================================
