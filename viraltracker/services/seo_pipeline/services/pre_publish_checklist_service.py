@@ -252,11 +252,11 @@ class PrePublishChecklistService:
                 schema_markup=article.get("schema_markup"),
             )
 
-            error_failures = [c for c in qa_checks if not c.passed and c.severity == "error"]
-            if error_failures:
-                names = ", ".join(c.name for c in error_failures[:3])
-                return {"name": "content_qa", "passed": False, "severity": "error",
-                        "message": f"QA failed: {names}"}
+            all_failures = [c for c in qa_checks if not c.passed]
+            if all_failures:
+                names = ", ".join(c.name for c in all_failures[:3])
+                return {"name": "content_qa", "passed": True, "severity": "warning",
+                        "message": f"QA suggestions: {names}"}
             return {"name": "content_qa", "passed": True, "severity": "warning", "message": ""}
         except Exception as e:
             logger.warning(f"QA check failed for {article_id}: {e}")
