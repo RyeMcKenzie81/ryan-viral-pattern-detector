@@ -119,23 +119,15 @@ Add at the end:
 
 ## Output Format
 
-Return the article with:
+Return ONLY the optimized article with:
 1. Meta tags at top (YAML frontmatter)
 2. Optimized content (minimal changes to voice)
 3. Internal link suggestions marked [LINK: anchor](url)
 4. Image markers placed INLINE in the body: [HERO IMAGE: ...] at top, [IMAGE: ...] distributed throughout
 5. Author bio at bottom
 
----
-
-## Quality Check
-
-Before finalizing, confirm:
-- [ ] Article voice is unchanged
-- [ ] Keyword appears naturally (not forced)
-- [ ] Links add value
-- [ ] Meta tags are compelling
-- [ ] Images enhance understanding
+**CRITICAL: Do NOT include any analysis, checklists, summaries, or commentary in your output.**
+Do NOT include sections like "SEO Optimization Summary", "Keyword Placement Check", "External Link Suggestions", "Readability Check", or "Content Integrity". These are internal checks — run them silently but only output the article itself.
 
 **Remember:** SEO is the packaging, not the product. Keep the article quality intact.
 
