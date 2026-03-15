@@ -1349,14 +1349,6 @@ class SEOWorkflowService:
             or a.get("phase_b_output")
             or ""
         )
-        logger.info(
-            f"Repair metadata for {article_id}: "
-            f"phase_c_output={'yes' if a.get('phase_c_output') else 'no'}, "
-            f"content_markdown={'yes' if a.get('content_markdown') else 'no'}, "
-            f"phase_b_output={'yes' if a.get('phase_b_output') else 'no'}, "
-            f"content_html={'yes' if a.get('content_html') else 'no'}, "
-            f"content_len={len(content)}"
-        )
         if not content:
             # Last resort: try HTML content
             content = a.get("content_html") or ""
@@ -1368,15 +1360,7 @@ class SEOWorkflowService:
 
         # Try frontmatter parsing first
         parsed = self._parse_frontmatter(content)
-        logger.info(
-            f"Repair frontmatter parse: parsed={parsed is not None}, "
-            f"content_start={repr(content[:200])}, "
-            f"existing seo_title={repr(a.get('seo_title'))}, "
-            f"existing meta_desc={repr(a.get('meta_description'))}, "
-            f"existing tags={repr(a.get('tags'))}"
-        )
         if parsed:
-            logger.info(f"Parsed frontmatter keys: {list(parsed.keys())}")
             if parsed.get("title") and not a.get("seo_title"):
                 update_fields["seo_title"] = parsed["title"][:200]
                 fixed.append("seo_title")

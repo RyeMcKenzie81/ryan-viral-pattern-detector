@@ -229,11 +229,26 @@ class PrePublishChecklistService:
         try:
             from viraltracker.services.seo_pipeline.services.qa_validation_service import QAValidationService
             qa_svc = QAValidationService(supabase_client=self.supabase)
-            qa_result = qa_svc.run_checks(article_id)
-            error_failures = [c for c in qa_result.get("failures", [])
-                              if c.get("severity") == "error"]
+
+            # Load article content for stateless checks
+            article = self._load_article(article_id)
+            if not article:
+                return {"name": "content_qa", "passed": True, "severity": "warning",
+                        "message": "Article not found for QA"}
+
+            content_md = article.get("content_markdown") or article.get("phase_c_output") or article.get("phase_b_output") or ""
+            qa_checks = qa_svc.run_checks(
+                content_markdown=content_md,
+                content_html=article.get("content_html") or "",
+                keyword=article.get("keyword", ""),
+                seo_title=article.get("seo_title") or article.get("title") or "",
+                meta_description=article.get("meta_description") or "",
+                schema_markup=article.get("schema_markup"),
+            )
+
+            error_failures = [c for c in qa_checks if not c.passed and c.severity == "error"]
             if error_failures:
-                names = ", ".join(c.get("name", "?") for c in error_failures[:3])
+                names = ", ".join(c.name for c in error_failures[:3])
                 return {"name": "content_qa", "passed": False, "severity": "error",
                         "message": f"QA failed: {names}"}
             return {"name": "content_qa", "passed": True, "severity": "warning", "message": ""}
