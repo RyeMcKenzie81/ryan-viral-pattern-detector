@@ -1331,6 +1331,7 @@ else:
 
     # Tab 1: Suggest Links
     with link_tabs[0]:
+        st.caption("Find related articles based on keyword similarity. Preview only — doesn't modify any articles.")
         if not articles:
             st.info("Add articles first to use link suggestions.")
         else:
@@ -1371,6 +1372,7 @@ else:
 
     # Tab 2: Auto-Link
     with link_tabs[1]:
+        st.caption("Scan an article's body for keyword mentions and inject contextual links to matching articles.")
         if not articles:
             st.info("Add articles first to use auto-linking.")
         else:
@@ -1400,6 +1402,7 @@ else:
 
     # Tab 3: Add Related
     with link_tabs[2]:
+        st.caption("Manually add a 'Related Articles' section at the bottom of an article. Pick which articles to feature.")
         if not articles:
             st.info("Add articles first to use bidirectional linking.")
         else:

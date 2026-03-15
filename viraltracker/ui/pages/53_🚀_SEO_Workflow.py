@@ -342,7 +342,7 @@ with tab_qw:
                                 st.divider()
                                 repair_col1, repair_col2, repair_col3, repair_col4 = st.columns(4)
                                 with repair_col1:
-                                    if st.button("Repair Metadata", key="seo_wf_repair_meta"):
+                                    if st.button("Repair Metadata", key="seo_wf_repair_meta", help="Re-extract SEO title, meta description, and tags from the article content without regenerating it."):
                                         with st.spinner("Re-parsing metadata from content..."):
                                             repair_result = workflow_svc.repair_article_metadata(article_id)
                                         fixed = repair_result.get("fixed", [])
@@ -353,7 +353,7 @@ with tab_qw:
                                         else:
                                             st.warning("No metadata could be extracted. Try Re-run Phase C.")
                                 with repair_col2:
-                                    if st.button("Re-run Phase C", key="seo_wf_rerun_phase_c"):
+                                    if st.button("Re-run Phase C", key="seo_wf_rerun_phase_c", help="Regenerate the article with Claude (SEO optimization pass). Use when content quality is poor or you want a fresh rewrite."):
                                         with st.spinner("Re-running Phase C (30-60s)..."):
                                             try:
                                                 pc_result = workflow_svc.rerun_phase_c(
@@ -366,7 +366,7 @@ with tab_qw:
                                             except Exception as e:
                                                 st.error(f"Phase C failed: {str(e)[:200]}")
                                 with repair_col3:
-                                    if st.button("Re-run Checklist", key="seo_wf_rerun_checklist"):
+                                    if st.button("Re-run Checklist", key="seo_wf_rerun_checklist", help="Re-validate the article against the pre-publish checklist (word count, readability, keyword usage, etc)."):
                                         with st.spinner("Running checklist..."):
                                             from viraltracker.services.seo_pipeline.services.pre_publish_checklist_service import PrePublishChecklistService
                                             from viraltracker.services.seo_pipeline.services.seo_brand_config_service import SEOBrandConfigService
@@ -381,7 +381,7 @@ with tab_qw:
                                             ).eq("id", active_job_id).execute()
                                             st.rerun()
                                 with repair_col4:
-                                    if st.button("Re-run Links", key="seo_wf_rerun_links"):
+                                    if st.button("Re-run Links", key="seo_wf_rerun_links", help="Refresh internal link suggestions, inject contextual links, and rebuild the Related Articles section."):
                                         with st.spinner("Re-running interlinking..."):
                                             try:
                                                 link_result = workflow_svc.rerun_interlinking(
@@ -554,6 +554,7 @@ with tab_qw:
                             st.info("No article ID available.")
 
                     with pub_tab:
+                        st.caption("Push the latest article content, images, and metadata to Shopify. Won't change the article's published/draft state.")
                         if article_id and st.button("Re-publish to Shopify", key="seo_wf_republish", type="primary"):
                             try:
                                 with st.spinner("Updating Shopify draft..."):
