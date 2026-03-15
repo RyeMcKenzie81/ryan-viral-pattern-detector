@@ -1368,7 +1368,15 @@ class SEOWorkflowService:
 
         # Try frontmatter parsing first
         parsed = self._parse_frontmatter(content)
+        logger.info(
+            f"Repair frontmatter parse: parsed={parsed is not None}, "
+            f"content_start={repr(content[:200])}, "
+            f"existing seo_title={repr(a.get('seo_title'))}, "
+            f"existing meta_desc={repr(a.get('meta_description'))}, "
+            f"existing tags={repr(a.get('tags'))}"
+        )
         if parsed:
+            logger.info(f"Parsed frontmatter keys: {list(parsed.keys())}")
             if parsed.get("title") and not a.get("seo_title"):
                 update_fields["seo_title"] = parsed["title"][:200]
                 fixed.append("seo_title")
