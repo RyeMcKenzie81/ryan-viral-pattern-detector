@@ -383,19 +383,20 @@ class ShopifyPublisher(CMSPublisher):
         """
         content = markdown_text
 
+        # Normalize line endings (API responses may use \r\n)
+        content = content.replace('\r\n', '\n')
+
+        # Strip hero image from body FIRST — it's already the Shopify featured image.
+        # Hero <img> tags have loading="eager" (inline ones have loading="lazy").
+        # Must run before code fence stripping so the fence is at start of string.
+        content = re.sub(r'<img[^>]*loading="eager"[^>]*/?>[\s]*', '', content)
+
         # Strip LLM code fence wrapper (Claude sometimes wraps output in ```markdown ... ```)
         content = content.strip()
         before = content
         content = re.sub(r'^```\w*\n', '', content)
         if content != before:
             content = re.sub(r'\n```\s*$', '', content)
-
-        # Strip hero image from body — it's already the Shopify featured image.
-        # Hero <img> tags have loading="eager" (inline ones have loading="lazy").
-        content = re.sub(r'<img[^>]*loading="eager"[^>]*/?>[\s]*', '', content)
-
-        # Normalize line endings (API responses may use \r\n)
-        content = content.replace('\r\n', '\n')
 
         # Strip YAML frontmatter
         content = content.lstrip()
