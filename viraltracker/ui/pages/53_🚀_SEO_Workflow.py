@@ -288,6 +288,16 @@ with tab_qw:
                         st.markdown(f"[View Shopify Draft]({url})")
                     article_id = result.get("article_id")
                     if article_id:
+                        # Show article title and ID
+                        _title_row = workflow_svc.supabase.table("seo_articles").select(
+                            "seo_title, title, keyword"
+                        ).eq("id", article_id).limit(1).execute()
+                        _article_title = ""
+                        if _title_row.data:
+                            _t = _title_row.data[0]
+                            _article_title = _t.get("seo_title") or _t.get("title") or _t.get("keyword") or ""
+                        if _article_title:
+                            st.markdown(f"**{_article_title}**")
                         st.caption(f"Article ID: {article_id}")
 
                     checklist = result.get("checklist", {})
