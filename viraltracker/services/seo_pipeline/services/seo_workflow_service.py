@@ -1474,7 +1474,78 @@ class SEOWorkflowService:
             if update_fields:
                 self.supabase.table("seo_articles").update(update_fields).eq("id", article_id).execute()
 
+        # Re-inject existing images from image_metadata into new content
+        self._reinject_images(article_id, phase_c_output)
+
         return {"phase_c": "complete", "parsed_fields": list((parsed or {}).keys())}
+
+    def _reinject_images(self, article_id: str, phase_c_output: str) -> None:
+        """Re-inject existing images from image_metadata into new Phase C content."""
+        article = (
+            self.supabase.table("seo_articles")
+            .select("image_metadata, phase_c_output")
+            .eq("id", article_id)
+            .limit(1)
+            .execute()
+        )
+        if not article.data:
+            return
+
+        image_metadata = article.data[0].get("image_metadata") or []
+        successful_images = [m for m in image_metadata if m.get("status") == "success" and m.get("cdn_url")]
+        if not successful_images:
+            return
+
+        from viraltracker.services.seo_pipeline.services.seo_image_service import SEOImageService
+
+        content = article.data[0].get("phase_c_output") or phase_c_output
+
+        # Try marker-based replacement first
+        img_svc = SEOImageService(supabase_client=self.supabase)
+        markers = img_svc.extract_image_markers(content)
+
+        if markers and len(markers) >= len(successful_images):
+            # Match markers to images by index/type
+            for marker, meta in zip(
+                sorted(markers, key=lambda m: m["position"]),
+                successful_images,
+            ):
+                img_tag = img_svc._build_img_tag(meta)
+                content = content.replace(marker["original_marker"], img_tag)
+        else:
+            # No markers — inject after H2 headings
+            import re as _re
+            hero_images = [m for m in successful_images if m.get("type") == "hero"]
+            inline_images = [m for m in successful_images if m.get("type") != "hero"]
+
+            # Inject hero at top (after frontmatter)
+            if hero_images:
+                hero_tag = img_svc._build_img_tag(hero_images[0])
+                # After frontmatter end or at top
+                fm_end = _re.search(r'^---\n[\s\S]+?\n---\n', content)
+                if fm_end:
+                    pos = fm_end.end()
+                    content = content[:pos] + "\n" + hero_tag + "\n" + content[pos:]
+                else:
+                    content = hero_tag + "\n\n" + content
+
+            # Inject inline images after H2 headings
+            if inline_images:
+                h2_positions = [m.end() for m in _re.finditer(r'^## .+$', content, _re.MULTILINE)]
+                for i, img_meta in enumerate(inline_images):
+                    if i < len(h2_positions):
+                        img_tag = "\n" + img_svc._build_img_tag(img_meta) + "\n"
+                        pos = h2_positions[i]
+                        content = content[:pos] + img_tag + content[pos:]
+                        # Shift remaining positions
+                        offset = len(img_tag)
+                        h2_positions = [p + offset if p > pos else p for p in h2_positions]
+
+        # Save updated content
+        self.supabase.table("seo_articles").update(
+            {"phase_c_output": content}
+        ).eq("id", article_id).execute()
+        logger.info(f"Re-injected {len(successful_images)} images into article {article_id}")
 
     def cleanup_stale_jobs(self) -> int:
         """Cancel jobs paused >24 hours or running with no update for >30 minutes."""
