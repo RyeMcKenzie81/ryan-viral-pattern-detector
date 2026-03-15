@@ -309,13 +309,33 @@ with tab_qw:
                             st.markdown(f"**Passed {passed_count}/{total_count} checks**")
                             for check in all_checks:
                                 passed = check.get("passed", False)
-                                icon = "PASS" if passed else "FAIL"
+                                name = check.get("name", "")
                                 msg = check.get("message", "")
-                                label = f"**{check.get('name', '')}** — {msg}" if msg else f"**{check.get('name', '')}**"
-                                if passed:
-                                    st.markdown(f"&ensp;:green[{icon}] {label}")
+                                sub_checks = check.get("sub_checks")
+
+                                if name == "content_qa" and sub_checks:
+                                    # Expand content_qa into individual sub-checks
+                                    qa_pass = sum(1 for s in sub_checks if s.get("passed"))
+                                    qa_total = len(sub_checks)
+                                    st.markdown(f"&ensp;**content_qa** ({qa_pass}/{qa_total})")
+                                    for sc in sub_checks:
+                                        sc_passed = sc.get("passed", False)
+                                        sc_icon = "PASS" if sc_passed else "WARN" if sc.get("severity") == "warning" else "FAIL"
+                                        sc_msg = sc.get("message", "")
+                                        sc_label = f"{sc.get('name', '')} — {sc_msg}" if sc_msg else sc.get("name", "")
+                                        if sc_passed:
+                                            st.markdown(f"&ensp;&ensp;&ensp;:green[{sc_icon}] {sc_label}")
+                                        elif sc.get("severity") == "warning":
+                                            st.markdown(f"&ensp;&ensp;&ensp;:orange[{sc_icon}] {sc_label}")
+                                        else:
+                                            st.markdown(f"&ensp;&ensp;&ensp;:red[{sc_icon}] {sc_label}")
                                 else:
-                                    st.markdown(f"&ensp;:red[{icon}] {label}")
+                                    icon = "PASS" if passed else "FAIL"
+                                    label = f"**{name}** — {msg}" if msg else f"**{name}**"
+                                    if passed:
+                                        st.markdown(f"&ensp;:green[{icon}] {label}")
+                                    else:
+                                        st.markdown(f"&ensp;:red[{icon}] {label}")
 
                             # Actions — always show Re-run Checklist; repair buttons only on failures
                             if article_id:

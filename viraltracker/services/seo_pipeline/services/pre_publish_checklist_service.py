@@ -252,12 +252,18 @@ class PrePublishChecklistService:
                 schema_markup=article.get("schema_markup"),
             )
 
+            # Include individual sub-checks for UI display
+            sub_checks = [
+                {"name": c.name, "passed": c.passed, "severity": c.severity, "message": c.message}
+                for c in qa_checks
+            ]
             all_failures = [c for c in qa_checks if not c.passed]
             if all_failures:
                 names = ", ".join(c.name for c in all_failures[:3])
                 return {"name": "content_qa", "passed": True, "severity": "warning",
-                        "message": f"QA suggestions: {names}"}
-            return {"name": "content_qa", "passed": True, "severity": "warning", "message": ""}
+                        "message": f"QA suggestions: {names}", "sub_checks": sub_checks}
+            return {"name": "content_qa", "passed": True, "severity": "warning",
+                    "message": "", "sub_checks": sub_checks}
         except Exception as e:
             logger.warning(f"QA check failed for {article_id}: {e}")
             return {"name": "content_qa", "passed": True, "severity": "warning",
