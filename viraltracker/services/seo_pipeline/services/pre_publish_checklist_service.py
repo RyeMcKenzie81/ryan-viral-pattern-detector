@@ -237,6 +237,12 @@ class PrePublishChecklistService:
                         "message": "Article not found for QA"}
 
             content_md = article.get("content_markdown") or article.get("phase_c_output") or article.get("phase_b_output") or ""
+            # Strip code fences and YAML frontmatter so QA sees clean markdown
+            content_md = content_md.strip()
+            content_md = re.sub(r'^```\w*\n', '', content_md)
+            content_md = re.sub(r'\n```\s*$', '', content_md)
+            content_md = re.sub(r'^---\n[\s\S]+?\n---\n', '', content_md.lstrip())
+
             qa_checks = qa_svc.run_checks(
                 content_markdown=content_md,
                 content_html=article.get("content_html") or "",
