@@ -394,9 +394,12 @@ class ShopifyPublisher(CMSPublisher):
         # Hero <img> tags have loading="eager" (inline ones have loading="lazy").
         content = re.sub(r'<img[^>]*loading="eager"[^>]*/?>[\s]*', '', content)
 
+        # Normalize line endings (API responses may use \r\n)
+        content = content.replace('\r\n', '\n')
+
         # Strip YAML frontmatter
         content = content.lstrip()
-        content = re.sub(r'^---\n[\s\S]+?\n---\n', '', content)
+        content = re.sub(r'^---\n[\s\S]+?\n---\n?', '', content)
 
         # Remove schema markup sections (kept in metafields, not body)
         content = re.sub(r'<!--[\s\S]*?SCHEMA MARKUP[\s\S]*?-->\s*```json\s*[\s\S]*?\s*```', '', content)
