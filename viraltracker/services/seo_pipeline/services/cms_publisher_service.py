@@ -198,6 +198,9 @@ class ShopifyPublisher(CMSPublisher):
             payload = {"article": {"body_html": article_data.get("body_html", "")}}
         else:
             payload = self._build_article_payload(article_data)
+            # Don't change published state on updates — preserve Shopify's current state.
+            # _build_article_payload defaults to published=False which would unpublish live articles.
+            payload.get("article", {}).pop("published", None)
         url = f"{self._base_url}/articles/{cms_article_id}.json"
 
         response = self._api_request("PUT", url, payload)
@@ -435,8 +438,13 @@ class ShopifyPublisher(CMSPublisher):
             md = MarkdownIt()
             html = md.render(content)
         except ImportError:
-            logger.warning("markdown-it-py not available, returning raw content")
-            html = content
+            logger.error(
+                "markdown-it-py not installed — body_html will contain raw markdown! "
+                "Install with: pip install markdown-it-py"
+            )
+            # Wrap in <pre> so at least it's valid HTML, not raw markdown
+            import html as html_mod
+            html = f"<pre>{html_mod.escape(content)}</pre>"
 
         # Add responsive image styling
         html = f'<style>img {{ max-width: 100%; height: auto; display: block; margin: 2rem auto; border-radius: 8px; }}</style>\n{html}'
@@ -660,10 +668,13 @@ class CMSPublisherService:
             or ""
         )
 
+        # Pre-render markdown to HTML so we can (a) send to CMS and (b) save to content_html
+        rendered_html = publisher._markdown_to_html(content_md) if content_md else ""
+
         article_data = {
             "title": article.get("title") or article.get("seo_title") or article.get("keyword", "Untitled"),
             "content_markdown": content_md,
-            "body_html": "",  # Always re-render from markdown to pick up image changes
+            "body_html": rendered_html,  # Pre-rendered — _build_article_payload will use as-is
             "author": author_name,
             "author_metaobject_gid": author_data.get("shopify_metaobject_gid", ""),
             "seo_title": article.get("seo_title", ""),
@@ -681,6 +692,9 @@ class CMSPublisherService:
             result = publisher.update(cms_article_id, article_data)
         else:
             result = publisher.publish(article_data, draft=draft)
+
+        # Include rendered HTML so _update_article_cms_data can save to content_html
+        result["body_html"] = rendered_html
 
         # Save CMS data back to article
         self._update_article_cms_data(article_id, result, draft)
