@@ -161,14 +161,23 @@ class PrePublishChecklistService:
 
     def _check_product_mentions(self, article: Dict, max_mentions: int) -> Dict:
         content = (article.get("content_html") or article.get("phase_c_output") or "").lower()
-        brand_name = article.get("keyword", "").split()[0].lower() if article.get("keyword") else ""
+        # Look up actual brand name from brands table
+        brand_name = ""
+        brand_id = article.get("brand_id")
+        if brand_id:
+            try:
+                result = self.supabase.table("brands").select("name").eq("id", brand_id).limit(1).execute()
+                if result.data:
+                    brand_name = result.data[0].get("name", "").lower()
+            except Exception:
+                pass
         if not brand_name or not content:
             return {"name": "product_mentions", "passed": True, "severity": "warning", "message": ""}
         # Rough count — brand name occurrences in content
         count = content.count(brand_name)
         passed = count <= max_mentions + 5  # generous — brand name in headings/links doesn't count
         return {"name": "product_mentions", "passed": passed, "severity": "warning",
-                "message": "" if passed else f"Brand name appears {count} times (max: ~{max_mentions} product mentions)"}
+                "message": "" if passed else f"Brand name '{brand_name}' appears {count} times (max: ~{max_mentions} product mentions)"}
 
     def _check_uniqueness(self, article: Dict) -> Dict:
         """Check content uniqueness vs existing published articles for the same brand."""

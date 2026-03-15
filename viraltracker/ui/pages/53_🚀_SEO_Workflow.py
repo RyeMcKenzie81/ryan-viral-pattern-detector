@@ -298,8 +298,14 @@ with tab_qw:
                             total_count = len(all_checks)
                             st.markdown(f"**Passed {passed_count}/{total_count} checks**")
                             for check in all_checks:
-                                icon = "+" if check.get("passed") else "-"
-                                st.markdown(f"  {icon} {check.get('name', '')} — {check.get('message', 'OK')}")
+                                passed = check.get("passed", False)
+                                icon = "PASS" if passed else "FAIL"
+                                msg = check.get("message", "")
+                                label = f"**{check.get('name', '')}** — {msg}" if msg else f"**{check.get('name', '')}**"
+                                if passed:
+                                    st.markdown(f"&ensp;:green[{icon}] {label}")
+                                else:
+                                    st.markdown(f"&ensp;:red[{icon}] {label}")
 
                             # Repair actions
                             if passed_count < total_count and article_id:
