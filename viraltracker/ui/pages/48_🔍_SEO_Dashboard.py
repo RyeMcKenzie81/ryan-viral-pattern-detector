@@ -87,6 +87,38 @@ def get_interlinking_service():
 ALL_PROJECTS_SENTINEL = "__all__"
 
 
+@st.cache_data(ttl=300)
+def _count_indexed_articles(_brand_id, _org_id):
+    """Count distinct articles that have GSC impressions (proxy for Google-indexed)."""
+    from viraltracker.core.database import get_supabase_client
+    try:
+        db = get_supabase_client()
+        # Get published article IDs for this brand
+        pub_res = (
+            db.table("seo_articles")
+            .select("id")
+            .eq("brand_id", _brand_id)
+            .in_("status", ["published", "publishing"])
+            .execute()
+        )
+        pub_ids = [r["id"] for r in (pub_res.data or [])]
+        if not pub_ids:
+            return 0
+        # Count distinct articles with any GSC impressions > 0
+        analytics_res = (
+            db.table("seo_article_analytics")
+            .select("article_id")
+            .eq("source", "gsc")
+            .gt("impressions", 0)
+            .in_("article_id", pub_ids)
+            .limit(5000)
+            .execute()
+        )
+        return len(set(r["article_id"] for r in (analytics_res.data or [])))
+    except Exception:
+        return 0
+
+
 def _resolve_org_id_for_brand(brand_id: str, org_id: str) -> str:
     """Resolve actual UUID org_id from brand when superuser has org_id='all'."""
     if org_id != "all":
@@ -309,7 +341,7 @@ if is_brand_view:
         keywords_data = dashboard["keywords"]
         projects_data = dashboard["projects"]
 
-        col1, col2, col3, col4 = st.columns(4)
+        col1, col2, col3, col4, col5 = st.columns(5)
         with col1:
             st.metric("Total Articles", articles_data["total"])
         with col2:
@@ -318,6 +350,10 @@ if is_brand_view:
             st.metric("Keywords", keywords_data["total"])
         with col4:
             st.metric("Projects", projects_data["total"])
+        with col5:
+            _indexed = _count_indexed_articles(brand_id, _real_org_id)
+            _pub_count = articles_data["published"]
+            st.metric("Indexed by Google", f"{_indexed}/{_pub_count}" if _pub_count else "0")
     else:
         articles_data = {"status_counts": {}}
 else:
@@ -327,7 +363,7 @@ else:
     keywords_data = dashboard["keywords"]
     links_data = dashboard["links"]
 
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3, col4, col5 = st.columns(5)
     with col1:
         st.metric("Total Articles", articles_data["total"])
     with col2:
@@ -336,6 +372,10 @@ else:
         st.metric("Keywords", keywords_data["total"])
     with col4:
         st.metric("Internal Links", links_data["total"])
+    with col5:
+        _indexed = _count_indexed_articles(brand_id, _real_org_id)
+        _pub_count = articles_data["published"]
+        st.metric("Indexed by Google", f"{_indexed}/{_pub_count}" if _pub_count else "0")
 
 
 # =============================================================================
@@ -593,7 +633,7 @@ if "gsc" in connected_integrations:
                 st.metric("Avg Position", f"{avg_position:.1f}")
 
         # Metric toggles
-        tog_cols = st.columns(4)
+        tog_cols = st.columns(5)
         with tog_cols[0]:
             show_impressions = st.checkbox("Impressions", value=True, key="seo_dash_show_imp")
         with tog_cols[1]:
@@ -602,6 +642,8 @@ if "gsc" in connected_integrations:
             show_ctr = st.checkbox("CTR", value=False, key="seo_dash_show_ctr")
         with tog_cols[3]:
             show_position = st.checkbox("Position", value=False, key="seo_dash_show_pos")
+        with tog_cols[4]:
+            show_indexed = st.checkbox("Pages Indexed", value=False, key="seo_dash_show_indexed")
 
         # Daily aggregation
         daily = df.groupby("date").agg(
@@ -616,6 +658,12 @@ if "gsc" in connected_integrations:
             lambda r: (r["weighted_pos_sum"] / r["impressions"]) if r["impressions"] else None, axis=1
         )
 
+        # Pages indexed per day = distinct articles with impressions > 0 on that day
+        _imp_df = df[df["impressions"] > 0]
+        pages_indexed_daily = _imp_df.groupby("date")["article_id"].nunique().reset_index()
+        pages_indexed_daily.columns = ["date", "pages_indexed"]
+        daily = daily.merge(pages_indexed_daily, on="date", how="left")
+
         # Fill date gaps
         full_range = pd.date_range(date_from, date_to, freq="D")
         daily = daily.set_index("date").reindex(full_range).reset_index()
@@ -623,10 +671,11 @@ if "gsc" in connected_integrations:
         daily["impressions"] = daily["impressions"].fillna(0).astype(int)
         daily["clicks"] = daily["clicks"].fillna(0).astype(int)
         daily["ctr"] = daily["ctr"].fillna(0.0)
+        daily["pages_indexed"] = daily["pages_indexed"].fillna(0).astype(int)
         # avg_position stays NaN for gap days — chart shows gaps
 
         # Build time series chart
-        any_toggled = show_impressions or show_clicks or show_ctr or show_position
+        any_toggled = show_impressions or show_clicks or show_ctr or show_position or show_indexed
         if any_toggled:
             base = alt.Chart(daily).encode(
                 x=alt.X("date:T", title="Date", axis=alt.Axis(format="%b %d")),
@@ -673,6 +722,18 @@ if "gsc" in connected_integrations:
                         tooltip=[
                             alt.Tooltip("date:T", format="%b %d, %Y"),
                             alt.Tooltip("avg_position:Q", format=".1f", title="Position"),
+                        ],
+                    )
+                )
+            if show_indexed:
+                layers.append(
+                    base.mark_area(
+                        color="#34A853", opacity=0.3, line={"color": "#34A853", "strokeWidth": 2}
+                    ).encode(
+                        y=alt.Y("pages_indexed:Q", title="Pages Indexed"),
+                        tooltip=[
+                            alt.Tooltip("date:T", format="%b %d, %Y"),
+                            alt.Tooltip("pages_indexed:Q", format=",", title="Pages Indexed"),
                         ],
                     )
                 )
