@@ -193,6 +193,91 @@ is_brand_view = selected_project_id == ALL_PROJECTS_SENTINEL
 
 
 # =============================================================================
+# SYNC STATUS BAR
+# =============================================================================
+
+def _render_sync_status(brand_id: str):
+    """Show last sync timestamps per source and warn if no scheduled sync."""
+    from viraltracker.core.database import get_supabase_client
+    db = get_supabase_client()
+
+    # Query latest synced_at per source for this brand's articles
+    _last_syncs = {}
+    try:
+        for source in ("gsc", "ga4", "shopify"):
+            res = (
+                db.table("seo_article_analytics")
+                .select("synced_at")
+                .eq("source", source)
+                .eq("organization_id", _real_org_id)
+                .order("synced_at", desc=True)
+                .limit(1)
+                .execute()
+            )
+            if res.data:
+                _last_syncs[source] = res.data[0]["synced_at"]
+    except Exception:
+        pass  # Non-fatal — just won't show dates
+
+    # Check for active scheduled sync jobs for this brand
+    _has_status_sync = False
+    _has_analytics_sync = False
+    try:
+        sched_res = (
+            db.table("scheduled_jobs")
+            .select("job_type")
+            .eq("brand_id", brand_id)
+            .in_("job_type", ["seo_status_sync", "analytics_sync"])
+            .eq("status", "active")
+            .execute()
+        )
+        for row in (sched_res.data or []):
+            if row["job_type"] == "seo_status_sync":
+                _has_status_sync = True
+            elif row["job_type"] == "analytics_sync":
+                _has_analytics_sync = True
+    except Exception:
+        pass
+
+    # Render
+    sync_cols = st.columns(4)
+    labels = {"gsc": "GSC", "ga4": "GA4", "shopify": "Shopify Analytics"}
+    for i, (source, label) in enumerate(labels.items()):
+        with sync_cols[i]:
+            ts = _last_syncs.get(source)
+            if ts:
+                from datetime import datetime as _dt, timezone as _tz
+                try:
+                    parsed = _dt.fromisoformat(ts.replace("Z", "+00:00"))
+                    age = _dt.now(_tz.utc) - parsed
+                    if age.days > 0:
+                        age_str = f"{age.days}d ago"
+                    elif age.seconds >= 3600:
+                        age_str = f"{age.seconds // 3600}h ago"
+                    else:
+                        age_str = f"{age.seconds // 60}m ago"
+                    st.caption(f"**{label}:** {age_str}")
+                except Exception:
+                    st.caption(f"**{label}:** synced")
+            else:
+                st.caption(f"**{label}:** —")
+
+    # Shopify status sync in 4th column
+    with sync_cols[3]:
+        st.caption("**Status sync:** " + ("scheduled" if _has_status_sync else "—"))
+
+    # Warning if no scheduled syncs
+    if not _has_status_sync and not _has_analytics_sync:
+        st.info(
+            "No scheduled syncs configured for this brand. "
+            "Set up recurring syncs in the [Ad Scheduler](Ad_Scheduler) to keep data fresh automatically.",
+            icon="💡",
+        )
+
+_render_sync_status(brand_id)
+
+
+# =============================================================================
 # KPIs
 # =============================================================================
 
