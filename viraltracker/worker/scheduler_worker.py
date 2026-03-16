@@ -3170,6 +3170,21 @@ async def execute_analytics_sync_job(job: Dict) -> Dict[str, Any]:
         logs.append(f"Shopify failed: {e}")
         logger.warning(f"Shopify sync failed for brand {brand_id}: {e}")
 
+    # Google indexing status check (non-fatal)
+    try:
+        from viraltracker.services.seo_pipeline.services.gsc_service import GSCService as _IdxGSC
+        idx_result = _IdxGSC().check_indexing_status(str(brand_id), org_id)
+        results["indexing"] = idx_result
+        logs.append(
+            f"Indexing: {idx_result.get('indexed', 0)} indexed, "
+            f"{idx_result.get('not_indexed', 0)} not indexed "
+            f"(of {idx_result.get('checked', 0)} checked)"
+        )
+    except Exception as e:
+        results["indexing"] = {"error": str(e)}
+        logs.append(f"Indexing check failed: {e}")
+        logger.warning(f"Indexing check failed for brand {brand_id}: {e}")
+
     update_job_run(run_id, {
         "status": "completed",
         "completed_at": datetime.now(PST).isoformat(),
@@ -3223,6 +3238,19 @@ async def execute_seo_status_sync_job(job: Dict) -> Dict[str, Any]:
         if result.get("error"):
             logs.append(f"Warning: {result['error']}")
 
+        # Google indexing status check (non-fatal)
+        idx_result = {}
+        try:
+            from viraltracker.services.seo_pipeline.services.gsc_service import GSCService as _IdxGSC2
+            idx_result = _IdxGSC2().check_indexing_status(str(brand_id), org_id)
+            logs.append(
+                f"Indexing: {idx_result.get('indexed', 0)} indexed, "
+                f"{idx_result.get('not_indexed', 0)} not indexed"
+            )
+        except Exception as idx_e:
+            logs.append(f"Indexing check skipped: {idx_e}")
+            logger.warning(f"Indexing check failed for brand {brand_id}: {idx_e}")
+
         update_job_run(run_id, {
             "status": "completed",
             "completed_at": datetime.now(PST).isoformat(),
@@ -3231,7 +3259,7 @@ async def execute_seo_status_sync_job(job: Dict) -> Dict[str, Any]:
         _update_job_next_run(job, job_id)
 
         logger.info(f"Completed SEO status sync: {result.get('synced', 0)} synced of {result.get('total', 0)}")
-        return {"success": True, **result}
+        return {"success": True, **result, "indexing": idx_result}
 
     except Exception as e:
         error_msg = str(e)

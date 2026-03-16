@@ -89,32 +89,19 @@ ALL_PROJECTS_SENTINEL = "__all__"
 
 @st.cache_data(ttl=300)
 def _count_indexed_articles(_brand_id, _org_id):
-    """Count distinct articles that have GSC impressions (proxy for Google-indexed)."""
+    """Count articles with confirmed Google indexing status from URL Inspection API."""
     from viraltracker.core.database import get_supabase_client
     try:
         db = get_supabase_client()
-        # Get published article IDs for this brand
-        pub_res = (
+        res = (
             db.table("seo_articles")
-            .select("id")
+            .select("index_status")
             .eq("brand_id", _brand_id)
             .in_("status", ["published", "publishing"])
+            .not_.is_("index_status", "null")
             .execute()
         )
-        pub_ids = [r["id"] for r in (pub_res.data or [])]
-        if not pub_ids:
-            return 0
-        # Count distinct articles with any GSC impressions > 0
-        analytics_res = (
-            db.table("seo_article_analytics")
-            .select("article_id")
-            .eq("source", "gsc")
-            .gt("impressions", 0)
-            .in_("article_id", pub_ids)
-            .limit(5000)
-            .execute()
-        )
-        return len(set(r["article_id"] for r in (analytics_res.data or [])))
+        return sum(1 for r in (res.data or []) if r.get("index_status") == "indexed")
     except Exception:
         return 0
 
@@ -200,6 +187,18 @@ with _sync_col:
             except Exception as _e:
                 _sync_messages.append(f"❌ Shopify analytics: {_e}")
 
+            # 5. Google indexing status check (non-fatal, reuses GSC credentials)
+            try:
+                from viraltracker.services.seo_pipeline.services.gsc_service import GSCService as _GSC2
+                _idx_res = _GSC2().check_indexing_status(brand_id, _real_org_id)
+                _sync_messages.append(
+                    f"✅ Indexing: {_idx_res.get('indexed', 0)} indexed, "
+                    f"{_idx_res.get('not_indexed', 0)} not indexed"
+                )
+                _needs_rerun = True
+            except Exception as _e:
+                _sync_messages.append(f"❌ Indexing check: {_e}")
+
         # Show results
         for _msg in _sync_messages:
             st.caption(_msg)
@@ -271,32 +270,53 @@ def _render_sync_status(brand_id: str):
     except Exception:
         pass
 
+    # Get last indexing check date
+    _last_index_check = None
+    try:
+        idx_res = (
+            db.table("seo_articles")
+            .select("index_checked_at")
+            .eq("brand_id", brand_id)
+            .not_.is_("index_checked_at", "null")
+            .order("index_checked_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        if idx_res.data:
+            _last_index_check = idx_res.data[0]["index_checked_at"]
+    except Exception:
+        pass
+
     # Render
+    from datetime import datetime as _dt, timezone as _tz
+
+    def _format_age(ts_str):
+        """Format a timestamp as relative age string."""
+        if not ts_str:
+            return None
+        try:
+            parsed = _dt.fromisoformat(ts_str.replace("Z", "+00:00"))
+            age = _dt.now(_tz.utc) - parsed
+            if age.days > 0:
+                return f"{age.days}d ago"
+            elif age.seconds >= 3600:
+                return f"{age.seconds // 3600}h ago"
+            else:
+                return f"{age.seconds // 60}m ago"
+        except Exception:
+            return "synced"
+
     sync_cols = st.columns(4)
     labels = {"gsc": "GSC", "ga4": "GA4", "shopify": "Shopify Analytics"}
     for i, (source, label) in enumerate(labels.items()):
         with sync_cols[i]:
-            ts = _last_syncs.get(source)
-            if ts:
-                from datetime import datetime as _dt, timezone as _tz
-                try:
-                    parsed = _dt.fromisoformat(ts.replace("Z", "+00:00"))
-                    age = _dt.now(_tz.utc) - parsed
-                    if age.days > 0:
-                        age_str = f"{age.days}d ago"
-                    elif age.seconds >= 3600:
-                        age_str = f"{age.seconds // 3600}h ago"
-                    else:
-                        age_str = f"{age.seconds // 60}m ago"
-                    st.caption(f"**{label}:** {age_str}")
-                except Exception:
-                    st.caption(f"**{label}:** synced")
-            else:
-                st.caption(f"**{label}:** —")
+            age_str = _format_age(_last_syncs.get(source))
+            st.caption(f"**{label}:** {age_str or '—'}")
 
-    # Shopify status sync in 4th column
+    # Indexing check date in 4th column
     with sync_cols[3]:
-        st.caption("**Status sync:** " + ("scheduled" if _has_status_sync else "—"))
+        idx_age = _format_age(_last_index_check)
+        st.caption(f"**Indexing:** {idx_age or '—'}")
 
     # Warning if no scheduled syncs
     if not _has_status_sync and not _has_analytics_sync:
@@ -388,6 +408,50 @@ if articles_data["status_counts"]:
     for i, (status, count) in enumerate(sorted(articles_data["status_counts"].items())):
         with status_cols[i % len(status_cols)]:
             st.metric(status.replace("_", " ").title(), count)
+
+
+# =============================================================================
+# GOOGLE INDEXING BREAKDOWN
+# =============================================================================
+
+@st.cache_data(ttl=300)
+def _load_indexing_breakdown(_brand_id):
+    """Load indexing status breakdown for published articles."""
+    from viraltracker.core.database import get_supabase_client
+    try:
+        db = get_supabase_client()
+        res = (
+            db.table("seo_articles")
+            .select("keyword, published_url, index_status, index_coverage_state, index_last_crawl_time, index_checked_at")
+            .eq("brand_id", _brand_id)
+            .in_("status", ["published", "publishing"])
+            .not_.is_("index_status", "null")
+            .execute()
+        )
+        return res.data or []
+    except Exception:
+        return []
+
+
+_idx_data = _load_indexing_breakdown(brand_id)
+if _idx_data:
+    _not_indexed = [r for r in _idx_data if r.get("index_status") == "not_indexed"]
+    if _not_indexed:
+        with st.expander(f"Why pages aren't indexed ({len(_not_indexed)} pages)", expanded=False):
+            # Group by coverage_state reason
+            _reasons = {}
+            for r in _not_indexed:
+                reason = r.get("index_coverage_state", "Unknown")
+                if reason not in _reasons:
+                    _reasons[reason] = []
+                _reasons[reason].append(r)
+
+            for reason, pages in sorted(_reasons.items(), key=lambda x: -len(x[1])):
+                st.markdown(f"**{reason}** — {len(pages)} page(s)")
+                for p in pages:
+                    kw = p.get("keyword", "Untitled")
+                    url = p.get("published_url", "")
+                    st.caption(f"  • {kw}" + (f" — [{url}]({url})" if url else ""))
 
 
 # =============================================================================

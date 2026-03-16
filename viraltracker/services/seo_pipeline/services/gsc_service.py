@@ -395,6 +395,115 @@ class GSCService(BaseAnalyticsService):
         )
         return created
 
+    # =========================================================================
+    # URL INSPECTION (INDEXING STATUS)
+    # =========================================================================
+
+    _INSPECTION_ENDPOINT = (
+        "https://searchconsole.googleapis.com/v1/urlInspection/index:inspect"
+    )
+
+    def check_indexing_status(
+        self,
+        brand_id: str,
+        organization_id: str,
+    ) -> Dict[str, Any]:
+        """
+        Check Google indexing status for all published articles via URL Inspection API.
+
+        Inspects each published article URL individually (rate limit: 2,000/day per site).
+        Updates seo_articles with index_status, index_coverage_state, and last crawl time.
+
+        Returns:
+            Dict with checked, indexed, not_indexed, errors counts
+        """
+        import httpx
+
+        access_token, site_url, _ = self._get_api_credentials(brand_id, organization_id)
+
+        # Get published articles with URLs
+        articles = (
+            self.supabase.table("seo_articles")
+            .select("id, published_url")
+            .eq("brand_id", brand_id)
+            .in_("status", ["published", "publishing"])
+            .not_.is_("published_url", "null")
+            .execute()
+        )
+
+        if not articles.data:
+            return {"checked": 0, "indexed": 0, "not_indexed": 0, "errors": 0}
+
+        indexed = 0
+        not_indexed = 0
+        errors = 0
+        now_iso = datetime.now(timezone.utc).isoformat()
+
+        with httpx.Client(timeout=30.0) as client:
+            for article in articles.data:
+                url = article["published_url"]
+                if not url:
+                    continue
+                try:
+                    resp = client.post(
+                        self._INSPECTION_ENDPOINT,
+                        headers={
+                            "Authorization": f"Bearer {access_token}",
+                            "Content-Type": "application/json",
+                        },
+                        json={
+                            "inspectionUrl": url,
+                            "siteUrl": site_url,
+                        },
+                    )
+                    if resp.status_code != 200:
+                        logger.warning(
+                            f"URL inspection API error for {url}: "
+                            f"{resp.status_code} — {resp.text[:200]}"
+                        )
+                        errors += 1
+                        continue
+
+                    result = resp.json().get("inspectionResult", {})
+                    idx_result = result.get("indexStatusResult", {})
+                    verdict = idx_result.get("verdict", "VERDICT_UNSPECIFIED")
+                    coverage_state = idx_result.get("coverageState", "")
+                    last_crawl = idx_result.get("lastCrawlTime")
+
+                    status = "indexed" if verdict == "PASS" else "not_indexed"
+                    if verdict == "PASS":
+                        indexed += 1
+                    else:
+                        not_indexed += 1
+
+                    update_data = {
+                        "index_status": status,
+                        "index_coverage_state": coverage_state,
+                        "index_checked_at": now_iso,
+                    }
+                    if last_crawl:
+                        update_data["index_last_crawl_time"] = last_crawl
+
+                    self.supabase.table("seo_articles").update(
+                        update_data
+                    ).eq("id", article["id"]).execute()
+
+                except Exception as e:
+                    logger.warning(f"URL inspection failed for {url}: {e}")
+                    errors += 1
+
+        logger.info(
+            f"GSC indexing check for brand {brand_id}: "
+            f"{indexed} indexed, {not_indexed} not indexed, {errors} errors "
+            f"(of {len(articles.data)} checked)"
+        )
+        return {
+            "checked": len(articles.data),
+            "indexed": indexed,
+            "not_indexed": not_indexed,
+            "errors": errors,
+        }
+
     def sync_to_db(
         self,
         brand_id: str,
