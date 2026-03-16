@@ -216,6 +216,9 @@ with tab_qw:
     # Progress panel for active job
     active_job_id = st.session_state.get("seo_wf_active_job")
     if active_job_id:
+        if st.session_state.pop("seo_wf_scroll_top", False):
+            import streamlit.components.v1 as components
+            components.html("<script>window.parent.document.querySelector('section.main').scrollTo(0, 0);</script>", height=0)
         st.divider()
         job = workflow_svc.get_job_status(active_job_id)
         if job:
@@ -743,6 +746,7 @@ with tab_qw:
                     if j_status in ("completed", "failed"):
                         if st.button("Load", key=f"seo_wf_load_{_jid}", use_container_width=True):
                             st.session_state["seo_wf_active_job"] = _jid
+                            st.session_state["seo_wf_scroll_top"] = True
                             st.rerun()
                     else:
                         st.write("")
@@ -1337,6 +1341,7 @@ with tab_cluster:
                     if bj_status in ("completed", "failed"):
                         if st.button("Load", key=f"seo_wf_load_batch_{_bjid}", use_container_width=True):
                             st.session_state["seo_wf_batch_job"] = _bjid
+                            st.session_state["seo_wf_scroll_top"] = True
                             st.rerun()
                     else:
                         st.write("")
