@@ -116,24 +116,63 @@ org_id = get_current_organization_id()
 # Real UUID org_id for DB writes (superuser has org_id="all" which can't be inserted into UUID columns)
 _real_org_id = _resolve_org_id_for_brand(brand_id, org_id)
 
-# Manual Shopify status sync button (top-right)
+# Manual sync button — Shopify status + GSC + GA4 + Shopify analytics
 with _sync_col:
     st.write("")  # Vertical alignment spacer
-    if st.button("🔄 Sync Shopify", key="seo_dash_sync_shopify", help="Sync article draft/live status from Shopify"):
-        from viraltracker.services.seo_pipeline.services.cms_publisher_service import CMSPublisherService
-        _cms = CMSPublisherService()
+    if st.button("🔄 Sync All", key="seo_dash_sync_all", help="Sync article statuses from Shopify + pull GSC, GA4, and Shopify analytics"):
+        _sync_messages = []
+        _needs_rerun = False
         with st.spinner("Syncing..."):
+            # 1. Shopify article status sync
             try:
-                _sync_res = _cms.sync_article_statuses(brand_id, _real_org_id)
-                if _sync_res.get("error"):
-                    st.warning(_sync_res["error"])
-                elif _sync_res.get("synced", 0) > 0:
-                    st.success(f"Synced {_sync_res['synced']}/{_sync_res['total']} articles")
-                    st.rerun()
+                from viraltracker.services.seo_pipeline.services.cms_publisher_service import CMSPublisherService
+                _cms = CMSPublisherService()
+                _status_res = _cms.sync_article_statuses(brand_id, _real_org_id)
+                if _status_res.get("error"):
+                    _sync_messages.append(f"⚠️ Shopify status: {_status_res['error']}")
+                elif _status_res.get("synced", 0) > 0:
+                    _sync_messages.append(f"✅ Shopify status: synced {_status_res['synced']}/{_status_res['total']} articles")
+                    _needs_rerun = True
                 else:
-                    st.info(f"All {_sync_res['total']} articles already in sync")
+                    _sync_messages.append(f"✅ Shopify status: {_status_res['total']} articles in sync")
             except Exception as _e:
-                st.error(f"Sync failed: {_e}")
+                _sync_messages.append(f"❌ Shopify status: {_e}")
+
+            # 2. GSC sync (non-fatal)
+            try:
+                from viraltracker.services.seo_pipeline.services.gsc_service import GSCService
+                _gsc_res = GSCService().sync_to_db(brand_id, _real_org_id, 28)
+                _sync_messages.append(f"✅ GSC: {_gsc_res.get('analytics_rows', 0)} analytics, {_gsc_res.get('ranking_rows', 0)} rankings")
+                if _gsc_res.get("analytics_rows", 0) > 0 or _gsc_res.get("ranking_rows", 0) > 0:
+                    _needs_rerun = True
+            except Exception as _e:
+                _sync_messages.append(f"❌ GSC: {_e}")
+
+            # 3. GA4 sync (non-fatal)
+            try:
+                from viraltracker.services.seo_pipeline.services.ga4_service import GA4Service
+                _ga4_res = GA4Service().sync_to_db(brand_id, _real_org_id, 28)
+                _sync_messages.append(f"✅ GA4: {_ga4_res.get('analytics_rows', 0)} analytics")
+                if _ga4_res.get("analytics_rows", 0) > 0:
+                    _needs_rerun = True
+            except Exception as _e:
+                _sync_messages.append(f"❌ GA4: {_e}")
+
+            # 4. Shopify analytics sync (non-fatal)
+            try:
+                from viraltracker.services.seo_pipeline.services.shopify_analytics_service import ShopifyAnalyticsService
+                _shop_res = ShopifyAnalyticsService().sync_to_db(brand_id, _real_org_id, 28)
+                _sync_messages.append(f"✅ Shopify analytics: {_shop_res.get('analytics_rows', 0)} rows")
+                if _shop_res.get("analytics_rows", 0) > 0:
+                    _needs_rerun = True
+            except Exception as _e:
+                _sync_messages.append(f"❌ Shopify analytics: {_e}")
+
+        # Show results
+        for _msg in _sync_messages:
+            st.caption(_msg)
+        if _needs_rerun:
+            st.rerun()
 
 # Project selector — "All Projects" as default
 project_service = get_project_service()
