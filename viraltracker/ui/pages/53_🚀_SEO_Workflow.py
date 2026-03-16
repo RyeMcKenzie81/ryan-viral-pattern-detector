@@ -337,80 +337,79 @@ with tab_qw:
                                     else:
                                         st.markdown(f"&ensp;:red[{icon}] {label}")
 
-                            # Actions — always show all buttons
-                            if article_id:
-                                st.divider()
-                                with st.container(border=True):
-                                    st.caption("Article Maintenance")
-                                    repair_col1, repair_col2, repair_col3, repair_col4 = st.columns(4)
-                                    with repair_col1:
-                                        if st.button("Repair Metadata", key="seo_wf_repair_meta", help="Re-extract SEO title, meta description, and tags from the article content without regenerating it."):
-                                            with st.spinner("Re-parsing metadata from content..."):
-                                                repair_result = workflow_svc.repair_article_metadata(article_id)
-                                            fixed = repair_result.get("fixed", [])
-                                            if fixed:
-                                                st.success(f"Fixed: {', '.join(fixed)}. Click Re-run Checklist to verify.")
-                                            elif repair_result.get("already_populated"):
-                                                st.info(f"Metadata already populated: {', '.join(repair_result['already_populated'])}. Click Re-run Checklist to refresh.")
-                                            else:
-                                                st.warning("No metadata could be extracted. Try Re-run Phase C.")
-                                    with repair_col2:
-                                        _republish = st.checkbox(
-                                            "Re-publish after",
-                                            value=bool(result.get("cms_article_id")),
-                                            key="seo_wf_rerun_republish",
-                                            help="Push updated content to Shopify after re-generation.",
-                                        )
-                                        if st.button("Re-run Phase C", key="seo_wf_rerun_phase_c", help="Regenerate the article with Claude (SEO optimization pass). Use when content quality is poor or you want a fresh rewrite."):
-                                            with st.spinner("Re-running Phase C (30-60s)..."):
-                                                try:
-                                                    pc_result = workflow_svc.rerun_phase_c(
-                                                        article_id=article_id,
-                                                        brand_id=brand_id,
-                                                        organization_id=org_id,
-                                                        republish=_republish,
-                                                    )
-                                                    parsed_fields = pc_result.get("parsed_fields", [])
-                                                    msg = f"Phase C complete. Parsed: {', '.join(parsed_fields) or 'none'}"
-                                                    if _republish:
-                                                        msg += " Re-published to Shopify."
-                                                    st.success(msg)
-                                                except Exception as e:
-                                                    st.error(f"Phase C failed: {str(e)[:200]}")
-                                    with repair_col3:
-                                        if st.button("Re-run Checklist", key="seo_wf_rerun_checklist", help="Re-validate the article against the pre-publish checklist (word count, readability, keyword usage, etc)."):
-                                            with st.spinner("Running checklist..."):
-                                                from viraltracker.services.seo_pipeline.services.pre_publish_checklist_service import PrePublishChecklistService
-                                                from viraltracker.services.seo_pipeline.services.seo_brand_config_service import SEOBrandConfigService
-                                                _cl_svc = PrePublishChecklistService()
-                                                _bc_svc = SEOBrandConfigService()
-                                                _bc = _bc_svc.get_config(brand_id) or {}
-                                                new_checklist = _cl_svc.run_checklist(article_id, _bc)
-                                                _job_result = job.get("result", {})
-                                                _job_result["checklist"] = new_checklist
-                                                workflow_svc.supabase.table("seo_workflow_jobs").update(
-                                                    {"result": _job_result}
-                                                ).eq("id", active_job_id).execute()
-                                                st.rerun()
-                                    with repair_col4:
-                                        if st.button("Re-run Links", key="seo_wf_rerun_links", help="Refresh internal link suggestions, inject contextual links, and rebuild the Related Articles section."):
-                                            with st.spinner("Re-running interlinking..."):
-                                                try:
-                                                    link_result = workflow_svc.rerun_interlinking(
-                                                        article_id=article_id,
-                                                        brand_id=brand_id,
-                                                        organization_id=org_id,
-                                                    )
-                                                    parts = []
-                                                    if link_result.get("suggestion_count"):
-                                                        parts.append(f"{link_result['suggestion_count']} suggestions")
-                                                    if link_result.get("links_added"):
-                                                        parts.append(f"{link_result['links_added']} auto-links")
-                                                    if link_result.get("related_articles_linked"):
-                                                        parts.append(f"{link_result['related_articles_linked']} related")
-                                                    st.success(f"Interlinking complete: {', '.join(parts) or 'no changes'}")
-                                                except Exception as e:
-                                                    st.error(f"Interlinking failed: {str(e)[:200]}")
+                    # Article Maintenance — outside expander so always visible
+                    if article_id:
+                        with st.container(border=True):
+                            st.caption("Article Maintenance")
+                            repair_col1, repair_col2, repair_col3, repair_col4 = st.columns(4)
+                            with repair_col1:
+                                if st.button("Repair Metadata", key="seo_wf_repair_meta", help="Re-extract SEO title, meta description, and tags from the article content without regenerating it."):
+                                    with st.spinner("Re-parsing metadata from content..."):
+                                        repair_result = workflow_svc.repair_article_metadata(article_id)
+                                    fixed = repair_result.get("fixed", [])
+                                    if fixed:
+                                        st.success(f"Fixed: {', '.join(fixed)}. Click Re-run Checklist to verify.")
+                                    elif repair_result.get("already_populated"):
+                                        st.info(f"Metadata already populated: {', '.join(repair_result['already_populated'])}. Click Re-run Checklist to refresh.")
+                                    else:
+                                        st.warning("No metadata could be extracted. Try Re-run Phase C.")
+                            with repair_col2:
+                                _republish = st.checkbox(
+                                    "Re-publish after",
+                                    value=bool(result.get("cms_article_id")),
+                                    key="seo_wf_rerun_republish",
+                                    help="Push updated content to Shopify after re-generation.",
+                                )
+                                if st.button("Re-run Phase C", key="seo_wf_rerun_phase_c", help="Regenerate the article with Claude (SEO optimization pass). Use when content quality is poor or you want a fresh rewrite."):
+                                    with st.spinner("Re-running Phase C (30-60s)..."):
+                                        try:
+                                            pc_result = workflow_svc.rerun_phase_c(
+                                                article_id=article_id,
+                                                brand_id=brand_id,
+                                                organization_id=org_id,
+                                                republish=_republish,
+                                            )
+                                            parsed_fields = pc_result.get("parsed_fields", [])
+                                            msg = f"Phase C complete. Parsed: {', '.join(parsed_fields) or 'none'}"
+                                            if _republish:
+                                                msg += " Re-published to Shopify."
+                                            st.success(msg)
+                                        except Exception as e:
+                                            st.error(f"Phase C failed: {str(e)[:200]}")
+                            with repair_col3:
+                                if st.button("Re-run Checklist", key="seo_wf_rerun_checklist", help="Re-validate the article against the pre-publish checklist (word count, readability, keyword usage, etc)."):
+                                    with st.spinner("Running checklist..."):
+                                        from viraltracker.services.seo_pipeline.services.pre_publish_checklist_service import PrePublishChecklistService
+                                        from viraltracker.services.seo_pipeline.services.seo_brand_config_service import SEOBrandConfigService
+                                        _cl_svc = PrePublishChecklistService()
+                                        _bc_svc = SEOBrandConfigService()
+                                        _bc = _bc_svc.get_config(brand_id) or {}
+                                        new_checklist = _cl_svc.run_checklist(article_id, _bc)
+                                        _job_result = job.get("result", {})
+                                        _job_result["checklist"] = new_checklist
+                                        workflow_svc.supabase.table("seo_workflow_jobs").update(
+                                            {"result": _job_result}
+                                        ).eq("id", active_job_id).execute()
+                                        st.rerun()
+                            with repair_col4:
+                                if st.button("Re-run Links", key="seo_wf_rerun_links", help="Refresh internal link suggestions, inject contextual links, and rebuild the Related Articles section."):
+                                    with st.spinner("Re-running interlinking..."):
+                                        try:
+                                            link_result = workflow_svc.rerun_interlinking(
+                                                article_id=article_id,
+                                                brand_id=brand_id,
+                                                organization_id=org_id,
+                                            )
+                                            parts = []
+                                            if link_result.get("suggestion_count"):
+                                                parts.append(f"{link_result['suggestion_count']} suggestions")
+                                            if link_result.get("links_added"):
+                                                parts.append(f"{link_result['links_added']} auto-links")
+                                            if link_result.get("related_articles_linked"):
+                                                parts.append(f"{link_result['related_articles_linked']} related")
+                                            st.success(f"Interlinking complete: {', '.join(parts) or 'no changes'}")
+                                        except Exception as e:
+                                            st.error(f"Interlinking failed: {str(e)[:200]}")
 
                     # Article status row (image status + published status + admin link)
                     _art_status_row = None
@@ -517,13 +516,13 @@ with tab_qw:
                                                 "Prompt",
                                                 value=original_desc,
                                                 height=100,
-                                                key=f"seo_img_{i}_prompt",
+                                                key=f"seo_img_{article_id}_{i}_prompt",
                                                 label_visibility="collapsed",
                                             )
 
                                             btn_col1, btn_col2 = st.columns(2)
                                             with btn_col1:
-                                                if st.button("Regenerate", key=f"seo_img_{i}_regen", use_container_width=True):
+                                                if st.button("Regenerate", key=f"seo_img_{article_id}_{i}_regen", use_container_width=True):
                                                     # Use whatever is in the text_area (may be edited)
                                                     regen_prompt = prompt_val.strip()
                                                     custom = regen_prompt if regen_prompt != original_desc else None
