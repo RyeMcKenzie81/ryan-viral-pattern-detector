@@ -618,6 +618,8 @@ async def execute_job(job: Dict) -> Dict[str, Any]:
         return await execute_ad_intelligence_analysis_job(job)
     elif job_type == 'analytics_sync':
         return await execute_analytics_sync_job(job)
+    elif job_type == 'seo_status_sync':
+        return await execute_seo_status_sync_job(job)
     elif job_type == 'iteration_auto_run':
         return await execute_iteration_auto_run_job(job)
     else:
@@ -3177,6 +3179,74 @@ async def execute_analytics_sync_job(job: Dict) -> Dict[str, Any]:
     _update_job_next_run(job, job_id)
 
     return {"success": True, "results": results}
+
+
+async def execute_seo_status_sync_job(job: Dict) -> Dict[str, Any]:
+    """Sync article draft/live status from Shopify into seo_articles.
+
+    Calls CMSPublisherService.sync_article_statuses() which fetches all
+    Shopify articles and updates any DB status mismatches.
+
+    No parameters required — brand_id comes from the job row.
+    """
+    job_id = job['id']
+    brand_id = job.get('brand_id')
+    brand_info = job.get('brands') or {}
+    brand_name = brand_info.get('name', 'Unknown')
+
+    logger.info(f"Starting SEO status sync job for brand {brand_name}")
+
+    update_job(job_id, {"next_run_at": None})
+    run_id = create_job_run(job_id)
+    if not run_id:
+        return {"success": False, "error": "Failed to create run record"}
+
+    logs = []
+
+    try:
+        # Resolve org_id from brand
+        db = get_supabase_client()
+        brand_result = db.table("brands").select("organization_id").eq(
+            "id", str(brand_id)
+        ).limit(1).execute()
+        if not brand_result.data:
+            raise ValueError(f"Brand {brand_id} not found")
+        org_id = brand_result.data[0]["organization_id"]
+
+        from viraltracker.services.seo_pipeline.services.cms_publisher_service import CMSPublisherService
+        cms_svc = CMSPublisherService()
+        result = cms_svc.sync_article_statuses(str(brand_id), org_id)
+
+        logs.append(f"Brand: {brand_name}")
+        logs.append(f"Total articles checked: {result.get('total', 0)}")
+        logs.append(f"Statuses synced: {result.get('synced', 0)}")
+        if result.get("error"):
+            logs.append(f"Warning: {result['error']}")
+
+        update_job_run(run_id, {
+            "status": "completed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "logs": "\n".join(logs),
+        })
+        _update_job_next_run(job, job_id)
+
+        logger.info(f"Completed SEO status sync: {result.get('synced', 0)} synced of {result.get('total', 0)}")
+        return {"success": True, **result}
+
+    except Exception as e:
+        error_msg = str(e)
+        logs.append(f"Job failed: {error_msg}")
+        logger.error(f"SEO status sync job {brand_name} failed: {error_msg}")
+
+        update_job_run(run_id, {
+            "status": "failed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "error_message": error_msg,
+            "logs": "\n".join(logs),
+        })
+        _reschedule_after_failure(job, job_id, get_run_attempt_number(run_id))
+
+        return {"success": False, "error": error_msg}
 
 
 async def execute_asset_download_job(job: Dict) -> Dict[str, Any]:

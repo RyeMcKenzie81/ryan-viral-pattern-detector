@@ -1749,6 +1749,187 @@ def _render_ad_classification_form(existing_job, is_edit):
             st.rerun()
 
 
+def _render_seo_status_sync_form(existing_job, is_edit):
+    """Render the SEO status sync job creation form."""
+
+    # ========================================================================
+    # Section 1: Brand Selection
+    # ========================================================================
+    st.subheader("1. Select Brand")
+
+    brands = get_brands()
+    if not brands:
+        st.error("No brands found")
+        return
+
+    brand_options = {b['name']: b['id'] for b in brands}
+    brand_names = list(brand_options.keys())
+
+    default_index = 0
+    if existing_job:
+        for i, b in enumerate(brands):
+            if b['id'] == existing_job['brand_id']:
+                default_index = i
+                break
+    else:
+        cookie_brand = _get_brand_from_cookie()
+        if cookie_brand:
+            for i, name in enumerate(brand_names):
+                if brand_options[name] == cookie_brand:
+                    default_index = i
+                    break
+
+    selected_brand_name = st.selectbox(
+        "Brand",
+        options=brand_names,
+        index=default_index,
+        help="Select the brand with Shopify integration to sync",
+        key="seo_sync_brand_selector"
+    )
+    selected_brand_id = brand_options[selected_brand_name]
+    _save_brand_to_cookie(selected_brand_id)
+
+    st.divider()
+
+    # ========================================================================
+    # Section 2: Job Name
+    # ========================================================================
+    st.subheader("2. Job Name")
+
+    job_name = st.text_input(
+        "Name for this schedule",
+        value=existing_job.get('name', '') if existing_job else f"SEO Status Sync — {selected_brand_name}",
+        placeholder="e.g., Daily SEO Status Sync",
+        key="seo_sync_job_name"
+    )
+
+    st.divider()
+
+    # ========================================================================
+    # Section 3: Schedule
+    # ========================================================================
+    st.subheader("3. Schedule")
+
+    current_time = datetime.now(PST)
+    st.info(f"Current time: **{current_time.strftime('%I:%M %p PST')}**")
+
+    schedule_type = st.radio(
+        "Schedule Type",
+        options=['recurring', 'one_time'],
+        index=0 if not existing_job or existing_job.get('schedule_type') == 'recurring' else 1,
+        format_func=lambda x: "Recurring" if x == 'recurring' else "One-time",
+        horizontal=True,
+        key="seo_sync_schedule_type"
+    )
+
+    cron_expression = None
+    scheduled_at = None
+
+    if schedule_type == 'recurring':
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            day_of_week = st.selectbox(
+                "Day of Week",
+                options=['*', 0, 1, 2, 3, 4, 5, 6],
+                index=0,
+                format_func=lambda x: 'Every day' if x == '*' else ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'][x],
+                key="seo_sync_day"
+            )
+        with col2:
+            run_hour = st.number_input("Hour (PST, 0-23)", min_value=0, max_value=23, value=8, key="seo_sync_hour")
+        with col3:
+            run_minute = st.number_input("Minute", min_value=0, max_value=59, value=0, step=15, key="seo_sync_minute")
+
+        cron_expression = f"{run_minute} {run_hour} * * {day_of_week}"
+    else:
+        col1, col2 = st.columns(2)
+        with col1:
+            run_date = st.date_input("Run date", value=current_time.date(), key="seo_sync_date")
+        with col2:
+            run_time = st.time_input("Run time (PST)", value=current_time.time(), key="seo_sync_time")
+
+        scheduled_at = PST.localize(datetime.combine(run_date, run_time))
+
+    st.divider()
+
+    # ========================================================================
+    # Section 4: Save & Run Now
+    # ========================================================================
+    st.subheader("4. Save Schedule")
+
+    parameters = {}
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        if st.button("Save Schedule", use_container_width=True, key="save_seo_sync"):
+            if not job_name:
+                st.error("Please enter a job name")
+                st.stop()
+
+            if is_edit:
+                job_id = existing_job['id']
+                update_job(job_id, {
+                    'name': job_name,
+                    'brand_id': selected_brand_id,
+                    'schedule_type': schedule_type,
+                    'cron_expression': cron_expression,
+                    'parameters': parameters,
+                })
+                st.success("Schedule updated!")
+            else:
+                next_run = None
+                if schedule_type == 'recurring' and cron_expression:
+                    next_run = calculate_next_run(cron_expression)
+                    if next_run:
+                        next_run = next_run.isoformat()
+                elif scheduled_at:
+                    next_run = scheduled_at.isoformat()
+
+                job_data = {
+                    'job_type': 'seo_status_sync',
+                    'product_id': None,
+                    'brand_id': selected_brand_id,
+                    'name': job_name,
+                    'schedule_type': schedule_type,
+                    'cron_expression': cron_expression,
+                    'scheduled_at': scheduled_at.isoformat() if scheduled_at else None,
+                    'next_run_at': next_run,
+                    'max_runs': None,
+                    'parameters': parameters,
+                }
+                job_id = create_scheduled_job(job_data)
+                if job_id:
+                    st.success("Schedule created!")
+                    st.session_state.scheduler_view = 'list'
+                    st.rerun()
+
+    with col2:
+        if st.button("Run Now", use_container_width=True, key="run_seo_sync_now"):
+            if not job_name:
+                st.error("Please enter a job name")
+                st.stop()
+
+            run_now_time = datetime.now(PST) + timedelta(minutes=1)
+            job_data = {
+                'job_type': 'seo_status_sync',
+                'product_id': None,
+                'brand_id': selected_brand_id,
+                'name': job_name,
+                'schedule_type': 'one_time',
+                'cron_expression': None,
+                'scheduled_at': run_now_time.isoformat(),
+                'next_run_at': run_now_time.isoformat(),
+                'max_runs': None,
+                'parameters': parameters,
+            }
+            job_id = create_scheduled_job(job_data)
+            if job_id:
+                st.success("Job scheduled to run in ~1 minute!")
+                st.session_state.scheduler_view = 'list'
+                st.rerun()
+
+
 def _render_iteration_auto_run_form(existing_job, is_edit):
     """Render the iteration auto-run job creation form."""
 
@@ -2308,7 +2489,7 @@ def render_create_schedule():
         st.subheader("Job Type")
         job_type = st.radio(
             "What type of job do you want to schedule?",
-            options=['ad_creation', 'template_scrape', 'template_approval', 'ad_classification', 'asset_download', 'iteration_auto_run'],
+            options=['ad_creation', 'template_scrape', 'template_approval', 'ad_classification', 'asset_download', 'iteration_auto_run', 'seo_status_sync'],
             index=0,
             format_func=lambda x: {
                 'ad_creation': '🎨 Ad Creation - Generate ads from templates',
@@ -2317,6 +2498,7 @@ def render_create_schedule():
                 'ad_classification': '🔬 Ad Classification - Pre-compute ad awareness classifications',
                 'asset_download': '📦 Asset Download - Download ad images & videos from Meta',
                 'iteration_auto_run': '🔬 Iteration Auto-Run - Auto-detect and iterate on mixed-signal ads',
+                'seo_status_sync': '🔄 SEO Status Sync - Sync article draft/live status from Shopify',
             }.get(x, x),
             horizontal=True,
             key="job_type_selector"
@@ -2358,6 +2540,13 @@ def render_create_schedule():
     # ========================================================================
     if job_type == 'iteration_auto_run':
         _render_iteration_auto_run_form(existing_job, is_edit)
+        return
+
+    # ========================================================================
+    # SEO STATUS SYNC JOB FORM
+    # ========================================================================
+    if job_type == 'seo_status_sync':
+        _render_seo_status_sync_form(existing_job, is_edit)
         return
 
     # ========================================================================

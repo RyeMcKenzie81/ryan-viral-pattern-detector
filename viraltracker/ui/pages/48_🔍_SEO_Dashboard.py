@@ -102,7 +102,9 @@ def _resolve_org_id_for_brand(brand_id: str, org_id: str) -> str:
 # MAIN PAGE
 # =============================================================================
 
-st.title("🔍 SEO Dashboard")
+_title_col, _sync_col = st.columns([5, 1])
+with _title_col:
+    st.title("🔍 SEO Dashboard")
 
 from viraltracker.ui.utils import render_brand_selector, get_current_organization_id
 
@@ -113,6 +115,25 @@ if not brand_id:
 org_id = get_current_organization_id()
 # Real UUID org_id for DB writes (superuser has org_id="all" which can't be inserted into UUID columns)
 _real_org_id = _resolve_org_id_for_brand(brand_id, org_id)
+
+# Manual Shopify status sync button (top-right)
+with _sync_col:
+    st.write("")  # Vertical alignment spacer
+    if st.button("🔄 Sync Shopify", key="seo_dash_sync_shopify", help="Sync article draft/live status from Shopify"):
+        from viraltracker.services.seo_pipeline.services.cms_publisher_service import CMSPublisherService
+        _cms = CMSPublisherService()
+        with st.spinner("Syncing..."):
+            try:
+                _sync_res = _cms.sync_article_statuses(brand_id, _real_org_id)
+                if _sync_res.get("error"):
+                    st.warning(_sync_res["error"])
+                elif _sync_res.get("synced", 0) > 0:
+                    st.success(f"Synced {_sync_res['synced']}/{_sync_res['total']} articles")
+                    st.rerun()
+                else:
+                    st.info(f"All {_sync_res['total']} articles already in sync")
+            except Exception as _e:
+                st.error(f"Sync failed: {_e}")
 
 # Project selector — "All Projects" as default
 project_service = get_project_service()
