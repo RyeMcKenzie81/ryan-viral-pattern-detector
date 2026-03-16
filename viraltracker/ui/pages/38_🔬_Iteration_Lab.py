@@ -7,8 +7,11 @@ Tab 2: Analyze Winners - Decompose what makes winning ads work
 
 import asyncio
 import json
+import logging
 import streamlit as st
 from typing import Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 st.set_page_config(
     page_title="Iteration Lab",
@@ -791,8 +794,8 @@ def _execute_replication(
                 brand_result = get_supabase_client().table("brands").select("name").eq("id", brand_id).limit(1).execute()
                 if brand_result.data:
                     brand_name = brand_result.data[0].get("name", brand_name)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Failed to fetch brand name: {e}")
 
             # Step 3: Create one-time V2 job
             job_row = {
@@ -1036,8 +1039,8 @@ def _run_per_winner_analysis(meta_ad_id: str, brand_id: str, org_id: str):
                     )
                     if thumb_result.data:
                         thumbnail_url = thumb_result.data[0].get("thumbnail_url", "")
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Failed to fetch thumbnail: {e}")
 
                 # Serialize for session state
                 st.session_state.iter_per_winner_result = {

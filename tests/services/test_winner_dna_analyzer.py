@@ -286,3 +286,233 @@ class TestBuildMessagingProfile:
         element_tags = {"hook_type": "curiosity"}
         profile = analyzer._build_messaging_profile(classification, element_tags)
         assert profile["hook_type"] == "curiosity"  # element_tags wins
+
+
+# ============================================================================
+# _find_notable_elements tests
+# ============================================================================
+
+class TestFindNotableElements:
+    def test_finds_sub_threshold_elements(self, analyzer):
+        """Elements at 25-49% frequency are returned; common_elements are excluded."""
+        # 4 winners: hook_type:curiosity appears in 3/4 (75% -> common),
+        # color_mode:complementary in 1/4 (25% -> notable),
+        # creative_format:video in 2/4 (50% -> common, not notable)
+        dnas = [
+            _make_dna("ad_1", element_scores=[
+                {"element": "hook_type", "value": "curiosity"},
+                {"element": "color_mode", "value": "complementary"},
+            ], messaging={}),
+            _make_dna("ad_2", element_scores=[
+                {"element": "hook_type", "value": "curiosity"},
+            ], messaging={}),
+            _make_dna("ad_3", element_scores=[
+                {"element": "hook_type", "value": "curiosity"},
+            ], messaging={}),
+            _make_dna("ad_4", element_scores=[
+                {"element": "hook_type", "value": "direct_benefit"},
+            ], messaging={}),
+        ]
+        common_elements = {
+            "hook_type:curiosity": {"element": "hook_type", "value": "curiosity", "frequency": 0.75},
+        }
+        notable = analyzer._find_notable_elements(dnas, common_elements)
+        # color_mode:complementary is 1/4 = 25% -> right at the 25% lower bound
+        assert "color_mode:complementary" in notable
+        assert notable["color_mode:complementary"]["frequency"] == 0.25
+        # hook_type:curiosity is common, should be excluded
+        assert "hook_type:curiosity" not in notable
+
+    def test_caps_at_five(self, analyzer):
+        """Returns at most 5 items even when more qualify."""
+        # Create 8 distinct elements each at 25% frequency (1 out of 4 winners)
+        dnas = [
+            _make_dna("ad_1", element_scores=[
+                {"element": "elem_a", "value": "v1"},
+                {"element": "elem_b", "value": "v1"},
+                {"element": "elem_c", "value": "v1"},
+                {"element": "elem_d", "value": "v1"},
+                {"element": "elem_e", "value": "v1"},
+                {"element": "elem_f", "value": "v1"},
+                {"element": "elem_g", "value": "v1"},
+                {"element": "elem_h", "value": "v1"},
+            ], messaging={}),
+            _make_dna("ad_2", element_scores=[], messaging={}),
+            _make_dna("ad_3", element_scores=[], messaging={}),
+            _make_dna("ad_4", element_scores=[], messaging={}),
+        ]
+        notable = analyzer._find_notable_elements(dnas, {})
+        assert len(notable) <= 5
+
+    def test_excludes_common(self, analyzer):
+        """Elements already in common_elements dict are not in the result."""
+        dnas = [
+            _make_dna("ad_1", element_scores=[
+                {"element": "hook_type", "value": "curiosity"},
+            ], messaging={}),
+            _make_dna("ad_2", element_scores=[
+                {"element": "hook_type", "value": "curiosity"},
+            ], messaging={}),
+            _make_dna("ad_3", element_scores=[], messaging={}),
+            _make_dna("ad_4", element_scores=[], messaging={}),
+        ]
+        # hook_type:curiosity is 2/4 = 50% which is >= COMMON_ELEMENT_THRESHOLD,
+        # so it wouldn't be notable by freq anyway. But also verify the common_elements
+        # exclusion by putting it in common_elements and making freq exactly at boundary.
+        # Actually, 2/4 = 0.5 which is NOT < 0.5, so it would be excluded by freq check.
+        # Use 3 dnas to get exactly within range for a cleaner test:
+        dnas_3 = [
+            _make_dna("ad_1", element_scores=[
+                {"element": "hook_type", "value": "curiosity"},
+            ], messaging={}),
+            _make_dna("ad_2", element_scores=[], messaging={}),
+            _make_dna("ad_3", element_scores=[], messaging={}),
+        ]
+        # hook_type:curiosity is 1/3 = 0.333 -> in 25-49% range -> would be notable
+        common_elements = {
+            "hook_type:curiosity": {"element": "hook_type", "value": "curiosity", "frequency": 0.75},
+        }
+        notable = analyzer._find_notable_elements(dnas_3, common_elements)
+        assert "hook_type:curiosity" not in notable
+
+
+# ============================================================================
+# _find_notable_visual_traits tests
+# ============================================================================
+
+class TestFindNotableVisualTraits:
+    def test_finds_sub_threshold_traits(self, analyzer):
+        """Visual traits at 25-49% frequency are returned."""
+        dnas = [
+            _make_dna("ad_1", visual_properties={"contrast_level": "high", "text_density": "low"}),
+            _make_dna("ad_2", visual_properties={"contrast_level": "medium", "text_density": "high"}),
+            _make_dna("ad_3", visual_properties={"contrast_level": "medium", "text_density": "high"}),
+            _make_dna("ad_4", visual_properties={"contrast_level": "low", "text_density": "high"}),
+        ]
+        # contrast_level:high = 1/4 = 25% -> notable
+        # contrast_level:medium = 2/4 = 50% -> NOT notable (>= threshold)
+        # text_density:low = 1/4 = 25% -> notable
+        # text_density:high = 3/4 = 75% -> NOT notable (>= threshold)
+        common_visuals = {}
+        notable = analyzer._find_notable_visual_traits(dnas, common_visuals)
+        # At least one of the 25% traits should appear
+        # Note: _find_notable_visual_traits uses field name as key (not field:value)
+        # and only keeps one value per field (last seen in iteration)
+        # From the code: notable[fld] = {...} so each field only has one entry
+        found_values = {v["value"] for v in notable.values()}
+        # "high" contrast or "low" text_density should be present
+        assert "high" in found_values or "low" in found_values
+
+    def test_excludes_common_visuals(self, analyzer):
+        """Traits already in common_visual_traits are excluded."""
+        dnas = [
+            _make_dna("ad_1", visual_properties={"contrast_level": "high"}),
+            _make_dna("ad_2", visual_properties={"contrast_level": "medium"}),
+            _make_dna("ad_3", visual_properties={"contrast_level": "medium"}),
+            _make_dna("ad_4", visual_properties={"contrast_level": "high"}),
+        ]
+        # contrast_level:high = 2/4 = 50% -> at threshold, excluded by freq
+        # contrast_level:medium = 2/4 = 50% -> at threshold, excluded by freq
+        # Now set up where a trait IS in range but also in common_visuals
+        dnas_notable = [
+            _make_dna("ad_1", visual_properties={"contrast_level": "high"}),
+            _make_dna("ad_2", visual_properties={"contrast_level": "medium"}),
+            _make_dna("ad_3", visual_properties={"contrast_level": "medium"}),
+        ]
+        # contrast_level:high = 1/3 = 0.33 -> in range, would be notable
+        # But contrast_level is in common_visuals -> excluded
+        common_visuals = {
+            "contrast_level": {"value": "medium", "frequency": 0.67},
+        }
+        notable = analyzer._find_notable_visual_traits(dnas_notable, common_visuals)
+        assert "contrast_level" not in notable
+
+
+# ============================================================================
+# _collect_winner_thumbnails tests
+# ============================================================================
+
+class TestCollectWinnerThumbnails:
+    def test_collects_thumbnails_for_matching_ads(self, analyzer):
+        """Only includes ads whose meta_ad_id matches a WinnerDNA."""
+        winner_ads = [
+            {"meta_ad_id": "ad_1", "thumbnail_url": "http://img1.png", "roas": 3.0, "ad_name": "Ad One"},
+            {"meta_ad_id": "ad_2", "thumbnail_url": "http://img2.png", "roas": 2.5, "ad_name": "Ad Two"},
+            {"meta_ad_id": "ad_3", "thumbnail_url": "http://img3.png", "roas": 1.0, "ad_name": "Ad Three"},
+        ]
+        winner_dnas = [
+            _make_dna("ad_1"),
+            _make_dna("ad_2"),
+        ]
+        thumbnails = analyzer._collect_winner_thumbnails(winner_ads, winner_dnas)
+        ids = [t["meta_ad_id"] for t in thumbnails]
+        assert "ad_1" in ids
+        assert "ad_2" in ids
+        assert "ad_3" not in ids
+
+    def test_returns_correct_fields(self, analyzer):
+        """Each item has meta_ad_id, thumbnail_url, roas, ad_name."""
+        winner_ads = [
+            {"meta_ad_id": "ad_1", "thumbnail_url": "http://img1.png", "roas": 4.2, "ad_name": "Winner Ad"},
+        ]
+        winner_dnas = [_make_dna("ad_1")]
+        thumbnails = analyzer._collect_winner_thumbnails(winner_ads, winner_dnas)
+        assert len(thumbnails) == 1
+        thumb = thumbnails[0]
+        assert thumb["meta_ad_id"] == "ad_1"
+        assert thumb["thumbnail_url"] == "http://img1.png"
+        assert thumb["roas"] == 4.2
+        assert thumb["ad_name"] == "Winner Ad"
+
+
+# ============================================================================
+# _compute_cohort_summary tests
+# ============================================================================
+
+class TestComputeCohortSummary:
+    def test_computes_averages_and_ranges(self, analyzer):
+        """avg_roas, roas_range, avg_ctr, ctr_range, total_spend computed correctly."""
+        dna1 = WinnerDNA(
+            meta_ad_id="ad_1",
+            metrics={"roas": 4.0, "ctr": 2.0, "cpa": 10.0, "spend": 100.0},
+            element_scores=[], top_elements=[], weak_elements=[],
+            visual_properties=None, messaging={}, cohort_comparison={},
+            active_synergies=[], active_conflicts=[],
+        )
+        dna2 = WinnerDNA(
+            meta_ad_id="ad_2",
+            metrics={"roas": 6.0, "ctr": 4.0, "cpa": 20.0, "spend": 200.0},
+            element_scores=[], top_elements=[], weak_elements=[],
+            visual_properties=None, messaging={}, cohort_comparison={},
+            active_synergies=[], active_conflicts=[],
+        )
+        summary = analyzer._compute_cohort_summary([dna1, dna2])
+        assert summary["avg_roas"] == 5.0       # (4+6)/2
+        assert summary["roas_range"] == [4.0, 6.0]
+        assert summary["avg_ctr"] == 3.0         # (2+4)/2
+        assert summary["ctr_range"] == [2.0, 4.0]
+        assert summary["total_spend"] == 300.0    # 100+200
+
+    def test_handles_empty_metrics(self, analyzer):
+        """Doesn't crash on WinnerDNA with empty/zero metrics."""
+        dna_empty = WinnerDNA(
+            meta_ad_id="ad_empty",
+            metrics={},
+            element_scores=[], top_elements=[], weak_elements=[],
+            visual_properties=None, messaging={}, cohort_comparison={},
+            active_synergies=[], active_conflicts=[],
+        )
+        dna_zero = WinnerDNA(
+            meta_ad_id="ad_zero",
+            metrics={"roas": 0, "ctr": 0, "cpa": 0, "spend": 0},
+            element_scores=[], top_elements=[], weak_elements=[],
+            visual_properties=None, messaging={}, cohort_comparison={},
+            active_synergies=[], active_conflicts=[],
+        )
+        summary = analyzer._compute_cohort_summary([dna_empty, dna_zero])
+        # Should not crash, return safe defaults
+        assert summary["avg_roas"] == 0
+        assert summary["roas_range"] == [0, 0]
+        assert summary["avg_ctr"] == 0
+        assert summary["ctr_range"] == [0, 0]
+        assert summary["total_spend"] == 0

@@ -172,6 +172,10 @@ class TestEvaluatePattern:
         assert result.strong_metric == "roas"
         assert result.weak_metric == "ctr"
         assert result.confidence > 0
+        # Verify explanation fields are populated
+        assert result.explanation_headline != ""
+        assert result.explanation_projection != ""
+        assert result.projected_roas > 0
 
     def test_rejects_insufficient_impressions(self, detector, baseline):
         ad = {
@@ -285,3 +289,78 @@ class TestBuildStrategyActions:
             )
             assert isinstance(actions, list)
             assert len(actions) > 0
+
+
+# ============================================================================
+# _build_explanation tests
+# ============================================================================
+
+class TestBuildExplanation:
+    def test_build_explanation_high_converter_low_stopper(self, detector, baseline):
+        """Tests headline mentions CVR and CTR, projection mentions constant conversion rate,
+        and projected_roas uses formula: roas * (median_ctr / ctr)."""
+        ad = {
+            "ctr": 0.3,               # Weak CTR
+            "roas": 3.0,              # Strong ROAS
+            "conversion_rate": 0.05,   # 5% CVR
+            "spend": 200,
+            "impressions": 5000,
+        }
+        headline, projection, projected_roas = detector._build_explanation(
+            "high_converter_low_stopper", ad, baseline
+        )
+        # Headline should mention CVR and CTR values
+        assert "5.0%" in headline         # cvr * 100
+        assert "30.0%" in headline        # ctr * 100
+        # Projection should mention constant conversion rate caveat
+        assert "constant conversion rate" in projection
+        # Projected ROAS formula: roas * (median_ctr / ctr) = 3.0 * (1.0 / 0.3)
+        expected_roas = 3.0 * (1.0 / 0.3)
+        assert abs(projected_roas - expected_roas) < 0.01
+
+    def test_build_explanation_good_hook_bad_close(self, detector, baseline):
+        """Tests headline mentions CTR above median and low ROAS,
+        projection mentions median ROAS."""
+        ad = {
+            "ctr": 1.5,               # Above median (1.0)
+            "roas": 0.4,              # Weak ROAS
+            "conversion_rate": 0.01,
+            "spend": 300,
+            "impressions": 8000,
+        }
+        headline, projection, projected_roas = detector._build_explanation(
+            "good_hook_bad_close", ad, baseline
+        )
+        # Headline should mention CTR and low ROAS
+        assert "150.0%" in headline       # ctr * 100
+        assert "0.4x" in headline         # roas
+        # Projection should reference median ROAS (1.5)
+        assert "1.5x" in projection       # median_roas
+        # Projected ROAS should equal median ROAS
+        assert projected_roas == 1.5
+
+    def test_build_explanation_all_patterns(self, detector, baseline):
+        """All 5 pattern types produce non-empty headline and valid projected_roas."""
+        all_patterns = [
+            "high_converter_low_stopper",
+            "good_hook_bad_close",
+            "thumb_stopper_quick_dropper",
+            "efficient_but_starved",
+            "fatiguing_winner",
+        ]
+        ad = {
+            "ctr": 0.3,
+            "roas": 3.0,
+            "conversion_rate": 0.05,
+            "spend": 200,
+            "impressions": 5000,
+            "hook_rate": 0.25,
+            "hold_rate": 0.04,
+            "ctr_decline_pct": -0.3,
+        }
+        for pattern_type in all_patterns:
+            headline, projection, projected_roas = detector._build_explanation(
+                pattern_type, ad, baseline
+            )
+            assert headline != "", f"{pattern_type} produced empty headline"
+            assert projected_roas >= 0, f"{pattern_type} produced negative projected_roas"
