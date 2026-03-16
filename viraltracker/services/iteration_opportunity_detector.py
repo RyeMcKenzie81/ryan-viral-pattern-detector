@@ -33,6 +33,7 @@ PATTERNS = {
         "strategy": "Strengthen visual impact \u2014 higher contrast, bolder text, face close-ups",
         "evolution_mode": "winner_iteration",
         "min_impressions": 1000,
+        "min_spend": 50,
         "min_days": 7,
     },
     "good_hook_bad_close": {
@@ -43,6 +44,7 @@ PATTERNS = {
         "strategy": "Improve conversion path \u2014 CTA clarity, offer alignment, LP congruence",
         "evolution_mode": "winner_iteration",
         "min_impressions": 1000,
+        "min_spend": 50,
         "min_days": 7,
     },
     "thumb_stopper_quick_dropper": {
@@ -53,6 +55,7 @@ PATTERNS = {
         "strategy": "Improve mid-video retention \u2014 storytelling, value reveal timing",
         "evolution_mode": "winner_iteration",
         "min_impressions": 1000,
+        "min_spend": 50,
         "min_days": 7,
     },
     "efficient_but_starved": {
@@ -63,6 +66,7 @@ PATTERNS = {
         "strategy": "Budget/audience expansion \u2014 increase daily budget, broaden targeting",
         "evolution_mode": None,
         "min_impressions": 500,
+        "min_spend": 20,
         "min_days": 5,
     },
 }
@@ -463,6 +467,8 @@ class IterationOpportunityDetector:
         # Check minimum data requirements
         if ad.get("impressions", 0) < pattern_def.get("min_impressions", 1000):
             return None
+        if ad.get("spend", 0) < pattern_def.get("min_spend", 50):
+            return None
         if ad.get("days_active", 0) < pattern_def.get("min_days", 7):
             return None
 
@@ -554,7 +560,7 @@ class IterationOpportunityDetector:
         self, ad: dict, brand_id: str, classification: dict
     ) -> Optional[IterationOpportunity]:
         """Check if a winning ad has only been tested in one canvas size."""
-        if ad.get("impressions", 0) < 1000 or ad.get("days_active", 0) < 7:
+        if ad.get("impressions", 0) < 1000 or ad.get("spend", 0) < 50 or ad.get("days_active", 0) < 7:
             return None
 
         # Need a good reward to qualify as "winner"
@@ -643,7 +649,7 @@ class IterationOpportunityDetector:
         self, ad: dict, brand_id: str, baseline
     ) -> Optional[IterationOpportunity]:
         """Check if a historically strong ad has declining CTR (fatigue)."""
-        if ad.get("impressions", 0) < 1000 or ad.get("days_active", 0) < 10:
+        if ad.get("impressions", 0) < 1000 or ad.get("spend", 0) < 50 or ad.get("days_active", 0) < 10:
             return None
 
         meta_ad_id = ad["meta_ad_id"]
