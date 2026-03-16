@@ -1186,7 +1186,6 @@ class MetaAdsService:
                     "video_p100_watched": insight.get("video_p100_watched"),
                     "raw_actions": insight.get("raw_actions"),
                     "raw_costs": insight.get("raw_costs"),
-                    "thumbnail_url": insight.get("thumbnail_url"),
                     # New metric columns
                     "video_p95_watched": insight.get("video_p95_watched"),
                     "video_thruplay": insight.get("video_thruplay"),
@@ -1202,6 +1201,12 @@ class MetaAdsService:
                         insight.get("meta_campaign_id"), "UNKNOWN"
                     ),
                 }
+
+                # Only include thumbnail_url when truthy — the insights API never
+                # returns it, so including None would clobber values previously
+                # enriched by update_missing_thumbnails() on re-sync.
+                if insight.get("thumbnail_url"):
+                    record["thumbnail_url"] = insight["thumbnail_url"]
 
                 # Upsert (on conflict with meta_ad_id + date)
                 supabase.table("meta_ads_performance").upsert(
