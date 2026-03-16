@@ -363,8 +363,51 @@ else:
     config = integration.get("config", {})
     st.markdown(f"**Platform:** {platform.title()}")
     st.markdown(f"**Store:** {config.get('store_domain', 'N/A')}")
+    if config.get("public_domain"):
+        st.markdown(f"**Public Domain:** {config['public_domain']}")
     st.markdown(f"**Blog ID:** {config.get('blog_id', 'N/A')}")
     st.markdown(f"**API Version:** {config.get('api_version', 'N/A')}")
+
+    with st.expander("Edit Integration Settings"):
+        with st.form("shopify_edit_form"):
+            edit_store_domain = st.text_input("Store Domain", value=config.get("store_domain", ""),
+                                              help="Your Shopify admin domain (used for API calls)")
+            edit_public_domain = st.text_input("Public Domain", value=config.get("public_domain", ""),
+                                               help="Your custom domain for public article URLs (e.g. mystore.com)")
+            edit_access_token = st.text_input("Access Token", value=config.get("access_token", ""), type="password")
+            edit_blog_id = st.text_input("Blog ID", value=config.get("blog_id", ""))
+            edit_api_version = st.text_input("API Version", value=config.get("api_version", "2024-10"))
+            edit_blog_handle = st.text_input("Blog Handle", value=config.get("blog_handle", "articles"))
+
+            save_edit = st.form_submit_button("Save Changes")
+            if save_edit:
+                if edit_store_domain and edit_access_token and edit_blog_id:
+                    updated_config = {
+                        "store_domain": edit_store_domain,
+                        "access_token": edit_access_token,
+                        "blog_id": edit_blog_id,
+                        "api_version": edit_api_version,
+                        "blog_handle": edit_blog_handle,
+                    }
+                    if edit_public_domain:
+                        updated_config["public_domain"] = edit_public_domain
+                    # Preserve client_id/client_secret if they exist
+                    for key in ("client_id", "client_secret"):
+                        if config.get(key):
+                            updated_config[key] = config[key]
+                    try:
+                        project_service.upsert_brand_integration(
+                            brand_id=brand_id,
+                            organization_id=org_id,
+                            platform="shopify",
+                            config=updated_config,
+                        )
+                        st.success("Integration updated!")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Failed to save: {e}")
+                else:
+                    st.error("Store domain, access token, and blog ID are required.")
 
     # Publish controls
     col_pub1, col_pub2 = st.columns(2)
