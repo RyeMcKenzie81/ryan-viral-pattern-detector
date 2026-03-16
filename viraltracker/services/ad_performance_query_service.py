@@ -1036,6 +1036,9 @@ class AdPerformanceQueryService:
             a["campaign_name"] = d.get("campaign_name") or a.get("campaign_name", "")
             a["meta_adset_id"] = d.get("meta_adset_id") or a.get("meta_adset_id", "")
             a["meta_campaign_id"] = d.get("meta_campaign_id") or a.get("meta_campaign_id", "")
+            # Keep the first non-empty thumbnail (rows ordered by date desc, so most recent first)
+            if d.get("thumbnail_url") and not a.get("thumbnail_url"):
+                a["thumbnail_url"] = d["thumbnail_url"]
             a["spend"] += float(d.get("spend") or 0)
             a["impressions"] += int(d.get("impressions") or 0)
             a["link_clicks"] += int(d.get("link_clicks") or 0)
@@ -1059,6 +1062,7 @@ class AdPerformanceQueryService:
                 "campaign_name": a["campaign_name"],
                 "meta_adset_id": a["meta_adset_id"],
                 "meta_campaign_id": a["meta_campaign_id"],
+                "thumbnail_url": a.get("thumbnail_url", ""),
                 "spend": spend,
                 "impressions": imp,
                 "reach": a["reach"],

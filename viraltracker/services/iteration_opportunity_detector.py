@@ -103,6 +103,11 @@ class IterationOpportunity:
     spend: float = 0.0
     impressions: int = 0
 
+    # Data-driven explanations (added by _build_explanation)
+    explanation_headline: str = ""
+    explanation_projection: str = ""
+    projected_roas: float = 0.0
+
 
 # ---------------------------------------------------------------------------
 # Metric helpers
@@ -513,6 +518,11 @@ class IterationOpportunityDetector:
         strong_pct = _compute_percentile_label(strong_value, baseline, strong_metric)
         weak_pct = _compute_percentile_label(weak_value, baseline, weak_metric)
 
+        # Build data-driven explanation
+        headline, projection, projected_roas = self._build_explanation(
+            pattern_type, ad, baseline
+        )
+
         return IterationOpportunity(
             id=str(uuid4()),
             meta_ad_id=ad["meta_ad_id"],
@@ -535,6 +545,9 @@ class IterationOpportunityDetector:
             thumbnail_url=ad.get("thumbnail_url", ""),
             spend=ad.get("spend", 0),
             impressions=ad.get("impressions", 0),
+            explanation_headline=headline,
+            explanation_projection=projection,
+            projected_roas=projected_roas,
         )
 
     def _detect_size_limited(
@@ -761,6 +774,90 @@ class IterationOpportunityDetector:
 
         return actions
 
+    def _build_explanation(
+        self,
+        pattern_type: str,
+        ad: dict,
+        baseline,
+    ) -> tuple:
+        """Build data-driven explanation headline and projection.
+
+        Returns:
+            Tuple of (headline, projection, projected_roas).
+        """
+        ctr = ad.get("ctr", 0)
+        roas = ad.get("roas", 0)
+        cvr = ad.get("conversion_rate", 0)
+        spend = ad.get("spend", 0)
+        impressions = ad.get("impressions", 0)
+
+        median_ctr = _get_baseline_value(baseline, "ctr", "p50") or 0
+        median_roas = _get_baseline_value(baseline, "roas", "p50") or 0
+
+        headline = ""
+        projection = ""
+        projected_roas = 0.0
+
+        if pattern_type == "high_converter_low_stopper":
+            headline = (
+                f"This ad converts at {cvr*100:.1f}% — your messaging clearly resonates with buyers. "
+                f"But CTR is only {ctr*100:.1f}%, meaning most people scroll past."
+            )
+            if ctr > 0 and median_ctr > 0:
+                projected_roas = roas * (median_ctr / ctr)
+                projection = (
+                    f"If visual stopping power improved CTR to the median ({median_ctr*100:.1f}%), "
+                    f"ROAS could go from {roas:.1f}x to ~{projected_roas:.1f}x "
+                    f"(assumes constant conversion rate)."
+                )
+
+        elif pattern_type == "good_hook_bad_close":
+            headline = (
+                f"This ad gets clicked at {ctr*100:.1f}% (above median) but ROAS is only {roas:.1f}x. "
+                f"People are interested but not converting."
+            )
+            projection = (
+                f"Your brand's median ROAS is {median_roas:.1f}x. "
+                f"Improving offer alignment or landing page congruence could close the gap."
+            )
+            projected_roas = median_roas
+
+        elif pattern_type == "thumb_stopper_quick_dropper":
+            hook_rate = ad.get("hook_rate", 0)
+            hold_rate = ad.get("hold_rate", 0)
+            headline = (
+                f"Hook rate is {hook_rate*100:.1f}% (strong) but hold rate drops to {hold_rate*100:.1f}%. "
+                f"Viewers lose interest after the first few seconds."
+            )
+            projection = (
+                "Improving mid-video retention (pacing, value reveal timing) "
+                "would increase completed views and conversions."
+            )
+
+        elif pattern_type == "efficient_but_starved":
+            headline = (
+                f"ROAS is {roas:.1f}x on only ${spend:,.0f} spend and {impressions:,} impressions. "
+                f"This ad is profitable but under-scaled."
+            )
+            projection = (
+                "Increasing budget 20-50% while monitoring ROAS could capture "
+                "additional conversions without diminishing returns."
+            )
+            projected_roas = roas  # Maintain current
+
+        elif pattern_type == "fatiguing_winner":
+            decline = ad.get("ctr_decline_pct", 0)
+            headline = (
+                f"CTR has declined {abs(decline)*100:.0f}% from early to late performance. "
+                f"This was a strong ad showing fatigue."
+            )
+            projection = (
+                "Refresh the creative with the same messaging angle but new visuals "
+                "to recapture initial performance."
+            )
+
+        return headline, projection, projected_roas
+
     def _build_iteration_instructions(self, opp: dict) -> str:
         """Build additional_instructions for WinnerEvolutionService."""
         pattern = opp.get("pattern_type", "")
@@ -800,6 +897,7 @@ class IterationOpportunityDetector:
                 )
                 .eq("brand_id", brand_id)
                 .gte("date", cutoff)
+                .order("date", desc=True)
                 .execute()
             )
             if not result.data:

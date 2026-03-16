@@ -129,18 +129,32 @@ def _confidence_label(conf: float) -> tuple:
     return "Moderate Signal", "gray"
 
 
-def _format_metric(metric: str, value: float) -> str:
-    """Format a metric value for display."""
+def _format_metric(metric: str, value: float, from_decimal: bool = False) -> str:
+    """Format a metric value for display.
+
+    Args:
+        metric: Metric name (roas, ctr, cpc, etc.)
+        value: Metric value.
+        from_decimal: True if rate metrics (ctr, conversion_rate) are stored as
+            decimals (0.015) rather than percentages (1.5). The detector uses
+            decimals; winner_dna_analyzer and ad_performance_query_service use
+            percentages.
+    """
+    if value is None:
+        return "n/a"
     if metric in ("roas",):
         return f"{value:.1f}x"
     elif metric in ("ctr", "hook_rate", "hold_rate", "conversion_rate"):
-        return f"{value:.2f}%"
+        display = value * 100 if from_decimal else value
+        return f"{display:.1f}%"
     elif metric in ("cpc", "cpa"):
         return f"${value:.2f}"
     elif metric in ("impressions",):
         return f"{value:,.0f}"
+    elif metric in ("spend",):
+        return f"${value:,.0f}"
     elif metric in ("ctr_decline_pct",):
-        return f"-{value:.0%}"
+        return f"-{abs(value) * 100:.0f}%" if value < 1 else f"-{value:.0f}%"
     else:
         return f"{value:.3f}"
 
@@ -306,6 +320,8 @@ def _render_opportunity_card(opp: dict, idx: int, brand_id: str, product_id: Opt
 
     thumbnail_url = _get_field(opp, "thumbnail_url", "")
     ad_name = _get_field(opp, "ad_name", "")
+    explanation_headline = _get_field(opp, "explanation_headline", "")
+    explanation_projection = _get_field(opp, "explanation_projection", "")
 
     # Level 1: Collapsed summary
     with st.container(border=True):
@@ -322,10 +338,13 @@ def _render_opportunity_card(opp: dict, idx: int, brand_id: str, product_id: Opt
             )
             if ad_name:
                 st.caption(f"**{ad_name}**")
-            st.caption(
-                f"{strong_label} {_format_metric(strong_metric, strong_value)} ({strong_pct}) "
-                f"but {weak_label} only {_format_metric(weak_metric, weak_value)} ({weak_pct})"
-            )
+            if explanation_headline:
+                st.caption(explanation_headline)
+            else:
+                st.caption(
+                    f"{strong_label} {_format_metric(strong_metric, strong_value, from_decimal=True)} ({strong_pct}) "
+                    f"but {weak_label} only {_format_metric(weak_metric, weak_value, from_decimal=True)} ({weak_pct})"
+                )
         with cols[2]:
             if is_video:
                 # Video ads get brief instead of iterate
@@ -359,6 +378,8 @@ def _render_opportunity_card(opp: dict, idx: int, brand_id: str, product_id: Opt
                     st.markdown(f"**Spend**: ${spend:,.0f} | **Impressions**: {impressions:,}")
 
             with col_strategy:
+                if explanation_projection:
+                    st.markdown(f"*{explanation_projection}*")
                 st.markdown(f"**Strategy**: {strategy_desc}")
                 if strategy_actions:
                     for action in strategy_actions:
@@ -484,27 +505,33 @@ def _render_video_brief(opp: dict, brand_id: str, org_id: str):
 def render_winners_tab(brand_id: str, org_id: str):
     """Render the Analyze Winners tab."""
 
-    view_mode = st.radio(
-        "View",
-        ["Winner Blueprint", "Deep Dive"],
-        horizontal=True,
-        key="iter_winner_view_mode",
-    )
+    col_mode, col_days = st.columns([3, 1])
+    with col_mode:
+        view_mode = st.radio(
+            "View",
+            ["Winner Blueprint", "Deep Dive"],
+            horizontal=True,
+            key="iter_winner_view_mode",
+        )
+    with col_days:
+        winner_days_back = st.selectbox(
+            "Days back", [14, 30, 60, 90], index=1, key="iter_winner_days_back"
+        )
 
     if view_mode == "Winner Blueprint":
-        _render_cross_winner(brand_id, org_id)
+        _render_cross_winner(brand_id, org_id, winner_days_back)
     else:
-        _render_per_winner(brand_id, org_id)
+        _render_per_winner(brand_id, org_id, winner_days_back)
 
 
-def _render_cross_winner(brand_id: str, org_id: str):
+def _render_cross_winner(brand_id: str, org_id: str, days_back: int = 30):
     """Render cross-winner blueprint view."""
     col1, col2 = st.columns([1, 3])
     with col1:
         top_n = st.selectbox("Top N", [5, 10, 15, 20], index=1, key="iter_top_n")
     with col2:
         if st.button("🧬 Analyze Winners", use_container_width=True, key="iter_cross_btn"):
-            _run_cross_winner_analysis(brand_id, org_id, top_n)
+            _run_cross_winner_analysis(brand_id, org_id, top_n, days_back)
 
     analysis = st.session_state.iter_cross_winner_result
     if not analysis:
@@ -513,7 +540,33 @@ def _render_cross_winner(brand_id: str, org_id: str):
 
     winner_count = analysis.get("winner_count", 0) if isinstance(analysis, dict) else getattr(analysis, "winner_count", 0)
 
-    # Winning formula card
+    # --- Cohort Performance Summary ---
+    cohort_summary = _safe_get(analysis, "cohort_summary")
+    if cohort_summary and isinstance(cohort_summary, dict):
+        m1, m2, m3, m4 = st.columns(4)
+        with m1:
+            st.metric("Avg ROAS", f"{cohort_summary.get('avg_roas', 0):.1f}x")
+        with m2:
+            ctr_range = cohort_summary.get("ctr_range", [0, 0])
+            st.metric("CTR Range", f"{ctr_range[0]:.1f}% - {ctr_range[1]:.1f}%")
+        with m3:
+            st.metric("Total Spend", f"${cohort_summary.get('total_spend', 0):,.0f}")
+        with m4:
+            st.metric("Avg CPA", f"${cohort_summary.get('avg_cpa', 0):,.2f}")
+
+    # --- Winner Thumbnail Gallery ---
+    winner_thumbnails = _safe_get(analysis, "winner_thumbnails") or []
+    if winner_thumbnails and isinstance(winner_thumbnails, list):
+        thumb_cols = st.columns(min(len(winner_thumbnails), 6))
+        for i, thumb in enumerate(winner_thumbnails[:6]):
+            with thumb_cols[i]:
+                if thumb.get("thumbnail_url"):
+                    st.image(thumb["thumbnail_url"], width=80)
+                else:
+                    st.markdown("🖼️")
+                st.caption(f"{thumb.get('roas', 0):.1f}x")
+
+    # --- Winning Formula Card ---
     with st.container(border=True):
         st.markdown(f"### Your Winning Formula (based on top {winner_count} ads)")
 
@@ -541,6 +594,30 @@ def _render_cross_winner(brand_id: str, org_id: str):
         if not common_elements and not common_visuals:
             st.caption("No strong common patterns found. Winners are diverse in this brand.")
 
+        # ALSO NOTABLE (sub-threshold trends 25-49%)
+        notable_elements = _safe_get(analysis, "notable_elements")
+        notable_visuals = _safe_get(analysis, "notable_visual_traits")
+        has_notable = (notable_elements and isinstance(notable_elements, dict)) or \
+                      (notable_visuals and isinstance(notable_visuals, dict))
+
+        if has_notable:
+            st.markdown("")
+            st.markdown("**ALSO NOTABLE** *(25-49% of winners)*")
+            if notable_elements and isinstance(notable_elements, dict):
+                for key, elem in notable_elements.items():
+                    display = elem.get("display_name", elem.get("element", key))
+                    val = elem.get("value", "")
+                    count = elem.get("count", 0)
+                    total = elem.get("total", winner_count)
+                    st.markdown(f"- {display}: {val} ({count}/{total} winners)")
+            if notable_visuals and isinstance(notable_visuals, dict):
+                for field, trait in notable_visuals.items():
+                    label = field.replace("_", " ").title()
+                    val = trait.get("value", "")
+                    count = trait.get("count", 0)
+                    total = trait.get("total", winner_count)
+                    st.markdown(f"- {label}: {val} ({count}/{total} winners)")
+
         # AVOID THIS
         anti_patterns = _safe_get(analysis, "anti_patterns")
         if anti_patterns:
@@ -563,17 +640,199 @@ def _render_cross_winner(brand_id: str, org_id: str):
                 label = direction.get("direction", "")
                 rationale = direction.get("rationale", "")
                 source = direction.get("source", "")
-                st.markdown(f"- **{label}** ({conf:.0%}) — {rationale} [{source}]")
+                st.markdown(f"- **{label}** ({conf:.0%}) -- {rationale} [{source}]")
+
+    # --- Replicate Winner DNA Button ---
+    _render_replicate_button(analysis, brand_id, org_id, winner_thumbnails)
 
 
-def _run_cross_winner_analysis(brand_id: str, org_id: str, top_n: int):
+def _blueprint_to_instructions(blueprint: dict) -> str:
+    """Convert a replication blueprint to human-readable instructions."""
+    from viraltracker.services.winner_dna_analyzer import ELEMENT_DISPLAY_NAMES
+
+    lines = ["WINNER DNA REPLICATION BRIEF:"]
+    element_combo = blueprint.get("element_combo", {})
+    visual = blueprint.get("visual_directives", {})
+    messaging = blueprint.get("messaging_directives", {})
+
+    if element_combo:
+        lines.append("Creative elements to use:")
+        for k, v in element_combo.items():
+            label = ELEMENT_DISPLAY_NAMES.get(k, k.replace('_', ' ').title())
+            lines.append(f"  - {label}: {v}")
+
+    if visual:
+        lines.append("Visual directives:")
+        for k, v in visual.items():
+            lines.append(f"  - {k.replace('_', ' ').title()}: {v}")
+
+    if messaging:
+        lines.append("Messaging directives:")
+        for k, v in messaging.items():
+            label = ELEMENT_DISPLAY_NAMES.get(k, k.replace('_', ' ').title())
+            lines.append(f"  - {label}: {v}")
+
+    return "\n".join(lines)
+
+
+def _render_replicate_button(analysis: dict, brand_id: str, org_id: str, winner_thumbnails: list):
+    """Render the 'Replicate Winner DNA' button below the Blueprint card."""
+    blueprint = _safe_get(analysis, "replication_blueprint")
+    if not blueprint:
+        return
+
+    st.divider()
+
+    if st.button("Replicate Winner DNA", key="iter_replicate_btn", type="primary", use_container_width=True):
+        st.session_state.iter_replicate_expand = True
+
+    if not st.session_state.get("iter_replicate_expand"):
+        return
+
+    with st.container(border=True):
+        st.markdown("### Replicate Winner DNA")
+        st.caption("Create new ads based on the winning formula above.")
+
+        # Winner selector (pick which winner to use as template)
+        if winner_thumbnails:
+            winner_options = [
+                f"{t.get('ad_name', t.get('meta_ad_id', ''))[:30]} ({t.get('roas', 0):.1f}x)"
+                for t in winner_thumbnails
+            ]
+            selected_winner_idx = st.selectbox(
+                "Base winner (template)", range(len(winner_options)),
+                format_func=lambda i: winner_options[i],
+                key="iter_replicate_winner",
+            )
+            selected_winner = winner_thumbnails[selected_winner_idx]
+        else:
+            st.warning("No winner ads available to use as template.")
+            return
+
+        # Product selector
+        products = get_products_for_brand(brand_id)
+        if not products:
+            st.warning("No products found for this brand.")
+            return
+
+        product_id = st.selectbox(
+            "Product",
+            options=[p["id"] for p in products],
+            format_func=lambda pid: next((p["name"] for p in products if p["id"] == pid), pid),
+            key="iter_replicate_product",
+        )
+
+        # Pre-filled instructions
+        default_instructions = _blueprint_to_instructions(blueprint)
+        instructions = st.text_area(
+            "Instructions (pre-filled from blueprint, editable)",
+            value=default_instructions,
+            height=150,
+            key="iter_replicate_instructions",
+        )
+
+        # Number of variations
+        num_variations = st.selectbox("Variations", [3, 5, 10], index=1, key="iter_replicate_num")
+
+        col_go, col_cancel = st.columns(2)
+        with col_go:
+            if st.button("Generate", key="iter_replicate_go", type="primary"):
+                _execute_replication(
+                    selected_winner, brand_id, product_id, org_id,
+                    instructions, num_variations,
+                )
+        with col_cancel:
+            if st.button("Cancel", key="iter_replicate_cancel"):
+                st.session_state.iter_replicate_expand = False
+                st.rerun()
+
+
+def _execute_replication(
+    selected_winner: dict, brand_id: str, product_id: str, org_id: str,
+    instructions: str, num_variations: int,
+):
+    """Execute the replication by creating a one-time scheduled job."""
+    from datetime import datetime, timedelta
+    from uuid import UUID
+
+    meta_ad_id = selected_winner.get("meta_ad_id", "")
+
+    with st.spinner("Setting up replication job..."):
+        try:
+            # Step 1: Find or import the winning ad as a template
+            detector = get_detector()
+            generated_ad_id = detector._find_generated_ad(meta_ad_id, brand_id)
+
+            if not generated_ad_id:
+                from viraltracker.services.meta_winner_import_service import MetaWinnerImportService
+                import_service = MetaWinnerImportService()
+                meta_ad_account_id = detector._get_account_id(meta_ad_id)
+                if not meta_ad_account_id:
+                    st.error("Could not determine Meta ad account ID for this winner.")
+                    return
+
+                import_result = asyncio.run(
+                    import_service.import_meta_winner(
+                        brand_id=UUID(brand_id),
+                        meta_ad_id=meta_ad_id,
+                        product_id=UUID(product_id),
+                        meta_ad_account_id=meta_ad_account_id,
+                        extract_element_tags=True,
+                    )
+                )
+                generated_ad_id = import_result.get("generated_ad_id")
+                if not generated_ad_id:
+                    st.error(f"Failed to import winner ad: {import_result.get('status', 'unknown')}")
+                    return
+
+            # Step 2: Get brand name for job label
+            brand_name = brand_id[:8]
+            try:
+                brand_result = get_supabase_client().table("brands").select("name").eq("id", brand_id).limit(1).execute()
+                if brand_result.data:
+                    brand_name = brand_result.data[0].get("name", brand_name)
+            except Exception:
+                pass
+
+            # Step 3: Create one-time V2 job
+            job_row = {
+                "name": f"Blueprint Replication - {brand_name}",
+                "job_type": "ad_creation_v2",
+                "brand_id": brand_id,
+                "product_id": product_id,
+                "schedule_type": "one_time",
+                "next_run_at": (datetime.utcnow() + timedelta(minutes=1)).isoformat(),
+                "is_active": True,
+                "scraped_template_ids": [generated_ad_id],
+                "parameters": json.dumps({
+                    "content_source": "recreate_template",
+                    "template_selection_mode": "manual",
+                    "num_variations": num_variations,
+                    "canvas_sizes": ["1080x1080px"],
+                    "color_modes": ["original"],
+                    "additional_instructions": instructions,
+                }),
+            }
+            get_supabase_client().table("scheduled_jobs").insert(job_row).execute()
+
+            st.success(
+                f"Replication job created! {num_variations} variations will be generated in ~1 minute. "
+                f"Check the **Scheduled Tasks** page for progress."
+            )
+            st.session_state.iter_replicate_expand = False
+
+        except Exception as e:
+            st.error(f"Replication failed: {e}")
+
+
+def _run_cross_winner_analysis(brand_id: str, org_id: str, top_n: int, days_back: int = 30):
     """Run cross-winner analysis."""
     analyzer = get_dna_analyzer()
 
     with st.spinner(f"Analyzing top {top_n} winners..."):
         try:
             result = asyncio.run(
-                analyzer.analyze_cross_winners(brand_id, org_id, top_n=top_n)
+                analyzer.analyze_cross_winners(brand_id, org_id, top_n=top_n, days_back=days_back)
             )
             if result:
                 # Serialize for session state
@@ -584,6 +843,10 @@ def _run_cross_winner_analysis(brand_id: str, org_id: str, top_n: int):
                     "anti_patterns": result.anti_patterns,
                     "iteration_directions": result.iteration_directions,
                     "replication_blueprint": result.replication_blueprint,
+                    "notable_elements": result.notable_elements,
+                    "notable_visual_traits": result.notable_visual_traits,
+                    "cohort_summary": result.cohort_summary,
+                    "winner_thumbnails": result.winner_thumbnails,
                 }
                 st.rerun()
             else:
@@ -592,14 +855,14 @@ def _run_cross_winner_analysis(brand_id: str, org_id: str, top_n: int):
             st.error(f"Analysis failed: {e}")
 
 
-def _render_per_winner(brand_id: str, org_id: str):
+def _render_per_winner(brand_id: str, org_id: str, days_back: int = 30):
     """Render per-winner deep dive view."""
     # Winner selector
     from viraltracker.services.ad_performance_query_service import AdPerformanceQueryService
     perf_service = AdPerformanceQueryService(get_supabase_client())
 
     top_result = perf_service.get_top_ads(
-        brand_id=brand_id, sort_by="roas", days_back=30, limit=20, min_spend=10.0
+        brand_id=brand_id, sort_by="roas", days_back=days_back, limit=20, min_spend=10.0
     )
     top_ads = top_result.get("ads", [])
 
@@ -607,25 +870,24 @@ def _render_per_winner(brand_id: str, org_id: str):
         st.info("No ads with enough performance data found. Ads need at least 7 days and $10+ spend.")
         return
 
-    # Build selector options
-    options = []
-    for ad in top_ads:
-        roas = ad.get("roas", 0)
-        name = ad.get("ad_name", ad.get("meta_ad_id", ""))[:40]
-        options.append(f"{name} — ROAS {roas:.1f}x")
-
-    selected_idx = st.selectbox(
-        "Select a winner to analyze",
-        range(len(options)),
-        format_func=lambda i: options[i],
-        key="iter_winner_select"
-    )
-
-    selected_ad = top_ads[selected_idx]
-    meta_ad_id = selected_ad["meta_ad_id"]
-
-    if st.button("🧬 Analyze", key="iter_per_winner_btn"):
-        _run_per_winner_analysis(meta_ad_id, brand_id, org_id)
+    # Visual card selector
+    st.markdown("**Select a winner to analyze:**")
+    for i, ad in enumerate(top_ads[:10]):
+        with st.container(border=True):
+            col_thumb, col_info, col_btn = st.columns([1, 4, 1])
+            with col_thumb:
+                if ad.get("thumbnail_url"):
+                    st.image(ad["thumbnail_url"], width=60)
+                else:
+                    st.markdown("🖼️")
+            with col_info:
+                st.markdown(f"**{ad.get('ad_name', '')[:40]}**")
+                roas = ad.get('roas', 0)
+                ctr = ad.get('ctr', 0)
+                st.caption(f"ROAS {roas:.1f}x | CTR {ctr:.1f}% | ${ad.get('spend', 0):,.0f}")
+            with col_btn:
+                if st.button("Analyze", key=f"iter_analyze_{i}"):
+                    _run_per_winner_analysis(ad["meta_ad_id"], brand_id, org_id)
 
     dna = st.session_state.iter_per_winner_result
     if not dna:
@@ -633,17 +895,26 @@ def _render_per_winner(brand_id: str, org_id: str):
 
     # Display DNA results
     dna_id = dna.get("meta_ad_id", "")
+    dna_thumbnail = dna.get("thumbnail_url", "")
     metrics = dna.get("metrics", {})
 
     with st.container(border=True):
-        st.markdown(f"### Why This Ad Wins: `{dna_id}`")
+        # Header with thumbnail
+        if dna_thumbnail:
+            col_dna_thumb, col_dna_title = st.columns([1, 5])
+            with col_dna_thumb:
+                st.image(dna_thumbnail, width=80)
+            with col_dna_title:
+                st.markdown(f"### Why This Ad Wins: `{dna_id}`")
+        else:
+            st.markdown(f"### Why This Ad Wins: `{dna_id}`")
 
         # Performance header
         perf_parts = []
         if metrics.get("roas"):
             perf_parts.append(f"ROAS: {metrics['roas']:.1f}x")
         if metrics.get("ctr"):
-            perf_parts.append(f"CTR: {metrics['ctr']:.2f}%")
+            perf_parts.append(f"CTR: {metrics['ctr']:.1f}%")
         if metrics.get("cpa"):
             perf_parts.append(f"CPA: ${metrics['cpa']:.2f}")
         if perf_parts:
@@ -721,8 +992,9 @@ def _render_per_winner(brand_id: str, org_id: str):
                     median = median if median is not None else 0
                     p75 = p75 if p75 is not None else 0
                     st.markdown(
-                        f"- **{METRIC_LABELS.get(metric, metric)}**: {val:.4f} "
-                        f"(p25: {p25:.4f} | median: {median:.4f} | p75: {p75:.4f}) {verdict_icon} {verdict}"
+                        f"- **{METRIC_LABELS.get(metric, metric)}**: {_format_metric(metric, val)} "
+                        f"(p25: {_format_metric(metric, p25)} | median: {_format_metric(metric, median)} "
+                        f"| p75: {_format_metric(metric, p75)}) {verdict_icon} {verdict}"
                     )
 
         # Synergies/conflicts expander
@@ -749,9 +1021,28 @@ def _run_per_winner_analysis(meta_ad_id: str, brand_id: str, org_id: str):
                 analyzer.analyze_winner(meta_ad_id, brand_id, org_id)
             )
             if dna:
+                # Fetch thumbnail_url from meta_ads_performance
+                thumbnail_url = ""
+                try:
+                    thumb_result = (
+                        get_supabase_client().table("meta_ads_performance")
+                        .select("thumbnail_url")
+                        .eq("meta_ad_id", meta_ad_id)
+                        .eq("brand_id", brand_id)
+                        .not_.is_("thumbnail_url", "null")
+                        .order("date", desc=True)
+                        .limit(1)
+                        .execute()
+                    )
+                    if thumb_result.data:
+                        thumbnail_url = thumb_result.data[0].get("thumbnail_url", "")
+                except Exception:
+                    pass
+
                 # Serialize for session state
                 st.session_state.iter_per_winner_result = {
                     "meta_ad_id": dna.meta_ad_id,
+                    "thumbnail_url": thumbnail_url,
                     "metrics": dna.metrics,
                     "element_scores": dna.element_scores,
                     "top_elements": dna.top_elements,

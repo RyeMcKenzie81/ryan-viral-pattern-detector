@@ -873,3 +873,64 @@ The current permissive RLS policy (`FOR ALL TO authenticated USING (true)`) mean
 - `viraltracker/ui/pages/60_⚙️_Pipeline_Manager.py` — Platform schedules
 
 **See also**: Item #9 (Activity Feed & Notification Inbox) — retry notifications feed into the activity feed.
+
+---
+
+### 35. CTR/Conversion Rate Service-Layer Normalization
+
+**Priority**: Low
+**Complexity**: Medium
+**Added**: 2026-03-16
+
+**Context**: CTR and conversion_rate are stored inconsistently across services — some as decimals (0.015 = 1.5%), others as percentages (1.5). Currently handled at the display layer with `from_decimal` param on `_format_metric()` in Iteration Lab, but this is fragile and doesn't scale.
+
+**Current state**:
+- `IterationOpportunityDetector` stores CTR/CVR as decimals (clicks/impressions)
+- `WinnerDNAAnalyzer._get_ad_metrics()` stores as percentage (clicks/impressions * 100)
+- `AdPerformanceQueryService._aggregate_by_ad()` stores as percentage (clicks/impressions * 100)
+- Baseline service stores CTR as decimal (from Meta API raw values)
+
+**Impact**: 23 format locations across 7 files (30_Ad_Performance, 36_Experiments, ad_intelligence_agent, etc.)
+
+**What's needed**:
+1. Pick a convention (percentage seems to be the majority)
+2. Normalize all services to that convention
+3. Remove `from_decimal` workaround from `_format_metric()`
+4. Audit baseline service to ensure consistency
+
+**Related files**:
+- `viraltracker/services/iteration_opportunity_detector.py` — `_load_ads_with_performance()`
+- `viraltracker/services/winner_dna_analyzer.py` — `_get_ad_metrics()`
+- `viraltracker/services/ad_performance_query_service.py` — `_aggregate_by_ad()`
+- `viraltracker/ui/pages/38_🔬_Iteration_Lab.py` — `_format_metric()`
+
+### 35. CTR / Conversion Rate Unit Normalization
+
+**Priority**: Medium
+**Complexity**: Medium (23 format locations across 7 files)
+**Added**: 2026-03-16
+
+**Context**: CTR and conversion_rate are stored in two different units depending on the service:
+- **Decimal** (0.015 = 1.5%): `IterationOpportunityDetector`, baseline service
+- **Percentage** (1.5 = 1.5%): `AdPerformanceQueryService`, `WinnerDNAAnalyzer`
+
+This inconsistency requires every display site to know which service provided the data. Currently handled with a `from_decimal` parameter in the Iteration Lab's `_format_metric()`, but this is fragile and doesn't scale.
+
+**What's needed**:
+1. Normalize all services to output CTR and conversion_rate as **decimals** (matching baselines and Meta API convention)
+2. Update all 23 display format locations to multiply by 100 when showing percentages
+3. Update test fixtures and assertions
+
+**Affected files** (source methods to normalize):
+- `ad_performance_query_service.py`: `_aggregate_by_ad()`, `_aggregate_by_campaign()`, `_aggregate_by_adset()`, `_compute_period_totals()`, `get_ad_details()`, `get_breakdown_by_media_type()`, `get_breakdown_by_landing_page()`, `get_breakdown_by_product()` (8 methods)
+- `winner_dna_analyzer.py`: `_get_ad_metrics()` (1 method)
+
+**Affected files** (consumer display code to update):
+- `viraltracker/ui/pages/30_📈_Ad_Performance.py` (6 locations)
+- `viraltracker/ui/pages/38_🔬_Iteration_Lab.py` (3 locations — remove `from_decimal` param)
+- `viraltracker/ui/pages/36_🧪_Experiments.py` (3 locations)
+- `viraltracker/agent/agents/ad_intelligence_agent.py` (5 locations)
+- `viraltracker/services/winner_dna_analyzer.py` (1 location — action brief)
+- `tests/services/test_winner_dna_analyzer.py` (2 assertions)
+
+**Migration strategy**: Do as a single focused PR — normalize sources first, then search-and-replace all `f"{ctr:.2f}%"` → `f"{ctr*100:.1f}%"` patterns.

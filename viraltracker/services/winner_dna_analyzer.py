@@ -69,6 +69,10 @@ class CrossWinnerAnalysis:
     iteration_directions: List[Dict[str, Any]]
     replication_blueprint: Dict[str, Any]
     winner_dnas: List[WinnerDNA] = field(default_factory=list)
+    notable_elements: Dict[str, Any] = field(default_factory=dict)
+    notable_visual_traits: Dict[str, Any] = field(default_factory=dict)
+    cohort_summary: Dict[str, Any] = field(default_factory=dict)
+    winner_thumbnails: List[Dict] = field(default_factory=list)
 
 
 class WinnerDNAAnalyzer:
@@ -157,6 +161,7 @@ class WinnerDNAAnalyzer:
         org_id: str,
         top_n: int = 10,
         min_reward: float = 0.65,
+        days_back: int = 30,
     ) -> Optional[CrossWinnerAnalysis]:
         """Cross-winner pattern extraction.
 
@@ -165,12 +170,13 @@ class WinnerDNAAnalyzer:
             org_id: Organization UUID.
             top_n: Number of top winners to analyze.
             min_reward: Minimum reward score to qualify as winner.
+            days_back: Lookback window in days for performance data.
 
         Returns:
             CrossWinnerAnalysis object, or None if insufficient winners.
         """
         # 1. Identify top winners
-        winner_ads = self._find_top_winners(brand_id, top_n, min_reward)
+        winner_ads = self._find_top_winners(brand_id, top_n, min_reward, days_back)
         if len(winner_ads) < 3:
             logger.info(f"Only {len(winner_ads)} winners found for brand {brand_id}, need at least 3")
             return None
@@ -188,24 +194,34 @@ class WinnerDNAAnalyzer:
         if len(winner_dnas) < 3:
             return None
 
-        # 3. Find common elements (>=70% frequency)
+        # 3. Find common elements (>=50% frequency)
         common_elements = self._find_common_elements(winner_dnas)
 
         # 4. Find common visual traits
         common_visuals = self._find_common_visual_traits(winner_dnas)
 
-        # 5. Anti-patterns (common in losers, absent in winners)
+        # 5. Find sub-threshold "Also Notable" trends (25-49%)
+        notable_elements = self._find_notable_elements(winner_dnas, common_elements)
+        notable_visuals = self._find_notable_visual_traits(winner_dnas, common_visuals)
+
+        # 6. Anti-patterns (common in losers, absent in winners)
         anti_patterns = await self._identify_anti_patterns(winner_dnas, brand_id)
 
-        # 6. Build iteration directions
+        # 7. Build iteration directions
         iteration_directions = self._build_iteration_directions(
             common_elements, common_visuals, anti_patterns, len(winner_dnas)
         )
 
-        # 7. Build replication blueprint
+        # 8. Build replication blueprint
         blueprint = self._build_replication_blueprint(
             common_elements, common_visuals, winner_dnas
         )
+
+        # 9. Collect winner thumbnails
+        winner_thumbnails = self._collect_winner_thumbnails(winner_ads, winner_dnas)
+
+        # 10. Compute cohort performance summary
+        cohort_summary = self._compute_cohort_summary(winner_dnas)
 
         real_org_id = self._resolve_org_id(org_id, brand_id)
 
@@ -217,6 +233,10 @@ class WinnerDNAAnalyzer:
             iteration_directions=iteration_directions,
             replication_blueprint=blueprint,
             winner_dnas=winner_dnas,
+            notable_elements=notable_elements,
+            notable_visual_traits=notable_visuals,
+            cohort_summary=cohort_summary,
+            winner_thumbnails=winner_thumbnails,
         )
 
         # Store cross-winner analysis
@@ -587,7 +607,7 @@ class WinnerDNAAnalyzer:
     # ---------------------------------------------------------------------------
 
     def _find_top_winners(
-        self, brand_id: str, top_n: int, min_reward: float
+        self, brand_id: str, top_n: int, min_reward: float, days_back: int = 30
     ) -> List[Dict]:
         """Find top N winning ads by ROAS."""
         from viraltracker.services.ad_performance_query_service import AdPerformanceQueryService
@@ -596,7 +616,7 @@ class WinnerDNAAnalyzer:
         result = perf_service.get_top_ads(
             brand_id=brand_id,
             sort_by="roas",
-            days_back=30,
+            days_back=days_back,
             limit=top_n * 2,  # Fetch more to filter
             min_spend=10.0,
         )
@@ -702,6 +722,141 @@ class WinnerDNAAnalyzer:
                     }
 
         return common
+
+    def _find_notable_elements(
+        self, dnas: List[WinnerDNA], common_elements: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Find sub-threshold element trends (25-49% frequency).
+
+        Returns elements that appear in 25-49% of winners but didn't meet
+        the 50% common threshold. Capped at 5 items.
+        """
+        n = len(dnas)
+        element_counter: Dict[str, Counter] = {}
+
+        for dna in dnas:
+            seen_keys: set = set()
+            for score in dna.element_scores:
+                elem = score["element"]
+                val = score["value"]
+                if elem not in element_counter:
+                    element_counter[elem] = Counter()
+                element_counter[elem][val] += 1
+                seen_keys.add(elem)
+
+            messaging = dna.messaging or {}
+            for field_key in ("hook_type", "awareness_level", "creative_format",
+                              "creative_angle", "primary_cta"):
+                if field_key in seen_keys:
+                    continue
+                val = messaging.get(field_key)
+                if val:
+                    if field_key not in element_counter:
+                        element_counter[field_key] = Counter()
+                    element_counter[field_key][val] += 1
+
+        notable = {}
+        for elem, counter in element_counter.items():
+            for val, count in counter.items():
+                freq = count / n
+                key = f"{elem}:{val}"
+                if 0.25 <= freq < COMMON_ELEMENT_THRESHOLD and key not in common_elements:
+                    notable[key] = {
+                        "element": elem,
+                        "display_name": ELEMENT_DISPLAY_NAMES.get(elem, elem.replace("_", " ").title()),
+                        "value": val,
+                        "frequency": round(freq, 2),
+                        "count": count,
+                        "total": n,
+                    }
+
+        # Sort by frequency desc, cap at 5
+        sorted_notable = dict(
+            sorted(notable.items(), key=lambda x: x[1]["frequency"], reverse=True)[:5]
+        )
+        return sorted_notable
+
+    def _find_notable_visual_traits(
+        self, dnas: List[WinnerDNA], common_visuals: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Find sub-threshold visual trends (25-49% frequency)."""
+        n_with_visuals = sum(1 for d in dnas if d.visual_properties)
+        if n_with_visuals < 3:
+            return {}
+
+        visual_fields = [
+            "contrast_level", "color_palette_type", "text_density",
+            "visual_hierarchy", "composition_style", "face_presence",
+            "person_framing", "product_prominence", "headline_style",
+        ]
+
+        trait_counters: Dict[str, Counter] = {}
+        for dna in dnas:
+            if not dna.visual_properties:
+                continue
+            for fld in visual_fields:
+                val = dna.visual_properties.get(fld)
+                if val is not None:
+                    if fld not in trait_counters:
+                        trait_counters[fld] = Counter()
+                    trait_counters[fld][str(val)] += 1
+
+        notable = {}
+        for fld, counter in trait_counters.items():
+            for val, count in counter.items():
+                freq = count / n_with_visuals
+                if 0.25 <= freq < COMMON_ELEMENT_THRESHOLD and fld not in common_visuals:
+                    notable[fld] = {
+                        "value": val,
+                        "frequency": round(freq, 2),
+                        "count": count,
+                        "total": n_with_visuals,
+                    }
+
+        # Sort by frequency desc, cap at 5
+        sorted_notable = dict(
+            sorted(notable.items(), key=lambda x: x[1]["frequency"], reverse=True)[:5]
+        )
+        return sorted_notable
+
+    def _collect_winner_thumbnails(
+        self, winner_ads: List[Dict], winner_dnas: List[WinnerDNA]
+    ) -> List[Dict]:
+        """Collect thumbnails from winner ads for gallery display."""
+        thumbnails = []
+        dna_ids = {d.meta_ad_id for d in winner_dnas}
+
+        for ad in winner_ads:
+            if ad["meta_ad_id"] not in dna_ids:
+                continue
+            thumb = {
+                "meta_ad_id": ad["meta_ad_id"],
+                "thumbnail_url": ad.get("thumbnail_url", ""),
+                "roas": ad.get("roas", 0),
+                "ad_name": ad.get("ad_name", ""),
+            }
+            thumbnails.append(thumb)
+
+        return thumbnails
+
+    def _compute_cohort_summary(self, winner_dnas: List[WinnerDNA]) -> Dict[str, Any]:
+        """Compute performance summary across the winner cohort."""
+        import statistics
+
+        roas_vals = [d.metrics.get("roas", 0) for d in winner_dnas if d.metrics.get("roas")]
+        ctr_vals = [d.metrics.get("ctr", 0) for d in winner_dnas if d.metrics.get("ctr")]
+        cpa_vals = [d.metrics.get("cpa", 0) for d in winner_dnas if d.metrics.get("cpa")]
+        spend_vals = [d.metrics.get("spend", 0) for d in winner_dnas if d.metrics.get("spend")]
+
+        summary = {
+            "avg_roas": round(statistics.mean(roas_vals), 1) if roas_vals else 0,
+            "roas_range": [round(min(roas_vals), 1), round(max(roas_vals), 1)] if roas_vals else [0, 0],
+            "avg_ctr": round(statistics.mean(ctr_vals), 2) if ctr_vals else 0,
+            "ctr_range": [round(min(ctr_vals), 2), round(max(ctr_vals), 2)] if ctr_vals else [0, 0],
+            "total_spend": round(sum(spend_vals), 0) if spend_vals else 0,
+            "avg_cpa": round(statistics.mean(cpa_vals), 2) if cpa_vals else 0,
+        }
+        return summary
 
     async def _identify_anti_patterns(
         self, winner_dnas: List[WinnerDNA], brand_id: str
