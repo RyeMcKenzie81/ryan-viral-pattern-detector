@@ -346,9 +346,17 @@ if not integration:
                     if public_domain:
                         config["public_domain"] = public_domain
                     try:
+                        # Resolve "all" to real UUID for superusers
+                        resolved_org_id = org_id
+                        if org_id == "all":
+                            from viraltracker.core.database import get_supabase_client
+                            _db = get_supabase_client()
+                            _row = _db.table("brands").select("organization_id").eq("id", brand_id).limit(1).execute()
+                            if _row.data:
+                                resolved_org_id = _row.data[0]["organization_id"]
                         project_service.upsert_brand_integration(
                             brand_id=brand_id,
-                            organization_id=org_id,
+                            organization_id=resolved_org_id,
                             platform="shopify",
                             config=config,
                         )
@@ -396,9 +404,17 @@ else:
                         if config.get(key):
                             updated_config[key] = config[key]
                     try:
+                        # Resolve "all" to real UUID for superusers
+                        resolved_org_id = org_id
+                        if org_id == "all":
+                            from viraltracker.core.database import get_supabase_client
+                            _db = get_supabase_client()
+                            _row = _db.table("brands").select("organization_id").eq("id", brand_id).limit(1).execute()
+                            if _row.data:
+                                resolved_org_id = _row.data[0]["organization_id"]
                         project_service.upsert_brand_integration(
                             brand_id=brand_id,
-                            organization_id=org_id,
+                            organization_id=resolved_org_id,
                             platform="shopify",
                             config=updated_config,
                         )
