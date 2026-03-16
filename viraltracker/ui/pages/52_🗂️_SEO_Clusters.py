@@ -365,7 +365,7 @@ def render_cluster_detail(project_id):
 
     # --- Section 3: Link Health (collapsed) ---
     with st.expander("Link Health"):
-        _render_link_health(cluster_id)
+        _render_link_health(cluster_id, brand_id, org_id)
 
     # --- Section 4: Gap Analysis (collapsed) ---
     with st.expander("Gap Analysis"):
@@ -437,7 +437,7 @@ def render_cluster_detail(project_id):
                 st.info("No planned spokes to schedule.")
 
 
-def _render_link_health(cluster_id):
+def _render_link_health(cluster_id, brand_id, org_id):
     """Render link health audit for a cluster."""
     svc = get_cluster_service()
     audit = svc.get_interlinking_audit(cluster_id)
@@ -736,7 +736,8 @@ project_service = get_project_service()
 projects = project_service.list_projects(org_id, brand_id=brand_id)
 
 if not projects:
-    st.info("No SEO projects found. Create one in the Keyword Research page.")
+    st.info("No SEO projects yet. Create one first.")
+    st.page_link("pages/49_🔑_Keyword_Research.py", label="Go to Keyword Research", icon="🔑")
     st.stop()
 
 project_options = {p["id"]: p["name"] for p in projects}

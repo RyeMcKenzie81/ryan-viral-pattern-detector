@@ -340,77 +340,101 @@ with tab_qw:
                             # Actions — always show all buttons
                             if article_id:
                                 st.divider()
-                                repair_col1, repair_col2, repair_col3, repair_col4 = st.columns(4)
-                                with repair_col1:
-                                    if st.button("Repair Metadata", key="seo_wf_repair_meta", help="Re-extract SEO title, meta description, and tags from the article content without regenerating it."):
-                                        with st.spinner("Re-parsing metadata from content..."):
-                                            repair_result = workflow_svc.repair_article_metadata(article_id)
-                                        fixed = repair_result.get("fixed", [])
-                                        if fixed:
-                                            st.success(f"Fixed: {', '.join(fixed)}. Click Re-run Checklist to verify.")
-                                        elif repair_result.get("already_populated"):
-                                            st.info(f"Metadata already populated: {', '.join(repair_result['already_populated'])}. Click Re-run Checklist to refresh.")
-                                        else:
-                                            st.warning("No metadata could be extracted. Try Re-run Phase C.")
-                                with repair_col2:
-                                    if st.button("Re-run Phase C", key="seo_wf_rerun_phase_c", help="Regenerate the article with Claude (SEO optimization pass). Use when content quality is poor or you want a fresh rewrite."):
-                                        with st.spinner("Re-running Phase C (30-60s)..."):
-                                            try:
-                                                pc_result = workflow_svc.rerun_phase_c(
-                                                    article_id=article_id,
-                                                    brand_id=brand_id,
-                                                    organization_id=org_id,
-                                                )
-                                                parsed_fields = pc_result.get("parsed_fields", [])
-                                                st.success(f"Phase C complete. Parsed: {', '.join(parsed_fields) or 'none'}")
-                                            except Exception as e:
-                                                st.error(f"Phase C failed: {str(e)[:200]}")
-                                with repair_col3:
-                                    if st.button("Re-run Checklist", key="seo_wf_rerun_checklist", help="Re-validate the article against the pre-publish checklist (word count, readability, keyword usage, etc)."):
-                                        with st.spinner("Running checklist..."):
-                                            from viraltracker.services.seo_pipeline.services.pre_publish_checklist_service import PrePublishChecklistService
-                                            from viraltracker.services.seo_pipeline.services.seo_brand_config_service import SEOBrandConfigService
-                                            _cl_svc = PrePublishChecklistService()
-                                            _bc_svc = SEOBrandConfigService()
-                                            _bc = _bc_svc.get_config(brand_id) or {}
-                                            new_checklist = _cl_svc.run_checklist(article_id, _bc)
-                                            _job_result = job.get("result", {})
-                                            _job_result["checklist"] = new_checklist
-                                            workflow_svc.supabase.table("seo_workflow_jobs").update(
-                                                {"result": _job_result}
-                                            ).eq("id", active_job_id).execute()
-                                            st.rerun()
-                                with repair_col4:
-                                    if st.button("Re-run Links", key="seo_wf_rerun_links", help="Refresh internal link suggestions, inject contextual links, and rebuild the Related Articles section."):
-                                        with st.spinner("Re-running interlinking..."):
-                                            try:
-                                                link_result = workflow_svc.rerun_interlinking(
-                                                    article_id=article_id,
-                                                    brand_id=brand_id,
-                                                    organization_id=org_id,
-                                                )
-                                                parts = []
-                                                if link_result.get("suggestion_count"):
-                                                    parts.append(f"{link_result['suggestion_count']} suggestions")
-                                                if link_result.get("links_added"):
-                                                    parts.append(f"{link_result['links_added']} auto-links")
-                                                if link_result.get("related_articles_linked"):
-                                                    parts.append(f"{link_result['related_articles_linked']} related")
-                                                st.success(f"Interlinking complete: {', '.join(parts) or 'no changes'}")
-                                            except Exception as e:
-                                                st.error(f"Interlinking failed: {str(e)[:200]}")
+                                with st.container(border=True):
+                                    st.caption("Article Maintenance")
+                                    repair_col1, repair_col2, repair_col3, repair_col4 = st.columns(4)
+                                    with repair_col1:
+                                        if st.button("Repair Metadata", key="seo_wf_repair_meta", help="Re-extract SEO title, meta description, and tags from the article content without regenerating it."):
+                                            with st.spinner("Re-parsing metadata from content..."):
+                                                repair_result = workflow_svc.repair_article_metadata(article_id)
+                                            fixed = repair_result.get("fixed", [])
+                                            if fixed:
+                                                st.success(f"Fixed: {', '.join(fixed)}. Click Re-run Checklist to verify.")
+                                            elif repair_result.get("already_populated"):
+                                                st.info(f"Metadata already populated: {', '.join(repair_result['already_populated'])}. Click Re-run Checklist to refresh.")
+                                            else:
+                                                st.warning("No metadata could be extracted. Try Re-run Phase C.")
+                                    with repair_col2:
+                                        _republish = st.checkbox(
+                                            "Re-publish after",
+                                            value=bool(result.get("cms_article_id")),
+                                            key="seo_wf_rerun_republish",
+                                            help="Push updated content to Shopify after re-generation.",
+                                        )
+                                        if st.button("Re-run Phase C", key="seo_wf_rerun_phase_c", help="Regenerate the article with Claude (SEO optimization pass). Use when content quality is poor or you want a fresh rewrite."):
+                                            with st.spinner("Re-running Phase C (30-60s)..."):
+                                                try:
+                                                    pc_result = workflow_svc.rerun_phase_c(
+                                                        article_id=article_id,
+                                                        brand_id=brand_id,
+                                                        organization_id=org_id,
+                                                        republish=_republish,
+                                                    )
+                                                    parsed_fields = pc_result.get("parsed_fields", [])
+                                                    msg = f"Phase C complete. Parsed: {', '.join(parsed_fields) or 'none'}"
+                                                    if _republish:
+                                                        msg += " Re-published to Shopify."
+                                                    st.success(msg)
+                                                except Exception as e:
+                                                    st.error(f"Phase C failed: {str(e)[:200]}")
+                                    with repair_col3:
+                                        if st.button("Re-run Checklist", key="seo_wf_rerun_checklist", help="Re-validate the article against the pre-publish checklist (word count, readability, keyword usage, etc)."):
+                                            with st.spinner("Running checklist..."):
+                                                from viraltracker.services.seo_pipeline.services.pre_publish_checklist_service import PrePublishChecklistService
+                                                from viraltracker.services.seo_pipeline.services.seo_brand_config_service import SEOBrandConfigService
+                                                _cl_svc = PrePublishChecklistService()
+                                                _bc_svc = SEOBrandConfigService()
+                                                _bc = _bc_svc.get_config(brand_id) or {}
+                                                new_checklist = _cl_svc.run_checklist(article_id, _bc)
+                                                _job_result = job.get("result", {})
+                                                _job_result["checklist"] = new_checklist
+                                                workflow_svc.supabase.table("seo_workflow_jobs").update(
+                                                    {"result": _job_result}
+                                                ).eq("id", active_job_id).execute()
+                                                st.rerun()
+                                    with repair_col4:
+                                        if st.button("Re-run Links", key="seo_wf_rerun_links", help="Refresh internal link suggestions, inject contextual links, and rebuild the Related Articles section."):
+                                            with st.spinner("Re-running interlinking..."):
+                                                try:
+                                                    link_result = workflow_svc.rerun_interlinking(
+                                                        article_id=article_id,
+                                                        brand_id=brand_id,
+                                                        organization_id=org_id,
+                                                    )
+                                                    parts = []
+                                                    if link_result.get("suggestion_count"):
+                                                        parts.append(f"{link_result['suggestion_count']} suggestions")
+                                                    if link_result.get("links_added"):
+                                                        parts.append(f"{link_result['links_added']} auto-links")
+                                                    if link_result.get("related_articles_linked"):
+                                                        parts.append(f"{link_result['related_articles_linked']} related")
+                                                    st.success(f"Interlinking complete: {', '.join(parts) or 'no changes'}")
+                                                except Exception as e:
+                                                    st.error(f"Interlinking failed: {str(e)[:200]}")
 
-                    # Image status badge
-                    _img_status_row = None
+                    # Article status row (image status + published status + admin link)
+                    _art_status_row = None
                     if article_id:
-                        _img_status_row = (
+                        _art_status_row = (
                             workflow_svc.supabase.table("seo_articles")
-                            .select("image_status")
+                            .select("image_status, image_metadata, status, cms_article_id, published_url")
                             .eq("id", article_id)
                             .limit(1)
                             .execute()
                         )
-                    _img_status = (_img_status_row.data[0].get("image_status", "none") if _img_status_row and _img_status_row.data else "none")
+                    _art_data = _art_status_row.data[0] if _art_status_row and _art_status_row.data else {}
+                    _img_status = _art_data.get("image_status") or "none"
+                    _img_count = len([m for m in (_art_data.get("image_metadata") or []) if m.get("status") == "success"])
+
+                    # Image status indicator
+                    _img_labels = {
+                        "pending": ":orange[Queued]",
+                        "processing": ":blue[Generating...]",
+                        "complete": f":green[Ready ({_img_count} images)]",
+                        "failed": ":red[Failed]",
+                    }
+                    _img_label = _img_labels.get(_img_status, ":gray[Not started]")
+                    st.markdown(f"**Images:** {_img_label}")
 
                     if _img_status in ("pending", "processing"):
                         st.info("Images generating in background...")
@@ -429,8 +453,20 @@ with tab_qw:
                                     st.rerun()
                                 except Exception as e:
                                     st.error(f"Retry failed: {str(e)[:200]}")
-                    elif _img_status == "complete":
-                        st.caption("Images: complete")
+
+                    # Published status badge + Shopify admin link
+                    _cms_id = _art_data.get("cms_article_id")
+                    _art_status = _art_data.get("status", "")
+                    if _cms_id:
+                        if _art_status == "published":
+                            _pub_badge = ":green[Live]"
+                        else:
+                            _pub_badge = ":orange[Draft]"
+                        _admin_url = result.get("admin_url", "")
+                        _pub_line = f"**Shopify:** {_pub_badge}"
+                        if _admin_url:
+                            _pub_line += f" · [Admin]({_admin_url})"
+                        st.markdown(_pub_line)
 
                     # Image Management & Publish Tabs
                     img_tab, pub_tab = st.tabs(["Images", "Publish"])
@@ -554,26 +590,44 @@ with tab_qw:
                             st.info("No article ID available.")
 
                     with pub_tab:
-                        st.caption("Push the latest article content, images, and metadata to Shopify. Won't change the article's published/draft state.")
-                        if article_id and st.button("Re-publish to Shopify", key="seo_wf_republish", type="primary"):
-                            try:
-                                with st.spinner("Updating Shopify draft..."):
-                                    from viraltracker.services.seo_pipeline.services.cms_publisher_service import CMSPublisherService
-                                    pub_svc = CMSPublisherService()
-                                    pub_result = pub_svc.publish_article(
-                                        article_id=article_id,
-                                        brand_id=brand_id,
-                                        organization_id=org_id,
-                                        draft=True,
-                                    )
-                                admin_url = pub_result.get("admin_url", "")
-                                if admin_url:
-                                    st.success(f"Updated! [View in Shopify]({admin_url})")
-                                else:
-                                    st.success("Article updated in Shopify.")
-                            except Exception as e:
-                                st.error(f"Publish failed: {str(e)[:200]}")
-                        elif not article_id:
+                        if article_id:
+                            if _img_status and _img_status != "complete":
+                                st.warning("Images are not ready yet. Publishing now will create the article without generated images.")
+                            _pub_mode = st.radio(
+                                "Publish mode",
+                                ["Draft", "Live"],
+                                key="seo_wf_pub_mode",
+                                horizontal=True,
+                                help="Draft pushes content without changing visibility. Live makes the article publicly visible on Shopify.",
+                            )
+                            _is_live = _pub_mode == "Live"
+                            if _is_live:
+                                st.warning("This will make the article publicly visible on your Shopify store.")
+                            else:
+                                st.caption("Push the latest article content, images, and metadata to Shopify without changing visibility.")
+                            if st.button(
+                                "Publish Live" if _is_live else "Re-publish to Shopify",
+                                key="seo_wf_republish",
+                                type="primary",
+                            ):
+                                try:
+                                    with st.spinner("Publishing to Shopify..."):
+                                        from viraltracker.services.seo_pipeline.services.cms_publisher_service import CMSPublisherService
+                                        pub_svc = CMSPublisherService()
+                                        pub_result = pub_svc.publish_article(
+                                            article_id=article_id,
+                                            brand_id=brand_id,
+                                            organization_id=org_id,
+                                            draft=not _is_live,
+                                        )
+                                    admin_url = pub_result.get("admin_url", "")
+                                    if admin_url:
+                                        st.success(f"{'Published live' if _is_live else 'Updated'}! [View in Shopify]({admin_url})")
+                                    else:
+                                        st.success("Published live!" if _is_live else "Article updated in Shopify.")
+                                except Exception as e:
+                                    st.error(f"Publish failed: {str(e)[:200]}")
+                        else:
                             st.info("No article ID available.")
 
                     # Auto-poll while images generating
@@ -677,16 +731,22 @@ with tab_qw:
             elif job_type == "batch":
                 role_tag = " · :violet[Cluster]"
 
-            rc1, rc2, rc3 = st.columns([4, 1, 1])
-            with rc1:
-                st.markdown(f"[{status_icon}] **{kw}** — {j_status}{shopify_tag}{role_tag} — {created}")
-            with rc2:
-                if url:
-                    st.markdown(f"[View]({url})")
-            with rc3:
-                if j_status in ("completed", "failed") and st.button("Load", key=f"seo_wf_load_{_jid}"):
-                    st.session_state["seo_wf_active_job"] = _jid
-                    st.rerun()
+            with st.container(border=True):
+                rc1, rc2, rc3 = st.columns([4, 1, 1])
+                with rc1:
+                    st.markdown(f"[{status_icon}] **{kw}** — {j_status}{shopify_tag}{role_tag} — {created}")
+                with rc2:
+                    if url:
+                        st.link_button("View", url, use_container_width=True)
+                    else:
+                        st.write("")
+                with rc3:
+                    if j_status in ("completed", "failed"):
+                        if st.button("Load", key=f"seo_wf_load_{_jid}", use_container_width=True):
+                            st.session_state["seo_wf_active_job"] = _jid
+                            st.rerun()
+                    else:
+                        st.write("")
     else:
         st.caption("No recent jobs for this brand.")
 
@@ -1267,15 +1327,19 @@ with tab_cluster:
 
             icon = {"completed": "+", "failed": "!", "cancelled": "x", "running": "~"}.get(bj_status, "?")
 
-            bc1, bc2 = st.columns([4, 1])
-            with bc1:
-                st.markdown(
-                    f"[{icon}] **{bc.get('pillar_keyword', '?')}** — "
-                    f"{bj_status} ({bj_completed}/{bj_total} articles) — {bj_created}"
-                )
-            with bc2:
-                if bj_status in ("completed", "failed") and st.button("Load", key=f"seo_wf_load_batch_{_bjid}"):
-                    st.session_state["seo_wf_batch_job"] = _bjid
-                    st.rerun()
+            with st.container(border=True):
+                bc1, bc2 = st.columns([4, 1])
+                with bc1:
+                    st.markdown(
+                        f"[{icon}] **{bc.get('pillar_keyword', '?')}** — "
+                        f"{bj_status} ({bj_completed}/{bj_total} articles) — {bj_created}"
+                    )
+                with bc2:
+                    if bj_status in ("completed", "failed"):
+                        if st.button("Load", key=f"seo_wf_load_batch_{_bjid}", use_container_width=True):
+                            st.session_state["seo_wf_batch_job"] = _bjid
+                            st.rerun()
+                    else:
+                        st.write("")
     else:
         st.caption("No recent batch jobs for this brand.")

@@ -20,6 +20,7 @@ from viraltracker.services.seo_pipeline.services.cms_publisher_service import (
     CMSPublisher,
     ShopifyPublisher,
     CMSPublisherService,
+    render_markdown_to_html,
 )
 
 
@@ -566,3 +567,121 @@ class TestAbstractClass:
     def test_cannot_instantiate_abc(self):
         with pytest.raises(TypeError):
             CMSPublisher()
+
+
+# ---------------------------------------------------------------------------
+# render_markdown_to_html standalone function
+# ---------------------------------------------------------------------------
+
+
+class TestRenderMarkdownToHtml:
+    def test_basic_conversion(self):
+        html = render_markdown_to_html("# Hello\n\nParagraph.")
+        assert "<h1>" in html
+        assert "<p>" in html
+
+    def test_strips_frontmatter(self):
+        md = '---\ntitle: "Test"\n---\n\n# Content'
+        html = render_markdown_to_html(md)
+        assert "title:" not in html
+        assert "<h1>" in html
+
+    def test_strips_image_markers(self):
+        md = "# Test\n\n[IMAGE: hero image]\n\nContent."
+        html = render_markdown_to_html(md)
+        assert "[IMAGE:" not in html
+
+    def test_adds_responsive_styling(self):
+        html = render_markdown_to_html("# Test")
+        assert "max-width: 100%" in html
+
+    def test_delegates_from_publisher(self, shopify_publisher):
+        md = "# Hello\n\nWorld."
+        assert shopify_publisher._markdown_to_html(md) == render_markdown_to_html(md)
+
+
+# ---------------------------------------------------------------------------
+# CMSPublisherService.sync_content_html
+# ---------------------------------------------------------------------------
+
+
+class TestSyncContentHtml:
+    def test_renders_and_persists(self, publisher_service):
+        article = {
+            "id": "art-1",
+            "phase_c_output": "# Article Title\n\nSome content here.",
+        }
+        mock_table = MagicMock()
+        publisher_service.supabase.table.return_value = mock_table
+        mock_table.select.return_value.eq.return_value.execute.return_value = MagicMock(data=[article])
+        mock_table.update.return_value.eq.return_value.execute.return_value = MagicMock()
+
+        result = publisher_service.sync_content_html("art-1")
+
+        assert "<h1>" in result
+        assert "Some content" in result
+        # Verify DB update was called with content_html
+        mock_table.update.assert_called_once()
+        update_arg = mock_table.update.call_args[0][0]
+        assert "content_html" in update_arg
+        assert "<h1>" in update_arg["content_html"]
+
+    def test_returns_empty_when_no_article(self, publisher_service):
+        mock_table = MagicMock()
+        publisher_service.supabase.table.return_value = mock_table
+        mock_table.select.return_value.eq.return_value.execute.return_value = MagicMock(data=[])
+
+        result = publisher_service.sync_content_html("missing-id")
+        assert result == ""
+
+    def test_returns_empty_when_no_phase_c(self, publisher_service):
+        article = {"id": "art-1", "phase_c_output": ""}
+        mock_table = MagicMock()
+        publisher_service.supabase.table.return_value = mock_table
+        mock_table.select.return_value.eq.return_value.execute.return_value = MagicMock(data=[article])
+
+        result = publisher_service.sync_content_html("art-1")
+        assert result == ""
+
+
+# ---------------------------------------------------------------------------
+# ShopifyPublisher.update with draft parameter
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateDraftParam:
+    def test_update_preserves_state_by_default(self, shopify_publisher, sample_article_data):
+        """draft=None (default) should strip published field."""
+        with patch.object(shopify_publisher, '_api_request') as mock_api:
+            mock_api.return_value = {"article": {"id": 123, "handle": "test", "published_at": "2026-01-01"}}
+            shopify_publisher.update("123", sample_article_data)
+
+            payload = mock_api.call_args[0][2]
+            assert "published" not in payload.get("article", {})
+
+    def test_update_draft_false_publishes_live(self, shopify_publisher, sample_article_data):
+        """draft=False should set published=True."""
+        with patch.object(shopify_publisher, '_api_request') as mock_api:
+            mock_api.return_value = {"article": {"id": 123, "handle": "test", "published_at": "2026-01-01"}}
+            shopify_publisher.update("123", sample_article_data, draft=False)
+
+            payload = mock_api.call_args[0][2]
+            assert payload["article"]["published"] is True
+
+    def test_update_draft_true_sets_draft(self, shopify_publisher, sample_article_data):
+        """draft=True should set published=False."""
+        with patch.object(shopify_publisher, '_api_request') as mock_api:
+            mock_api.return_value = {"article": {"id": 123, "handle": "test"}}
+            shopify_publisher.update("123", sample_article_data, draft=True)
+
+            payload = mock_api.call_args[0][2]
+            assert payload["article"]["published"] is False
+
+    def test_body_only_ignores_draft(self, shopify_publisher):
+        """body_only=True should only send body_html regardless of draft."""
+        with patch.object(shopify_publisher, '_api_request') as mock_api:
+            mock_api.return_value = {"article": {"id": 123, "handle": "test"}}
+            shopify_publisher.update("123", {"body_html": "<p>test</p>"}, body_only=True, draft=False)
+
+            payload = mock_api.call_args[0][2]
+            assert list(payload["article"].keys()) == ["body_html"]

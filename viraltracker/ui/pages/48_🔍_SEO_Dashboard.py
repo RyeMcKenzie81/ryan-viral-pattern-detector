@@ -1323,6 +1323,7 @@ except Exception as _e:
 
 st.divider()
 st.subheader("Internal Link Tools")
+st.caption("Project-wide link tools. For individual articles, use the Workflow page. For cluster linking, use the Clusters page.")
 
 if is_brand_view:
     st.info("Select a specific project to use link tools.")

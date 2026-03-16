@@ -1443,9 +1443,16 @@ class SEOWorkflowService:
         article_id: str,
         brand_id: str,
         organization_id: str,
+        republish: bool = False,
     ) -> Dict[str, Any]:
         """
         Re-run Phase C on an existing article and re-parse metadata.
+
+        Args:
+            article_id: Article UUID
+            brand_id: Brand UUID
+            organization_id: Organization UUID
+            republish: If True, re-publish to Shopify after Phase C + images + sync.
 
         Returns:
             Dict with phase_c result and repaired fields.
@@ -1493,6 +1500,23 @@ class SEOWorkflowService:
 
         # Re-inject existing images from image_metadata into new content
         self._reinject_images(article_id, phase_c_output)
+
+        # Sync content_html from updated phase_c_output
+        from viraltracker.services.seo_pipeline.services.cms_publisher_service import CMSPublisherService
+        cms_svc = CMSPublisherService(supabase_client=self.supabase)
+        cms_svc.sync_content_html(article_id)
+
+        # Re-publish to Shopify if requested
+        if republish:
+            try:
+                cms_svc.publish_article(
+                    article_id=article_id,
+                    brand_id=brand_id,
+                    organization_id=organization_id,
+                    draft=True,
+                )
+            except Exception as e:
+                logger.warning(f"Re-publish after Phase C re-run failed (non-fatal): {e}")
 
         return {"phase_c": "complete", "parsed_fields": list((parsed or {}).keys())}
 
@@ -1578,7 +1602,7 @@ class SEOWorkflowService:
 
         from viraltracker.services.seo_pipeline.services.seo_image_service import SEOImageService
 
-        content = article.data[0].get("phase_c_output") or phase_c_output
+        content = phase_c_output or article.data[0].get("phase_c_output") or ""
 
         # Try marker-based replacement first
         img_svc = SEOImageService(supabase_client=self.supabase)
@@ -1626,6 +1650,10 @@ class SEOWorkflowService:
             {"phase_c_output": content}
         ).eq("id", article_id).execute()
         logger.info(f"Re-injected {len(successful_images)} images into article {article_id}")
+
+        # Keep content_html in sync
+        from viraltracker.services.seo_pipeline.services.cms_publisher_service import CMSPublisherService
+        CMSPublisherService(supabase_client=self.supabase).sync_content_html(article_id)
 
     def cleanup_stale_jobs(self) -> int:
         """Cancel jobs paused >24 hours or running with no update for >30 minutes."""
@@ -1827,6 +1855,11 @@ class SEOWorkflowService:
                     )
                 except Exception as e:
                     logger.warning(f"Re-publish after images failed (non-fatal): {e}")
+                    # Defensive: sync content_html even if CMS push fails
+                    try:
+                        cms_svc.sync_content_html(article_id)
+                    except Exception:
+                        pass
 
                 sb.table("seo_articles").update(
                     {"image_status": "complete"}

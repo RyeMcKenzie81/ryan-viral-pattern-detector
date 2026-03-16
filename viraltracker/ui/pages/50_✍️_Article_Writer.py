@@ -61,7 +61,8 @@ project_service = get_project_service()
 projects = project_service.list_projects(org_id, brand_id=brand_id)
 
 if not projects:
-    st.info("No SEO projects. Create one in the Keyword Research page first.")
+    st.info("No SEO projects yet. Create one first.")
+    st.page_link("pages/49_🔑_Keyword_Research.py", label="Go to Keyword Research", icon="🔑")
     st.stop()
 
 project_options = {p["id"]: p["name"] for p in projects}

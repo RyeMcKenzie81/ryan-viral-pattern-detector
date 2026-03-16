@@ -29,6 +29,88 @@ logger = logging.getLogger(__name__)
 
 
 # =============================================================================
+# STANDALONE HELPERS
+# =============================================================================
+
+
+def render_markdown_to_html(content: str) -> str:
+    """
+    Convert markdown to clean HTML. Strips frontmatter, code fences, markers, metadata.
+
+    This is a pure text transformation (markdown-it-py + regex stripping) with no
+    CMS dependency — safe to call from any service layer.
+    """
+    # Normalize line endings (API responses may use \r\n)
+    text = content.replace('\r\n', '\n')
+
+    # Strip hero image from body FIRST — it's already the Shopify featured image.
+    text = re.sub(r'<img[^>]*loading="eager"[^>]*/?>[\s]*', '', text)
+
+    # Strip LLM code fence wrapper
+    text = text.strip()
+    before = text
+    text = re.sub(r'^```\w*\n', '', text)
+    if text != before:
+        text = re.sub(r'\n```\s*$', '', text)
+
+    # Strip YAML frontmatter
+    text = text.lstrip()
+    text = re.sub(r'^---\n[\s\S]+?\n---\n?', '', text)
+
+    # Remove schema markup sections
+    text = re.sub(r'<!--[\s\S]*?SCHEMA MARKUP[\s\S]*?-->\s*```json\s*[\s\S]*?\s*```', '', text)
+    text = re.sub(r'## Schema Markup[\s\S]*?(?=##|$)', '', text)
+
+    # Remove metadata sections
+    text = re.sub(r'## Related Articles[\s\S]*?(?=##|$)', '', text)
+    text = re.sub(r'## Internal Links to Add[\s\S]*?(?=##|$)', '', text)
+    text = re.sub(r'## Images Needed[\s\S]*?(?=##|$)', '', text)
+    text = re.sub(r'### Hero Image[\s\S]*?(?=###|##|$)', '', text)
+    text = re.sub(r'### Inline Image \d+[\s\S]*?(?=###|##|$)', '', text)
+    text = re.sub(r'<!--[\s\S]*?-->', '', text)
+    text = re.sub(r'```json[\s\S]*?```', '', text)
+
+    # Strip [IMAGE: ...] and [HERO IMAGE: ...] markers
+    text = re.sub(r'\[(?:HERO )?IMAGE:\s*[^\]]*\]', '', text, flags=re.IGNORECASE)
+
+    # Strip LLM self-assessment sections
+    for heading in [
+        r'SEO Optimization Summary',
+        r'Keyword Placement Check',
+        r'External Link Suggestions?',
+        r'Readability Check',
+        r'Content Integrity',
+        r'Quality Check',
+        r'Optimization Notes?',
+    ]:
+        text = re.sub(
+            rf'(?:##?\s*)?{heading}[\s\S]*?(?=\n##\s[^#]|\Z)',
+            '', text, flags=re.IGNORECASE,
+        )
+
+    # Remove author bio if present
+    text = re.sub(r'---\s*\n\s*\*\*About the Author:[\s\S]*$', '', text)
+    text = re.sub(r'\*\*Last Updated:\*\*.*$', '', text, flags=re.MULTILINE)
+
+    try:
+        from markdown_it import MarkdownIt
+        md = MarkdownIt()
+        html = md.render(text)
+    except ImportError:
+        logger.error(
+            "markdown-it-py not installed — body_html will contain raw markdown! "
+            "Install with: pip install markdown-it-py"
+        )
+        import html as html_mod
+        html = f"<pre>{html_mod.escape(text)}</pre>"
+
+    # Add responsive image styling
+    html = f'<style>img {{ max-width: 100%; height: auto; display: block; margin: 2rem auto; border-radius: 8px; }}</style>\n{html}'
+
+    return html
+
+
+# =============================================================================
 # ABSTRACT BASE
 # =============================================================================
 
@@ -70,6 +152,7 @@ class CMSPublisher(ABC):
         self,
         cms_article_id: str,
         article_data: Dict[str, Any],
+        draft: Optional[bool] = None,
     ) -> Dict[str, Any]:
         """
         Update an existing article in the CMS.
@@ -77,6 +160,8 @@ class CMSPublisher(ABC):
         Args:
             cms_article_id: The CMS-side article ID
             article_data: Updated article data (same format as publish)
+            draft: If None, preserve current published state. If True/False,
+                explicitly set draft/live status.
 
         Returns:
             Dict with cms_article_id, published_url, admin_url, status
@@ -184,6 +269,7 @@ class ShopifyPublisher(CMSPublisher):
         cms_article_id: str,
         article_data: Dict[str, Any],
         body_only: bool = False,
+        draft: Optional[bool] = None,
     ) -> Dict[str, Any]:
         """
         Update an existing Shopify blog article.
@@ -193,14 +279,18 @@ class ShopifyPublisher(CMSPublisher):
             article_data: Updated article data
             body_only: If True, only send body_html (safe for interlinking updates
                 that must not overwrite published status, metafields, handle, etc.)
+            draft: If None, preserve current published state. If True/False,
+                explicitly set draft/live status.
         """
         if body_only:
             payload = {"article": {"body_html": article_data.get("body_html", "")}}
         else:
-            payload = self._build_article_payload(article_data)
-            # Don't change published state on updates — preserve Shopify's current state.
-            # _build_article_payload defaults to published=False which would unpublish live articles.
-            payload.get("article", {}).pop("published", None)
+            payload = self._build_article_payload(
+                article_data, draft=draft if draft is not None else True
+            )
+            if draft is None:
+                # Preserve mode — don't change published status
+                payload.get("article", {}).pop("published", None)
         url = f"{self._base_url}/articles/{cms_article_id}.json"
 
         response = self._api_request("PUT", url, payload)
@@ -375,85 +465,8 @@ class ShopifyPublisher(CMSPublisher):
 
     @staticmethod
     def _markdown_to_html(markdown_text: str) -> str:
-        """
-        Convert markdown to HTML using markdown-it-py.
-
-        Strips frontmatter, schema blocks, and metadata sections
-        before converting (matches original convert-and-publish.js behavior).
-        """
-        content = markdown_text
-
-        # Normalize line endings (API responses may use \r\n)
-        content = content.replace('\r\n', '\n')
-
-        # Strip hero image from body FIRST — it's already the Shopify featured image.
-        # Hero <img> tags have loading="eager" (inline ones have loading="lazy").
-        # Must run before code fence stripping so the fence is at start of string.
-        content = re.sub(r'<img[^>]*loading="eager"[^>]*/?>[\s]*', '', content)
-
-        # Strip LLM code fence wrapper (Claude sometimes wraps output in ```markdown ... ```)
-        content = content.strip()
-        before = content
-        content = re.sub(r'^```\w*\n', '', content)
-        if content != before:
-            content = re.sub(r'\n```\s*$', '', content)
-
-        # Strip YAML frontmatter
-        content = content.lstrip()
-        content = re.sub(r'^---\n[\s\S]+?\n---\n?', '', content)
-
-        # Remove schema markup sections (kept in metafields, not body)
-        content = re.sub(r'<!--[\s\S]*?SCHEMA MARKUP[\s\S]*?-->\s*```json\s*[\s\S]*?\s*```', '', content)
-        content = re.sub(r'## Schema Markup[\s\S]*?(?=##|$)', '', content)
-
-        # Remove metadata sections that shouldn't be in article body
-        content = re.sub(r'## Related Articles[\s\S]*?(?=##|$)', '', content)
-        content = re.sub(r'## Internal Links to Add[\s\S]*?(?=##|$)', '', content)
-        content = re.sub(r'## Images Needed[\s\S]*?(?=##|$)', '', content)
-        content = re.sub(r'### Hero Image[\s\S]*?(?=###|##|$)', '', content)
-        content = re.sub(r'### Inline Image \d+[\s\S]*?(?=###|##|$)', '', content)
-        content = re.sub(r'<!--[\s\S]*?-->', '', content)
-        content = re.sub(r'```json[\s\S]*?```', '', content)
-
-        # Strip [IMAGE: ...] and [HERO IMAGE: ...] markers (left by deferred image gen)
-        content = re.sub(r'\[(?:HERO )?IMAGE:\s*[^\]]*\]', '', content, flags=re.IGNORECASE)
-
-        # Strip LLM self-assessment sections that sometimes leak into output
-        for heading in [
-            r'SEO Optimization Summary',
-            r'Keyword Placement Check',
-            r'External Link Suggestions?',
-            r'Readability Check',
-            r'Content Integrity',
-            r'Quality Check',
-            r'Optimization Notes?',
-        ]:
-            content = re.sub(
-                rf'(?:##?\s*)?{heading}[\s\S]*?(?=\n##\s[^#]|\Z)',
-                '', content, flags=re.IGNORECASE,
-            )
-
-        # Remove author bio if present (added via template)
-        content = re.sub(r'---\s*\n\s*\*\*About the Author:[\s\S]*$', '', content)
-        content = re.sub(r'\*\*Last Updated:\*\*.*$', '', content, flags=re.MULTILINE)
-
-        try:
-            from markdown_it import MarkdownIt
-            md = MarkdownIt()
-            html = md.render(content)
-        except ImportError:
-            logger.error(
-                "markdown-it-py not installed — body_html will contain raw markdown! "
-                "Install with: pip install markdown-it-py"
-            )
-            # Wrap in <pre> so at least it's valid HTML, not raw markdown
-            import html as html_mod
-            html = f"<pre>{html_mod.escape(content)}</pre>"
-
-        # Add responsive image styling
-        html = f'<style>img {{ max-width: 100%; height: auto; display: block; margin: 2rem auto; border-radius: 8px; }}</style>\n{html}'
-
-        return html
+        """Convert markdown to HTML. Delegates to module-level render_markdown_to_html()."""
+        return render_markdown_to_html(markdown_text)
 
     @staticmethod
     def _generate_handle(text: str) -> str:
@@ -693,7 +706,10 @@ class CMSPublisherService:
         # Check if already published (update vs create)
         cms_article_id = article.get("cms_article_id")
         if cms_article_id:
-            result = publisher.update(cms_article_id, article_data)
+            result = publisher.update(
+                cms_article_id, article_data,
+                draft=draft if not draft else None,
+            )
         else:
             result = publisher.publish(article_data, draft=draft)
 
@@ -862,6 +878,30 @@ class CMSPublisherService:
     # =========================================================================
     # SYNC STATUS FROM CMS
     # =========================================================================
+
+    def sync_content_html(self, article_id: str) -> str:
+        """
+        Re-render phase_c_output → content_html and persist to DB.
+
+        Returns:
+            Rendered HTML string (empty string if no phase_c_output).
+        """
+        article = self._get_article(article_id)
+        if not article:
+            return ""
+
+        phase_c = article.get("phase_c_output") or ""
+        if not phase_c:
+            return ""
+
+        html = render_markdown_to_html(phase_c)
+
+        self.supabase.table("seo_articles").update(
+            {"content_html": html}
+        ).eq("id", article_id).execute()
+
+        logger.info(f"Synced content_html for article {article_id}")
+        return html
 
     def sync_article_statuses(
         self,

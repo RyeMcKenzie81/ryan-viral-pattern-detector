@@ -161,6 +161,10 @@ class InterlinkingService:
             raise ValueError(f"Article not found: {article_id}")
 
         html = article.get("content_html", "")
+        if not html and article.get("phase_c_output"):
+            from viraltracker.services.seo_pipeline.services.cms_publisher_service import CMSPublisherService
+            cms_svc = CMSPublisherService(supabase_client=self.supabase)
+            html = cms_svc.sync_content_html(article_id)
         if not html:
             return {
                 "article_id": article_id,
@@ -257,6 +261,10 @@ class InterlinkingService:
             raise ValueError(f"Article not found: {article_id}")
 
         html = article.get("content_html", "")
+        if not html and article.get("phase_c_output"):
+            from viraltracker.services.seo_pipeline.services.cms_publisher_service import CMSPublisherService
+            cms_svc = CMSPublisherService(supabase_client=self.supabase)
+            html = cms_svc.sync_content_html(article_id)
         if not html:
             return {
                 "article_id": article_id,
