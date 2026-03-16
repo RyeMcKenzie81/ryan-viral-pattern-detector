@@ -219,6 +219,7 @@ class ShopifyPublisher(CMSPublisher):
         client_id: Optional[str] = None,
         client_secret: Optional[str] = None,
         on_token_refresh: Optional[Any] = None,
+        public_domain: Optional[str] = None,
     ):
         self.store_domain = store_domain
         self.access_token = access_token
@@ -228,6 +229,8 @@ class ShopifyPublisher(CMSPublisher):
         self._client_id = client_id
         self._client_secret = client_secret
         self._on_token_refresh = on_token_refresh
+        # Public domain for published URLs (falls back to store_domain)
+        self.public_domain = public_domain or store_domain
         self._base_url = f"https://{store_domain}/admin/api/{api_version}"
 
     def publish(
@@ -245,9 +248,7 @@ class ShopifyPublisher(CMSPublisher):
         article_id = str(article.get("id", ""))
         handle = article.get("handle", "")
 
-        # Build public URL from store domain
-        # Strip .myshopify.com for public URL (custom domain may differ)
-        public_url = f"https://{self.store_domain}/blogs/{self.blog_handle}/{handle}"
+        public_url = f"https://{self.public_domain}/blogs/{self.blog_handle}/{handle}"
 
         result = {
             "cms_article_id": article_id,
@@ -297,7 +298,7 @@ class ShopifyPublisher(CMSPublisher):
         article = response.get("article", {})
 
         handle = article.get("handle", "")
-        public_url = f"https://{self.store_domain}/blogs/{self.blog_handle}/{handle}"
+        public_url = f"https://{self.public_domain}/blogs/{self.blog_handle}/{handle}"
 
         result = {
             "cms_article_id": str(article.get("id", cms_article_id)),
@@ -780,6 +781,7 @@ class CMSPublisherService:
             client_id=config.get("client_id"),
             client_secret=config.get("client_secret"),
             on_token_refresh=on_token_refresh,
+            public_domain=config.get("public_domain"),
         )
 
     def _make_token_refresh_callback(
@@ -963,7 +965,57 @@ class CMSPublisherService:
                     f"Synced article {row['id']} status: {current_status} → {expected}"
                 )
 
-        return {"synced": synced, "total": len(our_articles.data or [])}
+        # Auto-fix published_url domain mismatches (myshopify.com → public domain)
+        urls_fixed = self._fix_published_urls(brand_id, organization_id)
+
+        return {"synced": synced, "total": len(our_articles.data or []), "urls_fixed": urls_fixed}
+
+    def _fix_published_urls(
+        self,
+        brand_id: str,
+        organization_id: str,
+    ) -> int:
+        """
+        Rewrite published_url from myshopify.com internal domain to public domain.
+
+        Runs on every status sync to catch articles published before
+        the public_domain config was set.
+        """
+        integration = self._get_integration(brand_id, organization_id)
+        if not integration:
+            return 0
+
+        config = integration.get("config", {})
+        public_domain = config.get("public_domain")
+        store_domain = config.get("store_domain", "")
+
+        if not public_domain or public_domain == store_domain:
+            return 0  # No public domain configured or same as store domain
+
+        # Find articles with store domain in published_url
+        articles = (
+            self.supabase.table("seo_articles")
+            .select("id, published_url")
+            .eq("brand_id", brand_id)
+            .not_.is_("published_url", "null")
+            .like("published_url", f"%{store_domain}%")
+            .execute()
+        )
+
+        fixed = 0
+        for row in (articles.data or []):
+            old_url = row.get("published_url", "")
+            new_url = old_url.replace(store_domain, public_domain)
+            if new_url != old_url:
+                self.supabase.table("seo_articles").update(
+                    {"published_url": new_url}
+                ).eq("id", row["id"]).execute()
+                fixed += 1
+                logger.info(f"Fixed published_url for article {row['id']}: {store_domain} → {public_domain}")
+
+        if fixed:
+            logger.info(f"Fixed {fixed} published_url(s) for brand {brand_id}")
+        return fixed
 
     # =========================================================================
     # IMPORT FROM CMS

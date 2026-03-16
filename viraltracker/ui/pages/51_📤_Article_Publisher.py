@@ -324,7 +324,10 @@ if not integration:
         """)
 
         with st.form("shopify_config_form"):
-            store_domain = st.text_input("Store Domain", placeholder="mystore.myshopify.com")
+            store_domain = st.text_input("Store Domain", placeholder="mystore.myshopify.com",
+                                         help="Your Shopify admin domain (used for API calls)")
+            public_domain = st.text_input("Public Domain (optional)", placeholder="mystore.com",
+                                          help="Your custom domain for public article URLs. Leave blank to use store domain.")
             access_token = st.text_input("Access Token", placeholder="shpat_...", type="password")
             blog_id = st.text_input("Blog ID", placeholder="99206135908")
             api_version = st.text_input("API Version", value="2024-10")
@@ -340,6 +343,8 @@ if not integration:
                         "api_version": api_version,
                         "blog_handle": blog_handle,
                     }
+                    if public_domain:
+                        config["public_domain"] = public_domain
                     try:
                         project_service.upsert_brand_integration(
                             brand_id=brand_id,
