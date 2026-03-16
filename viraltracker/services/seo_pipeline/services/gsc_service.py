@@ -412,14 +412,21 @@ class GSCService(BaseAnalyticsService):
         Check Google indexing status for all published articles via URL Inspection API.
 
         Inspects each published article URL individually (rate limit: 2,000/day per site).
+        Only inspects URLs whose domain matches the GSC property — Shopify internal
+        domain URLs (e.g. myshopify.com) are skipped since the API can't inspect them.
+
         Updates seo_articles with index_status, index_coverage_state, and last crawl time.
 
         Returns:
-            Dict with checked, indexed, not_indexed, errors counts
+            Dict with checked, indexed, not_indexed, skipped, errors counts
         """
         import httpx
+        from urllib.parse import urlparse
 
         access_token, site_url, _ = self._get_api_credentials(brand_id, organization_id)
+
+        # Extract the GSC property domain for filtering
+        gsc_domain = urlparse(site_url).netloc.lower() if site_url.startswith("http") else ""
 
         # Get published articles with URLs
         articles = (
@@ -432,15 +439,40 @@ class GSCService(BaseAnalyticsService):
         )
 
         if not articles.data:
-            return {"checked": 0, "indexed": 0, "not_indexed": 0, "errors": 0}
+            return {"checked": 0, "indexed": 0, "not_indexed": 0, "skipped": 0, "errors": 0}
+
+        # Filter to URLs matching the GSC property domain
+        inspectable = []
+        skipped = 0
+        for article in articles.data:
+            url = article.get("published_url", "")
+            if not url:
+                continue
+            url_domain = urlparse(url).netloc.lower()
+            if gsc_domain and url_domain != gsc_domain:
+                skipped += 1
+                continue
+            inspectable.append(article)
+
+        if not inspectable:
+            logger.info(
+                f"GSC indexing check: all {skipped} URLs are on different domain "
+                f"than GSC property ({gsc_domain}), skipping"
+            )
+            return {"checked": 0, "indexed": 0, "not_indexed": 0, "skipped": skipped, "errors": 0}
 
         indexed = 0
         not_indexed = 0
         errors = 0
         now_iso = datetime.now(timezone.utc).isoformat()
 
+        logger.info(
+            f"GSC indexing check: inspecting {len(inspectable)} URLs "
+            f"(skipped {skipped} non-matching domain)"
+        )
+
         with httpx.Client(timeout=30.0) as client:
-            for article in articles.data:
+            for article in inspectable:
                 url = article["published_url"]
                 if not url:
                     continue
@@ -494,13 +526,14 @@ class GSCService(BaseAnalyticsService):
 
         logger.info(
             f"GSC indexing check for brand {brand_id}: "
-            f"{indexed} indexed, {not_indexed} not indexed, {errors} errors "
-            f"(of {len(articles.data)} checked)"
+            f"{indexed} indexed, {not_indexed} not indexed, {errors} errors, "
+            f"{skipped} skipped (of {len(inspectable)} inspected)"
         )
         return {
-            "checked": len(articles.data),
+            "checked": len(inspectable),
             "indexed": indexed,
             "not_indexed": not_indexed,
+            "skipped": skipped,
             "errors": errors,
         }
 
