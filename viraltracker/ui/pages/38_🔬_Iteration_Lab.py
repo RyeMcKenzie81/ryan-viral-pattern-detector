@@ -232,7 +232,7 @@ def render_opportunities_tab(brand_id: str, product_id: Optional[str], org_id: s
         st.divider()
 
     # Scan controls
-    col1, col2, col3 = st.columns([3, 1, 1])
+    col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
     with col1:
         if st.button("🔍 Scan for Opportunities", use_container_width=True, key="iter_scan_btn"):
             _run_scan(brand_id, org_id)
@@ -241,6 +241,12 @@ def render_opportunities_tab(brand_id: str, product_id: Optional[str], org_id: s
             "Days back", [14, 30, 60, 90], index=1, key="iter_days_back"
         )
     with col3:
+        st.selectbox(
+            "Min spend", [0, 20, 50, 100, 250, 500], index=2,
+            format_func=lambda x: f"${x}" if x > 0 else "No min",
+            key="iter_min_spend"
+        )
+    with col4:
         st.selectbox(
             "Format", ["All", "Image", "Video"], key="iter_format_filter"
         )
@@ -289,7 +295,7 @@ def render_opportunities_tab(brand_id: str, product_id: Optional[str], org_id: s
 
     st.markdown(f"**{len(opportunities)} opportunities found**")
 
-    # Filter by category and format
+    # Filter by category, format, and min spend
     filtered = opportunities
     if st.session_state.iter_category_filter:
         filtered = [o for o in filtered if _get_field(o, "strategy_category") == st.session_state.iter_category_filter]
@@ -298,6 +304,9 @@ def render_opportunities_tab(brand_id: str, product_id: Optional[str], org_id: s
         filtered = [o for o in filtered if not _get_field(o, "creative_format", "").startswith("video_")]
     elif fmt_filter == "Video":
         filtered = [o for o in filtered if _get_field(o, "creative_format", "").startswith("video_")]
+    min_spend = st.session_state.get("iter_min_spend", 50)
+    if min_spend > 0:
+        filtered = [o for o in filtered if float(_get_field(o, "spend", 0)) >= min_spend]
 
     # Render opportunity cards
     for idx, opp in enumerate(filtered):
