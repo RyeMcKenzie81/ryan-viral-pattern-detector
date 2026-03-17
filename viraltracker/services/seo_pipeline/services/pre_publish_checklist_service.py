@@ -254,7 +254,8 @@ class PrePublishChecklistService:
 
             # Include individual sub-checks for UI display
             sub_checks = [
-                {"name": c.name, "passed": c.passed, "severity": c.severity, "message": c.message}
+                {"name": c.name, "passed": c.passed, "severity": c.severity,
+                 "message": c.message, "details": c.details}
                 for c in qa_checks
             ]
             all_failures = [c for c in qa_checks if not c.passed]

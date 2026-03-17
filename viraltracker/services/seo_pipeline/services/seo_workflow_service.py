@@ -1438,6 +1438,191 @@ class SEOWorkflowService:
 
         return {"fixed": fixed, "fields": update_fields, "already_populated": already_populated}
 
+    def fix_meta_description(self, article_id: str, keyword: str = "") -> Dict[str, Any]:
+        """Generate a new meta description using AI. Targets 150-160 chars with keyword."""
+        article = (
+            self.supabase.table("seo_articles")
+            .select("id, phase_c_output, content_markdown, keyword, meta_description, organization_id")
+            .eq("id", article_id)
+            .limit(1)
+            .execute()
+        )
+        if not article.data:
+            return {"error": "Article not found", "fixed": []}
+
+        a = article.data[0]
+        content = a.get("phase_c_output") or a.get("content_markdown") or ""
+        kw = keyword or a.get("keyword", "")
+        org_id = a.get("organization_id")
+
+        if not content:
+            return {"error": "No article content to generate from", "fixed": []}
+
+        # Truncate content for context (meta desc doesn't need full article)
+        context = content[:2000]
+
+        prompt = (
+            f"Write a meta description for the following article.\n\n"
+            f"Requirements:\n"
+            f"- MUST be between 150 and 160 characters (this is critical)\n"
+            f"- MUST contain the keyword: \"{kw}\"\n"
+            f"- Should be compelling and encourage clicks\n"
+            f"- Do NOT use em dashes (\u2014) or en dashes (\u2013)\n"
+            f"- Return ONLY the meta description text, nothing else\n\n"
+            f"Article content:\n{context}"
+        )
+
+        import anthropic
+        client = anthropic.Anthropic()
+        response = client.messages.create(
+            model="claude-sonnet-4-5-20250929",
+            max_tokens=256,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        new_meta = response.content[0].text.strip().strip('"')
+
+        # Track usage
+        if org_id:
+            from viraltracker.services.usage_tracker import UsageTracker, UsageRecord
+            tracker = UsageTracker(supabase_client=self.supabase)
+            tracker.track(
+                user_id=None,
+                organization_id=org_id,
+                record=UsageRecord(
+                    provider="anthropic",
+                    model="claude-sonnet-4-5-20250929",
+                    tool_name="seo_workflow_service",
+                    operation="fix_meta_description",
+                    input_tokens=response.usage.input_tokens,
+                    output_tokens=response.usage.output_tokens,
+                ),
+            )
+
+        # Update DB
+        self.supabase.table("seo_articles").update(
+            {"meta_description": new_meta}
+        ).eq("id", article_id).execute()
+
+        logger.info(f"Fixed meta_description for article {article_id}: {len(new_meta)} chars")
+        return {
+            "fixed": ["meta_description"],
+            "old_value": a.get("meta_description", ""),
+            "new_value": new_meta,
+            "length": len(new_meta),
+        }
+
+    def fix_first_paragraph(self, article_id: str, keyword: str = "") -> Dict[str, Any]:
+        """Rewrite the first paragraph to naturally include the keyword."""
+        article = (
+            self.supabase.table("seo_articles")
+            .select("id, phase_c_output, content_markdown, keyword, organization_id")
+            .eq("id", article_id)
+            .limit(1)
+            .execute()
+        )
+        if not article.data:
+            return {"error": "Article not found", "fixed": []}
+
+        a = article.data[0]
+        content = a.get("phase_c_output") or a.get("content_markdown") or ""
+        kw = keyword or a.get("keyword", "")
+        org_id = a.get("organization_id")
+
+        if not content:
+            return {"error": "No article content", "fixed": []}
+
+        # Find frontmatter end position to avoid replacing inside it
+        fm_end = 0
+        stripped_content = content.lstrip()
+        fm_match = re.match(r'^---\n[\s\S]+?\n---\n', stripped_content)
+        if fm_match:
+            fm_end = fm_match.end() + (len(content) - len(stripped_content))
+
+        # Find the first non-heading paragraph after frontmatter
+        after_fm = content[fm_end:]
+        paragraphs = re.split(r'\n\n+', after_fm.strip())
+        first_para = None
+        for p in paragraphs:
+            s = p.strip()
+            if s and not s.startswith("#") and not s.startswith("!") and not s.startswith("<!--") and not s.startswith("```"):
+                first_para = s
+                break
+
+        if first_para is None:
+            return {"error": "Could not identify first paragraph", "fixed": []}
+
+        if kw.lower() in first_para.lower():
+            return {"error": "Keyword already in first paragraph", "fixed": []}
+
+        # Send full article for context (truncate if very long)
+        article_context = content[:6000]
+
+        prompt = (
+            f"Rewrite ONLY the opening paragraph of this article so that it naturally "
+            f"includes the keyword \"{kw}\".\n\n"
+            f"Requirements:\n"
+            f"- Keep the same tone, style, and meaning as the original\n"
+            f"- The keyword must appear naturally, not forced\n"
+            f"- Keep similar length to the original paragraph\n"
+            f"- Do NOT use em dashes (\u2014) or en dashes (\u2013)\n"
+            f"- Return ONLY the rewritten paragraph, nothing else\n\n"
+            f"Original first paragraph:\n{first_para}\n\n"
+            f"Full article for context:\n{article_context}"
+        )
+
+        import anthropic
+        client = anthropic.Anthropic()
+        response = client.messages.create(
+            model="claude-sonnet-4-5-20250929",
+            max_tokens=1024,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        new_para = response.content[0].text.strip()
+
+        # Track usage
+        if org_id:
+            from viraltracker.services.usage_tracker import UsageTracker, UsageRecord
+            tracker = UsageTracker(supabase_client=self.supabase)
+            tracker.track(
+                user_id=None,
+                organization_id=org_id,
+                record=UsageRecord(
+                    provider="anthropic",
+                    model="claude-sonnet-4-5-20250929",
+                    tool_name="seo_workflow_service",
+                    operation="fix_first_paragraph",
+                    input_tokens=response.usage.input_tokens,
+                    output_tokens=response.usage.output_tokens,
+                ),
+            )
+
+        # Replace ONLY after frontmatter (safe positional replacement)
+        before_fm = content[:fm_end]
+        after_fm_updated = content[fm_end:].replace(first_para, new_para, 1)
+        updated_content = before_fm + after_fm_updated
+
+        # Update DB
+        update_data = {"phase_c_output": updated_content}
+        if a.get("content_markdown") and first_para in a["content_markdown"]:
+            update_data["content_markdown"] = a["content_markdown"].replace(first_para, new_para, 1)
+
+        self.supabase.table("seo_articles").update(update_data).eq("id", article_id).execute()
+
+        # Sync content_html
+        try:
+            from viraltracker.services.seo_pipeline.services.cms_publisher_service import CMSPublisherService
+            cms_svc = CMSPublisherService(supabase_client=self.supabase)
+            cms_svc.sync_content_html(article_id)
+        except Exception as e:
+            logger.debug(f"content_html sync skipped: {e}")
+
+        logger.info(f"Fixed first paragraph for article {article_id}")
+        return {
+            "fixed": ["first_paragraph"],
+            "old_value": first_para[:100],
+            "new_value": new_para[:100],
+        }
+
     def rerun_phase_c(
         self,
         article_id: str,

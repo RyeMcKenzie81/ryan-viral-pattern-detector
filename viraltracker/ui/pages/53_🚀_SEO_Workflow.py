@@ -323,15 +323,52 @@ with tab_qw:
                                     st.markdown(f"&ensp;**content_qa** ({qa_pass}/{qa_total})")
                                     for sc in sub_checks:
                                         sc_passed = sc.get("passed", False)
+                                        sc_name = sc.get("name", "")
                                         sc_icon = "PASS" if sc_passed else "WARN" if sc.get("severity") == "warning" else "FAIL"
                                         sc_msg = sc.get("message", "")
-                                        sc_label = f"{sc.get('name', '')} — {sc_msg}" if sc_msg else sc.get("name", "")
-                                        if sc_passed:
-                                            st.markdown(f"&ensp;&ensp;&ensp;:green[{sc_icon}] {sc_label}")
-                                        elif sc.get("severity") == "warning":
-                                            st.markdown(f"&ensp;&ensp;&ensp;:orange[{sc_icon}] {sc_label}")
+                                        sc_label = f"{sc_name} — {sc_msg}" if sc_msg else sc_name
+
+                                        # Check if this failed check has a targeted fix tool
+                                        _fixable = False
+                                        if not sc_passed:
+                                            if sc_name == "meta_description":
+                                                _fixable = True
+                                            elif sc_name == "keyword_placement":
+                                                _missing = (sc.get("details") or {}).get("missing", [])
+                                                _fixable = "first_paragraph" in _missing
+
+                                        if _fixable:
+                                            _check_col, _fix_col = st.columns([5, 1])
                                         else:
-                                            st.markdown(f"&ensp;&ensp;&ensp;:red[{sc_icon}] {sc_label}")
+                                            _check_col = st.container()
+                                            _fix_col = None
+
+                                        with _check_col:
+                                            if sc_passed:
+                                                st.markdown(f"&ensp;&ensp;&ensp;:green[{sc_icon}] {sc_label}")
+                                            elif sc.get("severity") == "warning":
+                                                st.markdown(f"&ensp;&ensp;&ensp;:orange[{sc_icon}] {sc_label}")
+                                            else:
+                                                st.markdown(f"&ensp;&ensp;&ensp;:red[{sc_icon}] {sc_label}")
+
+                                        if _fix_col:
+                                            with _fix_col:
+                                                if sc_name == "meta_description":
+                                                    if st.button("Fix", key="fix_meta_desc", help="AI-generate a new meta description (150-160 chars with keyword)"):
+                                                        with st.spinner("Generating..."):
+                                                            _fix_result = workflow_svc.fix_meta_description(article_id)
+                                                        if _fix_result.get("fixed"):
+                                                            st.success(f"New meta: {_fix_result['length']} chars. Re-run checklist to verify.")
+                                                        else:
+                                                            st.warning(_fix_result.get("error", "Fix failed"))
+                                                elif sc_name == "keyword_placement":
+                                                    if st.button("Fix", key="fix_first_para", help="AI-rewrite opening paragraph to include keyword"):
+                                                        with st.spinner("Rewriting..."):
+                                                            _fix_result = workflow_svc.fix_first_paragraph(article_id)
+                                                        if _fix_result.get("fixed"):
+                                                            st.success("First paragraph updated. Re-run checklist to verify.")
+                                                        else:
+                                                            st.warning(_fix_result.get("error", "Fix failed"))
                                 else:
                                     icon = "PASS" if passed else "FAIL"
                                     label = f"**{name}** — {msg}" if msg else f"**{name}**"
