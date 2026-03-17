@@ -86,6 +86,35 @@ def get_interlinking_service():
 
 ALL_PROJECTS_SENTINEL = "__all__"
 
+# Friendly labels for Google's technical coverage state strings
+_COVERAGE_LABELS = {
+    "Discovered - currently not indexed": {
+        "label": "Waiting in queue",
+        "severity": "info",
+        "guidance": "These pages are in Google's queue. This is normal for new pages \u2014 Google will get to them. If pages stay here for more than 2 weeks, check the page quality.",
+    },
+    "Crawled - currently not indexed": {
+        "label": "Read but not listed",
+        "severity": "warning",
+        "guidance": "Google read these pages but hasn't added them to search results. Review these articles for thin content, duplicate topics, or missing internal links.",
+    },
+    "URL is not on Google": {
+        "label": "Not found by Google",
+        "severity": "error",
+        "guidance": "Google has no record of these pages. Click 'Inspect in GSC' on each page to request indexing directly.",
+    },
+    "Duplicate without user-selected canonical": {
+        "label": "Flagged as duplicate",
+        "severity": "warning",
+        "guidance": "Google thinks these pages are copies of other pages on your site. Check if you have multiple articles covering the same topic.",
+    },
+    "Excluded by 'noindex' tag": {
+        "label": "Blocked by noindex tag",
+        "severity": "error",
+        "guidance": "A tag on this page is telling Google not to index it. If this is intentional, consider ignoring these articles from tracking.",
+    },
+}
+
 
 @st.cache_data(ttl=300)
 def _count_indexed_articles(_brand_id, _org_id):
@@ -98,10 +127,30 @@ def _count_indexed_articles(_brand_id, _org_id):
             .select("index_status")
             .eq("brand_id", _brand_id)
             .in_("status", ["published", "publishing"])
+            .eq("index_tracking_ignored", False)
             .not_.is_("index_status", "null")
             .execute()
         )
         return sum(1 for r in (res.data or []) if r.get("index_status") == "indexed")
+    except Exception:
+        return 0
+
+
+@st.cache_data(ttl=300)
+def _count_ignored_articles(_brand_id):
+    """Count articles ignored from indexing tracking."""
+    from viraltracker.core.database import get_supabase_client
+    try:
+        db = get_supabase_client()
+        res = (
+            db.table("seo_articles")
+            .select("id", count="exact")
+            .eq("brand_id", _brand_id)
+            .in_("status", ["published", "publishing"])
+            .eq("index_tracking_ignored", True)
+            .execute()
+        )
+        return res.count or 0
     except Exception:
         return 0
 
@@ -394,8 +443,12 @@ else:
         st.metric("Internal Links", links_data["total"])
     with col5:
         _indexed = _count_indexed_articles(brand_id, _real_org_id)
-        _pub_count = articles_data["published"]
-        st.metric("Indexed by Google", f"{_indexed}/{_pub_count}" if _pub_count else "0")
+        _ignored_n = _count_ignored_articles(brand_id)
+        _pub_count = articles_data["published"] - _ignored_n
+        _idx_label = f"{_indexed}/{_pub_count}" if _pub_count else "0"
+        if _ignored_n:
+            _idx_label += f" ({_ignored_n} ignored)"
+        st.metric("Indexed by Google", _idx_label)
 
 
 # =============================================================================
@@ -422,7 +475,7 @@ def _load_indexing_breakdown(_brand_id):
         db = get_supabase_client()
         res = (
             db.table("seo_articles")
-            .select("keyword, published_url, index_status, index_coverage_state, index_last_crawl_time, index_checked_at")
+            .select("id, keyword, published_url, index_status, index_coverage_state, index_last_crawl_time, index_checked_at, index_inspection_link, index_tracking_ignored")
             .eq("brand_id", _brand_id)
             .in_("status", ["published", "publishing"])
             .not_.is_("index_status", "null")
@@ -435,23 +488,84 @@ def _load_indexing_breakdown(_brand_id):
 
 _idx_data = _load_indexing_breakdown(brand_id)
 if _idx_data:
-    _not_indexed = [r for r in _idx_data if r.get("index_status") == "not_indexed"]
-    if _not_indexed:
-        with st.expander(f"Why pages aren't indexed ({len(_not_indexed)} pages)", expanded=False):
-            # Group by coverage_state reason
+    _tracked = [r for r in _idx_data if not r.get("index_tracking_ignored")]
+    _ignored_list = [r for r in _idx_data if r.get("index_tracking_ignored")]
+    _not_indexed = [r for r in _tracked if r.get("index_status") == "not_indexed"]
+    _indexed_list = [r for r in _tracked if r.get("index_status") == "indexed"]
+
+    if not _not_indexed:
+        st.success(f"All {len(_indexed_list)} published pages are indexed by Google")
+    else:
+        with st.expander(
+            f"Why pages aren't indexed ({len(_not_indexed)} pages)",
+            expanded=len(_not_indexed) >= 4,
+        ):
             _reasons = {}
             for r in _not_indexed:
                 reason = r.get("index_coverage_state", "Unknown")
-                if reason not in _reasons:
-                    _reasons[reason] = []
-                _reasons[reason].append(r)
+                _reasons.setdefault(reason, []).append(r)
 
             for reason, pages in sorted(_reasons.items(), key=lambda x: -len(x[1])):
-                st.markdown(f"**{reason}** — {len(pages)} page(s)")
+                meta = _COVERAGE_LABELS.get(reason, {"label": reason, "severity": "warning", "guidance": ""})
+
+                st.markdown(f"**{meta['label']}** — {len(pages)} page(s)")
+                st.caption(f"Google status: \"{reason}\"")
+
+                if meta["guidance"]:
+                    if meta["severity"] == "error":
+                        st.warning(meta["guidance"])
+                    else:
+                        st.info(meta["guidance"])
+
                 for p in pages:
                     kw = p.get("keyword", "Untitled")
-                    url = p.get("published_url", "")
-                    st.caption(f"  • {kw}" + (f" — [{url}]({url})" if url else ""))
+                    crawl_time = p.get("index_last_crawl_time")
+                    inspect_link = p.get("index_inspection_link", "")
+                    crawl_str = f"Last crawl: {crawl_time[:10]}" if crawl_time else "Never crawled"
+
+                    c1, c2, c3, c4 = st.columns([4, 2, 1.5, 0.5])
+                    with c1:
+                        st.caption(f"**{kw}**")
+                    with c2:
+                        st.caption(crawl_str)
+                    with c3:
+                        if inspect_link:
+                            st.link_button("Inspect in GSC", inspect_link, use_container_width=True)
+                        else:
+                            st.caption("No inspect link yet — run sync")
+                    with c4:
+                        if st.button("\u2715", key=f"ignore_{p['id']}", help="Ignore from tracking"):
+                            from viraltracker.core.database import get_supabase_client
+                            _db = get_supabase_client()
+                            _db.table("seo_articles").update(
+                                {"index_tracking_ignored": True}
+                            ).eq("id", p["id"]).execute()
+                            _load_indexing_breakdown.clear()
+                            _count_indexed_articles.clear()
+                            _count_ignored_articles.clear()
+                            st.rerun()
+
+                st.divider()
+
+    # Ignored articles — always accessible even when all tracked are indexed
+    if _ignored_list:
+        with st.expander(f"Ignored articles ({len(_ignored_list)})"):
+            for p in _ignored_list:
+                kw = p.get("keyword", "Untitled")
+                rc1, rc2 = st.columns([4, 1])
+                with rc1:
+                    st.caption(kw)
+                with rc2:
+                    if st.button("Restore", key=f"restore_{p['id']}"):
+                        from viraltracker.core.database import get_supabase_client
+                        _db = get_supabase_client()
+                        _db.table("seo_articles").update(
+                            {"index_tracking_ignored": False}
+                        ).eq("id", p["id"]).execute()
+                        _load_indexing_breakdown.clear()
+                        _count_indexed_articles.clear()
+                        _count_ignored_articles.clear()
+                        st.rerun()
 
 
 # =============================================================================

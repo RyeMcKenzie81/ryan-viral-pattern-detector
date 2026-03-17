@@ -501,6 +501,7 @@ class GSCService(BaseAnalyticsService):
                     verdict = idx_result.get("verdict", "VERDICT_UNSPECIFIED")
                     coverage_state = idx_result.get("coverageState", "")
                     last_crawl = idx_result.get("lastCrawlTime")
+                    inspection_link = result.get("inspectionResultLink", "")
 
                     status = "indexed" if verdict == "PASS" else "not_indexed"
                     if verdict == "PASS":
@@ -515,6 +516,8 @@ class GSCService(BaseAnalyticsService):
                     }
                     if last_crawl:
                         update_data["index_last_crawl_time"] = last_crawl
+                    if inspection_link:
+                        update_data["index_inspection_link"] = inspection_link
 
                     self.supabase.table("seo_articles").update(
                         update_data
