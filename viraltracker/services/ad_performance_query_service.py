@@ -719,6 +719,7 @@ class AdPerformanceQueryService:
         min_spend: float = 0.0,
         date_start: Optional[str] = None,
         date_end: Optional[str] = None,
+        format_filter: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Aggregate performance by consumer awareness level (Schwartz).
 
@@ -732,6 +733,7 @@ class AdPerformanceQueryService:
             min_spend: Minimum spend threshold per ad.
             date_start: Explicit start date (ISO format).
             date_end: Explicit end date (ISO format).
+            format_filter: Optional 'video' or 'image' to filter by creative format.
 
         Returns:
             Dict with 'levels' list, 'gaps' list, classification counts.
@@ -759,6 +761,13 @@ class AdPerformanceQueryService:
             product_perf_ids = self._resolve_product_ad_ids(brand_id, product_id, all_perf_ad_ids)
             total_all_ads = len(product_perf_ids)
 
+        # Format filter (video/image)
+        if format_filter and classified:
+            if format_filter == "video":
+                classified = [r for r in classified if (r.get("creative_format") or "").startswith("video_")]
+            elif format_filter == "image":
+                classified = [r for r in classified if not (r.get("creative_format") or "").startswith("video_")]
+
         # Canonical awareness levels
         canonical_levels = [level.value for level in AwarenessLevel]
         level_labels = {
@@ -774,7 +783,11 @@ class AdPerformanceQueryService:
         for level in canonical_levels:
             buckets[level] = {
                 "spend": 0, "impressions": 0, "link_clicks": 0,
-                "purchases": 0, "purchase_value": 0, "ad_ids": set(),
+                "add_to_carts": 0, "purchases": 0, "purchase_value": 0,
+                "ad_ids": set(),
+                # Per-ad accumulators for CPA distribution
+                "ad_spend": defaultdict(float),
+                "ad_purchases": defaultdict(int),
             }
 
         unclassified_ads = set()
@@ -787,13 +800,18 @@ class AdPerformanceQueryService:
             if level and level in buckets:
                 classified_ads.add(aid)
                 b = buckets[level]
-                b["spend"] += float(row.get("spend") or 0)
+                row_spend = float(row.get("spend") or 0)
+                row_purchases = int(row.get("purchases") or 0)
+                b["spend"] += row_spend
                 b["impressions"] += int(row.get("impressions") or 0)
                 b["link_clicks"] += int(row.get("link_clicks") or 0)
-                b["purchases"] += int(row.get("purchases") or 0)
+                b["add_to_carts"] += int(row.get("add_to_carts") or 0)
+                b["purchases"] += row_purchases
                 b["purchase_value"] += float(row.get("purchase_value") or 0)
                 if aid:
                     b["ad_ids"].add(aid)
+                    b["ad_spend"][aid] += row_spend
+                    b["ad_purchases"][aid] += row_purchases
             else:
                 if aid:
                     unclassified_ads.add(aid)
@@ -812,12 +830,29 @@ class AdPerformanceQueryService:
             spend = b["spend"]
             imp = b["impressions"]
             clicks = b["link_clicks"]
+            add_to_carts = b["add_to_carts"]
             purchases = b["purchases"]
             pv = b["purchase_value"]
             ad_count = len(b["ad_ids"])
 
             if ad_count == 0:
                 gaps.append(level)
+
+            # Compute per-ad CPA distribution (mean and p75)
+            ad_cpas = []
+            for aid in b["ad_ids"]:
+                a_spend = b["ad_spend"][aid]
+                a_purchases = b["ad_purchases"][aid]
+                if a_purchases > 0 and a_spend > 0:
+                    ad_cpas.append(a_spend / a_purchases)
+
+            ad_cpas.sort()
+            mean_cpa = (sum(ad_cpas) / len(ad_cpas)) if ad_cpas else 0
+            if ad_cpas:
+                p75_idx = int(len(ad_cpas) * 0.75)
+                p75_cpa = ad_cpas[min(p75_idx, len(ad_cpas) - 1)]
+            else:
+                p75_cpa = 0
 
             levels.append({
                 "awareness_level": level,
@@ -827,13 +862,17 @@ class AdPerformanceQueryService:
                 "spend_share": (spend / total_spend) if total_spend > 0 else 0,
                 "impressions": imp,
                 "clicks": clicks,
+                "add_to_carts": add_to_carts,
                 "purchases": purchases,
                 "purchase_value": pv,
                 "ctr": (clicks / imp * 100) if imp > 0 else 0,
                 "roas": (pv / spend) if spend > 0 else 0,
                 "cpa": (spend / purchases) if purchases > 0 else 0,
+                "mean_cpa": mean_cpa,
+                "p75_cpa": p75_cpa,
                 "cvr": (purchases / clicks * 100) if clicks > 0 else 0,
                 "cpm": (spend / imp * 1000) if imp > 0 else 0,
+                "atc_rate": (add_to_carts / clicks * 100) if clicks > 0 else 0,
             })
 
         return {

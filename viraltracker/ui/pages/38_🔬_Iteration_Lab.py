@@ -1244,7 +1244,7 @@ def render_awareness_tab(brand_id: str, product_id: Optional[str], org_id: str):
     """Render the Awareness Coverage tab."""
     from viraltracker.services.ad_performance_query_service import AdPerformanceQueryService
 
-    col1, col2 = st.columns([1, 1])
+    col1, col2, col3 = st.columns([1, 1, 1])
     with col1:
         awareness_days_back = st.selectbox(
             "Days back", [14, 30, 60, 90], index=1, key="iter_awareness_days_back"
@@ -1255,17 +1255,23 @@ def render_awareness_tab(brand_id: str, product_id: Optional[str], org_id: str):
             format_func=lambda x: f"${x}" if x > 0 else "No min",
             key="iter_awareness_min_spend"
         )
+    with col3:
+        awareness_format = st.selectbox(
+            "Format", ["All", "Image", "Video"], key="iter_awareness_format"
+        )
 
     # Load or use cached breakdown
     if st.button("📊 Analyze Awareness", use_container_width=True, key="iter_awareness_btn"):
         perf_service = AdPerformanceQueryService(get_supabase_client())
         with st.spinner("Analyzing awareness coverage..."):
             try:
+                fmt_map = {"All": None, "Image": "image", "Video": "video"}
                 breakdown = perf_service.get_breakdown_by_awareness(
                     brand_id=brand_id,
                     days_back=awareness_days_back,
                     product_id=product_id,
                     min_spend=float(awareness_min_spend),
+                    format_filter=fmt_map.get(awareness_format),
                 )
                 st.session_state.iter_awareness_breakdown = breakdown
                 st.session_state.iter_awareness_expanded = None
@@ -1328,8 +1334,9 @@ def render_awareness_tab(brand_id: str, product_id: Optional[str], org_id: str):
             )
 
     # Table
-    header_cols = st.columns([2.5, 0.7, 1.2, 0.8, 0.8, 0.8, 0.8, 0.8])
-    headers = ["Awareness Level", "Ads", "Spend", "CTR", "CVR", "ROAS", "CPA", "Share"]
+    col_widths = [2.2, 0.6, 1.0, 0.7, 0.7, 0.7, 0.7, 0.8, 0.8, 0.8, 0.7]
+    headers = ["Awareness Level", "Ads", "Spend", "CTR", "ATC%", "CVR", "ROAS", "Agg CPA", "Mean CPA", "p75 CPA", "Share"]
+    header_cols = st.columns(col_widths)
     for col, h in zip(header_cols, headers):
         with col:
             st.markdown(f"**{h}**")
@@ -1338,10 +1345,12 @@ def render_awareness_tab(brand_id: str, product_id: Optional[str], org_id: str):
         awareness_level = level["awareness_level"]
         health = _get_awareness_health_icon(level["spend_share"], level["ad_count"])
         is_expanded = st.session_state.iter_awareness_expanded == awareness_level
+        has_data = level["ad_count"] > 0
+        has_purchases = level.get("purchases", 0) > 0
 
-        row_cols = st.columns([2.5, 0.7, 1.2, 0.8, 0.8, 0.8, 0.8, 0.8])
+        row_cols = st.columns(col_widths)
         with row_cols[0]:
-            if level["ad_count"] > 0:
+            if has_data:
                 if st.button(
                     f"{health} {level['label']}",
                     key=f"iter_aw_{awareness_level}",
@@ -1357,29 +1366,31 @@ def render_awareness_tab(brand_id: str, product_id: Optional[str], org_id: str):
         with row_cols[1]:
             st.markdown(str(level["ad_count"]))
         with row_cols[2]:
-            if level["spend"] > 0:
-                st.markdown(f"${level['spend']:,.0f}")
-            else:
-                st.markdown("-")
+            st.markdown(f"${level['spend']:,.0f}" if level["spend"] > 0 else "-")
         with row_cols[3]:
-            st.markdown(f"{level['ctr']:.1f}%" if level["ad_count"] > 0 else "-")
+            st.markdown(f"{level['ctr']:.1f}%" if has_data else "-")
         with row_cols[4]:
-            st.markdown(f"{level['cvr']:.1f}%" if level["ad_count"] > 0 else "-")
+            st.markdown(f"{level.get('atc_rate', 0):.1f}%" if has_data and level.get("atc_rate", 0) > 0 else "-")
         with row_cols[5]:
-            st.markdown(f"{level['roas']:.1f}x" if level["ad_count"] > 0 else "-")
+            st.markdown(f"{level['cvr']:.1f}%" if has_data else "-")
         with row_cols[6]:
-            st.markdown(f"${level['cpa']:,.0f}" if level["purchases"] > 0 else "-")
+            st.markdown(f"{level['roas']:.1f}x" if has_data else "-")
         with row_cols[7]:
-            st.markdown(f"{level['spend_share']*100:.0f}%" if level["ad_count"] > 0 else "0%")
+            st.markdown(f"${level['cpa']:,.0f}" if has_purchases else "-")
+        with row_cols[8]:
+            st.markdown(f"${level.get('mean_cpa', 0):,.0f}" if level.get("mean_cpa", 0) > 0 else "-")
+        with row_cols[9]:
+            st.markdown(f"${level.get('p75_cpa', 0):,.0f}" if level.get("p75_cpa", 0) > 0 else "-")
+        with row_cols[10]:
+            st.markdown(f"{level['spend_share']*100:.0f}%" if has_data else "0%")
 
         # Drilldown: top ads for expanded level
-        if is_expanded and level["ad_count"] > 0:
+        if is_expanded and has_data:
             _render_awareness_drilldown(brand_id, awareness_level, awareness_days_back, product_id, float(awareness_min_spend))
 
     # Unclassified row
     if total_unclassified > 0:
-        # Unclassified spend not tracked at level granularity
-        row_cols = st.columns([2.5, 0.7, 1.2, 0.8, 0.8, 0.8, 0.8, 0.8])
+        row_cols = st.columns(col_widths)
         with row_cols[0]:
             st.markdown(f"⚪ Unclassified")
         with row_cols[1]:
