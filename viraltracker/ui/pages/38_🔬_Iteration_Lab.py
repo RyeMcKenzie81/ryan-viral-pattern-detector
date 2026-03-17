@@ -1378,7 +1378,7 @@ def render_awareness_tab(brand_id: str, product_id: Optional[str], org_id: str):
 
     # Unclassified row
     if total_unclassified > 0:
-        uncls_spend = sum(float(r.get("spend") or 0) for r in []) if False else 0  # Not tracked
+        # Unclassified spend not tracked at level granularity
         row_cols = st.columns([2.5, 0.7, 1.2, 0.8, 0.8, 0.8, 0.8, 0.8])
         with row_cols[0]:
             st.markdown(f"⚪ Unclassified")

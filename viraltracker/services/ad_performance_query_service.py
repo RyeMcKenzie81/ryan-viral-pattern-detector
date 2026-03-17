@@ -816,12 +816,6 @@ class AdPerformanceQueryService:
             pv = b["purchase_value"]
             ad_count = len(b["ad_ids"])
 
-            # Apply min_spend filter at level
-            if min_spend > 0:
-                # Filter individual ads by min_spend would require per-ad aggregation;
-                # instead we just report the level totals
-                pass
-
             if ad_count == 0:
                 gaps.append(level)
 
