@@ -1544,7 +1544,16 @@ class SEOWorkflowService:
         first_para = None
         for p in paragraphs:
             s = p.strip()
-            if s and not s.startswith("#") and not s.startswith("!") and not s.startswith("<!--") and not s.startswith("```"):
+            if (
+                s
+                and not s.startswith("#")        # headings
+                and not s.startswith("!")         # markdown images ![alt](url)
+                and not s.startswith("<!--")      # HTML comments
+                and not s.startswith("```")       # code fences
+                and not s.startswith("<img")      # inline image tags
+                and not s.startswith("<figure")   # figure elements
+                and not re.match(r'^\[(?:HERO )?IMAGE:', s, re.IGNORECASE)  # image markers
+            ):
                 first_para = s
                 break
 
