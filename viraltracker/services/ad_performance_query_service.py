@@ -848,7 +848,8 @@ class AdPerformanceQueryService:
             if ad_count == 0:
                 gaps.append(level)
 
-            # Compute per-ad CPA distribution (mean and p75)
+            # Compute per-ad CPA distribution
+            # "Top 75%" = 75th percentile of best performers = p25 of CPA ascending
             ad_cpas = []
             for aid in b["ad_ids"]:
                 a_spend = b["ad_spend"][aid]
@@ -859,10 +860,10 @@ class AdPerformanceQueryService:
             ad_cpas.sort()
             mean_cpa = (sum(ad_cpas) / len(ad_cpas)) if ad_cpas else 0
             if ad_cpas:
-                p75_idx = int(len(ad_cpas) * 0.75)
-                p75_cpa = ad_cpas[min(p75_idx, len(ad_cpas) - 1)]
+                p25_idx = int(len(ad_cpas) * 0.25)
+                top75_cpa = ad_cpas[min(p25_idx, len(ad_cpas) - 1)]
             else:
-                p75_cpa = 0
+                top75_cpa = 0
 
             levels.append({
                 "awareness_level": level,
@@ -880,7 +881,7 @@ class AdPerformanceQueryService:
                 "roas": (pv / spend) if spend > 0 else 0,
                 "cpa": (spend / purchases) if purchases > 0 else 0,
                 "mean_cpa": mean_cpa,
-                "p75_cpa": p75_cpa,
+                "top75_cpa": top75_cpa,
                 "cvr": (purchases / clicks * 100) if clicks > 0 else 0,
                 "cpm": (spend / imp * 1000) if imp > 0 else 0,
                 "atc_rate": (add_to_carts / clicks * 100) if clicks > 0 else 0,
