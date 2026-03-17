@@ -251,7 +251,12 @@ class QAValidationService:
         )
 
     def _check_heading_structure(self, soup: BeautifulSoup, content_md: str) -> QACheck:
-        """Check heading hierarchy: H1 present, H2s exist, no skipped levels."""
+        """Check heading hierarchy: H2s exist, no skipped levels.
+
+        Note: H1 is NOT expected in article body — CMS (Shopify) renders the
+        article title as the page H1. Having an H1 in the body would create
+        a duplicate.
+        """
         # Check in markdown as well (# heading)
         h1_md = len(re.findall(r'^# [^\n]+', content_md, re.MULTILINE))
         h2_md = len(re.findall(r'^## [^\n]+', content_md, re.MULTILINE))
@@ -265,10 +270,8 @@ class QAValidationService:
         h3_count = h3_md  # Usually only in markdown
 
         issues = []
-        if h1_count == 0:
-            issues.append("No H1 heading found")
-        elif h1_count > 1:
-            issues.append(f"Multiple H1 headings ({h1_count}) — should have exactly 1")
+        if h1_count > 0:
+            issues.append(f"H1 found in body ({h1_count}) — CMS provides H1 from article title, remove from body to avoid duplicate")
         if h2_count == 0:
             issues.append("No H2 headings found — article needs structure")
         if h3_count > 0 and h2_count == 0:
@@ -278,15 +281,15 @@ class QAValidationService:
             return QACheck(
                 name="heading_structure",
                 passed=True,
-                message=f"Heading structure OK: {h1_count} H1, {h2_count} H2, {h3_count} H3",
-                details={"h1": h1_count, "h2": h2_count, "h3": h3_count},
+                message=f"Heading structure OK: {h2_count} H2, {h3_count} H3 (H1 provided by CMS)",
+                details={"h1_in_body": h1_count, "h2": h2_count, "h3": h3_count},
             )
         return QACheck(
             name="heading_structure",
             passed=False,
-            severity="error" if h1_count == 0 else "warning",
+            severity="warning",
             message="; ".join(issues),
-            details={"h1": h1_count, "h2": h2_count, "h3": h3_count, "issues": issues},
+            details={"h1_in_body": h1_count, "h2": h2_count, "h3": h3_count, "issues": issues},
         )
 
     def _check_readability(self, plain_text: str) -> QACheck:
@@ -322,7 +325,11 @@ class QAValidationService:
         content_md: str,
         soup: BeautifulSoup,
     ) -> QACheck:
-        """Check keyword appears in title, H1, first paragraph, and meta description."""
+        """Check keyword appears in title (H1), first paragraph, and meta description.
+
+        Note: CMS (Shopify) renders seo_title as the page H1, so we check
+        seo_title for both 'title' and 'h1' placement.
+        """
         if not keyword:
             return QACheck(
                 name="keyword_placement",
@@ -331,20 +338,12 @@ class QAValidationService:
             )
 
         kw_lower = keyword.lower()
+        title_has_kw = kw_lower in seo_title.lower()
         placements = {
-            "title": kw_lower in seo_title.lower(),
+            "title/h1": title_has_kw,  # seo_title = page H1 in CMS
             "meta_description": kw_lower in meta_description.lower(),
             "first_paragraph": False,
-            "h1": False,
         }
-
-        # Check H1
-        h1_tags = soup.find_all("h1") if soup else []
-        h1_match = re.search(r'^# (.+)$', content_md, re.MULTILINE)
-        if any(kw_lower in tag.get_text().lower() for tag in h1_tags):
-            placements["h1"] = True
-        elif h1_match and kw_lower in h1_match.group(1).lower():
-            placements["h1"] = True
 
         # Check first paragraph
         paragraphs = re.split(r'\n\n+', content_md.strip())
@@ -365,7 +364,7 @@ class QAValidationService:
                 details={"placements": placements},
             )
 
-        severity = "error" if "title" in missing or "h1" in missing else "warning"
+        severity = "error" if "title/h1" in missing else "warning"
         return QACheck(
             name="keyword_placement",
             passed=False,
