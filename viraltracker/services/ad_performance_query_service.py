@@ -87,8 +87,32 @@ class AdPerformanceQueryService:
         reverse = sort_order == "desc"
         ads.sort(key=lambda a: a.get(sort_by, 0) or 0, reverse=reverse)
 
+        top_ads = ads[:limit]
+
+        # Enrich with creative_format from classifications
+        top_ad_ids = [a["meta_ad_id"] for a in top_ads]
+        if top_ad_ids:
+            try:
+                cls_result = (
+                    self.supabase.table("ad_creative_classifications")
+                    .select("meta_ad_id, creative_format")
+                    .eq("brand_id", brand_id)
+                    .in_("meta_ad_id", top_ad_ids)
+                    .order("classified_at", desc=True)
+                    .execute()
+                )
+                cls_map = {}
+                for c in (cls_result.data or []):
+                    aid = c.get("meta_ad_id")
+                    if aid and aid not in cls_map:
+                        cls_map[aid] = c.get("creative_format", "")
+                for a in top_ads:
+                    a["creative_format"] = cls_map.get(a["meta_ad_id"], "")
+            except Exception as e:
+                logger.debug(f"Could not enrich top ads with creative_format: {e}")
+
         return {
-            "ads": ads[:limit],
+            "ads": top_ads,
             "meta": {
                 "date_start": start.isoformat(),
                 "date_end": end.isoformat(),

@@ -953,12 +953,12 @@ def _render_per_winner(brand_id: str, org_id: str, days_back: int = 30):
     )
     top_ads = top_result.get("ads", [])
 
-    # Apply format filter (use ad_name heuristic — creative_format not in get_top_ads output)
+    # Apply format filter
     fmt_filter = st.session_state.get("iter_winner_format_filter", "All")
     if fmt_filter == "Image":
-        top_ads = [a for a in top_ads if "video" not in (a.get("ad_name") or "").lower()]
+        top_ads = [a for a in top_ads if not (a.get("creative_format") or "").startswith("video_")]
     elif fmt_filter == "Video":
-        top_ads = [a for a in top_ads if "video" in (a.get("ad_name") or "").lower()]
+        top_ads = [a for a in top_ads if (a.get("creative_format") or "").startswith("video_")]
 
     if not top_ads:
         st.info(f"No ads found with ${winner_min_spend:.0f}+ spend in the last {days_back} days.")
