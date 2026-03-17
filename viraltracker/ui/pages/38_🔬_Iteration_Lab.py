@@ -626,6 +626,11 @@ def _render_cross_winner(brand_id: str, org_id: str, days_back: int = 30):
 
     # --- Winner Thumbnail Gallery ---
     winner_thumbnails = _safe_get(analysis, "winner_thumbnails") or []
+    # Backfill missing thumbnails from Meta Creative API
+    if winner_thumbnails and isinstance(winner_thumbnails, list):
+        missing_ids = [t["meta_ad_id"] for t in winner_thumbnails if not t.get("thumbnail_url")]
+        if missing_ids:
+            winner_thumbnails = _backfill_thumbnails(missing_ids, winner_thumbnails)
     if winner_thumbnails and isinstance(winner_thumbnails, list):
         thumb_cols = st.columns(min(len(winner_thumbnails), 6))
         for i, thumb in enumerate(winner_thumbnails[:6]):
@@ -939,6 +944,11 @@ def _render_per_winner(brand_id: str, org_id: str, days_back: int = 30):
     if not top_ads:
         st.info("No ads with enough performance data found. Ads need at least 7 days and $10+ spend.")
         return
+
+    # Backfill missing thumbnails
+    missing_thumb_ids = [a["meta_ad_id"] for a in top_ads if not a.get("thumbnail_url")]
+    if missing_thumb_ids:
+        top_ads = _backfill_thumbnails(missing_thumb_ids, top_ads)
 
     # Visual card selector
     st.markdown("**Select a winner to analyze:**")
