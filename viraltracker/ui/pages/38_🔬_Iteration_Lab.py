@@ -83,6 +83,8 @@ if "iter_scan_done" not in st.session_state:
     st.session_state.iter_scan_done = False
 if "iter_category_filter" not in st.session_state:
     st.session_state.iter_category_filter = None
+if "iter_format_filter" not in st.session_state:
+    st.session_state.iter_format_filter = "All"
 if "iter_cross_winner_result" not in st.session_state:
     st.session_state.iter_cross_winner_result = None
 if "iter_per_winner_result" not in st.session_state:
@@ -230,13 +232,17 @@ def render_opportunities_tab(brand_id: str, product_id: Optional[str], org_id: s
         st.divider()
 
     # Scan controls
-    col1, col2 = st.columns([3, 1])
+    col1, col2, col3 = st.columns([3, 1, 1])
     with col1:
         if st.button("🔍 Scan for Opportunities", use_container_width=True, key="iter_scan_btn"):
             _run_scan(brand_id, org_id)
     with col2:
         days_back = st.selectbox(
             "Days back", [14, 30, 60, 90], index=1, key="iter_days_back"
+        )
+    with col3:
+        st.selectbox(
+            "Format", ["All", "Image", "Video"], key="iter_format_filter"
         )
 
     # Show results
@@ -283,10 +289,15 @@ def render_opportunities_tab(brand_id: str, product_id: Optional[str], org_id: s
 
     st.markdown(f"**{len(opportunities)} opportunities found**")
 
-    # Filter by category
+    # Filter by category and format
     filtered = opportunities
     if st.session_state.iter_category_filter:
-        filtered = [o for o in opportunities if _get_field(o, "strategy_category") == st.session_state.iter_category_filter]
+        filtered = [o for o in filtered if _get_field(o, "strategy_category") == st.session_state.iter_category_filter]
+    fmt_filter = st.session_state.get("iter_format_filter", "All")
+    if fmt_filter == "Image":
+        filtered = [o for o in filtered if not _get_field(o, "creative_format", "").startswith("video_")]
+    elif fmt_filter == "Video":
+        filtered = [o for o in filtered if _get_field(o, "creative_format", "").startswith("video_")]
 
     # Render opportunity cards
     for idx, opp in enumerate(filtered):
