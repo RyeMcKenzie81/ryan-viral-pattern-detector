@@ -73,6 +73,7 @@ class CrossWinnerAnalysis:
     notable_visual_traits: Dict[str, Any] = field(default_factory=dict)
     cohort_summary: Dict[str, Any] = field(default_factory=dict)
     winner_thumbnails: List[Dict] = field(default_factory=list)
+    awareness_distribution: Dict[str, int] = field(default_factory=dict)
 
 
 class WinnerDNAAnalyzer:
@@ -162,6 +163,7 @@ class WinnerDNAAnalyzer:
         top_n: int = 10,
         min_reward: float = 0.65,
         days_back: int = 30,
+        product_id: Optional[str] = None,
     ) -> Optional[CrossWinnerAnalysis]:
         """Cross-winner pattern extraction.
 
@@ -171,12 +173,13 @@ class WinnerDNAAnalyzer:
             top_n: Number of top winners to analyze.
             min_reward: Minimum reward score to qualify as winner.
             days_back: Lookback window in days for performance data.
+            product_id: Optional product UUID to filter winners by.
 
         Returns:
             CrossWinnerAnalysis object, or None if insufficient winners.
         """
         # 1. Identify top winners
-        winner_ads = self._find_top_winners(brand_id, top_n, min_reward, days_back)
+        winner_ads = self._find_top_winners(brand_id, top_n, min_reward, days_back, product_id=product_id)
         if len(winner_ads) < 3:
             logger.info(f"Only {len(winner_ads)} winners found for brand {brand_id}, need at least 3")
             return None
@@ -223,6 +226,14 @@ class WinnerDNAAnalyzer:
         # 10. Compute cohort performance summary
         cohort_summary = self._compute_cohort_summary(winner_dnas)
 
+        # 11. Compute awareness distribution from winner classifications
+        awareness_dist: Dict[str, int] = {}
+        for ad in winner_ads:
+            cls = self._get_classification(ad["meta_ad_id"], brand_id)
+            level = cls.get("creative_awareness_level")
+            if level:
+                awareness_dist[level] = awareness_dist.get(level, 0) + 1
+
         real_org_id = self._resolve_org_id(org_id, brand_id)
 
         analysis = CrossWinnerAnalysis(
@@ -237,6 +248,7 @@ class WinnerDNAAnalyzer:
             notable_visual_traits=notable_visuals,
             cohort_summary=cohort_summary,
             winner_thumbnails=winner_thumbnails,
+            awareness_distribution=awareness_dist,
         )
 
         # Store cross-winner analysis
@@ -607,7 +619,8 @@ class WinnerDNAAnalyzer:
     # ---------------------------------------------------------------------------
 
     def _find_top_winners(
-        self, brand_id: str, top_n: int, min_reward: float, days_back: int = 30
+        self, brand_id: str, top_n: int, min_reward: float, days_back: int = 30,
+        product_id: Optional[str] = None,
     ) -> List[Dict]:
         """Find top N winning ads by ROAS."""
         from viraltracker.services.ad_performance_query_service import AdPerformanceQueryService
@@ -619,6 +632,7 @@ class WinnerDNAAnalyzer:
             days_back=days_back,
             limit=top_n * 2,  # Fetch more to filter
             min_spend=10.0,
+            product_id=product_id,
         )
 
         ads = result.get("ads", [])

@@ -240,6 +240,7 @@ class IterationOpportunityDetector:
         org_id: str,
         days_back: int = 30,
         min_confidence: float = 0.3,
+        product_id: Optional[str] = None,
     ) -> List[IterationOpportunity]:
         """Find all iteration opportunities for a brand.
 
@@ -248,12 +249,13 @@ class IterationOpportunityDetector:
             org_id: Organization UUID (or "all").
             days_back: Days of performance data to consider.
             min_confidence: Minimum confidence threshold.
+            product_id: Optional product UUID to filter ads by.
 
         Returns:
             List of IterationOpportunity sorted by confidence desc.
         """
         # 1. Load active ads with aggregated performance
-        ads = self._load_ads_with_performance(brand_id, days_back)
+        ads = self._load_ads_with_performance(brand_id, days_back, product_id=product_id)
         if not ads:
             logger.info(f"No ads with performance data for brand {brand_id}")
             return []
@@ -975,7 +977,7 @@ class IterationOpportunityDetector:
     # ---------------------------------------------------------------------------
 
     def _load_ads_with_performance(
-        self, brand_id: str, days_back: int
+        self, brand_id: str, days_back: int, product_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Load ads with aggregated performance metrics."""
         cutoff = (date.today() - timedelta(days=days_back)).isoformat()
@@ -1078,6 +1080,14 @@ class IterationOpportunityDetector:
                 ad["hold_rate"] = agg["video_thruplay"] / agg["video_p25_watched"]
 
             ads.append(ad)
+
+        # Product filter
+        if product_id and ads:
+            from viraltracker.services.ad_performance_query_service import AdPerformanceQueryService
+            perf_service = AdPerformanceQueryService(self.supabase)
+            all_ad_ids = [a["meta_ad_id"] for a in ads]
+            product_ad_ids = perf_service._resolve_product_ad_ids(brand_id, product_id, all_ad_ids)
+            ads = [a for a in ads if a["meta_ad_id"] in product_ad_ids]
 
         return ads
 

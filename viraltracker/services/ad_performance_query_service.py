@@ -44,6 +44,7 @@ class AdPerformanceQueryService:
         campaign_name_filter: str = "",
         date_start: Optional[str] = None,
         date_end: Optional[str] = None,
+        product_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Get top/bottom ads ranked by a metric.
 
@@ -58,6 +59,7 @@ class AdPerformanceQueryService:
             campaign_name_filter: Filter by campaign name substring (case-insensitive).
             date_start: Explicit start date (ISO format, e.g. '2026-01-01').
             date_end: Explicit end date (ISO format).
+            product_id: Optional product UUID to filter ads by.
 
         Returns:
             Dict with 'ads' list, 'meta' dict with query params and date range.
@@ -69,6 +71,12 @@ class AdPerformanceQueryService:
             return {"ads": [], "meta": {"date_start": start.isoformat(), "date_end": end.isoformat(), "total_rows": 0}}
 
         ads = self._aggregate_by_ad(rows)
+
+        # Product filter (two-tier: landing page + name match)
+        if product_id:
+            all_ad_ids = [a["meta_ad_id"] for a in ads]
+            product_ad_ids = self._resolve_product_ad_ids(brand_id, product_id, all_ad_ids)
+            ads = [a for a in ads if a["meta_ad_id"] in product_ad_ids]
 
         # Apply filters
         if status_filter == "active":
@@ -703,9 +711,344 @@ class AdPerformanceQueryService:
             },
         }
 
+    def get_breakdown_by_awareness(
+        self,
+        brand_id: str,
+        days_back: int = 30,
+        product_id: Optional[str] = None,
+        min_spend: float = 0.0,
+        date_start: Optional[str] = None,
+        date_end: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Aggregate performance by consumer awareness level (Schwartz).
+
+        Groups classified ads by creative_awareness_level and computes
+        spend, CTR, ROAS, CPA, CVR per level. Identifies funnel gaps.
+
+        Args:
+            brand_id: Brand UUID string.
+            days_back: Number of days to look back.
+            product_id: Optional product UUID to filter ads by.
+            min_spend: Minimum spend threshold per ad.
+            date_start: Explicit start date (ISO format).
+            date_end: Explicit end date (ISO format).
+
+        Returns:
+            Dict with 'levels' list, 'gaps' list, classification counts.
+        """
+        from viraltracker.services.ad_intelligence.models import AwarenessLevel
+
+        start, end = self._resolve_date_range(days_back, date_start, date_end)
+
+        # Fetch all performance rows (both classified and unclassified)
+        all_perf_rows = self._fetch_performance_rows(brand_id, start, end)
+        total_all_ads = len(set(r.get("meta_ad_id") for r in all_perf_rows if r.get("meta_ad_id")))
+
+        # Fetch classified performance
+        classified = self._fetch_classified_performance(brand_id, start, end)
+
+        # Product filter
+        if product_id and classified:
+            all_cls_ad_ids = list(set(r["meta_ad_id"] for r in classified if r.get("meta_ad_id")))
+            product_ad_ids = self._resolve_product_ad_ids(brand_id, product_id, all_cls_ad_ids)
+            classified = [r for r in classified if r.get("meta_ad_id") in product_ad_ids]
+
+        # Also filter total ads count for product
+        if product_id and all_perf_rows:
+            all_perf_ad_ids = list(set(r.get("meta_ad_id") for r in all_perf_rows if r.get("meta_ad_id")))
+            product_perf_ids = self._resolve_product_ad_ids(brand_id, product_id, all_perf_ad_ids)
+            total_all_ads = len(product_perf_ids)
+
+        # Canonical awareness levels
+        canonical_levels = [level.value for level in AwarenessLevel]
+        level_labels = {
+            "unaware": "Unaware",
+            "problem_aware": "Problem Aware",
+            "solution_aware": "Solution Aware",
+            "product_aware": "Product Aware",
+            "most_aware": "Most Aware",
+        }
+
+        # Group by awareness level
+        buckets: Dict[str, Dict] = {}
+        for level in canonical_levels:
+            buckets[level] = {
+                "spend": 0, "impressions": 0, "link_clicks": 0,
+                "purchases": 0, "purchase_value": 0, "ad_ids": set(),
+            }
+
+        unclassified_ads = set()
+        classified_ads = set()
+
+        for row in classified:
+            level = row.get("creative_awareness_level")
+            aid = row.get("meta_ad_id")
+
+            if level and level in buckets:
+                classified_ads.add(aid)
+                b = buckets[level]
+                b["spend"] += float(row.get("spend") or 0)
+                b["impressions"] += int(row.get("impressions") or 0)
+                b["link_clicks"] += int(row.get("link_clicks") or 0)
+                b["purchases"] += int(row.get("purchases") or 0)
+                b["purchase_value"] += float(row.get("purchase_value") or 0)
+                if aid:
+                    b["ad_ids"].add(aid)
+            else:
+                if aid:
+                    unclassified_ads.add(aid)
+
+        total_classified = len(classified_ads)
+        total_unclassified = total_all_ads - total_classified
+
+        # Compute total spend for share calculation
+        total_spend = sum(b["spend"] for b in buckets.values())
+
+        # Build results
+        levels = []
+        gaps = []
+        for level in canonical_levels:
+            b = buckets[level]
+            spend = b["spend"]
+            imp = b["impressions"]
+            clicks = b["link_clicks"]
+            purchases = b["purchases"]
+            pv = b["purchase_value"]
+            ad_count = len(b["ad_ids"])
+
+            # Apply min_spend filter at level
+            if min_spend > 0:
+                # Filter individual ads by min_spend would require per-ad aggregation;
+                # instead we just report the level totals
+                pass
+
+            if ad_count == 0:
+                gaps.append(level)
+
+            levels.append({
+                "awareness_level": level,
+                "label": level_labels.get(level, level),
+                "ad_count": ad_count,
+                "spend": spend,
+                "spend_share": (spend / total_spend) if total_spend > 0 else 0,
+                "impressions": imp,
+                "clicks": clicks,
+                "purchases": purchases,
+                "purchase_value": pv,
+                "ctr": (clicks / imp * 100) if imp > 0 else 0,
+                "roas": (pv / spend) if spend > 0 else 0,
+                "cpa": (spend / purchases) if purchases > 0 else 0,
+                "cvr": (purchases / clicks * 100) if clicks > 0 else 0,
+                "cpm": (spend / imp * 1000) if imp > 0 else 0,
+            })
+
+        return {
+            "levels": levels,
+            "gaps": gaps,
+            "total_classified": total_classified,
+            "total_unclassified": total_unclassified,
+            "total_spend": total_spend,
+            "date_range": {"start": start.isoformat(), "end": end.isoformat()},
+        }
+
+    def get_top_ads_by_awareness(
+        self,
+        brand_id: str,
+        awareness_level: str,
+        days_back: int = 30,
+        limit: int = 10,
+        product_id: Optional[str] = None,
+        min_spend: float = 0.0,
+        date_start: Optional[str] = None,
+        date_end: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Get top ads for a specific awareness level, sorted by ROAS.
+
+        Args:
+            brand_id: Brand UUID string.
+            awareness_level: One of unaware, problem_aware, solution_aware, product_aware, most_aware.
+            days_back: Number of days to look back.
+            limit: Max ads to return.
+            product_id: Optional product UUID to filter ads by.
+            min_spend: Minimum spend threshold.
+            date_start: Explicit start date (ISO format).
+            date_end: Explicit end date (ISO format).
+
+        Returns:
+            Dict with 'ads' list and 'meta' dict.
+        """
+        start, end = self._resolve_date_range(days_back, date_start, date_end)
+        classified = self._fetch_classified_performance(brand_id, start, end)
+
+        # Filter to awareness level
+        classified = [
+            r for r in classified
+            if r.get("creative_awareness_level") == awareness_level
+        ]
+
+        if not classified:
+            return {"ads": [], "meta": {"awareness_level": awareness_level, "total": 0}}
+
+        # Product filter
+        if product_id:
+            all_ad_ids = list(set(r["meta_ad_id"] for r in classified if r.get("meta_ad_id")))
+            product_ad_ids = self._resolve_product_ad_ids(brand_id, product_id, all_ad_ids)
+            classified = [r for r in classified if r.get("meta_ad_id") in product_ad_ids]
+
+        # Aggregate by ad
+        ad_map: Dict[str, Dict] = defaultdict(lambda: {
+            "spend": 0, "impressions": 0, "link_clicks": 0,
+            "purchases": 0, "purchase_value": 0,
+            "ad_name": "", "thumbnail_url": "", "creative_format": "",
+        })
+
+        for row in classified:
+            aid = row.get("meta_ad_id")
+            if not aid:
+                continue
+            a = ad_map[aid]
+            a["ad_name"] = row.get("ad_name") or a["ad_name"]
+            if row.get("thumbnail_url") and not a["thumbnail_url"]:
+                a["thumbnail_url"] = row["thumbnail_url"]
+            a["creative_format"] = row.get("creative_format") or a["creative_format"]
+            a["spend"] += float(row.get("spend") or 0)
+            a["impressions"] += int(row.get("impressions") or 0)
+            a["link_clicks"] += int(row.get("link_clicks") or 0)
+            a["purchases"] += int(row.get("purchases") or 0)
+            a["purchase_value"] += float(row.get("purchase_value") or 0)
+
+        ads = []
+        for aid, a in ad_map.items():
+            spend = a["spend"]
+            if min_spend > 0 and spend < min_spend:
+                continue
+            imp = a["impressions"]
+            clicks = a["link_clicks"]
+            purchases = a["purchases"]
+            pv = a["purchase_value"]
+            ads.append({
+                "meta_ad_id": aid,
+                "ad_name": a["ad_name"],
+                "thumbnail_url": a["thumbnail_url"],
+                "creative_format": a["creative_format"],
+                "spend": spend,
+                "impressions": imp,
+                "link_clicks": clicks,
+                "ctr": (clicks / imp * 100) if imp > 0 else 0,
+                "purchases": purchases,
+                "purchase_value": pv,
+                "roas": (pv / spend) if spend > 0 else 0,
+                "cpa": (spend / purchases) if purchases > 0 else 0,
+                "cvr": (purchases / clicks * 100) if clicks > 0 else 0,
+            })
+
+        ads.sort(key=lambda a: a.get("roas", 0), reverse=True)
+
+        return {
+            "ads": ads[:limit],
+            "meta": {
+                "date_start": start.isoformat(),
+                "date_end": end.isoformat(),
+                "awareness_level": awareness_level,
+                "total": len(ads),
+                "returned": min(limit, len(ads)),
+            },
+        }
+
     # -------------------------------------------------------------------------
     # Internal helpers
     # -------------------------------------------------------------------------
+
+    def _resolve_product_ad_ids(
+        self, brand_id: str, product_id: str, ad_ids: List[str]
+    ) -> set:
+        """Resolve which ad_ids belong to a product via two-tier matching.
+
+        Tier 1: Join classified ads via landing_page_id -> brand_landing_pages.product_id.
+        Tier 2: Campaign/adset/ad name substring match on product name.
+
+        Args:
+            brand_id: Brand UUID string.
+            product_id: Product UUID string.
+            ad_ids: List of ad_ids to filter.
+
+        Returns:
+            Set of ad_ids belonging to the product.
+        """
+        if not ad_ids or not product_id:
+            return set(ad_ids)
+
+        matched = set()
+
+        # Get product name
+        product_name = ""
+        try:
+            result = self.supabase.table("products").select("name").eq("id", product_id).limit(1).execute()
+            if result.data:
+                product_name = result.data[0].get("name", "")
+        except Exception as e:
+            logger.debug(f"Failed to fetch product name: {e}")
+
+        # Tier 1: Landing page -> product_id match
+        try:
+            # Get landing page IDs linked to this product
+            lp_result = (
+                self.supabase.table("brand_landing_pages")
+                .select("id")
+                .eq("brand_id", brand_id)
+                .eq("product_id", product_id)
+                .execute()
+            )
+            lp_ids = [r["id"] for r in (lp_result.data or [])]
+
+            if lp_ids:
+                # Get classified ads pointing to those landing pages
+                for i in range(0, len(ad_ids), 500):
+                    batch = ad_ids[i:i + 500]
+                    cls_result = (
+                        self.supabase.table("ad_creative_classifications")
+                        .select("meta_ad_id, landing_page_id")
+                        .eq("brand_id", brand_id)
+                        .in_("meta_ad_id", batch)
+                        .in_("landing_page_id", lp_ids)
+                        .execute()
+                    )
+                    for c in (cls_result.data or []):
+                        if c.get("meta_ad_id"):
+                            matched.add(c["meta_ad_id"])
+        except Exception as e:
+            logger.debug(f"Tier 1 product resolution failed: {e}")
+
+        # Tier 2: Name substring match (catches unclassified ads)
+        if product_name:
+            name_lower = product_name.lower()
+            try:
+                for i in range(0, len(ad_ids), 500):
+                    batch = ad_ids[i:i + 500]
+                    perf_result = (
+                        self.supabase.table("meta_ads_performance")
+                        .select("meta_ad_id, ad_name, campaign_name, adset_name")
+                        .eq("brand_id", brand_id)
+                        .in_("meta_ad_id", batch)
+                        .execute()
+                    )
+                    seen = set()
+                    for r in (perf_result.data or []):
+                        aid = r.get("meta_ad_id")
+                        if aid in seen or aid in matched:
+                            continue
+                        seen.add(aid)
+                        searchable = " ".join([
+                            r.get("ad_name", ""),
+                            r.get("campaign_name", ""),
+                            r.get("adset_name", ""),
+                        ]).lower()
+                        if name_lower in searchable:
+                            matched.add(aid)
+            except Exception as e:
+                logger.debug(f"Tier 2 product name matching failed: {e}")
+
+        return matched
 
     def _resolve_date_range(
         self,

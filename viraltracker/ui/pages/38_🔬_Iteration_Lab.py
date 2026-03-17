@@ -91,6 +91,12 @@ if "iter_per_winner_result" not in st.session_state:
     st.session_state.iter_per_winner_result = None
 if "iter_action_confirm" not in st.session_state:
     st.session_state.iter_action_confirm = None
+if "iter_awareness_breakdown" not in st.session_state:
+    st.session_state.iter_awareness_breakdown = None
+if "iter_awareness_expanded" not in st.session_state:
+    st.session_state.iter_awareness_expanded = None
+if "iter_cache_key" not in st.session_state:
+    st.session_state.iter_cache_key = None
 
 
 # ============================================
@@ -235,7 +241,7 @@ def render_opportunities_tab(brand_id: str, product_id: Optional[str], org_id: s
     col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
     with col1:
         if st.button("🔍 Scan for Opportunities", use_container_width=True, key="iter_scan_btn"):
-            _run_scan(brand_id, org_id)
+            _run_scan(brand_id, org_id, product_id=product_id)
     with col2:
         days_back = st.selectbox(
             "Days back", [14, 30, 60, 90], index=1, key="iter_days_back"
@@ -329,7 +335,7 @@ def render_opportunities_tab(brand_id: str, product_id: Optional[str], org_id: s
                         st.rerun()
 
 
-def _run_scan(brand_id: str, org_id: str):
+def _run_scan(brand_id: str, org_id: str, product_id: Optional[str] = None):
     """Run opportunity detection scan."""
     detector = get_detector()
     days_back = st.session_state.get("iter_days_back", 30)
@@ -340,7 +346,7 @@ def _run_scan(brand_id: str, org_id: str):
 
         try:
             opps = asyncio.run(
-                detector.detect_opportunities(brand_id, org_id, days_back=days_back)
+                detector.detect_opportunities(brand_id, org_id, days_back=days_back, product_id=product_id)
             )
 
             # Convert dataclass list to dict list for session state serialization
@@ -576,7 +582,7 @@ def _render_video_brief(opp: dict, brand_id: str, org_id: str):
 # TAB 2: ANALYZE WINNERS
 # ============================================
 
-def render_winners_tab(brand_id: str, org_id: str):
+def render_winners_tab(brand_id: str, product_id: Optional[str], org_id: str):
     """Render the Analyze Winners tab."""
 
     col_mode, col_days, col_spend, col_fmt = st.columns([3, 1, 1, 1])
@@ -603,19 +609,19 @@ def render_winners_tab(brand_id: str, org_id: str):
         )
 
     if view_mode == "Winner Blueprint":
-        _render_cross_winner(brand_id, org_id, winner_days_back)
+        _render_cross_winner(brand_id, org_id, winner_days_back, product_id=product_id)
     else:
-        _render_per_winner(brand_id, org_id, winner_days_back)
+        _render_per_winner(brand_id, org_id, winner_days_back, product_id=product_id)
 
 
-def _render_cross_winner(brand_id: str, org_id: str, days_back: int = 30):
+def _render_cross_winner(brand_id: str, org_id: str, days_back: int = 30, product_id: Optional[str] = None):
     """Render cross-winner blueprint view."""
     col1, col2 = st.columns([1, 3])
     with col1:
         top_n = st.selectbox("Top N", [5, 10, 15, 20], index=1, key="iter_top_n")
     with col2:
         if st.button("🧬 Analyze Winners", use_container_width=True, key="iter_cross_btn"):
-            _run_cross_winner_analysis(brand_id, org_id, top_n, days_back)
+            _run_cross_winner_analysis(brand_id, org_id, top_n, days_back, product_id=product_id)
 
     analysis = st.session_state.iter_cross_winner_result
     if not analysis:
@@ -721,6 +727,24 @@ def _render_cross_winner(brand_id: str, org_id: str, days_back: int = 30):
                 total_losers = ap.get("total_losers", 0)
                 winner_count_ap = ap.get("winner_count", 0)
                 st.markdown(f"- {elem}: \"{val}\" ({winner_count_ap}/{winner_count} winners, {loser_count}/{total_losers} losers)")
+
+    # Winner Awareness Mix
+    awareness_dist = _safe_get(analysis, "awareness_distribution")
+    if awareness_dist and isinstance(awareness_dist, dict):
+        level_labels = {
+            "unaware": "Unaware", "problem_aware": "Problem Aware",
+            "solution_aware": "Solution Aware", "product_aware": "Product Aware",
+            "most_aware": "Most Aware",
+        }
+        parts = [f"{level_labels.get(k, k)} ({v})" for k, v in sorted(awareness_dist.items(), key=lambda x: -x[1])]
+        st.markdown(f"**Winner Awareness Mix**: {' | '.join(parts)}")
+        # Check if all winners are mid-to-bottom funnel
+        upper_funnel = awareness_dist.get("unaware", 0) + awareness_dist.get("problem_aware", 0)
+        if upper_funnel == 0 and sum(awareness_dist.values()) > 0:
+            st.caption(
+                "All winners are mid-to-bottom funnel. Testing upper-funnel creative "
+                "with these winning elements could expand reach."
+            )
 
     # Full breakdown expander
     iteration_directions = _safe_get(analysis, "iteration_directions")
@@ -916,14 +940,14 @@ def _execute_replication(
             st.error(f"Replication failed: {e}")
 
 
-def _run_cross_winner_analysis(brand_id: str, org_id: str, top_n: int, days_back: int = 30):
+def _run_cross_winner_analysis(brand_id: str, org_id: str, top_n: int, days_back: int = 30, product_id: Optional[str] = None):
     """Run cross-winner analysis."""
     analyzer = get_dna_analyzer()
 
     with st.spinner(f"Analyzing top {top_n} winners..."):
         try:
             result = asyncio.run(
-                analyzer.analyze_cross_winners(brand_id, org_id, top_n=top_n, days_back=days_back)
+                analyzer.analyze_cross_winners(brand_id, org_id, top_n=top_n, days_back=days_back, product_id=product_id)
             )
             if result:
                 # Serialize for session state
@@ -938,6 +962,7 @@ def _run_cross_winner_analysis(brand_id: str, org_id: str, top_n: int, days_back
                     "notable_visual_traits": result.notable_visual_traits,
                     "cohort_summary": result.cohort_summary,
                     "winner_thumbnails": result.winner_thumbnails,
+                    "awareness_distribution": result.awareness_distribution,
                 }
                 st.rerun()
             else:
@@ -946,7 +971,7 @@ def _run_cross_winner_analysis(brand_id: str, org_id: str, top_n: int, days_back
             st.error(f"Analysis failed: {e}")
 
 
-def _render_per_winner(brand_id: str, org_id: str, days_back: int = 30):
+def _render_per_winner(brand_id: str, org_id: str, days_back: int = 30, product_id: Optional[str] = None):
     """Render per-winner deep dive view."""
     # Winner selector
     from viraltracker.services.ad_performance_query_service import AdPerformanceQueryService
@@ -955,7 +980,7 @@ def _render_per_winner(brand_id: str, org_id: str, days_back: int = 30):
     winner_min_spend = float(st.session_state.get("iter_winner_min_spend", 50))
     top_result = perf_service.get_top_ads(
         brand_id=brand_id, sort_by="roas", days_back=days_back, limit=40,
-        min_spend=max(winner_min_spend, 10.0)
+        min_spend=max(winner_min_spend, 10.0), product_id=product_id,
     )
     top_ads = top_result.get("ads", [])
 
@@ -1169,6 +1194,269 @@ def _run_per_winner_analysis(meta_ad_id: str, brand_id: str, org_id: str):
 
 
 # ============================================
+# TAB 3: AWARENESS COVERAGE
+# ============================================
+
+AWARENESS_GAP_MESSAGES = {
+    "unaware": (
+        "Top-of-funnel ads build your retargeting audience. Without them, "
+        "BOFU audiences will shrink and CPAs will rise over time."
+    ),
+    "problem_aware": (
+        "Problem-aware ads educate prospects on the pain point. "
+        "They prime audiences to be receptive to your solution."
+    ),
+    "solution_aware": (
+        "Solution-aware ads position your approach vs alternatives. "
+        "Missing this stage means you're competing only on price."
+    ),
+    "product_aware": (
+        "Product-aware ads are your conversion drivers. "
+        "Without them, warm audiences have no clear path to purchase."
+    ),
+    "most_aware": (
+        "Most-aware ads target repeat buyers and loyalists. "
+        "They have the highest ROAS and lowest CPA."
+    ),
+}
+
+AWARENESS_LEVEL_ICONS = {
+    "unaware": "🔴",
+    "problem_aware": "🟡",
+    "solution_aware": "🟡",
+    "product_aware": "🟢",
+    "most_aware": "🟢",
+}
+
+
+def _get_awareness_health_icon(spend_share: float, ad_count: int) -> str:
+    """Get health icon based on spend share."""
+    if ad_count == 0:
+        return "🔴"
+    if spend_share >= 0.10:
+        return "🟢"
+    if spend_share >= 0.01:
+        return "🟡"
+    return "🔴"
+
+
+def render_awareness_tab(brand_id: str, product_id: Optional[str], org_id: str):
+    """Render the Awareness Coverage tab."""
+    from viraltracker.services.ad_performance_query_service import AdPerformanceQueryService
+
+    col1, col2 = st.columns([1, 1])
+    with col1:
+        awareness_days_back = st.selectbox(
+            "Days back", [14, 30, 60, 90], index=1, key="iter_awareness_days_back"
+        )
+    with col2:
+        awareness_min_spend = st.selectbox(
+            "Min spend", [0, 20, 50, 100, 250, 500], index=1,
+            format_func=lambda x: f"${x}" if x > 0 else "No min",
+            key="iter_awareness_min_spend"
+        )
+
+    # Load or use cached breakdown
+    if st.button("📊 Analyze Awareness", use_container_width=True, key="iter_awareness_btn"):
+        perf_service = AdPerformanceQueryService(get_supabase_client())
+        with st.spinner("Analyzing awareness coverage..."):
+            try:
+                breakdown = perf_service.get_breakdown_by_awareness(
+                    brand_id=brand_id,
+                    days_back=awareness_days_back,
+                    product_id=product_id,
+                    min_spend=float(awareness_min_spend),
+                )
+                st.session_state.iter_awareness_breakdown = breakdown
+                st.session_state.iter_awareness_expanded = None
+                st.rerun()
+            except Exception as e:
+                st.error(f"Analysis failed: {e}")
+                return
+
+    breakdown = st.session_state.iter_awareness_breakdown
+    if not breakdown:
+        st.info(
+            "See how your ad spend distributes across awareness levels "
+            "(Unaware → Problem Aware → Solution Aware → Product Aware → Most Aware). "
+            "Click **Analyze Awareness** to get started."
+        )
+        return
+
+    levels = breakdown.get("levels", [])
+    gaps = breakdown.get("gaps", [])
+    total_classified = breakdown.get("total_classified", 0)
+    total_unclassified = breakdown.get("total_unclassified", 0)
+    total_spend = breakdown.get("total_spend", 0)
+
+    if total_classified == 0:
+        st.warning(
+            f"No classified ads found. {total_unclassified} ads are unclassified. "
+            "Run Ad Intelligence classification first to see awareness breakdown."
+        )
+        return
+
+    # Classification coverage
+    st.markdown(
+        f"**{total_classified}** classified ads | "
+        f"**{total_unclassified}** unclassified | "
+        f"${total_spend:,.0f} total classified spend"
+    )
+
+    # Spend allocation bar
+    if total_spend > 0:
+        bar_parts = []
+        colors = {
+            "unaware": "#ef4444", "problem_aware": "#f59e0b",
+            "solution_aware": "#3b82f6", "product_aware": "#22c55e",
+            "most_aware": "#8b5cf6",
+        }
+        for level in levels:
+            share = level["spend_share"]
+            if share > 0.02:  # Only show segments > 2%
+                color = colors.get(level["awareness_level"], "#6b7280")
+                bar_parts.append(
+                    f'<div style="background:{color};width:{share*100:.1f}%;height:28px;'
+                    f'display:inline-block;text-align:center;color:white;font-size:11px;'
+                    f'line-height:28px;overflow:hidden;">'
+                    f'{level["label"]} {share*100:.0f}%</div>'
+                )
+        if bar_parts:
+            st.markdown(
+                f'<div style="display:flex;border-radius:6px;overflow:hidden;margin:8px 0 16px 0;">{"".join(bar_parts)}</div>',
+                unsafe_allow_html=True,
+            )
+
+    # Table
+    header_cols = st.columns([2.5, 0.7, 1.2, 0.8, 0.8, 0.8, 0.8, 0.8])
+    headers = ["Awareness Level", "Ads", "Spend", "CTR", "CVR", "ROAS", "CPA", "Share"]
+    for col, h in zip(header_cols, headers):
+        with col:
+            st.markdown(f"**{h}**")
+
+    for level in levels:
+        awareness_level = level["awareness_level"]
+        health = _get_awareness_health_icon(level["spend_share"], level["ad_count"])
+        is_expanded = st.session_state.iter_awareness_expanded == awareness_level
+
+        row_cols = st.columns([2.5, 0.7, 1.2, 0.8, 0.8, 0.8, 0.8, 0.8])
+        with row_cols[0]:
+            if level["ad_count"] > 0:
+                if st.button(
+                    f"{health} {level['label']}",
+                    key=f"iter_aw_{awareness_level}",
+                    use_container_width=True,
+                ):
+                    if is_expanded:
+                        st.session_state.iter_awareness_expanded = None
+                    else:
+                        st.session_state.iter_awareness_expanded = awareness_level
+                    st.rerun()
+            else:
+                st.markdown(f"{health} {level['label']}")
+        with row_cols[1]:
+            st.markdown(str(level["ad_count"]))
+        with row_cols[2]:
+            if level["spend"] > 0:
+                st.markdown(f"${level['spend']:,.0f}")
+            else:
+                st.markdown("-")
+        with row_cols[3]:
+            st.markdown(f"{level['ctr']:.1f}%" if level["ad_count"] > 0 else "-")
+        with row_cols[4]:
+            st.markdown(f"{level['cvr']:.1f}%" if level["ad_count"] > 0 else "-")
+        with row_cols[5]:
+            st.markdown(f"{level['roas']:.1f}x" if level["ad_count"] > 0 else "-")
+        with row_cols[6]:
+            st.markdown(f"${level['cpa']:,.0f}" if level["purchases"] > 0 else "-")
+        with row_cols[7]:
+            st.markdown(f"{level['spend_share']*100:.0f}%" if level["ad_count"] > 0 else "0%")
+
+        # Drilldown: top ads for expanded level
+        if is_expanded and level["ad_count"] > 0:
+            _render_awareness_drilldown(brand_id, awareness_level, awareness_days_back, product_id, float(awareness_min_spend))
+
+    # Unclassified row
+    if total_unclassified > 0:
+        uncls_spend = sum(float(r.get("spend") or 0) for r in []) if False else 0  # Not tracked
+        row_cols = st.columns([2.5, 0.7, 1.2, 0.8, 0.8, 0.8, 0.8, 0.8])
+        with row_cols[0]:
+            st.markdown(f"⚪ Unclassified")
+        with row_cols[1]:
+            st.markdown(str(total_unclassified))
+        for col in row_cols[2:]:
+            with col:
+                st.markdown("-")
+
+    # Gap messages
+    if gaps:
+        st.divider()
+        for gap in gaps:
+            msg = AWARENESS_GAP_MESSAGES.get(gap, "")
+            level_labels = {
+                "unaware": "UNAWARE", "problem_aware": "PROBLEM AWARE",
+                "solution_aware": "SOLUTION AWARE", "product_aware": "PRODUCT AWARE",
+                "most_aware": "MOST AWARE",
+            }
+            st.warning(f"**Gap: No {level_labels.get(gap, gap)} ads running.** {msg}")
+
+    # Concentration warning
+    for level in levels:
+        if level["spend_share"] > 0.60 and level["ad_count"] > 0:
+            st.warning(
+                f"**{level['spend_share']*100:.0f}% of spend on {level['label']}.** "
+                "Consider diversifying across awareness levels. "
+                "The 60/40 rule suggests ~40% on conversion, ~60% on awareness + consideration."
+            )
+
+
+def _render_awareness_drilldown(
+    brand_id: str, awareness_level: str, days_back: int,
+    product_id: Optional[str], min_spend: float,
+):
+    """Render top ads drilldown for a specific awareness level."""
+    from viraltracker.services.ad_performance_query_service import AdPerformanceQueryService
+    perf_service = AdPerformanceQueryService(get_supabase_client())
+
+    result = perf_service.get_top_ads_by_awareness(
+        brand_id=brand_id,
+        awareness_level=awareness_level,
+        days_back=days_back,
+        limit=5,
+        product_id=product_id,
+        min_spend=min_spend,
+    )
+    ads = result.get("ads", [])
+
+    if not ads:
+        st.caption("No ads found for this awareness level with current filters.")
+        return
+
+    # Backfill missing thumbnails
+    missing_thumb_ids = [a["meta_ad_id"] for a in ads if not a.get("thumbnail_url")]
+    if missing_thumb_ids:
+        ads = _backfill_thumbnails(missing_thumb_ids, ads)
+
+    for ad in ads:
+        with st.container(border=True):
+            col_thumb, col_info = st.columns([1, 5])
+            with col_thumb:
+                if ad.get("thumbnail_url"):
+                    st.image(ad["thumbnail_url"], width=60)
+                else:
+                    st.markdown("🖼️")
+            with col_info:
+                name = ad.get("ad_name", "")[:50]
+                st.markdown(f"**{name}**" if name else f"`{ad['meta_ad_id']}`")
+                st.caption(
+                    f"ROAS {ad.get('roas', 0):.1f}x | "
+                    f"CTR {ad.get('ctr', 0):.1f}% | "
+                    f"CVR {ad.get('cvr', 0):.1f}% | "
+                    f"${ad.get('spend', 0):,.0f}"
+                )
+
+
+# ============================================
 # HELPERS
 # ============================================
 
@@ -1209,10 +1497,22 @@ if not brand_id:
 from viraltracker.ui.utils import get_current_organization_id
 org_id = get_current_organization_id() or "all"
 
+# Session state invalidation on brand/product change
+cache_key = f"{brand_id}:{product_id}"
+if st.session_state.get("iter_cache_key") != cache_key:
+    st.session_state.iter_opportunities = None
+    st.session_state.iter_cross_winner_result = None
+    st.session_state.iter_awareness_breakdown = None
+    st.session_state.iter_awareness_expanded = None
+    st.session_state.iter_per_winner_result = None
+    st.session_state.iter_scan_done = False
+    st.session_state.iter_cache_key = cache_key
+
 # Tabs
-tab1, tab2 = st.tabs([
+tab1, tab2, tab3 = st.tabs([
     "💡 Find Opportunities",
     "🧬 Analyze Winners",
+    "📊 Awareness Coverage",
 ])
 
 with tab1:
@@ -1223,6 +1523,10 @@ with tab1:
 
 with tab2:
     st.caption("Understand what your best ads have in common.")
-    render_winners_tab(brand_id, org_id)
+    render_winners_tab(brand_id, product_id, org_id)
     st.divider()
     st.caption("Ready to iterate? See **Find Opportunities** tab.")
+
+with tab3:
+    st.caption("See how your ad spend and performance distribute across consumer awareness levels.")
+    render_awareness_tab(brand_id, product_id, org_id)
