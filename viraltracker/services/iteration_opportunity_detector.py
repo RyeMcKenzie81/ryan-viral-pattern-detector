@@ -345,10 +345,67 @@ class IterationOpportunityDetector:
                 query = query.eq("pattern_type", pattern_filter)
 
             result = query.execute()
-            return result.data or []
+            opps = result.data or []
+
+            # Enrich with ad_name, thumbnail_url, creative_format from source tables
+            if opps:
+                ad_ids = list({o["meta_ad_id"] for o in opps if o.get("meta_ad_id")})
+                self._enrich_opportunities(opps, ad_ids, brand_id)
+
+            return opps
         except Exception as e:
             logger.error(f"Failed to load opportunities: {e}")
             return []
+
+    def _enrich_opportunities(
+        self, opps: List[Dict], ad_ids: List[str], brand_id: str
+    ) -> None:
+        """Enrich stored opportunities with display fields from source tables."""
+        # Fetch ad_name + thumbnail_url from meta_ads_performance (latest row per ad)
+        perf_map: Dict[str, Dict] = {}
+        try:
+            for i in range(0, len(ad_ids), 50):
+                batch = ad_ids[i:i + 50]
+                res = (
+                    self.supabase.table("meta_ads_performance")
+                    .select("meta_ad_id, ad_name, thumbnail_url, spend")
+                    .in_("meta_ad_id", batch)
+                    .eq("brand_id", brand_id)
+                    .order("date", desc=True)
+                    .execute()
+                )
+                for r in (res.data or []):
+                    aid = r["meta_ad_id"]
+                    if aid not in perf_map:
+                        perf_map[aid] = r
+        except Exception as e:
+            logger.debug(f"Failed to fetch perf data for enrichment: {e}")
+
+        # Fetch creative_format from classifications
+        cls_map: Dict[str, str] = {}
+        try:
+            res = (
+                self.supabase.table("ad_creative_classifications")
+                .select("meta_ad_id, creative_format")
+                .eq("brand_id", brand_id)
+                .in_("meta_ad_id", ad_ids)
+                .order("classified_at", desc=True)
+                .execute()
+            )
+            for c in (res.data or []):
+                aid = c.get("meta_ad_id")
+                if aid and aid not in cls_map:
+                    cls_map[aid] = c.get("creative_format", "")
+        except Exception as e:
+            logger.debug(f"Failed to fetch classifications for enrichment: {e}")
+
+        # Merge into opportunities
+        for o in opps:
+            aid = o.get("meta_ad_id")
+            perf = perf_map.get(aid, {})
+            o.setdefault("ad_name", perf.get("ad_name", ""))
+            o.setdefault("thumbnail_url", perf.get("thumbnail_url", ""))
+            o.setdefault("creative_format", cls_map.get(aid, ""))
 
     def dismiss_opportunity(self, opportunity_id: str) -> bool:
         """Mark an opportunity as dismissed."""
