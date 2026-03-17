@@ -778,13 +778,20 @@ class AdPerformanceQueryService:
             "most_aware": "Most Aware",
         }
 
+        # Build ad_id -> latest status map (rows are date desc, first seen wins)
+        ad_status_map: Dict[str, str] = {}
+        for row in classified:
+            aid = row.get("meta_ad_id")
+            if aid and aid not in ad_status_map:
+                ad_status_map[aid] = (row.get("ad_status") or "").upper()
+
         # Group by awareness level
         buckets: Dict[str, Dict] = {}
         for level in canonical_levels:
             buckets[level] = {
                 "spend": 0, "impressions": 0, "link_clicks": 0,
                 "add_to_carts": 0, "purchases": 0, "purchase_value": 0,
-                "ad_ids": set(),
+                "ad_ids": set(), "active_ad_ids": set(),
                 # Per-ad accumulators for CPA distribution
                 "ad_spend": defaultdict(float),
                 "ad_purchases": defaultdict(int),
@@ -810,6 +817,8 @@ class AdPerformanceQueryService:
                 b["purchase_value"] += float(row.get("purchase_value") or 0)
                 if aid:
                     b["ad_ids"].add(aid)
+                    if ad_status_map.get(aid) == "ACTIVE":
+                        b["active_ad_ids"].add(aid)
                     b["ad_spend"][aid] += row_spend
                     b["ad_purchases"][aid] += row_purchases
             else:
@@ -834,6 +843,7 @@ class AdPerformanceQueryService:
             purchases = b["purchases"]
             pv = b["purchase_value"]
             ad_count = len(b["ad_ids"])
+            active_count = len(b["active_ad_ids"])
 
             if ad_count == 0:
                 gaps.append(level)
@@ -858,6 +868,7 @@ class AdPerformanceQueryService:
                 "awareness_level": level,
                 "label": level_labels.get(level, level),
                 "ad_count": ad_count,
+                "active_count": active_count,
                 "spend": spend,
                 "spend_share": (spend / total_spend) if total_spend > 0 else 0,
                 "impressions": imp,

@@ -1335,7 +1335,7 @@ def render_awareness_tab(brand_id: str, product_id: Optional[str], org_id: str):
 
     # Table
     col_widths = [2.2, 0.6, 1.0, 0.7, 0.7, 0.7, 0.7, 0.8, 0.8, 0.8, 0.7]
-    headers = ["Awareness Level", "Ads", "Spend", "CTR", "ATC%", "CVR", "ROAS", "Agg CPA", "Mean CPA", "p75 CPA", "Share"]
+    headers = ["Awareness Level", "Active/Total", "Spend", "CTR", "ATC%", "CVR", "ROAS", "Agg CPA", "Mean CPA", "p75 CPA", "Share"]
     header_cols = st.columns(col_widths)
     for col, h in zip(header_cols, headers):
         with col:
@@ -1364,7 +1364,9 @@ def render_awareness_tab(brand_id: str, product_id: Optional[str], org_id: str):
             else:
                 st.markdown(f"{health} {level['label']}")
         with row_cols[1]:
-            st.markdown(str(level["ad_count"]))
+            active = level.get("active_count", 0)
+            total = level["ad_count"]
+            st.markdown(f"{active}/{total}" if total > 0 else "0")
         with row_cols[2]:
             st.markdown(f"${level['spend']:,.0f}" if level["spend"] > 0 else "-")
         with row_cols[3]:
