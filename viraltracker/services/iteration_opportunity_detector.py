@@ -361,7 +361,7 @@ class IterationOpportunityDetector:
         self, opps: List[Dict], ad_ids: List[str], brand_id: str
     ) -> None:
         """Enrich stored opportunities with display fields from source tables."""
-        # Fetch ad_name + thumbnail_url from meta_ads_performance (latest row per ad)
+        # Fetch ad_name, thumbnail_url, and aggregate spend from meta_ads_performance
         perf_map: Dict[str, Dict] = {}
         try:
             for i in range(0, len(ad_ids), 50):
@@ -377,7 +377,12 @@ class IterationOpportunityDetector:
                 for r in (res.data or []):
                     aid = r["meta_ad_id"]
                     if aid not in perf_map:
-                        perf_map[aid] = r
+                        perf_map[aid] = {
+                            "ad_name": r.get("ad_name", ""),
+                            "thumbnail_url": r.get("thumbnail_url", ""),
+                            "spend": 0,
+                        }
+                    perf_map[aid]["spend"] += float(r.get("spend") or 0)
         except Exception as e:
             logger.debug(f"Failed to fetch perf data for enrichment: {e}")
 
@@ -405,6 +410,7 @@ class IterationOpportunityDetector:
             perf = perf_map.get(aid, {})
             o.setdefault("ad_name", perf.get("ad_name", ""))
             o.setdefault("thumbnail_url", perf.get("thumbnail_url", ""))
+            o.setdefault("spend", float(perf.get("spend") or 0))
             o.setdefault("creative_format", cls_map.get(aid, ""))
 
     def dismiss_opportunity(self, opportunity_id: str) -> bool:
@@ -975,21 +981,36 @@ class IterationOpportunityDetector:
         cutoff = (date.today() - timedelta(days=days_back)).isoformat()
 
         try:
-            result = (
-                self.supabase.table("meta_ads_performance")
-                .select(
-                    "meta_ad_id, ad_name, thumbnail_url, date, spend, impressions, "
-                    "link_clicks, link_ctr, link_cpc, "
-                    "purchases, purchase_value, roas, "
-                    "video_p25_watched, video_thruplay"
+            # Paginate — 90 days of data can exceed Supabase's 1000-row default
+            all_rows: List[Dict] = []
+            page_size = 1000
+            offset = 0
+            while True:
+                result = (
+                    self.supabase.table("meta_ads_performance")
+                    .select(
+                        "meta_ad_id, ad_name, thumbnail_url, date, spend, impressions, "
+                        "link_clicks, link_ctr, link_cpc, "
+                        "purchases, purchase_value, roas, "
+                        "video_p25_watched, video_thruplay"
+                    )
+                    .eq("brand_id", brand_id)
+                    .gte("date", cutoff)
+                    .order("date", desc=True)
+                    .range(offset, offset + page_size - 1)
+                    .execute()
                 )
-                .eq("brand_id", brand_id)
-                .gte("date", cutoff)
-                .order("date", desc=True)
-                .execute()
-            )
-            if not result.data:
+                if not result.data:
+                    break
+                all_rows.extend(result.data)
+                if len(result.data) < page_size:
+                    break
+                offset += page_size
+
+            if not all_rows:
                 return []
+
+            logger.info(f"Loaded {len(all_rows)} performance rows for brand {brand_id} ({days_back} days)")
 
         except Exception as e:
             logger.error(f"Failed to load performance data: {e}")
@@ -997,7 +1018,7 @@ class IterationOpportunityDetector:
 
         # Aggregate per ad
         ad_map: Dict[str, Dict[str, Any]] = {}
-        for row in result.data:
+        for row in all_rows:
             ad_id = row["meta_ad_id"]
             if ad_id not in ad_map:
                 ad_map[ad_id] = {

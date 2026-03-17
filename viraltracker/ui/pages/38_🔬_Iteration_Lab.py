@@ -293,8 +293,6 @@ def render_opportunities_tab(brand_id: str, product_id: Optional[str], org_id: s
                     st.session_state.iter_category_filter = cat
                     st.rerun()
 
-    st.markdown(f"**{len(opportunities)} opportunities found**")
-
     # Filter by category, format, and min spend
     filtered = opportunities
     if st.session_state.iter_category_filter:
@@ -307,6 +305,11 @@ def render_opportunities_tab(brand_id: str, product_id: Optional[str], org_id: s
     min_spend = st.session_state.get("iter_min_spend", 50)
     if min_spend > 0:
         filtered = [o for o in filtered if float(_get_field(o, "spend", 0)) >= min_spend]
+
+    if len(filtered) < len(opportunities):
+        st.markdown(f"**{len(filtered)} opportunities shown** ({len(opportunities)} found, {len(opportunities) - len(filtered)} filtered out)")
+    else:
+        st.markdown(f"**{len(opportunities)} opportunities found**")
 
     # Render opportunity cards
     for idx, opp in enumerate(filtered):
