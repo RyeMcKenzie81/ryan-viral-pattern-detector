@@ -575,7 +575,7 @@ def _render_video_brief(opp: dict, brand_id: str, org_id: str):
 def render_winners_tab(brand_id: str, org_id: str):
     """Render the Analyze Winners tab."""
 
-    col_mode, col_days = st.columns([3, 1])
+    col_mode, col_days, col_spend, col_fmt = st.columns([3, 1, 1, 1])
     with col_mode:
         view_mode = st.radio(
             "View",
@@ -586,6 +586,16 @@ def render_winners_tab(brand_id: str, org_id: str):
     with col_days:
         winner_days_back = st.selectbox(
             "Days back", [14, 30, 60, 90], index=1, key="iter_winner_days_back"
+        )
+    with col_spend:
+        st.selectbox(
+            "Min spend", [0, 20, 50, 100, 250, 500], index=2,
+            format_func=lambda x: f"${x}" if x > 0 else "No min",
+            key="iter_winner_min_spend"
+        )
+    with col_fmt:
+        st.selectbox(
+            "Format", ["All", "Image", "Video"], key="iter_winner_format_filter"
         )
 
     if view_mode == "Winner Blueprint":
@@ -936,13 +946,22 @@ def _render_per_winner(brand_id: str, org_id: str, days_back: int = 30):
     from viraltracker.services.ad_performance_query_service import AdPerformanceQueryService
     perf_service = AdPerformanceQueryService(get_supabase_client())
 
+    winner_min_spend = float(st.session_state.get("iter_winner_min_spend", 50))
     top_result = perf_service.get_top_ads(
-        brand_id=brand_id, sort_by="roas", days_back=days_back, limit=20, min_spend=10.0
+        brand_id=brand_id, sort_by="roas", days_back=days_back, limit=40,
+        min_spend=max(winner_min_spend, 10.0)
     )
     top_ads = top_result.get("ads", [])
 
+    # Apply format filter (use ad_name heuristic — creative_format not in get_top_ads output)
+    fmt_filter = st.session_state.get("iter_winner_format_filter", "All")
+    if fmt_filter == "Image":
+        top_ads = [a for a in top_ads if "video" not in (a.get("ad_name") or "").lower()]
+    elif fmt_filter == "Video":
+        top_ads = [a for a in top_ads if "video" in (a.get("ad_name") or "").lower()]
+
     if not top_ads:
-        st.info("No ads with enough performance data found. Ads need at least 7 days and $10+ spend.")
+        st.info(f"No ads found with ${winner_min_spend:.0f}+ spend in the last {days_back} days.")
         return
 
     # Backfill missing thumbnails
