@@ -444,8 +444,9 @@ def _render_opportunity_card(opp: dict, idx: int, brand_id: str, product_id: Opt
 
                 spend = float(_get_field(opp, "spend", 0))
                 impressions = int(float(_get_field(opp, "impressions", 0)))
+                cvr = float(_get_field(opp, "conversion_rate", 0))
                 if spend > 0:
-                    st.markdown(f"**Spend**: ${spend:,.0f} | **Impressions**: {impressions:,}")
+                    st.markdown(f"**Spend**: ${spend:,.0f} | **Impressions**: {impressions:,} | **CVR**: {cvr*100:.1f}%")
 
             with col_strategy:
                 if explanation_projection:
@@ -623,15 +624,17 @@ def _render_cross_winner(brand_id: str, org_id: str, days_back: int = 30):
     # --- Cohort Performance Summary ---
     cohort_summary = _safe_get(analysis, "cohort_summary")
     if cohort_summary and isinstance(cohort_summary, dict):
-        m1, m2, m3, m4 = st.columns(4)
+        m1, m2, m3, m4, m5 = st.columns(5)
         with m1:
             st.metric("Avg ROAS", f"{cohort_summary.get('avg_roas', 0):.1f}x")
         with m2:
             ctr_range = cohort_summary.get("ctr_range", [0, 0])
             st.metric("CTR Range", f"{ctr_range[0]:.1f}% - {ctr_range[1]:.1f}%")
         with m3:
-            st.metric("Total Spend", f"${cohort_summary.get('total_spend', 0):,.0f}")
+            st.metric("Avg CVR", f"{cohort_summary.get('avg_conversion_rate', 0):.1f}%")
         with m4:
+            st.metric("Total Spend", f"${cohort_summary.get('total_spend', 0):,.0f}")
+        with m5:
             st.metric("Avg CPA", f"${cohort_summary.get('avg_cpa', 0):,.2f}")
 
     # --- Winner Thumbnail Gallery ---
@@ -649,7 +652,7 @@ def _render_cross_winner(brand_id: str, org_id: str, days_back: int = 30):
                     st.image(thumb["thumbnail_url"], width=80)
                 else:
                     st.markdown("🖼️")
-                st.caption(f"{thumb.get('roas', 0):.1f}x")
+                st.caption(f"{thumb.get('roas', 0):.1f}x | {thumb.get('conversion_rate', 0):.1f}% CVR")
 
     # --- Winning Formula Card ---
     with st.container(border=True):
@@ -983,7 +986,8 @@ def _render_per_winner(brand_id: str, org_id: str, days_back: int = 30):
                 st.markdown(f"**{ad.get('ad_name', '')[:40]}**")
                 roas = ad.get('roas', 0)
                 ctr = ad.get('ctr', 0)
-                st.caption(f"ROAS {roas:.1f}x | CTR {ctr:.1f}% | ${ad.get('spend', 0):,.0f}")
+                cvr = ad.get('conversion_rate', 0)
+                st.caption(f"ROAS {roas:.1f}x | CTR {ctr:.1f}% | CVR {cvr:.1f}% | ${ad.get('spend', 0):,.0f}")
             with col_btn:
                 if st.button("Analyze", key=f"iter_analyze_{i}"):
                     _run_per_winner_analysis(ad["meta_ad_id"], brand_id, org_id)
@@ -1014,6 +1018,8 @@ def _render_per_winner(brand_id: str, org_id: str, days_back: int = 30):
             perf_parts.append(f"ROAS: {metrics['roas']:.1f}x")
         if metrics.get("ctr"):
             perf_parts.append(f"CTR: {metrics['ctr']:.1f}%")
+        if metrics.get("conversion_rate"):
+            perf_parts.append(f"CVR: {metrics['conversion_rate']:.1f}%")
         if metrics.get("cpa"):
             perf_parts.append(f"CPA: ${metrics['cpa']:.2f}")
         if perf_parts:

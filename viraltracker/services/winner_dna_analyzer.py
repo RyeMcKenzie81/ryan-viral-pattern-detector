@@ -833,6 +833,8 @@ class WinnerDNAAnalyzer:
                 "meta_ad_id": ad["meta_ad_id"],
                 "thumbnail_url": ad.get("thumbnail_url", ""),
                 "roas": ad.get("roas", 0),
+                "ctr": ad.get("ctr", 0),
+                "conversion_rate": ad.get("conversion_rate", 0),
                 "ad_name": ad.get("ad_name", ""),
             }
             thumbnails.append(thumb)
@@ -846,6 +848,7 @@ class WinnerDNAAnalyzer:
         roas_vals = [d.metrics.get("roas", 0) for d in winner_dnas if d.metrics.get("roas")]
         ctr_vals = [d.metrics.get("ctr", 0) for d in winner_dnas if d.metrics.get("ctr")]
         cpa_vals = [d.metrics.get("cpa", 0) for d in winner_dnas if d.metrics.get("cpa")]
+        cvr_vals = [d.metrics.get("conversion_rate", 0) for d in winner_dnas if d.metrics.get("conversion_rate")]
         spend_vals = [d.metrics.get("spend", 0) for d in winner_dnas if d.metrics.get("spend")]
 
         summary = {
@@ -853,6 +856,7 @@ class WinnerDNAAnalyzer:
             "roas_range": [round(min(roas_vals), 1), round(max(roas_vals), 1)] if roas_vals else [0, 0],
             "avg_ctr": round(statistics.mean(ctr_vals), 2) if ctr_vals else 0,
             "ctr_range": [round(min(ctr_vals), 2), round(max(ctr_vals), 2)] if ctr_vals else [0, 0],
+            "avg_conversion_rate": round(statistics.mean(cvr_vals), 2) if cvr_vals else 0,
             "total_spend": round(sum(spend_vals), 0) if spend_vals else 0,
             "avg_cpa": round(statistics.mean(cpa_vals), 2) if cpa_vals else 0,
         }
