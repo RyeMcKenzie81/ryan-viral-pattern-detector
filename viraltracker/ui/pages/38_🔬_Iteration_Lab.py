@@ -132,6 +132,45 @@ def _confidence_label(conf: float) -> tuple:
     return "Moderate Signal", "gray"
 
 
+def _backfill_thumbnails(ad_ids: list, results: list) -> list:
+    """Fetch missing thumbnails from Meta Creative API and update DB + results.
+
+    Only fetches for ads in ad_ids. Updates meta_ads_performance rows
+    and patches the in-memory results list so thumbnails display immediately.
+    """
+    try:
+        from viraltracker.services.meta_ads_service import MetaAdsService
+        service = MetaAdsService()
+        thumbnails = asyncio.run(service.fetch_ad_thumbnails(ad_ids))
+        if not thumbnails:
+            return results
+
+        # Update DB rows
+        from viraltracker.core.database import get_supabase_client
+        supabase = get_supabase_client()
+        for ad_id, meta in thumbnails.items():
+            url = meta.get("thumbnail_url")
+            if not url:
+                continue
+            try:
+                supabase.table("meta_ads_performance").update(
+                    {"thumbnail_url": url}
+                ).eq("meta_ad_id", ad_id).execute()
+            except Exception:
+                pass
+
+        # Patch in-memory results
+        for r in results:
+            mid = r.get("meta_ad_id")
+            if mid in thumbnails and thumbnails[mid].get("thumbnail_url"):
+                r["thumbnail_url"] = thumbnails[mid]["thumbnail_url"]
+
+        logger.info(f"Backfilled {len(thumbnails)} thumbnails for Iteration Lab")
+    except Exception as e:
+        logger.warning(f"Thumbnail backfill failed (non-fatal): {e}")
+    return results
+
+
 def _format_metric(metric: str, value: float, from_decimal: bool = False) -> str:
     """Format a metric value for display.
 
@@ -290,6 +329,14 @@ def _run_scan(brand_id: str, org_id: str):
                     result.append(o)
                 else:
                     result.append({"meta_ad_id": str(o)})
+
+            # Auto-fetch missing thumbnails for opportunity ads
+            missing_thumb_ids = [
+                r["meta_ad_id"] for r in result
+                if r.get("meta_ad_id") and not r.get("thumbnail_url")
+            ]
+            if missing_thumb_ids:
+                result = _backfill_thumbnails(missing_thumb_ids, result)
 
             st.session_state.iter_opportunities = result
             st.session_state.iter_scan_done = True
