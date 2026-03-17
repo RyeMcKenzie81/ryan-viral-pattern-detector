@@ -58,6 +58,17 @@ PATTERNS = {
         "min_spend": 50,
         "min_days": 7,
     },
+    "high_cvr_low_ctr": {
+        "label": "High Conversion Rate, Weak CTR",
+        "strong": {"metric": "conversion_rate", "threshold": "p50", "direction": "above"},
+        "weak": {"metric": "ctr", "threshold": "p25", "direction": "below"},
+        "strategy_category": "visual",
+        "strategy": "Right message, wrong wrapper — boost visual stopping power with higher contrast, bolder imagery, face close-ups",
+        "evolution_mode": "winner_iteration",
+        "min_impressions": 1000,
+        "min_spend": 50,
+        "min_days": 7,
+    },
     "efficient_but_starved": {
         "label": "Profitable but Under-Scaled",
         "strong": {"metric": "roas", "threshold": "p50", "direction": "above"},
@@ -814,6 +825,20 @@ class IterationOpportunityDetector:
                 projection = (
                     f"If visual stopping power improved CTR to the median ({median_ctr*100:.1f}%), "
                     f"ROAS could go from {roas:.1f}x to ~{projected_roas:.1f}x "
+                    f"(assumes constant conversion rate)."
+                )
+
+        elif pattern_type == "high_cvr_low_ctr":
+            median_cvr = _get_baseline_value(baseline, "conversion_rate", "p50") or 0
+            headline = (
+                f"This ad converts {cvr*100:.1f}% of clickers into buyers — well above the {median_cvr*100:.1f}% median. "
+                f"But CTR is only {ctr*100:.1f}%, so most people never see the message."
+            )
+            if ctr > 0 and median_ctr > 0:
+                projected_roas = roas * (median_ctr / ctr)
+                projection = (
+                    f"The messaging resonates, but the creative doesn't stop the scroll. "
+                    f"Lifting CTR to the median ({median_ctr*100:.1f}%) could push ROAS from {roas:.1f}x to ~{projected_roas:.1f}x "
                     f"(assumes constant conversion rate)."
                 )
 
