@@ -226,15 +226,17 @@ class TestSaveKeyword:
         service.supabase.table.return_value.select.return_value.eq.return_value.eq.return_value = mock_select
 
         # Mock: insert succeeds
+        expected_id = str(uuid4())
         mock_insert = MagicMock()
-        mock_insert.execute.return_value = MagicMock(data=[{"id": str(uuid4())}])
+        mock_insert.execute.return_value = MagicMock(data=[{"id": expected_id}])
         service.supabase.table.return_value.insert.return_value = mock_insert
 
         result = service._save_keyword(
             str(uuid4()),
             {"keyword": "test keyword here", "word_count": 3, "seed_keyword": "test", "found_in_seeds": 1},
         )
-        assert result is True
+        # Returns keyword UUID on success (not True)
+        assert result == expected_id
 
     def test_skips_duplicate(self, service):
         existing_id = str(uuid4())
@@ -252,7 +254,8 @@ class TestSaveKeyword:
             str(uuid4()),
             {"keyword": "existing keyword here", "word_count": 3, "seed_keyword": "test", "found_in_seeds": 2},
         )
-        assert result is False
+        # Returns None for duplicates (not False)
+        assert result is None
 
     def test_handles_db_error(self, service):
         service.supabase.table.return_value.select.return_value.eq.return_value.eq.return_value.execute.side_effect = Exception("DB error")
@@ -261,7 +264,8 @@ class TestSaveKeyword:
             str(uuid4()),
             {"keyword": "error keyword here", "word_count": 3, "seed_keyword": "test", "found_in_seeds": 1},
         )
-        assert result is False
+        # Returns None on error (not False)
+        assert result is None
 
 
 # ---------------------------------------------------------------------------

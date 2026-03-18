@@ -57,44 +57,59 @@ class InterlinkingService:
     def suggest_links(
         self,
         article_id: str,
-        min_similarity: float = 0.2,
+        min_similarity: float = 0.50,
         max_suggestions: int = 5,
         save: bool = True,
     ) -> Dict[str, Any]:
         """
-        Suggest internal links for an article using Jaccard similarity.
+        Suggest internal links for an article using semantic similarity.
 
-        Finds related articles by keyword word-set overlap, generates anchor
-        text variations, and suggests placement (middle or end).
+        Uses cosine similarity between keyword embeddings when available,
+        falls back to Jaccard word-overlap otherwise.
 
         Args:
             article_id: Source article UUID
-            min_similarity: Minimum Jaccard similarity threshold (default: 0.2)
+            min_similarity: Minimum similarity threshold (default: 0.50)
             max_suggestions: Maximum number of suggestions (default: 5)
             save: Whether to save suggestions to seo_internal_links table
 
         Returns:
             Dict with suggestions list, count, and article info
         """
+        from viraltracker.core.embeddings import embedding_similarity
+
         article = self._get_article(article_id)
         if not article:
             raise ValueError(f"Article not found: {article_id}")
+
+        # Get source keyword embedding
+        source_keyword = article.get("keyword", "")
+        source_embedding = self._get_keyword_embedding(article.get("keyword_id") or article_id, source_keyword)
 
         # Get all other articles in the same project
         project_id = article.get("project_id")
         all_articles = self._get_project_articles(project_id, exclude_id=article_id)
 
-        source_keyword = article.get("keyword", "")
         suggestions = []
 
         for target in all_articles:
             target_keyword = target.get("keyword", "")
-            similarity = self._jaccard_similarity(source_keyword, target_keyword)
+            target_embedding = self._get_keyword_embedding(target.get("keyword_id"), target_keyword)
 
-            if similarity >= min_similarity:
+            use_embedding = source_embedding is not None and target_embedding is not None
+            similarity = embedding_similarity(
+                source_keyword, target_keyword,
+                source_embedding, target_embedding,
+            )
+
+            # Respect caller's threshold; use 0.2 floor only for Jaccard fallback
+            threshold = min_similarity if use_embedding else max(min_similarity, 0.2)
+
+            if similarity >= threshold:
                 anchor_texts = self._generate_anchor_texts(target_keyword)
                 placement = self._suggest_placement(source_keyword, target_keyword)
-                priority = LinkPriority.HIGH if similarity > 0.4 else LinkPriority.MEDIUM
+                high_threshold = 0.65 if use_embedding else 0.4
+                priority = LinkPriority.HIGH if similarity > high_threshold else LinkPriority.MEDIUM
 
                 suggestions.append({
                     "target_article_id": target["id"],
@@ -909,6 +924,24 @@ class InterlinkingService:
     # =========================================================================
     # DB HELPERS
     # =========================================================================
+
+    def _get_keyword_embedding(self, keyword_id: Optional[str], keyword_text: str) -> Optional[List[float]]:
+        """Get embedding for a keyword from DB, or None."""
+        if not keyword_id:
+            return None
+        try:
+            result = (
+                self.supabase.table("seo_keywords")
+                .select("embedding")
+                .eq("keyword", keyword_text)
+                .limit(1)
+                .execute()
+            )
+            if result.data:
+                return result.data[0].get("embedding")
+        except Exception:
+            pass
+        return None
 
     def _get_article(self, article_id: str) -> Optional[Dict[str, Any]]:
         """Get article from DB."""

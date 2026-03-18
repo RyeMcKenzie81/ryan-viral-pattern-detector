@@ -141,10 +141,24 @@ class KeywordDiscoveryService:
 
         # Save to database
         saved_count = 0
+        saved_ids = []
         for kw_data in keywords_list:
-            saved = self._save_keyword(project_id, kw_data)
-            if saved:
+            kw_id = self._save_keyword(project_id, kw_data)
+            if kw_id:
                 saved_count += 1
+                saved_ids.append(kw_id)
+
+        # Batch-embed newly saved keywords (non-fatal)
+        if saved_ids:
+            self._batch_embed_keywords(saved_ids)
+
+        # Enrich with volume/KD from DataForSEO (non-fatal)
+        if saved_count > 0:
+            new_kw_texts = [
+                kw_data["keyword"] for kw_data in keywords_list
+                if kw_data.get("keyword")
+            ]
+            self._enrich_keywords_volume(new_kw_texts, project_id)
 
         return {
             "total_keywords": len(keywords_list),
@@ -251,7 +265,7 @@ class KeywordDiscoveryService:
         self,
         project_id: str,
         kw_data: Dict[str, Any],
-    ) -> bool:
+    ) -> Optional[str]:
         """
         Save a keyword to the database, skipping duplicates.
 
@@ -260,7 +274,7 @@ class KeywordDiscoveryService:
             kw_data: Keyword data dict
 
         Returns:
-            True if saved (new), False if duplicate
+            Keyword UUID if newly saved, None if duplicate
         """
         try:
             # Check for existing keyword in this project
@@ -277,10 +291,10 @@ class KeywordDiscoveryService:
                 self.supabase.table("seo_keywords").update({
                     "found_in_seeds": kw_data["found_in_seeds"],
                 }).eq("id", current["id"]).execute()
-                return False
+                return None
 
             # Insert new keyword
-            self.supabase.table("seo_keywords").insert({
+            result = self.supabase.table("seo_keywords").insert({
                 "project_id": project_id,
                 "keyword": kw_data["keyword"],
                 "word_count": kw_data["word_count"],
@@ -288,11 +302,11 @@ class KeywordDiscoveryService:
                 "found_in_seeds": kw_data["found_in_seeds"],
                 "status": "discovered",
             }).execute()
-            return True
+            return result.data[0]["id"] if result.data else None
 
         except Exception as e:
             logger.error(f"Error saving keyword '{kw_data['keyword']}': {e}")
-            return False
+            return None
 
     def create_keyword(self, project_id: str, keyword: str) -> Dict[str, Any]:
         """
@@ -306,14 +320,25 @@ class KeywordDiscoveryService:
             Created keyword record with id
         """
         word_count = len(keyword.split())
-        result = self.supabase.table("seo_keywords").insert({
+        insert_data: Dict[str, Any] = {
             "project_id": project_id,
             "keyword": keyword,
             "word_count": word_count,
             "seed_keyword": keyword,
             "found_in_seeds": 1,
             "status": "in_progress",
-        }).execute()
+        }
+
+        # Embed inline (non-fatal)
+        try:
+            from viraltracker.core.embeddings import create_seo_embedder
+            embedder = create_seo_embedder()
+            vec = embedder.embed_text(keyword, task_type="CLUSTERING")
+            insert_data["embedding"] = vec
+        except Exception as e:
+            logger.warning(f"Failed to embed keyword '{keyword}': {e}")
+
+        result = self.supabase.table("seo_keywords").insert(insert_data).execute()
         if result.data:
             logger.info(f"Created keyword '{keyword}' in project {project_id}")
             return result.data[0]
@@ -371,3 +396,76 @@ class KeywordDiscoveryService:
             .execute()
         )
         return result.data[0] if result.data else None
+
+    def _batch_embed_keywords(self, keyword_ids: List[str]) -> int:
+        """
+        Batch-embed keywords that have NULL embedding. Non-fatal on failure.
+
+        Args:
+            keyword_ids: List of keyword UUIDs to embed
+
+        Returns:
+            Number of keywords successfully embedded
+        """
+        try:
+            from viraltracker.core.embeddings import create_seo_embedder
+
+            # Fetch keyword texts
+            rows = (
+                self.supabase.table("seo_keywords")
+                .select("id, keyword")
+                .in_("id", keyword_ids)
+                .is_("embedding", "null")
+                .execute()
+            ).data or []
+
+            if not rows:
+                return 0
+
+            embedder = create_seo_embedder()
+            texts = [r["keyword"] for r in rows]
+            ids = [r["id"] for r in rows]
+
+            vectors = embedder.embed_texts(texts, task_type="CLUSTERING")
+
+            embedded = 0
+            for kw_id, vec in zip(ids, vectors):
+                try:
+                    self.supabase.table("seo_keywords").update(
+                        {"embedding": vec}
+                    ).eq("id", kw_id).execute()
+                    embedded += 1
+                except Exception as e:
+                    logger.warning(f"Failed to store embedding for keyword {kw_id}: {e}")
+
+            logger.info(f"Batch-embedded {embedded}/{len(rows)} keywords")
+            return embedded
+
+        except Exception as e:
+            logger.warning(f"Batch embedding failed (non-fatal): {e}")
+            return 0
+
+    def _enrich_keywords_volume(
+        self,
+        keyword_texts: List[str],
+        project_id: Optional[str] = None,
+    ) -> int:
+        """
+        Enrich keywords with search volume and difficulty from DataForSEO.
+        Non-fatal: if DataForSEO is not configured or fails, keywords remain with NULL volume/KD.
+
+        Args:
+            keyword_texts: Keyword strings to enrich
+            project_id: Optional project filter for DB matching
+
+        Returns:
+            Number of keywords enriched
+        """
+        try:
+            from viraltracker.services.seo_pipeline.services.dataforseo_service import DataForSEOService
+            svc = DataForSEOService(supabase_client=self._supabase)
+            count = svc.enrich_and_store(keyword_texts, project_id=project_id)
+            return count
+        except Exception as e:
+            logger.warning(f"Keyword enrichment failed (non-fatal): {e}")
+            return 0

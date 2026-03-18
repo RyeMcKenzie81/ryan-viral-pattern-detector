@@ -1,16 +1,17 @@
 """
-Embedding Infrastructure for Comment Finder
+Embedding Infrastructure
 
 Provides text embedding generation using Gemini with caching support.
-Used for taxonomy matching and semantic similarity.
+Used for taxonomy matching, semantic similarity, and SEO keyword matching.
 """
 
 import os
 import json
+import math
 import time
 import logging
 from pathlib import Path
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Optional, Dict
 import hashlib
 
@@ -19,10 +20,16 @@ from google.genai import types
 
 logger = logging.getLogger(__name__)
 
-# Gemini embedding model and dimensions
-# Using gemini-embedding-001 with output_dimensionality=768 for backward compatibility
+# Gemini embedding models and dimensions
 EMBED_MODEL = "gemini-embedding-001"
-EMBED_DIM = 768  # Match existing cached embeddings dimension
+EMBED_MODEL_V2 = "gemini-embedding-2-preview"
+EMBED_DIM = 768
+
+
+def _normalize(vec: List[float]) -> List[float]:
+    """L2-normalize a vector. Required for Gemini Embedding 2 at non-3072 dims."""
+    norm = math.sqrt(sum(x * x for x in vec))
+    return [x / norm for x in vec] if norm > 0 else vec
 
 
 @dataclass
@@ -34,10 +41,14 @@ class Embedder:
         provider: Embedding provider (default: "gemini")
         api_key: API key for the provider
         cache_dir: Directory for caching embeddings (default: ./cache)
+        model: Gemini model ID (default: gemini-embedding-001)
+        dimensions: Output dimensionality (default: 768)
     """
     provider: str = "gemini"
     api_key: Optional[str] = None
     cache_dir: str = "cache"
+    model: str = EMBED_MODEL
+    dimensions: int = EMBED_DIM
 
     def __post_init__(self):
         """Initialize API client"""
@@ -53,16 +64,21 @@ class Embedder:
         # Ensure cache directory exists
         Path(self.cache_dir).mkdir(parents=True, exist_ok=True)
 
+        # Gemini Embedding 2 at non-3072 dims requires L2 normalization
+        self._needs_normalize = (
+            self.model == EMBED_MODEL_V2 and self.dimensions < 3072
+        )
+
     def embed_texts(self, texts: List[str], task_type: str = "RETRIEVAL_DOCUMENT") -> List[List[float]]:
         """
         Embed multiple texts in a batch.
 
         Args:
             texts: List of text strings to embed
-            task_type: Task type for embedding (RETRIEVAL_DOCUMENT or RETRIEVAL_QUERY)
+            task_type: Task type for embedding
 
         Returns:
-            List of embedding vectors (each vector is list of 768 floats)
+            List of embedding vectors
         """
         if not texts:
             return []
@@ -79,18 +95,19 @@ class Embedder:
                 for attempt in range(3):
                     try:
                         result = self.client.models.embed_content(
-                            model=EMBED_MODEL,
+                            model=self.model,
                             contents=batch,
                             config=types.EmbedContentConfig(
                                 task_type=task_type,
-                                output_dimensionality=EMBED_DIM  # Match existing 768-dim embeddings
+                                output_dimensionality=self.dimensions,
                             )
                         )
 
-                        # Extract embeddings from new SDK response format
-                        # result.embeddings is a list of ContentEmbedding objects
                         for embedding_obj in result.embeddings:
-                            embeddings.append(embedding_obj.values)
+                            vec = embedding_obj.values
+                            if self._needs_normalize:
+                                vec = _normalize(vec)
+                            embeddings.append(vec)
 
                         break  # Success, exit retry loop
 
@@ -120,7 +137,7 @@ class Embedder:
             task_type: Task type for embedding
 
         Returns:
-            Embedding vector (list of 768 floats)
+            Embedding vector
         """
         return self.embed_texts([text], task_type=task_type)[0]
 
@@ -135,6 +152,34 @@ class Embedder:
             Embedding vector optimized for retrieval
         """
         return self.embed_text(query, task_type="RETRIEVAL_QUERY")
+
+
+def create_seo_embedder() -> Embedder:
+    """Factory for SEO pipeline embedder (Gemini Embedding 2, 768 dims)."""
+    return Embedder(model=EMBED_MODEL_V2, dimensions=EMBED_DIM)
+
+
+def embedding_similarity(
+    kw1: str, kw2: str,
+    emb1: Optional[List[float]] = None,
+    emb2: Optional[List[float]] = None,
+) -> float:
+    """Cosine similarity if both embeddings available, else Jaccard word-overlap fallback."""
+    if emb1 is not None and emb2 is not None:
+        return cosine_similarity(emb1, emb2)
+    return _jaccard_word_similarity(kw1, kw2)
+
+
+def _jaccard_word_similarity(kw1: str, kw2: str) -> float:
+    """Jaccard similarity on word sets (fallback when embeddings unavailable)."""
+    if not kw1 or not kw2:
+        return 0.0
+    words1 = set(kw1.lower().split())
+    words2 = set(kw2.lower().split())
+    union = words1 | words2
+    if not union:
+        return 0.0
+    return len(words1 & words2) / len(union)
 
 
 # Cache helpers for JSON storage

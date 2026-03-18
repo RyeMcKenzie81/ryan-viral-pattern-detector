@@ -738,17 +738,42 @@ class BrandSeedGeneratorService:
         seeds_by_topic: Dict[str, List[GeneratedSeed]],
         existing_keywords: List[str],
     ) -> Dict[str, List[GeneratedSeed]]:
-        """Remove near-duplicate seeds within and across topics."""
+        """
+        Remove near-duplicate seeds within and across topics.
+
+        Uses semantic cosine similarity (>= 0.82) when embeddings are available,
+        falls back to stemmed Jaccard (> 0.6) otherwise.
+        """
         existing_stems = [self._stemmed_words(k) for k in existing_keywords]
 
         # Intent priority: commercial > comparison > informational
         intent_rank = {"commercial": 2, "comparison": 1, "informational": 0}
 
+        # Try batch embedding all seeds + existing keywords for semantic dedup
+        all_seed_texts = []
+        for seeds in seeds_by_topic.values():
+            for s in seeds:
+                all_seed_texts.append(s.keyword)
+
+        embeddings_map: Dict[str, List[float]] = {}
+        try:
+            from viraltracker.core.embeddings import create_seo_embedder
+            embedder = create_seo_embedder()
+            all_texts = existing_keywords + all_seed_texts
+            if all_texts:
+                all_vecs = embedder.embed_texts(all_texts, task_type="CLUSTERING")
+                for text, vec in zip(all_texts, all_vecs):
+                    embeddings_map[text.lower()] = vec
+        except Exception as e:
+            logger.warning(f"Seed dedup embedding failed, using Jaccard: {e}")
+
+        use_embedding = bool(embeddings_map)
+
         kept: Dict[str, List[GeneratedSeed]] = {}
         seen_stems: List[tuple] = []  # (stemmed_set, seed)
+        seen_embeddings: List[tuple] = []  # (embedding, seed)
 
         for topic, seeds in seeds_by_topic.items():
-            # Sort by intent priority descending so we keep higher-intent first
             sorted_seeds = sorted(
                 seeds, key=lambda s: intent_rank.get(s.intent, 0), reverse=True
             )
@@ -759,15 +784,36 @@ class BrandSeedGeneratorService:
                 if not stems:
                     continue
 
-                # Check overlap with existing keywords
-                if any(self._jaccard(stems, ex) > 0.6 for ex in existing_stems):
-                    continue
+                seed_emb = embeddings_map.get(seed.keyword.lower())
+                is_dup = False
 
-                # Check overlap with already-kept seeds
-                if any(self._jaccard(stems, s) > 0.6 for s, _ in seen_stems):
+                if use_embedding and seed_emb:
+                    from viraltracker.core.embeddings import cosine_similarity as _cosine
+                    # Check against existing keywords
+                    for ex_kw in existing_keywords:
+                        ex_emb = embeddings_map.get(ex_kw.lower())
+                        if ex_emb and _cosine(seed_emb, ex_emb) > 0.82:
+                            is_dup = True
+                            break
+                    # Check against already-kept seeds
+                    if not is_dup:
+                        for kept_emb, _ in seen_embeddings:
+                            if _cosine(seed_emb, kept_emb) > 0.82:
+                                is_dup = True
+                                break
+                else:
+                    # Jaccard fallback
+                    if any(self._jaccard(stems, ex) > 0.6 for ex in existing_stems):
+                        is_dup = True
+                    if not is_dup and any(self._jaccard(stems, s) > 0.6 for s, _ in seen_stems):
+                        is_dup = True
+
+                if is_dup:
                     continue
 
                 seen_stems.append((stems, seed))
+                if seed_emb:
+                    seen_embeddings.append((seed_emb, seed))
                 topic_kept.append(seed)
 
             kept[topic] = topic_kept

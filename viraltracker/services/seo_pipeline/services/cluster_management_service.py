@@ -325,6 +325,20 @@ class ClusterManagementService:
         # Update spoke_count on cluster
         self._update_spoke_count(cluster_id)
 
+        # Update centroid incrementally if keyword has an embedding
+        try:
+            emb_row = (
+                self.supabase.table("seo_keywords")
+                .select("embedding")
+                .eq("id", keyword_id)
+                .execute()
+            )
+            kw_embedding = (emb_row.data[0].get("embedding") if emb_row.data else None)
+            if kw_embedding:
+                self._update_centroid_incremental(cluster_id, kw_embedding)
+        except Exception as e:
+            logger.warning(f"Centroid update failed for cluster {cluster_id}: {e}")
+
         return result.data[0]
 
     def remove_spoke(self, cluster_id: str, keyword_id: str) -> bool:
@@ -624,10 +638,10 @@ class ClusterManagementService:
 
     def get_interlinking_audit(self, cluster_id: str) -> Dict[str, Any]:
         """
-        Audit internal links within a cluster.
+        Audit internal links within a cluster using semantic similarity.
 
-        Delegates to InterlinkingService for Jaccard similarity,
-        returns spoke-to-pillar and spoke-to-spoke link matrix.
+        Uses cosine similarity between keyword embeddings when available,
+        falls back to Jaccard word-overlap otherwise.
 
         Args:
             cluster_id: Cluster UUID
@@ -635,12 +649,12 @@ class ClusterManagementService:
         Returns:
             Dict with link_matrix, missing_links, coverage_pct
         """
-        from viraltracker.services.seo_pipeline.services.interlinking_service import InterlinkingService
+        from viraltracker.core.embeddings import embedding_similarity
 
-        # Get spokes with articles
+        # Get spokes with articles and keyword embeddings
         spokes_result = (
             self.supabase.table("seo_cluster_spokes")
-            .select("keyword_id, article_id, role, seo_keywords(keyword)")
+            .select("keyword_id, article_id, role, seo_keywords(keyword, embedding)")
             .eq("cluster_id", cluster_id)
             .execute()
         )
@@ -675,18 +689,27 @@ class ClusterManagementService:
         total_possible = 0
         total_linked = 0
 
-        interlinking = InterlinkingService(supabase_client=self._supabase)
-
         for i, source in enumerate(spokes):
             for j, target in enumerate(spokes):
                 if i == j:
                     continue
 
                 total_possible += 1
-                source_kw = (source.get("seo_keywords") or {}).get("keyword", "")
-                target_kw = (target.get("seo_keywords") or {}).get("keyword", "")
-                similarity = interlinking._jaccard_similarity(source_kw, target_kw)
+                source_kw_data = source.get("seo_keywords") or {}
+                target_kw_data = target.get("seo_keywords") or {}
+                source_kw = source_kw_data.get("keyword", "")
+                target_kw = target_kw_data.get("keyword", "")
+                source_emb = source_kw_data.get("embedding")
+                target_emb = target_kw_data.get("embedding")
+
+                similarity = embedding_similarity(
+                    source_kw, target_kw, source_emb, target_emb
+                )
                 has_link = (source["article_id"], target["article_id"]) in existing_links
+
+                # Threshold: 0.50 for embedding, 0.2 for Jaccard fallback
+                use_embedding = source_emb is not None and target_emb is not None
+                missing_threshold = 0.50 if use_embedding else 0.2
 
                 entry = {
                     "source_article_id": source["article_id"],
@@ -700,7 +723,7 @@ class ClusterManagementService:
 
                 if has_link:
                     total_linked += 1
-                elif similarity >= 0.2:
+                elif similarity >= missing_threshold:
                     missing_links.append(entry)
 
         coverage_pct = round((total_linked / total_possible * 100) if total_possible > 0 else 0, 1)
@@ -724,17 +747,20 @@ class ClusterManagementService:
         dry_run: bool = True,
     ) -> List[Dict[str, Any]]:
         """
-        Auto-assign unassigned keywords to clusters based on word overlap scoring.
+        Auto-assign unassigned keywords to clusters using semantic similarity.
 
-        Scoring:
-        - Cluster name word overlap: 3 points per matching word
-        - Pillar keyword word overlap: 2 points per matching word
-        - Existing spoke keyword overlap: 1 point per matching word
+        Uses cosine similarity between keyword embedding and cluster centroid
+        when both are available. Falls back to word-overlap scoring otherwise.
 
-        Confidence bands:
-        - HIGH (score >= 5 AND score >= 2x runner-up): auto-assign if not dry_run
-        - MEDIUM (score >= 3): suggest with top 3 alternatives
-        - LOW (score < 3): skip
+        Confidence bands (embedding mode):
+        - HIGH (>= 0.70 AND >= 1.3x runner-up): auto-assign if not dry_run
+        - MEDIUM (>= 0.55): suggest with top 3 alternatives
+        - LOW (< 0.55): skip
+
+        Confidence bands (word-overlap fallback):
+        - HIGH (score >= 5 AND score >= 2x runner-up)
+        - MEDIUM (score >= 3)
+        - LOW (score < 3)
 
         Args:
             project_id: Project UUID
@@ -743,10 +769,12 @@ class ClusterManagementService:
         Returns:
             List of suggestion dicts with keyword, cluster, confidence, score
         """
-        # Get all clusters with their spokes
+        from viraltracker.core.embeddings import cosine_similarity as _cosine
+
+        # Get all clusters with centroids
         clusters_result = (
             self.supabase.table("seo_clusters")
-            .select("id, name, pillar_keyword")
+            .select("id, name, pillar_keyword, centroid_embedding")
             .eq("project_id", project_id)
             .execute()
         )
@@ -755,7 +783,7 @@ class ClusterManagementService:
         if not clusters:
             return []
 
-        # Get spoke keywords per cluster
+        # Get spoke keywords per cluster (for word-overlap fallback)
         cluster_ids = [c["id"] for c in clusters]
         spokes_result = (
             self.supabase.table("seo_cluster_spokes")
@@ -772,10 +800,10 @@ class ClusterManagementService:
                 cluster_spoke_words[cid] = set()
             cluster_spoke_words[cid].update(self._extract_words(kw))
 
-        # Get unassigned keywords
+        # Get unassigned keywords with embeddings
         unassigned_result = (
             self.supabase.table("seo_keywords")
-            .select("id, keyword")
+            .select("id, keyword, embedding")
             .eq("project_id", project_id)
             .is_("cluster_id", "null")
             .execute()
@@ -784,48 +812,60 @@ class ClusterManagementService:
 
         results = []
         for kw in unassigned:
+            kw_embedding = kw.get("embedding")
             kw_words = self._extract_words(kw["keyword"])
-            if not kw_words:
+            if not kw_words and not kw_embedding:
                 continue
 
             scores = []
+            use_embedding = False
+
             for cluster in clusters:
-                score = 0
+                centroid = cluster.get("centroid_embedding")
 
-                # Cluster name overlap (3pts per word)
-                name_words = self._extract_words(cluster["name"])
-                score += len(kw_words & name_words) * 3
-
-                # Pillar keyword overlap (2pts per word)
-                pillar_words = self._extract_words(cluster.get("pillar_keyword") or "")
-                score += len(kw_words & pillar_words) * 2
-
-                # Spoke keyword overlap (1pt per word)
-                spoke_words = cluster_spoke_words.get(cluster["id"], set())
-                score += len(kw_words & spoke_words) * 1
+                if kw_embedding and centroid:
+                    # Semantic scoring
+                    use_embedding = True
+                    score = _cosine(kw_embedding, centroid)
+                else:
+                    # Word-overlap fallback
+                    score = 0
+                    name_words = self._extract_words(cluster["name"])
+                    score += len(kw_words & name_words) * 3
+                    pillar_words = self._extract_words(cluster.get("pillar_keyword") or "")
+                    score += len(kw_words & pillar_words) * 2
+                    spoke_words = cluster_spoke_words.get(cluster["id"], set())
+                    score += len(kw_words & spoke_words) * 1
 
                 scores.append({
                     "cluster_id": cluster["id"],
                     "cluster_name": cluster["name"],
-                    "score": score,
+                    "score": round(score, 4) if use_embedding else score,
                 })
 
-            # Sort by score descending
             scores.sort(key=lambda s: s["score"], reverse=True)
 
-            if not scores or scores[0]["score"] < 1:
+            if not scores or scores[0]["score"] < (0.30 if use_embedding else 1):
                 continue
 
             top = scores[0]
             runner_up_score = scores[1]["score"] if len(scores) > 1 else 0
 
-            # Determine confidence
-            if top["score"] >= 5 and top["score"] >= 2 * max(runner_up_score, 1):
-                confidence = "HIGH"
-            elif top["score"] >= 3:
-                confidence = "MEDIUM"
+            # Determine confidence — different thresholds for embedding vs word-overlap
+            if use_embedding:
+                if top["score"] >= 0.70 and top["score"] >= 1.3 * max(runner_up_score, 0.01):
+                    confidence = "HIGH"
+                elif top["score"] >= 0.55:
+                    confidence = "MEDIUM"
+                else:
+                    confidence = "LOW"
             else:
-                confidence = "LOW"
+                if top["score"] >= 5 and top["score"] >= 2 * max(runner_up_score, 1):
+                    confidence = "HIGH"
+                elif top["score"] >= 3:
+                    confidence = "MEDIUM"
+                else:
+                    confidence = "LOW"
 
             suggestion = {
                 "keyword_id": kw["id"],
@@ -834,10 +874,11 @@ class ClusterManagementService:
                 "cluster_name": top["cluster_name"],
                 "confidence": confidence,
                 "score": top["score"],
+                "method": "embedding" if use_embedding else "word_overlap",
                 "alternatives": [
                     {"cluster_id": s["cluster_id"], "cluster_name": s["cluster_name"], "score": s["score"]}
-                    for s in scores[1:4]  # top 3 alternatives
-                    if s["score"] > 0
+                    for s in scores[1:4]
+                    if s["score"] > (0.30 if use_embedding else 0)
                 ],
             }
             results.append(suggestion)
@@ -864,12 +905,16 @@ class ClusterManagementService:
         """
         Check for content overlap before writing a new article.
 
-        Uses Jaccard similarity (words > 3 chars) to detect cannibalization risks.
+        Uses semantic cosine similarity when embeddings are available,
+        falls back to Jaccard word-overlap otherwise.
 
-        Risk levels:
-        - HIGH (>60%): recommend merge or unique angle
-        - MEDIUM (30-60%): suggest as internal link candidates
-        - CLEAR (<30%): safe to proceed
+        Risk levels (embedding mode):
+        - HIGH (>75%): recommend merge or unique angle
+        - MEDIUM (55-75%): suggest as internal link candidates
+        - CLEAR (<55%): safe to proceed
+
+        Risk levels (Jaccard fallback):
+        - HIGH (>60%), MEDIUM (30-60%), CLEAR (<30%)
 
         Args:
             keyword: Keyword to check
@@ -879,46 +924,82 @@ class ClusterManagementService:
         Returns:
             Dict with risk_level, overlapping_articles, link_candidates, recommendation
         """
-        from viraltracker.services.seo_pipeline.services.interlinking_service import InterlinkingService
+        from viraltracker.core.embeddings import embedding_similarity
 
         if not project_id and not brand_id:
             raise ValueError("Either project_id or brand_id must be provided")
 
-        # Get articles — brand-wide if brand_id provided, else project-scoped
+        # Embed candidate keyword on-the-fly
+        candidate_embedding = None
+        try:
+            from viraltracker.core.embeddings import create_seo_embedder
+            embedder = create_seo_embedder()
+            candidate_embedding = embedder.embed_text(keyword, task_type="SEMANTIC_SIMILARITY")
+        except Exception as e:
+            logger.warning(f"Failed to embed candidate keyword '{keyword}': {e}")
+
+        # Get articles with keyword embeddings
         query = (
             self.supabase.table("seo_articles")
-            .select("id, keyword, title, status, published_url")
+            .select("id, keyword, title, status, published_url, seo_keywords!inner(embedding)")
         )
         if brand_id:
             query = query.eq("brand_id", brand_id)
         else:
             query = query.eq("project_id", project_id)
-        articles_result = query.execute()
-        articles = articles_result.data or []
+
+        try:
+            articles_result = query.execute()
+            articles = articles_result.data or []
+        except Exception:
+            # Fallback: join may fail if no seo_keywords FK — query without embedding
+            query = (
+                self.supabase.table("seo_articles")
+                .select("id, keyword, title, status, published_url")
+            )
+            if brand_id:
+                query = query.eq("brand_id", brand_id)
+            else:
+                query = query.eq("project_id", project_id)
+            articles_result = query.execute()
+            articles = articles_result.data or []
 
         overlapping = []
         link_candidates = []
-        interlinking = InterlinkingService()
 
         for article in articles:
             article_kw = article.get("keyword", "")
-            overlap = interlinking._jaccard_similarity(keyword, article_kw)
-            overlap_pct = round(overlap * 100, 1)
+            # Extract embedding from joined keyword record
+            kw_data = article.get("seo_keywords")
+            article_embedding = None
+            if isinstance(kw_data, dict):
+                article_embedding = kw_data.get("embedding")
+            elif isinstance(kw_data, list) and kw_data:
+                article_embedding = kw_data[0].get("embedding")
 
-            if overlap_pct > 30:
+            similarity = embedding_similarity(
+                keyword, article_kw,
+                candidate_embedding, article_embedding,
+            )
+
+            use_embedding = (candidate_embedding is not None and article_embedding is not None)
+            high_threshold = 0.75 if use_embedding else 0.60
+            medium_threshold = 0.55 if use_embedding else 0.30
+
+            if similarity >= medium_threshold:
                 entry = {
                     "article_id": article["id"],
                     "keyword": article_kw,
                     "title": article.get("title") or article_kw,
                     "status": article.get("status"),
-                    "overlap_pct": overlap_pct,
+                    "overlap_pct": round(similarity * 100, 1),
+                    "method": "embedding" if use_embedding else "jaccard",
                 }
-                if overlap_pct > 60:
+                if similarity >= high_threshold:
                     overlapping.append(entry)
                 else:
                     link_candidates.append(entry)
 
-        # Sort by overlap descending
         overlapping.sort(key=lambda x: x["overlap_pct"], reverse=True)
         link_candidates.sort(key=lambda x: x["overlap_pct"], reverse=True)
 
@@ -1061,7 +1142,10 @@ class ClusterManagementService:
 
     def analyze_gaps(self, cluster_id: str) -> List[Dict[str, Any]]:
         """
-        Find unassigned keywords with high word overlap to cluster keywords.
+        Find unassigned keywords with semantic or word-overlap affinity to a cluster.
+
+        Uses cosine similarity to cluster centroid when embeddings are available,
+        falls back to Jaccard word-overlap otherwise.
 
         Args:
             cluster_id: Cluster UUID
@@ -1069,10 +1153,12 @@ class ClusterManagementService:
         Returns:
             List of gap suggestions
         """
-        # Get cluster's project and keywords
+        from viraltracker.core.embeddings import embedding_similarity
+
+        # Get cluster's project, keywords, and centroid
         cluster = (
             self.supabase.table("seo_clusters")
-            .select("project_id, name, pillar_keyword")
+            .select("project_id, name, pillar_keyword, centroid_embedding")
             .eq("id", cluster_id)
             .execute()
         )
@@ -1082,8 +1168,9 @@ class ClusterManagementService:
         project_id = cluster.data[0]["project_id"]
         cluster_name = cluster.data[0]["name"]
         pillar_keyword = cluster.data[0].get("pillar_keyword") or ""
+        centroid = cluster.data[0].get("centroid_embedding")
 
-        # Get cluster spoke keywords
+        # Build word set for fallback
         spokes_result = (
             self.supabase.table("seo_cluster_spokes")
             .select("seo_keywords(keyword)")
@@ -1096,10 +1183,13 @@ class ClusterManagementService:
             kw = (spoke.get("seo_keywords") or {}).get("keyword", "")
             cluster_words |= self._extract_words(kw)
 
-        # Get unassigned keywords in the project
+        # Combine cluster text for Jaccard fallback
+        cluster_combined = f"{cluster_name} {pillar_keyword}"
+
+        # Get unassigned keywords with embeddings
         unassigned_result = (
             self.supabase.table("seo_keywords")
-            .select("id, keyword, search_volume, keyword_difficulty")
+            .select("id, keyword, search_volume, keyword_difficulty, embedding")
             .eq("project_id", project_id)
             .is_("cluster_id", "null")
             .execute()
@@ -1107,19 +1197,34 @@ class ClusterManagementService:
 
         suggestions = []
         for kw in (unassigned_result.data or []):
+            kw_embedding = kw.get("embedding")
             kw_words = self._extract_words(kw["keyword"])
-            if not kw_words or not cluster_words:
-                continue
 
-            overlap = len(kw_words & cluster_words) / len(kw_words | cluster_words)
-            if overlap >= 0.2:
+            if centroid and kw_embedding:
+                # Semantic similarity to centroid
+                similarity = embedding_similarity(
+                    kw["keyword"], cluster_combined,
+                    kw_embedding, centroid,
+                )
+                threshold = 0.50
+                method = "embedding"
+            else:
+                # Jaccard fallback
+                if not kw_words or not cluster_words:
+                    continue
+                similarity = len(kw_words & cluster_words) / len(kw_words | cluster_words)
+                threshold = 0.2
+                method = "word_overlap"
+
+            if similarity >= threshold:
                 suggestions.append({
                     "keyword_id": kw["id"],
                     "suggested_keyword": kw["keyword"],
                     "search_volume": kw.get("search_volume"),
                     "keyword_difficulty": kw.get("keyword_difficulty"),
-                    "overlap_score": round(overlap, 3),
-                    "reason": f"Word overlap with cluster '{cluster_name}': {overlap:.0%}",
+                    "overlap_score": round(similarity, 3),
+                    "method": method,
+                    "reason": f"{'Semantic' if method == 'embedding' else 'Word'} similarity with cluster '{cluster_name}': {similarity:.0%}",
                 })
 
         suggestions.sort(key=lambda s: s["overlap_score"], reverse=True)
@@ -1527,6 +1632,80 @@ class ClusterManagementService:
         if not text:
             return set()
         return {w for w in text.lower().split() if len(w) > 3}
+
+    def _update_centroid_incremental(self, cluster_id: str, new_embedding: List[float]) -> None:
+        """O(1) centroid update: new = (old * n + new) / (n + 1), then normalize."""
+        from viraltracker.core.embeddings import _normalize
+
+        # Count existing spokes with embeddings
+        count_result = (
+            self.supabase.table("seo_cluster_spokes")
+            .select("keyword_id, seo_keywords!inner(embedding)")
+            .eq("cluster_id", cluster_id)
+            .execute()
+        )
+        n = sum(
+            1 for s in (count_result.data or [])
+            if (s.get("seo_keywords") or {}).get("embedding") is not None
+        )
+        # n includes the spoke we just added, so prior count is n - 1
+        prior = n - 1
+
+        cluster_row = (
+            self.supabase.table("seo_clusters")
+            .select("centroid_embedding")
+            .eq("id", cluster_id)
+            .execute()
+        )
+        old_centroid = (cluster_row.data[0].get("centroid_embedding")
+                        if cluster_row.data else None)
+
+        if prior <= 0 or not old_centroid:
+            centroid = _normalize(new_embedding)
+        else:
+            centroid = [
+                (old * prior + nv) / (prior + 1)
+                for old, nv in zip(old_centroid, new_embedding)
+            ]
+            centroid = _normalize(centroid)
+
+        self.supabase.table("seo_clusters").update(
+            {"centroid_embedding": centroid}
+        ).eq("id", cluster_id).execute()
+
+    def recompute_centroid(self, cluster_id: str) -> None:
+        """Full centroid recompute from all spoke embeddings."""
+        from viraltracker.core.embeddings import _normalize
+
+        spokes = (
+            self.supabase.table("seo_cluster_spokes")
+            .select("seo_keywords!inner(embedding)")
+            .eq("cluster_id", cluster_id)
+            .execute()
+        ).data or []
+
+        embeddings = []
+        for s in spokes:
+            emb = (s.get("seo_keywords") or {}).get("embedding")
+            if emb:
+                embeddings.append(emb)
+
+        if not embeddings:
+            self.supabase.table("seo_clusters").update(
+                {"centroid_embedding": None}
+            ).eq("id", cluster_id).execute()
+            return
+
+        dim = len(embeddings[0])
+        centroid = [
+            sum(e[i] for e in embeddings) / len(embeddings)
+            for i in range(dim)
+        ]
+        centroid = _normalize(centroid)
+
+        self.supabase.table("seo_clusters").update(
+            {"centroid_embedding": centroid}
+        ).eq("id", cluster_id).execute()
 
     def link_article_to_spoke(self, keyword_id: str, article_id: str) -> bool:
         """

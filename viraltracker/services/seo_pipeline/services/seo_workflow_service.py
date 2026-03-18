@@ -869,9 +869,22 @@ class SEOWorkflowService:
         keywords: List[str],
         source_results: Dict[str, List[str]],
     ) -> Dict[str, Any]:
-        """Algorithmic clustering using word overlap (Jaccard similarity)."""
-        from viraltracker.services.seo_pipeline.services.interlinking_service import InterlinkingService
-        link_svc = InterlinkingService()
+        """
+        Algorithmic clustering using semantic similarity.
+
+        Batch-embeds all keywords and uses cosine similarity (>= 0.60) to group
+        them. Falls back to Jaccard word-overlap if embedding fails.
+        """
+        from viraltracker.core.embeddings import embedding_similarity
+
+        # Try batch embedding
+        embeddings = None
+        try:
+            from viraltracker.core.embeddings import create_seo_embedder
+            embedder = create_seo_embedder()
+            embeddings = embedder.embed_texts(keywords, task_type="CLUSTERING")
+        except Exception as e:
+            logger.warning(f"Quick cluster embedding failed, using Jaccard fallback: {e}")
 
         clusters = []
         assigned = set()
@@ -882,11 +895,20 @@ class SEOWorkflowService:
             cluster = [kw]
             assigned.add(kw)
 
-            for other in keywords[i + 1:]:
+            for j, other in enumerate(keywords[i + 1:], start=i + 1):
                 if other in assigned:
                     continue
-                sim = link_svc._jaccard_similarity(kw, other)
-                if sim > 0.3:
+
+                if embeddings:
+                    sim = embedding_similarity(
+                        kw, other, embeddings[i], embeddings[j]
+                    )
+                    threshold = 0.60
+                else:
+                    sim = embedding_similarity(kw, other)  # Jaccard fallback
+                    threshold = 0.3
+
+                if sim > threshold:
                     cluster.append(other)
                     assigned.add(other)
 
@@ -895,8 +917,8 @@ class SEOWorkflowService:
                     "pillar_keyword": cluster[0],
                     "topic_summary": f"Cluster around '{cluster[0]}'",
                     "opportunity_score": min(len(cluster) / 10, 1.0),
-                    "spokes": [{"keyword": kw, "angle": "", "priority": i + 1}
-                               for i, kw in enumerate(cluster[1:])],
+                    "spokes": [{"keyword": kw, "angle": "", "priority": idx + 1}
+                               for idx, kw in enumerate(cluster[1:])],
                 })
 
         return {
