@@ -345,7 +345,8 @@ def render_opportunities_tab(brand_id: str, product_id: Optional[str], org_id: s
         categories[cat] = categories.get(cat, 0) + 1
 
     if len(categories) > 1:
-        pills = st.columns(min(len(categories) + 1, 7))
+        max_pills = len(categories) + 1  # +1 for "All"
+        pills = st.columns(max_pills)
         with pills[0]:
             if st.button(f"All ({len(opportunities)})", key="iter_cat_all",
                          type="primary" if st.session_state.iter_category_filter is None else "secondary"):
