@@ -948,12 +948,40 @@ class SEOWorkflowService:
         existing = sb.table("seo_articles").select("keyword").eq("brand_id", brand_id).neq("status", "discovered").limit(100).execute()
         existing_keywords = [a.get("keyword", "") for a in (existing.data or [])]
 
+        # Enrich keywords with volume/KD from DataForSEO (non-fatal)
+        kw_metrics: Dict[str, Dict[str, Any]] = {}
+        try:
+            from viraltracker.services.seo_pipeline.services.dataforseo_service import DataForSEOService
+            dataforseo = DataForSEOService(supabase_client=sb)
+            if dataforseo._available:
+                enriched = dataforseo.enrich_keywords_bulk(keywords[:100])
+                for item in enriched:
+                    kw = item.get("keyword", "")
+                    vol = item.get("search_volume")
+                    kd = item.get("keyword_difficulty")
+                    if vol is not None or kd is not None:
+                        kw_metrics[kw] = {"volume": vol, "kd": kd}
+                logger.info(f"Enriched {len(kw_metrics)}/{len(keywords[:100])} keywords with volume/KD")
+        except Exception as e:
+            logger.warning(f"Keyword enrichment for cluster research failed (non-fatal): {e}")
+
+        # Build keyword list with metrics for prompt
+        kw_lines = []
+        for kw in keywords[:100]:
+            m = kw_metrics.get(kw.lower(), {})
+            parts = [f"- {kw}"]
+            if m.get("volume") is not None:
+                parts.append(f"vol={m['volume']}")
+            if m.get("kd") is not None:
+                parts.append(f"KD={m['kd']}")
+            kw_lines.append(" | ".join(parts) if len(parts) > 1 else parts[0])
+
         prompt = (
             f"You are an SEO strategist. Analyze these keywords and group them into topic clusters.\n\n"
             f"Brand: {brand_name}\n"
             f"Positioning: {brand_positioning}\n\n"
-            f"Keywords to cluster:\n"
-            + "\n".join(f"- {kw}" for kw in keywords[:100])
+            f"Keywords to cluster (with search volume and keyword difficulty where available):\n"
+            + "\n".join(kw_lines)
             + "\n\nExisting articles (avoid cannibalization):\n"
             + "\n".join(f"- {kw}" for kw in existing_keywords[:50])
             + "\n\nFor each cluster, identify:\n"
@@ -969,12 +997,14 @@ class SEOWorkflowService:
             "Combine related subtopics into one authoritative cluster rather than splitting into 3-4 article micro-clusters.\n"
             "- Every spoke MUST target a distinct search intent. If two spokes chase nearly the same intent, "
             "merge them into one or drop the weaker one. Overlapping spokes cause cannibalization.\n"
-            "- Exclude keywords that would cannibalize existing articles.\n\n"
+            "- Exclude keywords that would cannibalize existing articles.\n"
+            "- Use the search volume and KD data to inform opportunity scores and prioritization. "
+            "Higher volume + lower KD = better opportunity.\n\n"
             "Return as JSON:\n"
             '{"clusters": [{"pillar_keyword": "...", "topic_summary": "...", '
             '"opportunity_score": 0.8, "reasoning": "...", '
             '"spokes": [{"keyword": "...", "angle": "...", "priority": 1, '
-            '"estimated_difficulty": "low|medium|high"}]}]}'
+            '"search_volume": 100, "keyword_difficulty": 25}]}]}'
         )
 
         try:

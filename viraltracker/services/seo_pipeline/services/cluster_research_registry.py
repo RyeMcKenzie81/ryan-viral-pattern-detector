@@ -251,18 +251,27 @@ class ClusterResearchRegistry:
             logger.info("DataForSEO not configured — skipping competitor keywords source")
             return []
 
-        # Get competitor domains from existing analyses
+        # Get competitor domains by extracting from SERP URLs in competitor analyses
+        # Table links through keyword_id → seo_keywords.project_id → seo_projects.brand_id
+        project_id = self._get_project_id(brand_id)
+        if not project_id:
+            logger.info("No SEO project for brand — skipping competitor keywords source")
+            return []
+
         comp_result = (
             self.supabase.table("seo_competitor_analyses")
-            .select("competitor_domain")
-            .eq("brand_id", brand_id)
-            .limit(5)
+            .select("url, seo_keywords!inner(project_id)")
+            .eq("seo_keywords.project_id", project_id)
+            .limit(100)
             .execute()
         )
+        # Extract unique domains from competitor URLs
+        from urllib.parse import urlparse
         domains = list({
-            r["competitor_domain"] for r in (comp_result.data or [])
-            if r.get("competitor_domain")
-        })
+            urlparse(r["url"]).netloc
+            for r in (comp_result.data or [])
+            if r.get("url") and urlparse(r["url"]).netloc
+        })[:5]
 
         if not domains:
             logger.info("No competitor domains found — skipping competitor keywords source")

@@ -1312,9 +1312,23 @@ with tab_cluster:
                     if spokes:
                         st.markdown(f"**Spokes ({len(spokes)}):**")
                         for spoke in spokes:
+                            kw = spoke.get("keyword", "")
                             angle = spoke.get("angle", "")
+                            vol = spoke.get("search_volume")
+                            kd = spoke.get("keyword_difficulty")
                             diff = spoke.get("estimated_difficulty", "")
-                            st.markdown(f"- {spoke.get('keyword', '')} {f'— {angle}' if angle else ''} {f'({diff})' if diff else ''}")
+
+                            # Build metrics tag
+                            metrics = []
+                            if vol is not None:
+                                metrics.append(f"vol: {vol:,}")
+                            if kd is not None:
+                                metrics.append(f"KD: {kd}")
+                            if not metrics and diff:
+                                metrics.append(diff)
+                            metrics_str = f" ({', '.join(metrics)})" if metrics else ""
+
+                            st.markdown(f"- {kw}{f' — {angle}' if angle else ''}{metrics_str}")
 
                     # Generate button
                     total_articles = 1 + len(spokes)
