@@ -333,7 +333,9 @@ class ClusterManagementService:
                 .eq("id", keyword_id)
                 .execute()
             )
-            kw_embedding = (emb_row.data[0].get("embedding") if emb_row.data else None)
+            kw_embedding = self._parse_embedding(
+                emb_row.data[0].get("embedding") if emb_row.data else None
+            )
             if kw_embedding:
                 self._update_centroid_incremental(cluster_id, kw_embedding)
         except Exception as e:
@@ -812,7 +814,7 @@ class ClusterManagementService:
 
         results = []
         for kw in unassigned:
-            kw_embedding = kw.get("embedding")
+            kw_embedding = self._parse_embedding(kw.get("embedding"))
             kw_words = self._extract_words(kw["keyword"])
             if not kw_words and not kw_embedding:
                 continue
@@ -821,7 +823,7 @@ class ClusterManagementService:
             use_embedding = False
 
             for cluster in clusters:
-                centroid = cluster.get("centroid_embedding")
+                centroid = self._parse_embedding(cluster.get("centroid_embedding"))
 
                 if kw_embedding and centroid:
                     # Semantic scoring
@@ -1168,7 +1170,7 @@ class ClusterManagementService:
         project_id = cluster.data[0]["project_id"]
         cluster_name = cluster.data[0]["name"]
         pillar_keyword = cluster.data[0].get("pillar_keyword") or ""
-        centroid = cluster.data[0].get("centroid_embedding")
+        centroid = self._parse_embedding(cluster.data[0].get("centroid_embedding"))
 
         # Build word set for fallback
         spokes_result = (
@@ -1633,6 +1635,21 @@ class ClusterManagementService:
             return set()
         return {w for w in text.lower().split() if len(w) > 3}
 
+    @staticmethod
+    def _parse_embedding(raw) -> Optional[List[float]]:
+        """Parse embedding from Supabase — may be list or JSON string."""
+        if raw is None:
+            return None
+        if isinstance(raw, list):
+            return raw
+        if isinstance(raw, str):
+            import json
+            try:
+                return json.loads(raw)
+            except (json.JSONDecodeError, ValueError):
+                return None
+        return None
+
     def _update_centroid_incremental(self, cluster_id: str, new_embedding: List[float]) -> None:
         """O(1) centroid update: new = (old * n + new) / (n + 1), then normalize."""
         from viraltracker.core.embeddings import _normalize
@@ -1646,7 +1663,7 @@ class ClusterManagementService:
         )
         n = sum(
             1 for s in (count_result.data or [])
-            if (s.get("seo_keywords") or {}).get("embedding") is not None
+            if self._parse_embedding((s.get("seo_keywords") or {}).get("embedding")) is not None
         )
         # n includes the spoke we just added, so prior count is n - 1
         prior = n - 1
@@ -1657,8 +1674,9 @@ class ClusterManagementService:
             .eq("id", cluster_id)
             .execute()
         )
-        old_centroid = (cluster_row.data[0].get("centroid_embedding")
-                        if cluster_row.data else None)
+        old_centroid = self._parse_embedding(
+            cluster_row.data[0].get("centroid_embedding") if cluster_row.data else None
+        )
 
         if prior <= 0 or not old_centroid:
             centroid = _normalize(new_embedding)
@@ -1686,7 +1704,8 @@ class ClusterManagementService:
 
         embeddings = []
         for s in spokes:
-            emb = (s.get("seo_keywords") or {}).get("embedding")
+            raw = (s.get("seo_keywords") or {}).get("embedding")
+            emb = self._parse_embedding(raw)
             if emb:
                 embeddings.append(emb)
 

@@ -159,12 +159,29 @@ def create_seo_embedder() -> Embedder:
     return Embedder(model=EMBED_MODEL_V2, dimensions=EMBED_DIM)
 
 
+def parse_embedding(raw) -> Optional[List[float]]:
+    """Parse embedding from Supabase — may be a list already or a JSON string."""
+    if raw is None:
+        return None
+    if isinstance(raw, list):
+        return raw
+    if isinstance(raw, str):
+        import json
+        try:
+            return json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            return None
+    return None
+
+
 def embedding_similarity(
     kw1: str, kw2: str,
     emb1: Optional[List[float]] = None,
     emb2: Optional[List[float]] = None,
 ) -> float:
     """Cosine similarity if both embeddings available, else Jaccard word-overlap fallback."""
+    emb1 = parse_embedding(emb1)
+    emb2 = parse_embedding(emb2)
     if emb1 is not None and emb2 is not None:
         return cosine_similarity(emb1, emb2)
     return _jaccard_word_similarity(kw1, kw2)

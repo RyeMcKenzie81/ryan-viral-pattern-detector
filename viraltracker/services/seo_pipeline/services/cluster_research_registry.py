@@ -295,8 +295,13 @@ class ClusterResearchRegistry:
         gap_keywords = []
         if existing_embeddings:
             try:
-                from viraltracker.core.embeddings import create_seo_embedder, cosine_similarity as _cosine
+                from viraltracker.core.embeddings import create_seo_embedder, cosine_similarity as _cosine, parse_embedding
                 embedder = create_seo_embedder()
+                # Parse existing embeddings (Supabase returns VECTOR as JSON strings)
+                existing_embeddings = [
+                    (kw, parsed) for kw, raw in existing_embeddings
+                    if (parsed := parse_embedding(raw)) is not None
+                ]
                 comp_vecs = embedder.embed_texts(competitor_keywords[:500], task_type="CLUSTERING")
 
                 for comp_kw, comp_vec in zip(competitor_keywords[:500], comp_vecs):
