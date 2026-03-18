@@ -952,16 +952,46 @@ class SEOWorkflowService:
         existing_keywords = [a.get("keyword", "") for a in (existing.data or [])]
 
         # Enrich keywords with volume/KD from DataForSEO via cache (non-fatal)
+        # Also enrich 2-word and 3-word core extractions for long-tail phrases
         kw_metrics: Dict[str, Dict[str, Any]] = {}
         try:
-            from viraltracker.services.seo_pipeline.services.dataforseo_service import DataForSEOService
+            from viraltracker.services.seo_pipeline.services.dataforseo_service import (
+                DataForSEOService,
+                extract_core_keyword,
+            )
             dataforseo = DataForSEOService(supabase_client=sb)
             if dataforseo._available:
-                enriched = dataforseo.enrich_with_cache(keywords[:100], force_refresh=force_refresh)
+                kws_to_enrich = keywords[:100]
+                core_map = {}  # original -> [(core3, core2)]
+                extra_cores = set()
+                for kw in kws_to_enrich:
+                    kw_low = kw.lower()
+                    c3 = extract_core_keyword(kw_low, max_words=3)
+                    c2 = extract_core_keyword(kw_low, max_words=2)
+                    cores = []
+                    if c3 != kw_low:
+                        cores.append(c3)
+                        extra_cores.add(c3)
+                    if c2 != kw_low and c2 != c3:
+                        cores.append(c2)
+                        extra_cores.add(c2)
+                    if cores:
+                        core_map[kw_low] = cores
+                all_to_enrich = list(set([k.lower() for k in kws_to_enrich] + list(extra_cores)))
+                enriched = dataforseo.enrich_with_cache(all_to_enrich, force_refresh=force_refresh)
                 for item in enriched:
-                    kw = item.get("keyword", "")
-                    kw_metrics[kw] = item
-                logger.info(f"Enriched {len(kw_metrics)}/{len(keywords[:100])} keywords with volume/KD (cached)")
+                    kw_metrics[item.get("keyword", "")] = item
+                # Fall back to best core keyword for nulls (prefer 3-word, then 2-word)
+                for kw in kws_to_enrich:
+                    kw_low = kw.lower()
+                    m = kw_metrics.get(kw_low, {})
+                    if m.get("search_volume") is None and kw_low in core_map:
+                        for core in core_map[kw_low]:
+                            core_m = kw_metrics.get(core, {})
+                            if core_m.get("search_volume") is not None:
+                                kw_metrics[kw_low] = {**core_m, "keyword": kw_low, "core_keyword": core}
+                                break
+                logger.info(f"Enriched {len(kw_metrics)}/{len(kws_to_enrich)} keywords with volume/KD (cached)")
         except Exception as e:
             logger.warning(f"Keyword enrichment for cluster research failed (non-fatal): {e}")
 
@@ -1024,24 +1054,69 @@ class SEOWorkflowService:
                 result["sources"] = {k: len(v) for k, v in source_results.items()}
 
                 # Post-enrich spoke keywords with real volume/KD via cached endpoint
+                # Long-tail AI-generated spokes often have zero search data, so we
+                # also enrich the 2-4 word core keyword and fall back to that.
                 try:
-                    from viraltracker.services.seo_pipeline.services.dataforseo_service import DataForSEOService
+                    from viraltracker.services.seo_pipeline.services.dataforseo_service import (
+                        DataForSEOService,
+                        extract_core_keyword,
+                    )
                     dataforseo = DataForSEOService(supabase_client=sb)
                     if dataforseo._available:
                         # Collect all spoke + pillar keywords
                         all_cluster_kws = []
+                        core_map = {}  # original_kw -> [core3, core2] (prefer longer)
+                        extra_cores = set()
                         for cluster in result.get("clusters", []):
                             pillar = cluster.get("pillar_keyword", "").lower()
                             if pillar:
                                 all_cluster_kws.append(pillar)
+                                c3 = extract_core_keyword(pillar, max_words=3)
+                                c2 = extract_core_keyword(pillar, max_words=2)
+                                cores = []
+                                if c3 != pillar:
+                                    cores.append(c3)
+                                    extra_cores.add(c3)
+                                if c2 != pillar and c2 != c3:
+                                    cores.append(c2)
+                                    extra_cores.add(c2)
+                                if cores:
+                                    core_map[pillar] = cores
                             for spoke in cluster.get("spokes", []):
                                 kw = spoke.get("keyword", "").lower()
                                 if kw:
                                     all_cluster_kws.append(kw)
+                                    c3 = extract_core_keyword(kw, max_words=3)
+                                    c2 = extract_core_keyword(kw, max_words=2)
+                                    cores = []
+                                    if c3 != kw:
+                                        cores.append(c3)
+                                        extra_cores.add(c3)
+                                    if c2 != kw and c2 != c3:
+                                        cores.append(c2)
+                                        extra_cores.add(c2)
+                                    if cores:
+                                        core_map[kw] = cores
 
                         if all_cluster_kws:
-                            spoke_enriched = dataforseo.enrich_with_cache(all_cluster_kws, force_refresh=force_refresh)
+                            # Enrich originals + 2-word + 3-word cores in one batch
+                            all_to_enrich = list(set(all_cluster_kws + list(extra_cores)))
+                            spoke_enriched = dataforseo.enrich_with_cache(all_to_enrich, force_refresh=force_refresh)
                             spoke_metrics = {item["keyword"]: item for item in spoke_enriched if item.get("keyword")}
+
+                            # For keywords with no volume, fall back to best core
+                            core_fallback_count = 0
+                            for kw in all_cluster_kws:
+                                m = spoke_metrics.get(kw, {})
+                                if m.get("search_volume") is None and kw in core_map:
+                                    for core in core_map[kw]:  # 3-word first, then 2-word
+                                        core_m = spoke_metrics.get(core, {})
+                                        if core_m.get("search_volume") is not None:
+                                            spoke_metrics[kw] = {**core_m, "keyword": kw, "core_keyword": core}
+                                            core_fallback_count += 1
+                                            break
+                            if core_fallback_count:
+                                logger.info(f"Core keyword fallback provided volume for {core_fallback_count}/{len(all_cluster_kws)} keywords")
 
                             # Merge metrics into spoke data + calculate cluster totals
                             for cluster in result.get("clusters", []):
@@ -1049,6 +1124,17 @@ class SEOWorkflowService:
                                 cluster_kd_sum = 0
                                 cluster_kd_count = 0
                                 cluster_est_traffic = 0
+
+                                # Enrich pillar too
+                                pillar = cluster.get("pillar_keyword", "").lower()
+                                if pillar in spoke_metrics:
+                                    pm = spoke_metrics[pillar]
+                                    if pm.get("search_volume") is not None:
+                                        cluster["pillar_volume"] = pm["search_volume"]
+                                    if pm.get("keyword_difficulty") is not None:
+                                        cluster["pillar_kd"] = pm["keyword_difficulty"]
+                                    if pm.get("core_keyword"):
+                                        cluster["pillar_core_keyword"] = pm["core_keyword"]
 
                                 for spoke in cluster.get("spokes", []):
                                     kw = spoke.get("keyword", "").lower()
@@ -1071,6 +1157,8 @@ class SEOWorkflowService:
                                             spoke["competition"] = m["competition"]
                                         if m.get("search_intent"):
                                             spoke["search_intent"] = m["search_intent"]
+                                        if m.get("core_keyword"):
+                                            spoke["core_keyword"] = m["core_keyword"]
 
                                 # Store cluster-level aggregates
                                 cluster["total_volume"] = cluster_total_vol

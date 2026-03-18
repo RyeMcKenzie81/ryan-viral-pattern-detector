@@ -46,6 +46,68 @@ def _normalize_competition(val) -> Optional[float]:
     return None
 
 
+_QUESTION_PREFIXES = [
+    "what is the", "what are the", "what is", "what are",
+    "how to", "how do you", "how do", "how does", "how can",
+    "why do", "why does", "why is", "why are",
+    "can you", "can i", "is it", "is there", "are there",
+    "what", "how", "why", "when", "where", "which",
+]
+
+_STOP_WORDS = frozenset({
+    "a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for",
+    "of", "with", "by", "from", "about", "into", "through", "during",
+    "before", "after", "between", "under", "over",
+    "is", "are", "was", "were", "be", "been", "being",
+    "have", "has", "had", "do", "does", "did",
+    "will", "would", "could", "should", "may", "might", "can",
+    "i", "you", "he", "she", "it", "we", "they", "me", "him", "her", "us", "them",
+    "my", "your", "his", "its", "our", "their",
+    "this", "that", "these", "those",
+    "not", "no", "nor", "so", "too", "very",
+})
+
+
+def extract_core_keyword(phrase: str, max_words: int = 4) -> str:
+    """
+    Extract 2-4 word core keyword from a long-tail phrase.
+
+    Long-tail AI-generated spoke keywords like "gaming stress keeping me up nights"
+    have zero search volume. The core phrase "gaming stress" does have data.
+    This extracts the searchable core for volume enrichment.
+
+    Args:
+        phrase: Long-tail keyword or question
+        max_words: Maximum words in the core (default: 4)
+
+    Returns:
+        Shortened core keyword (2-4 words), or original if already short enough
+    """
+    text = phrase.lower().strip().rstrip("?!.")
+
+    # Already short enough
+    if len(text.split()) <= max_words:
+        return text
+
+    # Strip question prefixes
+    for prefix in _QUESTION_PREFIXES:
+        if text.startswith(prefix + " "):
+            text = text[len(prefix):].strip()
+            break
+
+    # Remove stop words, keep content words
+    words = [w for w in text.split() if w not in _STOP_WORDS and len(w) > 1]
+
+    core = " ".join(words[:max_words])
+
+    # If we stripped too much, fall back to first max_words of original
+    if len(core.split()) < 2:
+        words = phrase.lower().strip().rstrip("?!.").split()
+        core = " ".join(words[:max_words])
+
+    return core
+
+
 class DataForSEOService:
     """DataForSEO API wrapper for keyword data, PAA, and competitor analysis."""
 
