@@ -84,7 +84,7 @@ prefill_keyword = st.session_state.pop("seo_prefill_keyword", "")
 # TABS
 # =============================================================================
 
-tab_qw, tab_cluster = st.tabs(["Quick Write", "Cluster Builder"])
+tab_qw, tab_cluster, tab_explorer = st.tabs(["Quick Write", "Cluster Builder", "Keyword Explorer"])
 
 
 # =============================================================================
@@ -981,6 +981,12 @@ with tab_cluster:
                         horizontal=True,
                         key="seo_wf_smart_research_mode",
                     )
+                    force_refresh = st.checkbox(
+                        "Force refresh keyword data (bypass 7-day cache)",
+                        value=False,
+                        key="seo_wf_force_refresh",
+                    )
+                    st.session_state["seo_wf_force_refresh"] = force_refresh
 
                     MAX_SEEDS_FOR_RESEARCH = 20
                     capped = len(checked_seeds) > MAX_SEEDS_FOR_RESEARCH
@@ -1305,33 +1311,83 @@ with tab_cluster:
                     st.markdown(f"### {pillar_kw}")
                     st.markdown(f"**Score:** {score:.1f} | **Summary:** {cluster.get('topic_summary', '')}")
 
+                    # Cluster-level aggregate metrics
+                    total_vol = cluster.get("total_volume")
+                    avg_kd = cluster.get("avg_difficulty")
+                    est_traffic = cluster.get("estimated_traffic")
+                    if total_vol is not None or avg_kd is not None:
+                        metrics_parts = []
+                        if total_vol is not None:
+                            metrics_parts.append(f"Total Volume: {total_vol:,}/mo")
+                        if avg_kd is not None:
+                            kd_color = "green" if avg_kd < 30 else ("orange" if avg_kd < 60 else "red")
+                            metrics_parts.append(f"Avg KD: :{kd_color}[{avg_kd:.0f}]")
+                        if est_traffic is not None and est_traffic > 0:
+                            metrics_parts.append(f"Est. Traffic: {est_traffic:,}/mo")
+                        spokes_for_count = cluster.get("spokes", [])
+                        metrics_parts.append(f"Spokes: {len(spokes_for_count)}")
+                        st.markdown(f"📊 {' | '.join(metrics_parts)}")
+
                     if cluster.get("reasoning"):
                         st.caption(cluster["reasoning"])
 
                     spokes = cluster.get("spokes", [])
                     if spokes:
                         st.markdown(f"**Spokes ({len(spokes)}):**")
+
+                        # Compact bullet view (always shown)
                         for spoke in spokes:
                             kw = spoke.get("keyword", "")
                             angle = spoke.get("angle", "")
                             vol = spoke.get("search_volume")
                             kd = spoke.get("keyword_difficulty")
-                            diff = spoke.get("estimated_difficulty", "")
 
-                            # Build metrics tag
-                            metrics = []
+                            # Build inline metrics
+                            parts = []
                             if vol is not None:
                                 try:
-                                    metrics.append(f"vol: {int(vol):,}")
+                                    parts.append(f"vol: {int(vol):,}")
                                 except (ValueError, TypeError):
-                                    metrics.append(f"vol: {vol}")
+                                    parts.append(f"vol: {vol}")
                             if kd is not None:
-                                metrics.append(f"KD: {kd}")
-                            if not metrics and diff:
-                                metrics.append(diff)
-                            metrics_str = f" ({', '.join(metrics)})" if metrics else ""
-
+                                kd_val = int(kd) if isinstance(kd, (int, float)) else kd
+                                parts.append(f"KD: {kd_val}")
+                            metrics_str = f" ({', '.join(parts)})" if parts else ""
                             st.markdown(f"- {kw}{f' — {angle}' if angle else ''}{metrics_str}")
+
+                        # Expandable data table (if any spokes have metrics)
+                        has_metrics = any(s.get("search_volume") is not None or s.get("keyword_difficulty") is not None for s in spokes)
+                        if has_metrics:
+                            with st.expander("📊 View detailed keyword data"):
+                                import pandas as pd
+                                table_data = []
+                                for spoke in spokes:
+                                    row = {
+                                        "Keyword": spoke.get("keyword", ""),
+                                        "Volume": spoke.get("search_volume"),
+                                        "KD": spoke.get("keyword_difficulty"),
+                                        "CPC ($)": round(spoke["cpc"], 2) if spoke.get("cpc") is not None else None,
+                                        "Competition": round(float(spoke["competition"]), 2) if spoke.get("competition") is not None and str(spoke["competition"]).replace('.','',1).isdigit() else spoke.get("competition"),
+                                        "Est. Traffic": spoke.get("estimated_traffic"),
+                                        "Intent": spoke.get("search_intent", ""),
+                                        "Angle": spoke.get("angle", ""),
+                                    }
+                                    table_data.append(row)
+                                df = pd.DataFrame(table_data)
+
+                                # Style: color-code KD column
+                                def color_kd(val):
+                                    if val is None or pd.isna(val):
+                                        return ""
+                                    val = float(val)
+                                    if val < 30:
+                                        return "background-color: #d4edda"  # green
+                                    elif val < 60:
+                                        return "background-color: #fff3cd"  # yellow
+                                    return "background-color: #f8d7da"  # red
+
+                                styled = df.style.map(color_kd, subset=["KD"])
+                                st.dataframe(styled, use_container_width=True, hide_index=True)
 
                     # Generate button
                     total_articles = 1 + len(spokes)
@@ -1401,3 +1457,199 @@ with tab_cluster:
                         st.write("")
     else:
         st.caption("No recent batch jobs for this brand.")
+
+
+# =============================================================================
+# TAB 3: KEYWORD EXPLORER
+# =============================================================================
+
+with tab_explorer:
+    st.markdown("Explore keyword opportunities with real search data from DataForSEO.")
+
+    # Input
+    explorer_seeds = st.text_area(
+        "Seed keywords (one per line, max 10)",
+        height=100,
+        key="seo_wf_explorer_seeds",
+        placeholder="e.g.\nbest games for kids\ngaming headset for children",
+    )
+
+    col_explore, col_opts = st.columns([2, 1])
+    with col_opts:
+        explorer_limit = st.slider(
+            "Results per seed",
+            min_value=50,
+            max_value=500,
+            value=200,
+            step=50,
+            key="seo_wf_explorer_limit",
+        )
+        explorer_force = st.checkbox(
+            "Force refresh (bypass cache)",
+            value=False,
+            key="seo_wf_explorer_force",
+        )
+
+    with col_explore:
+        explore_btn = st.button(
+            "🔍 Explore Keywords",
+            type="primary",
+            key="seo_wf_explore_btn",
+        )
+
+    if explore_btn and explorer_seeds.strip():
+        seeds = [s.strip() for s in explorer_seeds.strip().split("\n") if s.strip()][:10]
+
+        with st.spinner(f"Exploring {len(seeds)} seed keywords..."):
+            try:
+                from viraltracker.services.seo_pipeline.services.dataforseo_service import DataForSEOService
+                dataforseo = DataForSEOService()
+
+                all_suggestions = []
+                for seed in seeds:
+                    suggestions = dataforseo.get_keyword_suggestions(
+                        seed_keyword=seed,
+                        limit=explorer_limit,
+                    )
+                    for s in suggestions:
+                        s["source_seed"] = seed
+                    all_suggestions.extend(suggestions)
+
+                # Deduplicate by keyword
+                seen = set()
+                unique = []
+                for s in all_suggestions:
+                    kw = s.get("keyword", "").lower()
+                    if kw not in seen:
+                        seen.add(kw)
+                        unique.append(s)
+
+                st.session_state["seo_wf_explorer_results"] = unique
+            except Exception as e:
+                st.error(f"Exploration failed: {e}")
+
+    # Display results
+    results = st.session_state.get("seo_wf_explorer_results")
+    if results:
+        import pandas as pd
+
+        # Summary stats
+        volumes = [r.get("search_volume") or 0 for r in results]
+        kds = [r.get("keyword_difficulty") or 0 for r in results if r.get("keyword_difficulty") is not None]
+
+        stat_cols = st.columns(4)
+        with stat_cols[0]:
+            st.metric("Keywords Found", f"{len(results):,}")
+        with stat_cols[1]:
+            st.metric("Avg Volume", f"{int(sum(volumes)/len(volumes)):,}" if volumes else "—")
+        with stat_cols[2]:
+            easy = len([k for k in kds if k < 30])
+            st.metric("Easy KD (<30)", f"{easy} ({int(easy/len(kds)*100) if kds else 0}%)")
+        with stat_cols[3]:
+            total_vol = sum(volumes)
+            st.metric("Total Volume", f"{total_vol:,}")
+
+        # Filters
+        with st.expander("🔧 Filters", expanded=False):
+            filter_cols = st.columns(3)
+            with filter_cols[0]:
+                vol_range = st.slider(
+                    "Volume range",
+                    min_value=0,
+                    max_value=max(max(volumes), 1000),
+                    value=(0, max(max(volumes), 1000)),
+                    key="seo_wf_explorer_vol_range",
+                )
+            with filter_cols[1]:
+                kd_range = st.slider(
+                    "KD range",
+                    min_value=0,
+                    max_value=100,
+                    value=(0, 100),
+                    key="seo_wf_explorer_kd_range",
+                )
+            with filter_cols[2]:
+                intent_filter = st.multiselect(
+                    "Intent",
+                    options=["informational", "commercial", "transactional", "navigational"],
+                    default=[],
+                    key="seo_wf_explorer_intent",
+                )
+
+        # Filter results
+        filtered = results
+        filtered = [r for r in filtered if (r.get("search_volume") or 0) >= vol_range[0] and (r.get("search_volume") or 0) <= vol_range[1]]
+        filtered = [r for r in filtered if (r.get("keyword_difficulty") or 0) >= kd_range[0] and (r.get("keyword_difficulty") or 0) <= kd_range[1]]
+        if intent_filter:
+            filtered = [r for r in filtered if r.get("search_intent", "").lower() in [i.lower() for i in intent_filter]]
+
+        st.caption(f"Showing {len(filtered)} of {len(results)} keywords")
+
+        # Build dataframe
+        table_data = []
+        for r in filtered:
+            table_data.append({
+                "Keyword": r.get("keyword", ""),
+                "Volume": r.get("search_volume"),
+                "KD": r.get("keyword_difficulty"),
+                "CPC ($)": round(r["cpc"], 2) if r.get("cpc") is not None else None,
+                "Competition": round(float(r["competition"]), 2) if r.get("competition") is not None and str(r["competition"]).replace('.','',1).isdigit() else r.get("competition"),
+                "Intent": r.get("search_intent", ""),
+                "Source Seed": r.get("source_seed", ""),
+            })
+
+        df = pd.DataFrame(table_data)
+
+        if not df.empty:
+            # Color-code KD
+            def color_kd_explorer(val):
+                if val is None or pd.isna(val):
+                    return ""
+                val = float(val)
+                if val < 30:
+                    return "background-color: #d4edda"
+                elif val < 60:
+                    return "background-color: #fff3cd"
+                return "background-color: #f8d7da"
+
+            styled = df.style.map(color_kd_explorer, subset=["KD"])
+            st.dataframe(styled, use_container_width=True, hide_index=True, height=500)
+
+            # Actions
+            action_cols = st.columns(2)
+            with action_cols[0]:
+                if st.button("📋 Add to Cluster Research Seeds", key="seo_wf_explorer_to_cluster"):
+                    # Push top keywords into cluster builder session state
+                    top_kws = [r["Keyword"] for r in table_data[:20] if r.get("Volume")]
+                    existing = st.session_state.get("seo_wf_explorer_selected_seeds", [])
+                    st.session_state["seo_wf_explorer_selected_seeds"] = list(set(existing + top_kws))
+                    st.success(f"Added {len(top_kws)} keywords to cluster research seeds")
+
+            with action_cols[1]:
+                if st.button("💾 Save to Project", key="seo_wf_explorer_save"):
+                    try:
+                        from viraltracker.services.seo_pipeline.services.keyword_discovery_service import KeywordDiscoveryService
+                        kw_svc = KeywordDiscoveryService()
+                        # Get project for brand
+                        projects = kw_svc.supabase.table("seo_projects").select("id").eq("brand_id", brand_id).limit(1).execute()
+                        if projects.data:
+                            project_id = projects.data[0]["id"]
+                            saved = 0
+                            for r in table_data[:100]:
+                                try:
+                                    kw_svc._save_keyword(project_id, {
+                                        "keyword": r["Keyword"],
+                                        "word_count": len(r["Keyword"].split()),
+                                        "seed_keyword": r.get("Source Seed", ""),
+                                        "found_in_seeds": 1,
+                                    })
+                                    saved += 1
+                                except Exception:
+                                    pass
+                            st.success(f"Saved {saved} keywords to project")
+                        else:
+                            st.warning("No SEO project found for this brand. Create one first.")
+                    except Exception as e:
+                        st.error(f"Save failed: {e}")
+        else:
+            st.info("No keywords match the current filters.")

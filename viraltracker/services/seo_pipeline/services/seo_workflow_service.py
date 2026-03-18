@@ -948,20 +948,17 @@ class SEOWorkflowService:
         existing = sb.table("seo_articles").select("keyword").eq("brand_id", brand_id).neq("status", "discovered").limit(100).execute()
         existing_keywords = [a.get("keyword", "") for a in (existing.data or [])]
 
-        # Enrich keywords with volume/KD from DataForSEO (non-fatal)
+        # Enrich keywords with volume/KD from DataForSEO via cache (non-fatal)
         kw_metrics: Dict[str, Dict[str, Any]] = {}
         try:
             from viraltracker.services.seo_pipeline.services.dataforseo_service import DataForSEOService
             dataforseo = DataForSEOService(supabase_client=sb)
             if dataforseo._available:
-                enriched = dataforseo.enrich_keywords_bulk(keywords[:100])
+                enriched = dataforseo.enrich_with_cache(keywords[:100])
                 for item in enriched:
                     kw = item.get("keyword", "")
-                    vol = item.get("search_volume")
-                    kd = item.get("keyword_difficulty")
-                    if vol is not None or kd is not None:
-                        kw_metrics[kw] = {"volume": vol, "kd": kd}
-                logger.info(f"Enriched {len(kw_metrics)}/{len(keywords[:100])} keywords with volume/KD")
+                    kw_metrics[kw] = item
+                logger.info(f"Enriched {len(kw_metrics)}/{len(keywords[:100])} keywords with volume/KD (cached)")
         except Exception as e:
             logger.warning(f"Keyword enrichment for cluster research failed (non-fatal): {e}")
 
@@ -970,10 +967,10 @@ class SEOWorkflowService:
         for kw in keywords[:100]:
             m = kw_metrics.get(kw.lower(), {})
             parts = [f"- {kw}"]
-            if m.get("volume") is not None:
-                parts.append(f"vol={m['volume']}")
-            if m.get("kd") is not None:
-                parts.append(f"KD={m['kd']}")
+            if m.get("search_volume") is not None:
+                parts.append(f"vol={m['search_volume']}")
+            if m.get("keyword_difficulty") is not None:
+                parts.append(f"KD={m['keyword_difficulty']}")
             kw_lines.append(" | ".join(parts) if len(parts) > 1 else parts[0])
 
         prompt = (
@@ -998,13 +995,11 @@ class SEOWorkflowService:
             "- Every spoke MUST target a distinct search intent. If two spokes chase nearly the same intent, "
             "merge them into one or drop the weaker one. Overlapping spokes cause cannibalization.\n"
             "- Exclude keywords that would cannibalize existing articles.\n"
-            "- Use the search volume and KD data to inform opportunity scores and prioritization. "
-            "Higher volume + lower KD = better opportunity.\n\n"
+            "- Volume and difficulty data will be added automatically after clustering.\n\n"
             "Return as JSON:\n"
             '{"clusters": [{"pillar_keyword": "...", "topic_summary": "...", '
             '"opportunity_score": 0.8, "reasoning": "...", '
-            '"spokes": [{"keyword": "...", "angle": "...", "priority": 1, '
-            '"search_volume": 100, "keyword_difficulty": 25}]}]}'
+            '"spokes": [{"keyword": "...", "angle": "...", "priority": 1}]}]}'
         )
 
         try:
@@ -1025,43 +1020,63 @@ class SEOWorkflowService:
                 result["total_keywords"] = len(keywords)
                 result["sources"] = {k: len(v) for k, v in source_results.items()}
 
-                # Post-enrich spoke keywords with real volume/KD from DataForSEO
+                # Post-enrich spoke keywords with real volume/KD via cached endpoint
                 try:
                     from viraltracker.services.seo_pipeline.services.dataforseo_service import DataForSEOService
                     dataforseo = DataForSEOService(supabase_client=sb)
                     if dataforseo._available:
-                        # Collect all spoke keywords
-                        all_spoke_kws = []
+                        # Collect all spoke + pillar keywords
+                        all_cluster_kws = []
                         for cluster in result.get("clusters", []):
+                            pillar = cluster.get("pillar_keyword", "").lower()
+                            if pillar:
+                                all_cluster_kws.append(pillar)
                             for spoke in cluster.get("spokes", []):
                                 kw = spoke.get("keyword", "").lower()
                                 if kw:
-                                    all_spoke_kws.append(kw)
+                                    all_cluster_kws.append(kw)
 
-                        if all_spoke_kws:
-                            spoke_enriched = dataforseo.enrich_keywords_bulk(all_spoke_kws)
-                            spoke_metrics = {}
-                            for item in spoke_enriched:
-                                kw = item.get("keyword", "").lower()
-                                vol = item.get("search_volume")
-                                kd = item.get("keyword_difficulty")
-                                if vol is not None or kd is not None:
-                                    spoke_metrics[kw] = {"search_volume": vol, "keyword_difficulty": kd}
+                        if all_cluster_kws:
+                            spoke_enriched = dataforseo.enrich_with_cache(all_cluster_kws)
+                            spoke_metrics = {item["keyword"]: item for item in spoke_enriched if item.get("keyword")}
 
-                            # Merge metrics into spoke data
+                            # Merge metrics into spoke data + calculate cluster totals
                             for cluster in result.get("clusters", []):
+                                cluster_total_vol = 0
+                                cluster_kd_sum = 0
+                                cluster_kd_count = 0
+                                cluster_est_traffic = 0
+
                                 for spoke in cluster.get("spokes", []):
                                     kw = spoke.get("keyword", "").lower()
                                     if kw in spoke_metrics:
                                         m = spoke_metrics[kw]
                                         if m.get("search_volume") is not None:
                                             spoke["search_volume"] = m["search_volume"]
+                                            cluster_total_vol += m["search_volume"]
+                                            # Estimate traffic at position 5 (~5% CTR)
+                                            est = int(m["search_volume"] * 0.05)
+                                            spoke["estimated_traffic"] = est
+                                            cluster_est_traffic += est
                                         if m.get("keyword_difficulty") is not None:
                                             spoke["keyword_difficulty"] = m["keyword_difficulty"]
+                                            cluster_kd_sum += m["keyword_difficulty"]
+                                            cluster_kd_count += 1
+                                        if m.get("cpc") is not None:
+                                            spoke["cpc"] = m["cpc"]
+                                        if m.get("competition") is not None:
+                                            spoke["competition"] = m["competition"]
+                                        if m.get("search_intent"):
+                                            spoke["search_intent"] = m["search_intent"]
 
-                            logger.info(f"Post-enriched {len(spoke_metrics)}/{len(all_spoke_kws)} spoke keywords with volume/KD")
+                                # Store cluster-level aggregates
+                                cluster["total_volume"] = cluster_total_vol
+                                cluster["avg_difficulty"] = round(cluster_kd_sum / cluster_kd_count, 1) if cluster_kd_count else None
+                                cluster["estimated_traffic"] = cluster_est_traffic
+
+                            logger.info(f"Post-enriched {len(spoke_metrics)}/{len(all_cluster_kws)} cluster keywords with volume/KD")
                 except Exception as e:
-                    logger.warning(f"Post-enrichment of spoke keywords failed (non-fatal): {e}")
+                    logger.warning(f"Post-enrichment of cluster keywords failed (non-fatal): {e}")
 
                 return result
         except Exception as e:
