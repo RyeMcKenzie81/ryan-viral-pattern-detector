@@ -1328,6 +1328,15 @@ with tab_cluster:
                         metrics_parts.append(f"Spokes: {len(spokes_for_count)}")
                         st.markdown(f"📊 {' | '.join(metrics_parts)}")
 
+                    # Opportunity badge
+                    if total_vol is not None and avg_kd is not None:
+                        if total_vol >= 1000 and avg_kd < 30:
+                            st.markdown("🟢 **High Opportunity** — high volume, low difficulty")
+                        elif avg_kd >= 60:
+                            st.markdown("🔴 **Competitive** — high difficulty")
+                        else:
+                            st.markdown("🟡 **Medium Opportunity**")
+
                     if cluster.get("reasoning"):
                         st.caption(cluster["reasoning"])
 
@@ -1576,12 +1585,38 @@ with tab_explorer:
                     key="seo_wf_explorer_intent",
                 )
 
+            filter_cols2 = st.columns(2)
+            with filter_cols2[0]:
+                cpcs = [r.get("cpc") or 0.0 for r in results]
+                max_cpc = max(max(cpcs), 1.0) if cpcs else 1.0
+                cpc_range = st.slider(
+                    "CPC range ($)",
+                    min_value=0.0,
+                    max_value=float(max_cpc),
+                    value=(0.0, float(max_cpc)),
+                    step=0.1,
+                    key="seo_wf_explorer_cpc_range",
+                )
+            with filter_cols2[1]:
+                min_word_count = st.number_input(
+                    "Min word count",
+                    min_value=0,
+                    max_value=10,
+                    value=0,
+                    step=1,
+                    key="seo_wf_explorer_min_words",
+                    help="Filter to keywords with at least this many words (0 = no filter)",
+                )
+
         # Filter results
         filtered = results
         filtered = [r for r in filtered if (r.get("search_volume") or 0) >= vol_range[0] and (r.get("search_volume") or 0) <= vol_range[1]]
         filtered = [r for r in filtered if (r.get("keyword_difficulty") or 0) >= kd_range[0] and (r.get("keyword_difficulty") or 0) <= kd_range[1]]
         if intent_filter:
             filtered = [r for r in filtered if r.get("search_intent", "").lower() in [i.lower() for i in intent_filter]]
+        filtered = [r for r in filtered if (r.get("cpc") or 0.0) >= cpc_range[0] and (r.get("cpc") or 0.0) <= cpc_range[1]]
+        if min_word_count > 0:
+            filtered = [r for r in filtered if len((r.get("keyword") or "").split()) >= min_word_count]
 
         st.caption(f"Showing {len(filtered)} of {len(results)} keywords")
 
@@ -1628,25 +1663,33 @@ with tab_explorer:
             with action_cols[1]:
                 if st.button("💾 Save to Project", key="seo_wf_explorer_save"):
                     try:
-                        from viraltracker.services.seo_pipeline.services.keyword_discovery_service import KeywordDiscoveryService
-                        kw_svc = KeywordDiscoveryService()
+                        from viraltracker.services.seo_pipeline.services.seo_project_service import SEOProjectService
+                        project_svc = SEOProjectService()
                         # Get project for brand
-                        projects = kw_svc.supabase.table("seo_projects").select("id").eq("brand_id", brand_id).limit(1).execute()
-                        if projects.data:
-                            project_id = projects.data[0]["id"]
+                        projects = project_svc.list_projects(
+                            organization_id=org_id,
+                            brand_id=brand_id,
+                        )
+                        if projects:
+                            project_id = projects[0]["id"]
                             saved = 0
+                            failed = 0
                             for r in table_data[:100]:
                                 try:
-                                    kw_svc._save_keyword(project_id, {
+                                    project_svc.supabase.table("seo_keywords").upsert({
+                                        "project_id": project_id,
                                         "keyword": r["Keyword"],
-                                        "word_count": len(r["Keyword"].split()),
-                                        "seed_keyword": r.get("Source Seed", ""),
-                                        "found_in_seeds": 1,
-                                    })
+                                        "search_volume": r.get("Volume"),
+                                        "keyword_difficulty": r.get("KD"),
+                                        "search_intent": r.get("Intent"),
+                                    }, on_conflict="project_id,keyword").execute()
                                     saved += 1
                                 except Exception:
-                                    pass
-                            st.success(f"Saved {saved} keywords to project")
+                                    failed += 1
+                            if failed:
+                                st.warning(f"Saved {saved} keywords ({failed} failed)")
+                            else:
+                                st.success(f"Saved {saved} keywords to project")
                         else:
                             st.warning("No SEO project found for this brand. Create one first.")
                     except Exception as e:
