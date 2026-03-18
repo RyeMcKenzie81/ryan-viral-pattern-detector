@@ -1024,6 +1024,45 @@ class SEOWorkflowService:
                 result["mode"] = "deep"
                 result["total_keywords"] = len(keywords)
                 result["sources"] = {k: len(v) for k, v in source_results.items()}
+
+                # Post-enrich spoke keywords with real volume/KD from DataForSEO
+                try:
+                    from viraltracker.services.seo_pipeline.services.dataforseo_service import DataForSEOService
+                    dataforseo = DataForSEOService(supabase_client=sb)
+                    if dataforseo._available:
+                        # Collect all spoke keywords
+                        all_spoke_kws = []
+                        for cluster in result.get("clusters", []):
+                            for spoke in cluster.get("spokes", []):
+                                kw = spoke.get("keyword", "").lower()
+                                if kw:
+                                    all_spoke_kws.append(kw)
+
+                        if all_spoke_kws:
+                            spoke_enriched = dataforseo.enrich_keywords_bulk(all_spoke_kws)
+                            spoke_metrics = {}
+                            for item in spoke_enriched:
+                                kw = item.get("keyword", "").lower()
+                                vol = item.get("search_volume")
+                                kd = item.get("keyword_difficulty")
+                                if vol is not None or kd is not None:
+                                    spoke_metrics[kw] = {"search_volume": vol, "keyword_difficulty": kd}
+
+                            # Merge metrics into spoke data
+                            for cluster in result.get("clusters", []):
+                                for spoke in cluster.get("spokes", []):
+                                    kw = spoke.get("keyword", "").lower()
+                                    if kw in spoke_metrics:
+                                        m = spoke_metrics[kw]
+                                        if m.get("search_volume") is not None:
+                                            spoke["search_volume"] = m["search_volume"]
+                                        if m.get("keyword_difficulty") is not None:
+                                            spoke["keyword_difficulty"] = m["keyword_difficulty"]
+
+                            logger.info(f"Post-enriched {len(spoke_metrics)}/{len(all_spoke_kws)} spoke keywords with volume/KD")
+                except Exception as e:
+                    logger.warning(f"Post-enrichment of spoke keywords failed (non-fatal): {e}")
+
                 return result
         except Exception as e:
             logger.error(f"Deep cluster research failed: {e}")
