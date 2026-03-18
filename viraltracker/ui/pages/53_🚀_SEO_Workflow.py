@@ -1321,7 +1321,10 @@ with tab_cluster:
                             # Build metrics tag
                             metrics = []
                             if vol is not None:
-                                metrics.append(f"vol: {vol:,}")
+                                try:
+                                    metrics.append(f"vol: {int(vol):,}")
+                                except (ValueError, TypeError):
+                                    metrics.append(f"vol: {vol}")
                             if kd is not None:
                                 metrics.append(f"KD: {kd}")
                             if not metrics and diff:
