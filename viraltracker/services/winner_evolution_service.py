@@ -759,6 +759,7 @@ class WinnerEvolutionService:
         mode: str,
         variable_override: Optional[str] = None,
         job_id: Optional[UUID] = None,
+        skip_winner_check: bool = False,
     ) -> Dict[str, Any]:
         """Execute winner evolution: validate, build V2 params, run pipeline, record lineage.
 
@@ -767,6 +768,8 @@ class WinnerEvolutionService:
             mode: Evolution mode (winner_iteration, anti_fatigue_refresh, cross_size_expansion).
             variable_override: Optional override for which variable to change (winner_iteration only).
             job_id: Optional scheduled_job ID for tracking.
+            skip_winner_check: If True, skip winner criteria validation (used by batch iterate
+                where the opportunity detector has already enforced quality thresholds).
 
         Returns:
             Dict with ad_run_id, child_ad_ids, lineage_entries, mode, variable_changed.
@@ -777,10 +780,11 @@ class WinnerEvolutionService:
         if mode not in EVOLUTION_MODES:
             raise ValueError(f"Invalid evolution mode: {mode}. Must be one of {EVOLUTION_MODES}")
 
-        # 1. Validate winner criteria
-        winner = await self.check_winner_criteria(parent_ad_id)
-        if not winner["is_winner"]:
-            raise ValueError(f"Ad {parent_ad_id} does not meet winner criteria: {winner['reason']}")
+        # 1. Validate winner criteria (skippable for batch iterate)
+        if not skip_winner_check:
+            winner = await self.check_winner_criteria(parent_ad_id)
+            if not winner["is_winner"]:
+                raise ValueError(f"Ad {parent_ad_id} does not meet winner criteria: {winner['reason']}")
 
         # 2. Check iteration limits
         limits = await self.check_iteration_limits(parent_ad_id)
@@ -808,7 +812,15 @@ class WinnerEvolutionService:
             raise ValueError(f"Ad run {parent['ad_run_id']} not found")
 
         product_id = ad_run.data[0]["product_id"]
-        brand_id = UUID(ad_run.data[0]["brand_id"])
+        brand_id_raw = ad_run.data[0].get("brand_id")
+        if brand_id_raw:
+            brand_id = UUID(brand_id_raw)
+        else:
+            # Fallback: look up brand_id via products table (imported ads may lack brand_id on ad_runs)
+            prod = self.supabase.table("products").select("brand_id").eq("id", product_id).limit(1).execute()
+            if not prod.data:
+                raise ValueError(f"Could not determine brand_id for product {product_id}")
+            brand_id = UUID(prod.data[0]["brand_id"])
 
         # 4. Download parent ad image as base64
         from viraltracker.services.ad_creation_service import AdCreationService

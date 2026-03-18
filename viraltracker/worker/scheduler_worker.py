@@ -4044,6 +4044,7 @@ async def execute_winner_evolution_job(job: Dict) -> Dict[str, Any]:
         parent_ad_id = params.get("parent_ad_id")
         evolution_mode = params.get("evolution_mode")
         variable_override = params.get("variable_override")
+        skip_winner_check = params.get("skip_winner_check", False)
 
         if not parent_ad_id:
             raise ValueError("parent_ad_id is required for winner_evolution")
@@ -4053,6 +4054,8 @@ async def execute_winner_evolution_job(job: Dict) -> Dict[str, Any]:
         logs.append(f"Evolving ad {parent_ad_id} | mode={evolution_mode}")
         if variable_override:
             logs.append(f"Variable override: {variable_override}")
+        if skip_winner_check:
+            logs.append("Winner check skipped (batch iterate)")
 
         evolution_service = WinnerEvolutionService()
 
@@ -4061,6 +4064,7 @@ async def execute_winner_evolution_job(job: Dict) -> Dict[str, Any]:
             mode=evolution_mode,
             variable_override=variable_override,
             job_id=UUID(job_id),
+            skip_winner_check=skip_winner_check,
         )
 
         child_count = len(result.get("child_ad_ids", []))

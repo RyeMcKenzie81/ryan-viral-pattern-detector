@@ -349,6 +349,7 @@ class MetaWinnerImportService:
             product_id=product_id,
             storage_path=storage_path,
             batch_id=batch_id,
+            brand_id=brand_id,
         )
 
         # 4. Create synthetic generated_ad
@@ -735,11 +736,18 @@ Return ONLY valid JSON, no markdown formatting."""
         product_id: UUID,
         storage_path: str,
         batch_id: Optional[str] = None,
+        brand_id: Optional[UUID] = None,
     ) -> str:
         """Create a synthetic ad_run with status='complete'.
 
         D1: Uses status='complete' (valid CHECK constraint value).
         D4: One ad_run per imported ad for reliability.
+
+        Args:
+            product_id: Product UUID.
+            storage_path: Reference ad storage path.
+            batch_id: Optional batch grouping ID.
+            brand_id: Optional brand UUID (set so evolve_winner can read it back).
 
         Returns:
             ad_run UUID string.
@@ -748,13 +756,17 @@ Return ONLY valid JSON, no markdown formatting."""
         if batch_id:
             params["batch_id"] = batch_id
 
-        result = self.supabase.table("ad_runs").insert({
+        row = {
             "product_id": str(product_id),
             "reference_ad_storage_path": storage_path,
             "status": "complete",
             "completed_at": datetime.now(timezone.utc).isoformat(),
             "parameters": params,
-        }).execute()
+        }
+        if brand_id:
+            row["brand_id"] = str(brand_id)
+
+        result = self.supabase.table("ad_runs").insert(row).execute()
 
         return result.data[0]["id"]
 

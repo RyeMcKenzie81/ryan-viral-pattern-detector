@@ -97,6 +97,8 @@ if "iter_awareness_expanded" not in st.session_state:
     st.session_state.iter_awareness_expanded = None
 if "iter_cache_key" not in st.session_state:
     st.session_state.iter_cache_key = None
+if "iter_awareness_filter" not in st.session_state:
+    st.session_state.iter_awareness_filter = None
 
 
 # ============================================
@@ -116,6 +118,53 @@ CATEGORY_ICONS = {
     "budget": "💰",
     "cross_size": "📐",
     "anti_fatigue": "🔄",
+    "scale": "🚀",
+}
+
+# Strategy options for batch iterate
+STRATEGY_OPTIONS = {
+    "improve_hook": {
+        "label": "Improve Hook",
+        "evolution_mode": "winner_iteration",
+        "variable_override": "hook_type",
+        "description": "Change the opening hook to improve stopping power",
+    },
+    "new_layout": {
+        "label": "New Layout",
+        "evolution_mode": "winner_iteration",
+        "variable_override": "template_category",
+        "description": "Try a different visual layout/structure",
+    },
+    "auto_improve": {
+        "label": "Auto-Improve",
+        "evolution_mode": "winner_iteration",
+        "variable_override": None,
+        "description": "System picks the best variable to change",
+    },
+    "new_sizes": {
+        "label": "New Sizes",
+        "evolution_mode": "cross_size_expansion",
+        "variable_override": None,
+        "description": "Generate in untested canvas sizes (1080x1080, 1350, 1920)",
+    },
+    "fresh_creative": {
+        "label": "Fresh Creative",
+        "evolution_mode": "anti_fatigue_refresh",
+        "variable_override": None,
+        "description": "Same psychology, completely fresh visual execution",
+    },
+}
+
+# Auto-recommend strategy per pattern type
+PATTERN_DEFAULT_STRATEGY = {
+    "high_converter_low_stopper": "improve_hook",
+    "high_cvr_low_ctr": "improve_hook",
+    "good_hook_bad_close": "auto_improve",
+    "thumb_stopper_quick_dropper": "auto_improve",
+    "proven_winner": "auto_improve",
+    "size_limited_winner": "new_sizes",
+    "fatiguing_winner": "fresh_creative",
+    "efficient_but_starved": None,  # budget recommendation, no evolution
 }
 
 METRIC_LABELS = {
@@ -299,7 +348,19 @@ def render_opportunities_tab(brand_id: str, product_id: Optional[str], org_id: s
                     st.session_state.iter_category_filter = cat
                     st.rerun()
 
-    # Filter by category, format, and min spend
+    # Awareness filter (from Tab 3 link)
+    awareness_filter = st.session_state.get("iter_awareness_filter")
+    if awareness_filter:
+        level_label = awareness_filter.replace("_", " ").title()
+        col_af1, col_af2 = st.columns([5, 1])
+        with col_af1:
+            st.info(f"Showing opportunities for **{level_label}** ads")
+        with col_af2:
+            if st.button("Clear filter", key="iter_clear_awareness_filter"):
+                st.session_state.iter_awareness_filter = None
+                st.rerun()
+
+    # Filter by category, format, min spend, and awareness
     filtered = opportunities
     if st.session_state.iter_category_filter:
         filtered = [o for o in filtered if _get_field(o, "strategy_category") == st.session_state.iter_category_filter]
@@ -311,6 +372,8 @@ def render_opportunities_tab(brand_id: str, product_id: Optional[str], org_id: s
     min_spend = st.session_state.get("iter_min_spend", 50)
     if min_spend > 0:
         filtered = [o for o in filtered if float(_get_field(o, "spend", 0)) >= min_spend]
+    if awareness_filter:
+        filtered = [o for o in filtered if _get_field(o, "awareness_level", "") == awareness_filter]
 
     if len(filtered) < len(opportunities):
         st.markdown(f"**{len(filtered)} opportunities shown** ({len(opportunities)} found, {len(opportunities) - len(filtered)} filtered out)")
@@ -320,6 +383,9 @@ def render_opportunities_tab(brand_id: str, product_id: Optional[str], org_id: s
     # Render opportunity cards
     for idx, opp in enumerate(filtered):
         _render_opportunity_card(opp, idx, brand_id, product_id, org_id)
+
+    # Batch queue bar
+    _render_batch_queue_bar(filtered, brand_id, product_id, org_id)
 
     # Dismissed section
     dismissed = detector.get_opportunities(brand_id, org_id, status="dismissed")
@@ -403,14 +469,30 @@ def _render_opportunity_card(opp: dict, idx: int, brand_id: str, product_id: Opt
     explanation_projection = _get_field(opp, "explanation_projection", "")
 
     # Level 1: Collapsed summary
+    pattern_type = _get_field(opp, "pattern_type", "")
     with st.container(border=True):
-        cols = st.columns([1, 4, 2])
-        with cols[0]:
+        # Image ads with evolution_mode get a checkbox; video ads and budget-only do not
+        can_batch = not is_video and bool(evolution_mode)
+        if can_batch:
+            cols = st.columns([0.4, 0.8, 3.5, 2.3])
+        else:
+            cols = st.columns([1, 4, 2])
+
+        col_offset = 0
+        if can_batch:
+            with cols[0]:
+                st.checkbox(
+                    "Select", key=f"iter_select_{opp_id}",
+                    label_visibility="collapsed",
+                )
+            col_offset = 1
+
+        with cols[col_offset]:
             if thumbnail_url:
                 st.image(thumbnail_url, width=100)
             else:
                 st.markdown(f"**{format_badge}**")
-        with cols[1]:
+        with cols[col_offset + 1]:
             st.markdown(
                 f"**{pattern_label}** &nbsp; "
                 f":{conf_color}[{conf_label}]"
@@ -424,13 +506,26 @@ def _render_opportunity_card(opp: dict, idx: int, brand_id: str, product_id: Opt
                     f"{strong_label} {_format_metric(strong_metric, strong_value, from_decimal=True)} ({strong_pct}) "
                     f"but {weak_label} only {_format_metric(weak_metric, weak_value, from_decimal=True)} ({weak_pct})"
                 )
-        with cols[2]:
+        with cols[col_offset + 2]:
             if is_video:
                 # Video ads get brief instead of iterate
                 pass  # Action brief shown in details
             elif evolution_mode:
-                if st.button("🔬 Iterate", key=f"iter_act_{idx}", use_container_width=True):
-                    st.session_state.iter_action_confirm = idx
+                # Strategy dropdown
+                default_strategy = PATTERN_DEFAULT_STRATEGY.get(pattern_type, "auto_improve")
+                strategy_keys = list(STRATEGY_OPTIONS.keys())
+                default_idx = strategy_keys.index(default_strategy) if default_strategy in strategy_keys else 2
+
+                st.selectbox(
+                    "Strategy",
+                    options=strategy_keys,
+                    index=default_idx,
+                    format_func=lambda s, d=default_strategy: (
+                        STRATEGY_OPTIONS[s]["label"] + (" ★" if s == d else "")
+                    ),
+                    key=f"iter_strategy_{opp_id}",
+                    label_visibility="collapsed",
+                )
             elif category == "budget":
                 st.caption("Budget recommendation")
 
@@ -552,6 +647,97 @@ def _execute_iteration(opp: dict, brand_id: str, product_id: str, org_id: str):
                 st.error(f"Iteration failed: {result.get('error', 'Unknown error')}")
         except Exception as e:
             st.error(f"Iteration failed: {e}")
+
+
+def _render_batch_queue_bar(
+    filtered: list, brand_id: str, product_id: Optional[str], org_id: str
+):
+    """Render batch queue bar below opportunity list when items are selected."""
+    selected_opps = [
+        opp for opp in filtered
+        if st.session_state.get(f"iter_select_{_get_field(opp, 'id')}")
+    ]
+
+    if not selected_opps:
+        return
+
+    st.divider()
+    cols = st.columns([2, 1.5, 1.5])
+    with cols[0]:
+        st.markdown(f"**{len(selected_opps)} selected**")
+    with cols[1]:
+        bulk_strategy = st.selectbox(
+            "Bulk strategy",
+            options=["keep_individual", *STRATEGY_OPTIONS.keys()],
+            format_func=lambda s: (
+                "Keep Individual" if s == "keep_individual"
+                else STRATEGY_OPTIONS[s]["label"]
+            ),
+            key="iter_bulk_strategy",
+            label_visibility="collapsed",
+        )
+    with cols[2]:
+        if not product_id:
+            st.warning("Select a product first")
+        elif st.button(
+            f"Queue {len(selected_opps)} Iterations",
+            type="primary",
+            key="iter_batch_queue_btn",
+        ):
+            _batch_queue(selected_opps, brand_id, product_id, org_id, bulk_strategy)
+
+
+def _batch_queue(
+    opps: list, brand_id: str, product_id: str, org_id: str, bulk_strategy: str
+):
+    """Import needed ads and create scheduled_jobs for batch iteration."""
+    detector = get_detector()
+
+    # Build strategy overrides from individual dropdowns
+    overrides = {}
+    for opp in opps:
+        opp_id = _get_field(opp, "id")
+        strategy_key = st.session_state.get(f"iter_strategy_{opp_id}", "auto_improve")
+        if bulk_strategy != "keep_individual":
+            strategy_key = bulk_strategy
+        strategy = STRATEGY_OPTIONS[strategy_key]
+        overrides[opp_id] = {
+            "evolution_mode": strategy["evolution_mode"],
+            "variable_override": strategy.get("variable_override"),
+        }
+
+    with st.spinner(f"Queueing {len(opps)} iterations..."):
+        result = asyncio.run(
+            detector.batch_queue_iterations(
+                opportunity_ids=[_get_field(o, "id") for o in opps],
+                brand_id=brand_id,
+                product_id=product_id,
+                org_id=org_id,
+                strategy_overrides=overrides,
+            )
+        )
+
+    queued = result.get("queued", 0)
+    imported = result.get("imported", 0)
+    errors = result.get("errors", [])
+
+    if queued > 0:
+        msg = f"Queued {queued} iterations"
+        if imported:
+            msg += f" (imported {imported} ads)"
+        st.success(msg)
+        # Clear checkbox + strategy state after successful queue
+        for opp in opps:
+            opp_id = _get_field(opp, "id")
+            st.session_state.pop(f"iter_select_{opp_id}", None)
+            st.session_state.pop(f"iter_strategy_{opp_id}", None)
+        # Re-fetch opportunities to reflect "queued" status
+        st.session_state.iter_opportunities = None
+        st.session_state.iter_scan_done = False
+        st.rerun()
+    if errors:
+        for err in errors:
+            st.warning(err)
 
 
 def _render_video_brief(opp: dict, brand_id: str, org_id: str):
@@ -1468,6 +1654,15 @@ def _render_awareness_drilldown(
                     f"${ad.get('spend', 0):,.0f}"
                 )
 
+    # Link to Find Opportunities tab filtered by this awareness level
+    level_label = awareness_level.replace("_", " ").title()
+    if st.button(
+        f"View iteration opportunities for {level_label} ads",
+        key=f"iter_awareness_opps_{awareness_level}",
+    ):
+        st.session_state.iter_awareness_filter = awareness_level
+        st.toast(f"Switch to the **Find Opportunities** tab to see {level_label} ads")
+
 
 # ============================================
 # HELPERS
@@ -1519,6 +1714,7 @@ if st.session_state.get("iter_cache_key") != cache_key:
     st.session_state.iter_awareness_expanded = None
     st.session_state.iter_per_winner_result = None
     st.session_state.iter_scan_done = False
+    st.session_state.iter_awareness_filter = None
     st.session_state.iter_cache_key = cache_key
 
 # Tabs

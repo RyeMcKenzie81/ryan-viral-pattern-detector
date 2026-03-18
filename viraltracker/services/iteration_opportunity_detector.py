@@ -305,6 +305,10 @@ class IterationOpportunityDetector:
             if fatigue_opp and fatigue_opp.confidence >= min_confidence:
                 opportunities.append(fatigue_opp)
 
+            proven_opp = self._detect_proven_winner(ad, brand_id, baseline)
+            if proven_opp and proven_opp.confidence >= min_confidence:
+                opportunities.append(proven_opp)
+
         # 6. Sort by confidence desc
         opportunities.sort(key=lambda o: o.confidence, reverse=True)
 
@@ -388,12 +392,12 @@ class IterationOpportunityDetector:
         except Exception as e:
             logger.debug(f"Failed to fetch perf data for enrichment: {e}")
 
-        # Fetch creative_format from classifications
-        cls_map: Dict[str, str] = {}
+        # Fetch creative_format and awareness_level from classifications
+        cls_map: Dict[str, Dict] = {}
         try:
             res = (
                 self.supabase.table("ad_creative_classifications")
-                .select("meta_ad_id, creative_format")
+                .select("meta_ad_id, creative_format, creative_awareness_level")
                 .eq("brand_id", brand_id)
                 .in_("meta_ad_id", ad_ids)
                 .order("classified_at", desc=True)
@@ -402,7 +406,10 @@ class IterationOpportunityDetector:
             for c in (res.data or []):
                 aid = c.get("meta_ad_id")
                 if aid and aid not in cls_map:
-                    cls_map[aid] = c.get("creative_format", "")
+                    cls_map[aid] = {
+                        "creative_format": c.get("creative_format", ""),
+                        "awareness_level": c.get("creative_awareness_level", ""),
+                    }
         except Exception as e:
             logger.debug(f"Failed to fetch classifications for enrichment: {e}")
 
@@ -410,10 +417,12 @@ class IterationOpportunityDetector:
         for o in opps:
             aid = o.get("meta_ad_id")
             perf = perf_map.get(aid, {})
+            cls = cls_map.get(aid, {})
             o.setdefault("ad_name", perf.get("ad_name", ""))
             o.setdefault("thumbnail_url", perf.get("thumbnail_url", ""))
             o.setdefault("spend", float(perf.get("spend") or 0))
-            o.setdefault("creative_format", cls_map.get(aid, ""))
+            o.setdefault("creative_format", cls.get("creative_format", ""))
+            o.setdefault("awareness_level", cls.get("awareness_level", ""))
 
     def dismiss_opportunity(self, opportunity_id: str) -> bool:
         """Mark an opportunity as dismissed."""
@@ -475,7 +484,7 @@ class IterationOpportunityDetector:
             # Auto-import via MetaWinnerImportService
             try:
                 from viraltracker.services.meta_winner_import_service import MetaWinnerImportService
-                import_service = MetaWinnerImportService(self.supabase)
+                import_service = MetaWinnerImportService()
 
                 meta_ad_account_id = self._get_account_id(meta_ad_id)
                 if not meta_ad_account_id:
@@ -501,12 +510,13 @@ class IterationOpportunityDetector:
         # Step 3: Evolve via WinnerEvolutionService
         try:
             from viraltracker.services.winner_evolution_service import WinnerEvolutionService
-            evolution_service = WinnerEvolutionService(self.supabase)
+            evolution_service = WinnerEvolutionService()
 
             result = await evolution_service.evolve_winner(
                 parent_ad_id=UUID(generated_ad_id),
                 mode=evolution_mode,
                 variable_override=None,
+                skip_winner_check=True,
             )
         except Exception as e:
             logger.error(f"Evolution failed for {meta_ad_id}: {e}")
@@ -525,6 +535,128 @@ class IterationOpportunityDetector:
             "generated_ad_id": generated_ad_id,
             "evolution_result": result,
             "child_ad_id": child_ad_id,
+        }
+
+    async def batch_queue_iterations(
+        self,
+        opportunity_ids: List[str],
+        brand_id: str,
+        product_id: str,
+        org_id: str,
+        strategy_overrides: Optional[Dict[str, Dict]] = None,
+    ) -> Dict[str, Any]:
+        """Queue multiple iteration jobs via scheduled_jobs (non-blocking).
+
+        For each opportunity: imports ad if needed, creates a winner_evolution
+        scheduled_job. Jobs are picked up by the worker within ~1 minute.
+
+        Args:
+            opportunity_ids: List of opportunity UUIDs.
+            brand_id: Brand UUID string.
+            product_id: Product UUID string.
+            org_id: Organization UUID.
+            strategy_overrides: Optional per-opportunity overrides.
+                Format: {opp_id: {"evolution_mode": "...", "variable_override": "..."}}
+
+        Returns:
+            Dict with queued, imported, skipped counts and errors list.
+        """
+        from viraltracker.services.meta_winner_import_service import MetaWinnerImportService
+
+        MAX_BATCH = 20
+        if len(opportunity_ids) > MAX_BATCH:
+            opportunity_ids = opportunity_ids[:MAX_BATCH]
+
+        strategy_overrides = strategy_overrides or {}
+        import_service = MetaWinnerImportService()
+
+        queued = 0
+        imported = 0
+        skipped = 0
+        errors = []
+
+        for opp_id in opportunity_ids:
+            try:
+                opp = self._get_opportunity(opp_id)
+                if not opp:
+                    errors.append(f"Opportunity {opp_id[:8]} not found")
+                    continue
+
+                # Only queue opportunities with status "detected"
+                if opp.get("status") != "detected":
+                    skipped += 1
+                    continue
+
+                meta_ad_id = opp["meta_ad_id"]
+                evolution_mode = opp.get("evolution_mode")
+                if not evolution_mode:
+                    skipped += 1
+                    continue
+
+                # Find or import generated_ad
+                generated_ad_id = self._find_generated_ad(meta_ad_id, brand_id)
+                if not generated_ad_id:
+                    meta_ad_account_id = self._get_account_id(meta_ad_id)
+                    if not meta_ad_account_id:
+                        errors.append(f"No account ID for {meta_ad_id}")
+                        continue
+
+                    import_result = await import_service.import_meta_winner(
+                        brand_id=UUID(brand_id),
+                        meta_ad_id=meta_ad_id,
+                        product_id=UUID(product_id),
+                        meta_ad_account_id=meta_ad_account_id,
+                        extract_element_tags=True,
+                    )
+                    generated_ad_id = import_result.get("generated_ad_id")
+                    if not generated_ad_id:
+                        errors.append(f"Import failed for {meta_ad_id}: {import_result.get('status')}")
+                        continue
+                    imported += 1
+
+                # Resolve strategy
+                override = strategy_overrides.get(opp_id, {})
+                mode = override.get("evolution_mode", evolution_mode)
+                variable_override = override.get("variable_override")
+
+                # Create scheduled_job
+                now = datetime.utcnow()
+                ad_name = opp.get("ad_name") or opp.get("meta_ad_id", "")
+                job_row = {
+                    "job_type": "winner_evolution",
+                    "brand_id": str(brand_id),
+                    "product_id": str(product_id),
+                    "name": f"Batch iterate: {ad_name[:40]}",
+                    "status": "active",
+                    "schedule_type": "one_time",
+                    "next_run_at": (now + timedelta(minutes=1)).isoformat(),
+                    "trigger_source": "manual",
+                    "parameters": {
+                        "parent_ad_id": str(generated_ad_id),
+                        "evolution_mode": mode,
+                        "variable_override": variable_override,
+                        "skip_winner_check": True,
+                    },
+                }
+                self.supabase.table("scheduled_jobs").insert(job_row).execute()
+
+                # Mark opportunity as queued (not actioned — evolved_ad_id unknown)
+                self.supabase.table("iteration_opportunities").update({
+                    "status": "queued",
+                    "actioned_at": now.isoformat(),
+                }).eq("id", opp_id).execute()
+
+                queued += 1
+
+            except Exception as e:
+                logger.error(f"Batch queue error for {opp_id}: {e}")
+                errors.append(f"Error for {opp_id[:8]}: {str(e)[:80]}")
+
+        return {
+            "queued": queued,
+            "imported": imported,
+            "skipped": skipped,
+            "errors": errors,
         }
 
     # ---------------------------------------------------------------------------
@@ -807,6 +939,93 @@ class IterationOpportunityDetector:
             thumbnail_url=ad.get("thumbnail_url", ""),
             spend=ad.get("spend", 0),
             impressions=ad.get("impressions", 0),
+        )
+
+    def _detect_proven_winner(
+        self, ad: dict, brand_id: str, baseline
+    ) -> Optional[IterationOpportunity]:
+        """Detect ads performing well across all metrics — scale candidates.
+
+        Proven winners have no exploitable weakness — they're strong across the board.
+        These should be scaled via new sizes, fresh creative, or variable iteration.
+
+        Requirements (all must be met):
+        - ROAS above median (p50)
+        - CTR above p25
+        - Spend > $100
+        - Impressions > 5000
+        - Days active > 7
+        """
+        if not baseline:
+            return None
+        if ad.get("impressions", 0) < 5000:
+            return None
+        if ad.get("spend", 0) < 100:
+            return None
+        if ad.get("days_active", 0) < 7:
+            return None
+
+        roas = ad.get("roas", 0)
+        ctr = ad.get("ctr", 0)
+
+        median_roas = _get_baseline_value(baseline, "roas", "p50")
+        p25_ctr = _get_baseline_value(baseline, "ctr", "p25")
+
+        if median_roas is None or p25_ctr is None:
+            return None
+        if roas <= median_roas:
+            return None
+        if ctr <= p25_ctr:
+            return None
+
+        # Compute confidence from how far above thresholds
+        roas_excess = min((roas / median_roas) - 1.0, 2.0) if median_roas > 0 else 0.5
+        ctr_excess = min((ctr / p25_ctr) - 1.0, 2.0) if p25_ctr > 0 else 0.5
+        volume_score = min(ad.get("impressions", 0) / 20000, 1.0)
+        confidence = round(min(0.4 + (roas_excess + ctr_excess) * 0.15 + volume_score * 0.2, 0.95), 2)
+
+        # Auto-recommend strategy based on profile
+        strategy_actions = [
+            f"ROAS {roas:.1f}x (above {median_roas:.1f}x median) on ${ad.get('spend', 0):,.0f} spend",
+            "Generate in additional canvas sizes (1080x1080, 1350, 1920)",
+            "Create fresh creative variants with same messaging angle",
+            "Test hook variations to find even stronger stopping power",
+        ]
+
+        roas_pct = _compute_percentile_label(roas, baseline, "roas")
+        ctr_pct = _compute_percentile_label(ctr, baseline, "ctr")
+
+        return IterationOpportunity(
+            id=str(uuid4()),
+            meta_ad_id=ad["meta_ad_id"],
+            brand_id=brand_id,
+            pattern_type="proven_winner",
+            pattern_label="Proven Winner",
+            confidence=confidence,
+            strong_metric="roas",
+            strong_value=round(roas, 4),
+            strong_percentile=roas_pct,
+            weak_metric="ctr",
+            weak_value=round(ctr, 4),
+            weak_percentile=ctr_pct,
+            strategy_category="scale",
+            strategy_description="This ad performs well across all metrics — scale via new sizes, fresh creative, or variable iteration",
+            strategy_actions=strategy_actions,
+            evolution_mode="winner_iteration",
+            ad_name=ad.get("ad_name", ""),
+            creative_format="",
+            thumbnail_url=ad.get("thumbnail_url", ""),
+            spend=ad.get("spend", 0),
+            impressions=ad.get("impressions", 0),
+            explanation_headline=(
+                f"This ad has {roas:.1f}x ROAS and {ctr*100:.1f}% CTR — strong across the board. "
+                f"It's a proven winner ready to be scaled."
+            ),
+            explanation_projection=(
+                "Expanding to new sizes and creating fresh variants can capture "
+                "additional audiences without diminishing returns."
+            ),
+            projected_roas=roas,
         )
 
     # ---------------------------------------------------------------------------
