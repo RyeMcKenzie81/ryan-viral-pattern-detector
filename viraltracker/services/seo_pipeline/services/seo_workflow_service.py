@@ -820,6 +820,7 @@ class SEOWorkflowService:
         seed_keywords: Optional[List[str]] = None,
         sources: Optional[List[str]] = None,
         research_mode: str = "deep",
+        force_refresh: bool = False,
     ) -> Dict[str, Any]:
         """
         Run cluster research. Returns structured research report.
@@ -861,7 +862,8 @@ class SEOWorkflowService:
             return self._quick_cluster(unique_keywords, source_results)
 
         return await self._deep_cluster_research(
-            unique_keywords, brand_id, organization_id, source_results
+            unique_keywords, brand_id, organization_id, source_results,
+            force_refresh=force_refresh,
         )
 
     def _quick_cluster(
@@ -934,6 +936,7 @@ class SEOWorkflowService:
         brand_id: str,
         organization_id: str,
         source_results: Dict[str, List[str]],
+        force_refresh: bool = False,
     ) -> Dict[str, Any]:
         """AI-powered cluster analysis using Claude."""
         from viraltracker.core.database import get_supabase_client
@@ -954,7 +957,7 @@ class SEOWorkflowService:
             from viraltracker.services.seo_pipeline.services.dataforseo_service import DataForSEOService
             dataforseo = DataForSEOService(supabase_client=sb)
             if dataforseo._available:
-                enriched = dataforseo.enrich_with_cache(keywords[:100])
+                enriched = dataforseo.enrich_with_cache(keywords[:100], force_refresh=force_refresh)
                 for item in enriched:
                     kw = item.get("keyword", "")
                     kw_metrics[kw] = item
@@ -1037,7 +1040,7 @@ class SEOWorkflowService:
                                     all_cluster_kws.append(kw)
 
                         if all_cluster_kws:
-                            spoke_enriched = dataforseo.enrich_with_cache(all_cluster_kws)
+                            spoke_enriched = dataforseo.enrich_with_cache(all_cluster_kws, force_refresh=force_refresh)
                             spoke_metrics = {item["keyword"]: item for item in spoke_enriched if item.get("keyword")}
 
                             # Merge metrics into spoke data + calculate cluster totals

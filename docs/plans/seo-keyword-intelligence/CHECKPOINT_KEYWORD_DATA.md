@@ -2,7 +2,7 @@
 
 **Date**: 2026-03-18
 **Branch**: feat/ad-creator-v2-phase0
-**Commit**: 6fcae7d
+**Last commit**: pending
 
 ## What's Done
 
@@ -27,18 +27,19 @@
 - ✅ Expandable keyword data table per cluster with pandas DataFrame
 - ✅ Color-coded KD column (green <30, yellow 30-60, red >60)
 - ✅ Competition display handles both string and float values
+- ✅ Opportunity badges (green/yellow/red) on cluster headers
 
 ### Phase 4: Keyword Explorer Tab
 - ✅ Third tab added: "Keyword Explorer"
 - ✅ Seed input, DataForSEO suggestions, summary metrics
-- ✅ Filters: volume range, KD range, intent
+- ✅ Filters: volume range, KD range, intent, CPC range, word count
 - ✅ Sortable DataFrame with color-coded KD
 - ✅ "Add to Cluster Research Seeds" and "Save to Project" action buttons
 
 ### Phase 5: Cache
-- ✅ Migration written: `migrations/2026-03-18_seo_keyword_metrics_cache.sql`
+- ✅ Migration written and run: `migrations/2026-03-18_seo_keyword_metrics_cache.sql`
 - ✅ `enrich_with_cache()` with 7-day freshness + force-refresh
-- ✅ Force-refresh checkbox in cluster builder UI
+- ✅ Force-refresh checkbox in cluster builder UI, wired through to service
 
 ### Critical Discovery: Google Ads Child Keyword Restriction
 - Google Ads blocks volume/CPC/competition for keywords containing "kids", "children", "baby", "babies"
@@ -47,20 +48,18 @@
 - Clickstream volumes are ~30-70% of Google Ads numbers but better than nothing
 - Implemented automatic clickstream fallback in all enrichment methods
 
-## Post-Plan Review Findings (Blocking)
+### Post-Plan Review Fixes (All Complete)
+- ✅ **G2**: Replaced bare `except Exception: pass` with failure counter + user warning
+- ✅ **G3**: Replaced raw DB query with `SEOProjectService.list_projects()` + direct upsert
+- ✅ **T1**: Created `tests/test_dataforseo_service.py` — 32 unit tests, all passing
+- ✅ **Phase 3.3**: Added opportunity badges (green/yellow/red) to cluster headers
+- ✅ **Phase 4.3**: Added CPC range slider and word count filter to Keyword Explorer
 
-1. **G2**: Bare `except Exception: pass` in UI keyword save loop — needs logging
-2. **G3**: Raw DB query + private method call in UI "Save to Project" — needs service method
-3. **T1**: No unit tests for `dataforseo_service.py` (7 methods)
-4. **Phase 3.3 partial**: No explicit opportunity badge (green/yellow/red icons)
-5. **Phase 4.3 partial**: Missing CPC range slider and word count filter
+### Bug Fixes
+- ✅ Fixed `StreamlitAPIException: st.session_state.seo_wf_force_refresh cannot be modified after widget instantiation` — removed redundant session state write (widget owns the key)
+- ✅ Wired `force_refresh` parameter through full chain: UI checkbox → `start_cluster_research()` → `_deep_cluster_research()` → `enrich_with_cache()`
 
 ## Pending
 
-- [ ] Fix G2: Add logging to save loop
-- [ ] Fix G3: Extract save-to-project into service method
-- [ ] Create `tests/test_dataforseo_service.py`
-- [ ] Add opportunity badges to cluster headers
-- [ ] Add CPC + word count filters to explorer
-- [ ] Run migration on Supabase
 - [ ] Deploy to Railway and test full flow
+- [ ] Verify keyword data appears in cluster research results after enrichment

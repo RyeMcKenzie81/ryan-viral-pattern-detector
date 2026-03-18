@@ -986,7 +986,6 @@ with tab_cluster:
                         value=False,
                         key="seo_wf_force_refresh",
                     )
-                    st.session_state["seo_wf_force_refresh"] = force_refresh
 
                     MAX_SEEDS_FOR_RESEARCH = 20
                     capped = len(checked_seeds) > MAX_SEEDS_FOR_RESEARCH
@@ -1016,6 +1015,7 @@ with tab_cluster:
                                             seed_keywords=seeds_to_run,
                                             sources=smart_sources,
                                             research_mode=mode,
+                                            force_refresh=force_refresh,
                                         )
                                     )
                                 finally:
@@ -1084,6 +1084,7 @@ with tab_cluster:
                                 seed_keywords=seeds,
                                 sources=selected_sources,
                                 research_mode=mode,
+                                force_refresh=False,
                             )
                         )
                     finally:
