@@ -167,6 +167,18 @@ PATTERN_DEFAULT_STRATEGY = {
     "efficient_but_starved": None,  # budget recommendation, no evolution
 }
 
+# Default variation count per strategy (Auto-Improve and New Sizes always 1)
+STRATEGY_DEFAULT_VARIATIONS = {
+    "improve_hook": 3,
+    "new_layout": 3,
+    "auto_improve": 1,
+    "new_sizes": 1,
+    "fresh_creative": 3,
+}
+
+# Strategies that support user-chosen variation counts
+VARIABLE_VARIATION_STRATEGIES = {"improve_hook", "new_layout", "fresh_creative"}
+
 METRIC_LABELS = {
     "roas": "ROAS",
     "ctr": "CTR",
@@ -662,7 +674,7 @@ def _render_batch_queue_bar(
         return
 
     st.divider()
-    cols = st.columns([2, 1.5, 1.5])
+    cols = st.columns([2, 1.5, 1, 1.5])
     with cols[0]:
         st.markdown(f"**{len(selected_opps)} selected**")
     with cols[1]:
@@ -677,6 +689,20 @@ def _render_batch_queue_bar(
             label_visibility="collapsed",
         )
     with cols[2]:
+        # Show variations dropdown — only meaningful for variable strategies
+        effective_strategy = bulk_strategy if bulk_strategy != "keep_individual" else None
+        can_vary = effective_strategy in VARIABLE_VARIATION_STRATEGIES if effective_strategy else True
+        if can_vary:
+            num_variations = st.selectbox(
+                "Variations",
+                options=[1, 3, 5],
+                index=1,  # default 3
+                key="iter_num_variations",
+            )
+        else:
+            num_variations = 1
+            st.markdown("**1** variation")
+    with cols[3]:
         if not product_id:
             st.warning("Select a product first")
         elif st.button(
@@ -684,11 +710,12 @@ def _render_batch_queue_bar(
             type="primary",
             key="iter_batch_queue_btn",
         ):
-            _batch_queue(selected_opps, brand_id, product_id, org_id, bulk_strategy)
+            _batch_queue(selected_opps, brand_id, product_id, org_id, bulk_strategy, num_variations)
 
 
 def _batch_queue(
-    opps: list, brand_id: str, product_id: str, org_id: str, bulk_strategy: str
+    opps: list, brand_id: str, product_id: str, org_id: str, bulk_strategy: str,
+    num_variations: int = 3,
 ):
     """Import needed ads and create scheduled_jobs for batch iteration."""
     detector = get_detector()
@@ -714,6 +741,7 @@ def _batch_queue(
                 product_id=product_id,
                 org_id=org_id,
                 strategy_overrides=overrides,
+                num_variations=num_variations,
             )
         )
 

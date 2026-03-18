@@ -760,6 +760,7 @@ class WinnerEvolutionService:
         variable_override: Optional[str] = None,
         job_id: Optional[UUID] = None,
         skip_winner_check: bool = False,
+        num_variations: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Execute winner evolution: validate, build V2 params, run pipeline, record lineage.
 
@@ -770,6 +771,8 @@ class WinnerEvolutionService:
             job_id: Optional scheduled_job ID for tracking.
             skip_winner_check: If True, skip winner criteria validation (used by batch iterate
                 where the opportunity detector has already enforced quality thresholds).
+            num_variations: Override for number of ad variations to generate.
+                Defaults: winner_iteration=1, anti_fatigue_refresh=3, cross_size=1 per size.
 
         Returns:
             Dict with ad_run_id, child_ad_ids, lineage_entries, mode, variable_changed.
@@ -845,6 +848,7 @@ class WinnerEvolutionService:
                 product_id=product_id,
                 brand_id=brand_id,
                 variable_override=variable_override,
+                num_variations=num_variations,
             )
         elif mode == "anti_fatigue_refresh":
             result = await self._evolve_anti_fatigue(
@@ -852,6 +856,7 @@ class WinnerEvolutionService:
                 element_tags=element_tags,
                 parent_image_b64=parent_image_b64,
                 product_id=product_id,
+                num_variations=num_variations,
             )
         elif mode == "cross_size_expansion":
             result = await self._evolve_cross_size(
@@ -859,6 +864,7 @@ class WinnerEvolutionService:
                 element_tags=element_tags,
                 parent_image_b64=parent_image_b64,
                 product_id=product_id,
+                num_variations=num_variations,
             )
         else:
             raise ValueError(f"Unhandled mode: {mode}")
@@ -899,6 +905,7 @@ class WinnerEvolutionService:
         product_id: str,
         brand_id: UUID,
         variable_override: Optional[str] = None,
+        num_variations: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Execute winner iteration: change ONE element, regenerate.
 
@@ -963,7 +970,7 @@ class WinnerEvolutionService:
                 f"Keep the same visual style and template structure."
             )
 
-        pipeline_params["num_variations"] = 1
+        pipeline_params["num_variations"] = num_variations or 1
 
         # Run V2 pipeline
         child_ad_ids, ad_run_ids = await self._run_v2_pipeline(pipeline_params)
@@ -982,6 +989,7 @@ class WinnerEvolutionService:
         element_tags: Dict,
         parent_image_b64: str,
         product_id: str,
+        num_variations: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Execute anti-fatigue refresh: same psychology, fresh visual.
 
@@ -1004,7 +1012,7 @@ class WinnerEvolutionService:
 
         pipeline_params["color_modes"] = refresh_colors[:1]
         pipeline_params["content_source"] = "recreate_template"
-        pipeline_params["num_variations"] = 3
+        pipeline_params["num_variations"] = num_variations or 3
         pipeline_params["additional_instructions"] = (
             "ANTI-FATIGUE REFRESH: Maintain the exact same psychological approach, "
             "messaging, and hook type. Only change the visual execution — new layout, "
@@ -1030,6 +1038,7 @@ class WinnerEvolutionService:
         element_tags: Dict,
         parent_image_b64: str,
         product_id: str,
+        num_variations: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Execute cross-size expansion: generate winner in untested sizes.
 
@@ -1057,7 +1066,7 @@ class WinnerEvolutionService:
                 parent, element_tags, parent_image_b64, product_id
             )
             pipeline_params["canvas_sizes"] = [new_size]
-            pipeline_params["num_variations"] = 1
+            pipeline_params["num_variations"] = num_variations or 1
 
             child_ids, run_ids = await self._run_v2_pipeline(pipeline_params)
             all_child_ids.extend(child_ids)

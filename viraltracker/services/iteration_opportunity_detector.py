@@ -544,6 +544,7 @@ class IterationOpportunityDetector:
         product_id: str,
         org_id: str,
         strategy_overrides: Optional[Dict[str, Dict]] = None,
+        num_variations: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Queue multiple iteration jobs via scheduled_jobs (non-blocking).
 
@@ -619,6 +620,13 @@ class IterationOpportunityDetector:
                 mode = override.get("evolution_mode", evolution_mode)
                 variable_override = override.get("variable_override")
 
+                # Only pass num_variations for strategies that support it
+                # Auto-Improve (no variable_override) and cross_size always use 1
+                job_variations = None
+                if num_variations and num_variations > 1:
+                    if mode == "anti_fatigue_refresh" or variable_override:
+                        job_variations = num_variations
+
                 # Create scheduled_job
                 now = datetime.utcnow()
                 ad_name = opp.get("ad_name") or opp.get("meta_ad_id", "")
@@ -636,6 +644,7 @@ class IterationOpportunityDetector:
                         "evolution_mode": mode,
                         "variable_override": variable_override,
                         "skip_winner_check": True,
+                        **({"num_variations": job_variations} if job_variations else {}),
                     },
                 }
                 self.supabase.table("scheduled_jobs").insert(job_row).execute()
