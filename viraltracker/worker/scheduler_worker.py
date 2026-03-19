@@ -622,6 +622,8 @@ async def execute_job(job: Dict) -> Dict[str, Any]:
         return await execute_seo_status_sync_job(job)
     elif job_type == 'iteration_auto_run':
         return await execute_iteration_auto_run_job(job)
+    elif job_type == 'size_variant':
+        return await execute_size_variant_job(job)
     else:
         # Hard-fail on unknown job types — never silently fall through to V1
         logger.error(f"Unknown job_type '{job_type}' for job {job_id} ({job_name}). "
@@ -4474,6 +4476,89 @@ async def execute_iteration_auto_run_job(job: Dict) -> Dict[str, Any]:
         _reschedule_after_failure(job, job_id, get_run_attempt_number(run_id))
 
         return {"success": False, "error": error_msg}
+
+
+async def execute_size_variant_job(job: Dict) -> Dict[str, Any]:
+    """Execute a Size Variant job — create size variants for an existing ad.
+
+    Job parameters (in job['parameters'] JSONB):
+        source_ad_id: UUID of the ad to resize (REQUIRED)
+        target_sizes: List of target size ratios e.g. ["4:5", "9:16"] (REQUIRED)
+    """
+    job_id = job['id']
+    job_name = job['name']
+    params = job.get('parameters', {}) or {}
+
+    logger.info(f"Starting Size Variant job: {job_name} (ID: {job_id})")
+
+    update_job(job_id, {"next_run_at": None})
+
+    run_id = create_job_run(job_id)
+    if not run_id:
+        logger.error(f"Failed to create run record for size variant job {job_id}")
+        return {"success": False, "error": "Failed to create run record"}
+
+    logs = []
+
+    try:
+        from viraltracker.services.ad_creation_service import AdCreationService
+        from uuid import UUID
+
+        source_ad_id = params.get("source_ad_id")
+        target_sizes = params.get("target_sizes", [])
+
+        if not source_ad_id:
+            raise ValueError("source_ad_id is required for size_variant")
+        if not target_sizes:
+            raise ValueError("target_sizes is required for size_variant")
+
+        logs.append(f"Source ad: {source_ad_id}")
+        logs.append(f"Target sizes: {', '.join(target_sizes)}")
+
+        service = AdCreationService()
+        results = await service.create_size_variants_batch(
+            source_ad_id=UUID(source_ad_id),
+            target_sizes=target_sizes,
+        )
+
+        successful = results.get("successful", [])
+        failed = results.get("failed", [])
+
+        for s in successful:
+            logs.append(f"Created {s['variant_size']}: {s['variant_id']}")
+        for f in failed:
+            logs.append(f"Failed {f['size']}: {f.get('error', 'Unknown')}")
+
+        summary = {
+            "source_ad_id": source_ad_id,
+            "successful_count": len(successful),
+            "failed_count": len(failed),
+            "successful": successful,
+            "failed": failed,
+        }
+
+        status = "completed" if not failed else ("completed" if successful else "failed")
+
+        update_job_run(run_id, {
+            "status": status,
+            "completed_at": datetime.now(PST).isoformat(),
+            "logs": "\n".join(logs),
+            "metadata": summary,
+        })
+
+        return {"success": True, **summary}
+
+    except Exception as e:
+        logger.error(f"Size variant job failed: {e}")
+        logs.append(f"ERROR: {e}")
+        update_job_run(run_id, {
+            "status": "failed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "error_message": str(e),
+            "logs": "\n".join(logs),
+        })
+        _reschedule_after_failure(job, job_id, get_run_attempt_number(run_id))
+        return {"success": False, "error": str(e)}
 
 
 def main():

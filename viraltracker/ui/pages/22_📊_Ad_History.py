@@ -15,7 +15,7 @@ import io
 import zipfile
 import requests
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 from uuid import UUID
 
 # Initialize export list
@@ -461,13 +461,33 @@ def get_ad_current_size(ad: dict) -> str:
     # Default assumption for ads without explicit size info is 1:1
     return "1:1"
 
-async def create_size_variants_async(ad_id: str, target_sizes: list) -> dict:
-    """Create size variants using the AdCreationService."""
-    service = get_ad_creation_service()
-    return await service.create_size_variants_batch(
-        source_ad_id=UUID(ad_id),
-        target_sizes=target_sizes
-    )
+def queue_size_variant_job(ad_id: str, target_sizes: list, brand_id: str = None) -> str:
+    """Queue a size variant job for background processing. Returns job ID."""
+    import pytz
+    PST = pytz.timezone('US/Pacific')
+    run_now_time = datetime.now(PST) + timedelta(minutes=1)
+    size_label = "/".join(target_sizes)
+    job_data = {
+        'job_type': 'size_variant',
+        'brand_id': brand_id,
+        'name': f'Size variants ({size_label}) for {ad_id[:8]}',
+        'schedule_type': 'one_time',
+        'cron_expression': None,
+        'scheduled_at': run_now_time.isoformat(),
+        'next_run_at': run_now_time.isoformat(),
+        'max_runs': None,
+        'parameters': {
+            'source_ad_id': ad_id,
+            'target_sizes': target_sizes,
+        },
+    }
+    try:
+        db = get_supabase_client()
+        result = db.table("scheduled_jobs").insert(job_data).execute()
+        return result.data[0]['id'] if result.data else None
+    except Exception as e:
+        st.error(f"Failed to queue size variant job: {e}")
+        return None
 
 async def delete_ad_async(ad_id: str, delete_variants: bool = True) -> dict:
     """Delete an ad using the AdCreationService."""
@@ -1316,26 +1336,27 @@ else:
                                                 if is_selected:
                                                     selected_sizes.append(size)
 
-                                            # Show results if available
-                                            if st.session_state.size_variant_results:
-                                                results = st.session_state.size_variant_results
-                                                if results.get("successful"):
-                                                    success_sizes = ', '.join([r['variant_size'] for r in results['successful']])
-                                                    st.success(f"✅ Created {len(results['successful'])} variant(s): {success_sizes}")
-                                                if results.get("failed"):
-                                                    failed_msgs = [f"{r['size']}: {r.get('error', 'Unknown error')}" for r in results['failed']]
-                                                    st.error(f"❌ Failed: {', '.join(failed_msgs)}")
-
-                                            # Generate button
+                                            # Generate button — queues a background job
                                             btn_col1, btn_col2 = st.columns(2)
                                             with btn_col1:
                                                 if st.button(
-                                                    "🚀 Generate Variants",
+                                                    "🚀 Queue Size Variants",
                                                     key=f"generate_variants_{ad_id}",
-                                                    disabled=len(selected_sizes) == 0 or st.session_state.size_variant_generating
+                                                    disabled=len(selected_sizes) == 0,
                                                 ):
-                                                    st.session_state.size_variant_generating = True
-                                                    st.rerun()
+                                                    run_brand_id = run.get('products', {}).get('brand_id')
+                                                    job_id = queue_size_variant_job(
+                                                        ad_id=ad_id,
+                                                        target_sizes=selected_sizes,
+                                                        brand_id=run_brand_id,
+                                                    )
+                                                    if job_id:
+                                                        st.session_state.size_variant_results = {
+                                                            "queued": True,
+                                                            "job_id": job_id,
+                                                            "sizes": selected_sizes,
+                                                        }
+                                                        st.rerun()
 
                                             with btn_col2:
                                                 if st.button("Cancel", key=f"cancel_sizes_{ad_id}"):
@@ -1343,20 +1364,14 @@ else:
                                                     st.session_state.size_variant_results = None
                                                     st.rerun()
 
-                                            # Handle generation - service handles everything
-                                            if st.session_state.size_variant_generating and selected_sizes:
-                                                with st.spinner(f"Generating {len(selected_sizes)} size variant(s)..."):
-                                                    # Run async generation via service
-                                                    results = asyncio.run(
-                                                        create_size_variants_async(
-                                                            ad_id=ad_id,
-                                                            target_sizes=selected_sizes
-                                                        )
-                                                    )
-                                                    st.session_state.size_variant_results = results
-
-                                                st.session_state.size_variant_generating = False
-                                                st.rerun()
+                                            # Show queued confirmation
+                                            if st.session_state.size_variant_results and st.session_state.size_variant_results.get("queued"):
+                                                queued = st.session_state.size_variant_results
+                                                st.success(
+                                                    f"Queued {', '.join(queued['sizes'])} size variants. "
+                                                    f"Job will run in ~1 minute."
+                                                )
+                                                st.caption(f"Job ID: {queued['job_id']}")
 
                                         # Smart Edit button for approved ads (non-variants only)
                                         is_edit_modal_open = st.session_state.edit_ad_id == ad_id
