@@ -806,24 +806,19 @@ class WinnerEvolutionService:
         parent = parent_ad.data[0]
         element_tags = parent.get("element_tags") or {}
 
-        # Get product_id and brand_id from ad_run
+        # Get product_id from ad_run, then brand_id from products
         ad_run = self.supabase.table("ad_runs").select(
-            "product_id, brand_id"
+            "product_id"
         ).eq("id", parent["ad_run_id"]).limit(1).execute()
 
         if not ad_run.data:
             raise ValueError(f"Ad run {parent['ad_run_id']} not found")
 
         product_id = ad_run.data[0]["product_id"]
-        brand_id_raw = ad_run.data[0].get("brand_id")
-        if brand_id_raw:
-            brand_id = UUID(brand_id_raw)
-        else:
-            # Fallback: look up brand_id via products table (imported ads may lack brand_id on ad_runs)
-            prod = self.supabase.table("products").select("brand_id").eq("id", product_id).limit(1).execute()
-            if not prod.data:
-                raise ValueError(f"Could not determine brand_id for product {product_id}")
-            brand_id = UUID(prod.data[0]["brand_id"])
+        prod = self.supabase.table("products").select("brand_id").eq("id", product_id).limit(1).execute()
+        if not prod.data:
+            raise ValueError(f"Could not determine brand_id for product {product_id}")
+        brand_id = UUID(prod.data[0]["brand_id"])
 
         # 4. Download parent ad image as base64
         from viraltracker.services.ad_creation_service import AdCreationService
