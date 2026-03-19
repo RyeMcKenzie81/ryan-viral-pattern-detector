@@ -580,14 +580,22 @@ class IterationOpportunityDetector:
             from viraltracker.services.creative_genome_service import CreativeGenomeService
             genome = CreativeGenomeService()
             reward_result = await genome.compute_rewards(UUID(brand_id))
-            if reward_result.get("new_rewards", 0) > 0:
-                await genome.update_element_scores(UUID(brand_id))
+            new_rewards = reward_result.get("new_rewards", 0)
+            logger.info(f"Creative Genome compute_rewards: {new_rewards} new rewards for brand {brand_id}")
+            if new_rewards > 0:
+                score_result = await genome.update_element_scores(UUID(brand_id))
                 logger.info(
-                    f"Seeded Creative Genome: {reward_result['new_rewards']} rewards "
-                    f"computed for brand {brand_id}"
+                    f"Creative Genome update_element_scores: "
+                    f"{score_result.get('elements_updated', 0)} elements, "
+                    f"{score_result.get('events_inserted', 0)} events for brand {brand_id}"
+                )
+            else:
+                logger.warning(
+                    f"Creative Genome: no matured ads found for brand {brand_id}. "
+                    f"Winner iteration may fail without element score data."
                 )
         except Exception as e:
-            logger.warning(f"Creative Genome seeding failed (non-fatal): {e}")
+            logger.error(f"Creative Genome seeding failed: {e}", exc_info=True)
 
         queued = 0
         imported = 0

@@ -218,54 +218,52 @@ class CreativeGenomeService:
         ).eq("brand_id", str(brand_id)).execute()
         existing_ids = {r["generated_ad_id"] for r in (existing.data or [])}
 
-        # Find mapped ads with performance data
-        # Join: generated_ads → meta_ad_mapping → meta_ads_performance
-        mapped = self.supabase.table("meta_ad_mapping").select(
-            "generated_ad_id, meta_ad_id"
-        ).execute()
-
-        if not mapped.data:
-            return []
-
-        # Filter to ads with element_tags (Phase 6+ ads)
-        # Brand filtering is done via brand_run_ids set below
-        gen_ads = self.supabase.table("generated_ads").select(
-            "id, element_tags, ad_run_id"
-        ).not_.is_("element_tags", "null").execute()
-
-        # Get ad_runs for this brand by joining through products
-        # (ad_runs has product_id, not brand_id)
+        # Step 1: Get this brand's product IDs
         brand_products = self.supabase.table("products").select(
             "id"
         ).eq("brand_id", str(brand_id)).execute()
-        brand_product_ids = {p["id"] for p in (brand_products.data or [])}
+        brand_product_ids = [p["id"] for p in (brand_products.data or [])]
+        if not brand_product_ids:
+            return []
 
+        # Step 2: Get ad_runs for these products (filtered at DB level)
         ad_runs = self.supabase.table("ad_runs").select(
-            "id, product_id"
-        ).execute()
-        brand_run_ids = {r["id"] for r in (ad_runs.data or []) if r.get("product_id") in brand_product_ids}
+            "id"
+        ).in_("product_id", brand_product_ids).execute()
+        brand_run_ids = [r["id"] for r in (ad_runs.data or [])]
+        if not brand_run_ids:
+            return []
 
-        # Build lookup of generated_ads with element_tags for this brand
+        # Step 3: Get generated_ads with element_tags for these ad_runs (filtered at DB level)
+        gen_ads = self.supabase.table("generated_ads").select(
+            "id, element_tags, ad_run_id"
+        ).in_("ad_run_id", brand_run_ids).not_.is_("element_tags", "null").execute()
+
         eligible_ads = {}
         for ga in (gen_ads.data or []):
-            if ga["ad_run_id"] in brand_run_ids and ga["id"] not in existing_ids:
+            if ga["id"] not in existing_ids:
                 eligible_ads[ga["id"]] = ga
 
         if not eligible_ads:
             return []
 
-        # Match mapped ads to eligible ads
+        # Step 4: Get meta_ad_mapping for these generated_ads (filtered at DB level)
+        eligible_ids = list(eligible_ads.keys())
+        mapped = self.supabase.table("meta_ad_mapping").select(
+            "generated_ad_id, meta_ad_id"
+        ).in_("generated_ad_id", eligible_ids).execute()
+
+        if not mapped.data:
+            return []
+
+        # Step 5: For each mapped ad, check maturation via meta_ads_performance
         matured = []
         cutoff_date = (datetime.now(timezone.utc) - timedelta(days=3)).strftime("%Y-%m-%d")
 
         for mapping in mapped.data:
             gen_ad_id = mapping["generated_ad_id"]
-            if gen_ad_id not in eligible_ads:
-                continue
-
             meta_ad_id = mapping["meta_ad_id"]
 
-            # Get aggregated performance for this meta ad
             perf = self.supabase.table("meta_ads_performance").select(
                 "impressions, link_ctr, conversion_rate, roas, date, campaign_objective"
             ).eq(
@@ -275,17 +273,13 @@ class CreativeGenomeService:
             if not perf.data:
                 continue
 
-            # Aggregate: sum impressions, weighted avg of metrics
             total_imp = sum(r.get("impressions") or 0 for r in perf.data)
             if total_imp < 500:
-                continue  # Not matured yet
+                continue
 
-            # Weighted average CTR, conversion_rate, ROAS
             avg_ctr = self._weighted_avg(perf.data, "link_ctr", "impressions")
             avg_conv = self._weighted_avg(perf.data, "conversion_rate", "impressions")
             avg_roas = self._weighted_avg(perf.data, "roas", "impressions")
-
-            # Get campaign objective from most recent row
             objective = perf.data[-1].get("campaign_objective") or "DEFAULT"
 
             matured.append({
