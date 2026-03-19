@@ -432,8 +432,7 @@ class InstagramContentService:
         cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
 
         # Query posts for watched accounts
-        posts = []
-        # Process in batches to avoid URL length limits
+        all_posts = []
         batch_size = 50
         for i in range(0, len(account_ids), batch_size):
             batch = account_ids[i : i + batch_size]
@@ -445,66 +444,86 @@ class InstagramContentService:
                 .execute()
             )
             if result.data:
-                posts.extend(result.data)
+                all_posts.extend(result.data)
 
-        total_posts = len(posts)
+        total_posts = len(all_posts)
         logger.info(f"Outlier detection: {total_posts} posts from {len(account_ids)} accounts")
 
-        if total_posts < self.MIN_POSTS_FOR_OUTLIER:
-            logger.warning(
-                f"Only {total_posts} posts (< {self.MIN_POSTS_FOR_OUTLIER}). "
-                "Skipping outlier detection."
-            )
+        if total_posts == 0:
             return {
-                "total_posts": total_posts,
+                "total_posts": 0,
                 "outliers_found": 0,
-                "message": f"Need at least {self.MIN_POSTS_FOR_OUTLIER} posts for outlier detection",
+                "message": "No posts found in date range",
             }
 
-        # Calculate engagement scores
-        scores = []
-        for post in posts:
-            views = post.get("views") or 0
-            likes = post.get("likes") or 0
-            comments = post.get("comments") or 0
-            shares = post.get("shares") or 0
+        # Group posts by account for per-account outlier detection.
+        # Pooling across accounts with different engagement levels would make
+        # smaller accounts' posts invisible (their z-scores are always low).
+        posts_by_account: Dict[str, List[Dict]] = {}
+        for post in all_posts:
+            aid = post["account_id"]
+            posts_by_account.setdefault(aid, []).append(post)
 
-            # Composite engagement score (weighted)
-            score = likes * 1.0 + comments * 0.8 + shares * 0.5
-            # Add engagement rate component if views > 0
-            if views > 0:
-                engagement_rate = (likes + comments + shares) / views
-                score += engagement_rate * 1000  # Scale up for meaningful contribution
-            scores.append(score)
-
-        scores_array = np.array(scores)
-
-        # Detect outliers
-        if method == "zscore":
-            outlier_flags, outlier_scores = self._zscore_detection(
-                scores_array, threshold, trim_percent
-            )
-        elif method == "percentile":
-            outlier_flags, outlier_scores = self._percentile_detection(
-                scores_array, threshold
-            )
-        else:
-            raise ValueError(f"Unknown method: {method}. Use 'zscore' or 'percentile'")
-
-        # Update posts in database
         now = datetime.now(timezone.utc).isoformat()
         outliers_found = 0
 
-        for post, is_outlier, score in zip(posts, outlier_flags, outlier_scores):
-            update_data = {
-                "is_outlier": bool(is_outlier),
-                "outlier_score": float(score),
-                "outlier_method": method,
-                "outlier_calculated_at": now,
-            }
-            self.supabase.table("posts").update(update_data).eq("id", post["id"]).execute()
-            if is_outlier:
-                outliers_found += 1
+        for account_id, posts in posts_by_account.items():
+            if len(posts) < self.MIN_POSTS_FOR_OUTLIER:
+                logger.warning(
+                    f"Account {account_id}: only {len(posts)} posts "
+                    f"(< {self.MIN_POSTS_FOR_OUTLIER}), skipping outlier detection"
+                )
+                # Still mark them as calculated (not outlier) so they don't look stale
+                for post in posts:
+                    self.supabase.table("posts").update({
+                        "is_outlier": False,
+                        "outlier_score": 0.0,
+                        "outlier_method": method,
+                        "outlier_calculated_at": now,
+                    }).eq("id", post["id"]).execute()
+                continue
+
+            # Calculate engagement scores for this account
+            scores = []
+            for post in posts:
+                views = post.get("views") or 0
+                likes = post.get("likes") or 0
+                comments = post.get("comments") or 0
+                shares = post.get("shares") or 0
+
+                score = likes * 1.0 + comments * 0.8 + shares * 0.5
+                if views > 0:
+                    engagement_rate = (likes + comments + shares) / views
+                    score += engagement_rate * 1000
+                scores.append(score)
+
+            scores_array = np.array(scores)
+
+            if method == "zscore":
+                outlier_flags, outlier_scores = self._zscore_detection(
+                    scores_array, threshold, trim_percent
+                )
+            elif method == "percentile":
+                outlier_flags, outlier_scores = self._percentile_detection(
+                    scores_array, threshold
+                )
+            else:
+                raise ValueError(f"Unknown method: {method}. Use 'zscore' or 'percentile'")
+
+            for post, is_outlier, score in zip(posts, outlier_flags, outlier_scores):
+                self.supabase.table("posts").update({
+                    "is_outlier": bool(is_outlier),
+                    "outlier_score": float(score),
+                    "outlier_method": method,
+                    "outlier_calculated_at": now,
+                }).eq("id", post["id"]).execute()
+                if is_outlier:
+                    outliers_found += 1
+
+            account_outliers = sum(outlier_flags)
+            logger.info(
+                f"Account {account_id}: {account_outliers}/{len(posts)} outliers"
+            )
 
         logger.info(f"Outlier detection complete: {outliers_found}/{total_posts} outliers")
         return {

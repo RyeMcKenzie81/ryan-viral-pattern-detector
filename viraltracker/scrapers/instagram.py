@@ -405,9 +405,11 @@ class InstagramScraper:
                 "cdn_image_url": post.get("displayUrl"),
             }
 
-            # Handle views (priority: videoViewCount > videoPlayCount > likesCount)
-            views = post.get("videoViewCount") or post.get("videoPlayCount") or post.get("likesCount", 0)
-            post_data["views"] = max(0, int(views)) if views is not None else 0
+            # Handle views (priority: videoViewCount > videoPlayCount)
+            # Only videos have meaningful view counts on Instagram;
+            # image posts have no views — don't fall back to likesCount.
+            views = post.get("videoViewCount") or post.get("videoPlayCount") or 0
+            post_data["views"] = max(0, int(views)) if views else 0
 
             post_data["likes"] = max(0, int(post_data["likes"]) if post_data["likes"] else 0)
             post_data["comments"] = max(0, int(post_data["comments"]) if post_data["comments"] else 0)
