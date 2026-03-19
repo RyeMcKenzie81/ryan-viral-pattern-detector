@@ -93,6 +93,8 @@ async def run_ad_creation_v2(
     auto_retry_rejected: bool = False,
     max_retry_attempts: int = 1,
     skip_template_reference: bool = False,
+    pre_selected_hooks: Optional[List[Dict[str, Any]]] = None,
+    generation_temperature: Optional[float] = None,
     # Phase 8B: selection transport (scorer weight learning)
     selection_weights_used: Optional[Dict[str, float]] = None,
     selection_scorer_breakdown: Optional[Dict[str, float]] = None,
@@ -194,6 +196,8 @@ async def run_ad_creation_v2(
         auto_retry_rejected=auto_retry_rejected,
         max_retry_attempts=max_retry_attempts,
         skip_template_reference=skip_template_reference,
+        pre_selected_hooks=pre_selected_hooks,
+        generation_temperature=generation_temperature,
         # Phase 8B: selection transport
         selection_weights_used=selection_weights_used,
         selection_scorer_breakdown=selection_scorer_breakdown,

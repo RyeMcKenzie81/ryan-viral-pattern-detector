@@ -60,6 +60,8 @@ class AdCreationPipelineState:
     auto_retry_rejected: bool = False
     max_retry_attempts: int = 1  # per rejected ad
     skip_template_reference: bool = False  # When True, omit template image from Gemini reference_images
+    pre_selected_hooks: Optional[List[Dict[str, Any]]] = None  # Bypass SelectContentNode
+    generation_temperature: Optional[float] = None  # Override default Gemini temperature (0.4)
 
     # === POPULATED BY NODES ===
 

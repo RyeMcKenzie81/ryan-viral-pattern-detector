@@ -55,6 +55,13 @@ class SelectContentNode(BaseNode[AdCreationPipelineState]):
         logger.info(f"Step 4: Selecting content ({ctx.state.content_source} mode)...")
         ctx.state.current_step = "select_content"
 
+        # Evolution jobs pre-build hooks — skip content generation entirely
+        if ctx.state.pre_selected_hooks:
+            ctx.state.selected_hooks = ctx.state.pre_selected_hooks
+            logger.info(f"Using {len(ctx.state.pre_selected_hooks)} pre-selected hooks (evolution bypass)")
+            ctx.state.mark_step_complete("select_content")
+            return HeadlineCongruenceNode()
+
         try:
             content_source = ctx.state.content_source
             content_service = AdContentService()

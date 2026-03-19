@@ -425,7 +425,8 @@ class AdGenerationService:
             prompt=nano_banana_prompt['full_prompt'],
             reference_images=reference_images,
             image_size=image_resolution,
-            return_metadata=True
+            return_metadata=True,
+            temperature=nano_banana_prompt.get('generation_temperature') or 0.4,
         )
 
         generated_ad = {

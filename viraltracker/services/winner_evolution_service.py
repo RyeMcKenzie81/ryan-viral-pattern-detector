@@ -1371,6 +1371,19 @@ class WinnerEvolutionService:
                 f"Skipping template reference image."
             )
 
+        # Pre-build hook — bypasses SelectContentNode's benefit variation generation.
+        # SpecialInstructions handles the actual variable change.
+        parent_hook_text = parent.get("hook_text") or ""
+        evolution_hook = {
+            "adapted_text": parent_hook_text,
+            "text": parent_hook_text,
+            "benefit": "evolution_iteration",
+            "persuasion_type": new_value if variable == "hook_type" else element_tags.get("hook_type"),
+            "framework": f"Evolution ({variable}: {parent_value} → {new_value})",
+        }
+        pipeline_params["pre_selected_hooks"] = [evolution_hook]
+        pipeline_params["generation_temperature"] = 0.7
+
         # color_mode is still set mechanically (in addition to instructions)
         if variable == "color_mode":
             pipeline_params["color_modes"] = [new_value]
@@ -1451,6 +1464,19 @@ class WinnerEvolutionService:
             )
 
         pipeline_params["additional_instructions"] = anti_fatigue_instructions
+
+        # Pre-build hook — bypasses SelectContentNode's benefit variation generation
+        parent_hook_text = parent.get("hook_text") or ""
+        anti_fatigue_hook = {
+            "adapted_text": parent_hook_text,
+            "text": parent_hook_text,
+            "benefit": "anti_fatigue_refresh",
+            "persuasion_type": element_tags.get("hook_type"),
+            "framework": "Anti-Fatigue Refresh",
+        }
+        pipeline_params["pre_selected_hooks"] = [anti_fatigue_hook]
+        pipeline_params["generation_temperature"] = 0.7
+
         # Don't use the same template — let the pipeline pick a different one
         pipeline_params.pop("template_id", None)
 
@@ -1499,6 +1525,7 @@ class WinnerEvolutionService:
             )
             pipeline_params["canvas_sizes"] = [new_size]
             pipeline_params["num_variations"] = num_variations or 1
+            pipeline_params["generation_temperature"] = 0.7
 
             child_ids, run_ids = await self._run_v2_pipeline(pipeline_params)
             all_child_ids.extend(child_ids)

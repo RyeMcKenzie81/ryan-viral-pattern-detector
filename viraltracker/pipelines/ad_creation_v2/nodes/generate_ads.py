@@ -177,6 +177,7 @@ class GenerateAdsNode(BaseNode[AdCreationPipelineState]):
 
                         # Pass skip_template_reference flag from state
                         prompt["skip_template_reference"] = ctx.state.skip_template_reference
+                        prompt["generation_temperature"] = ctx.state.generation_temperature
 
                         # Execute generation
                         generated_ad = await generation_service.execute_generation(
