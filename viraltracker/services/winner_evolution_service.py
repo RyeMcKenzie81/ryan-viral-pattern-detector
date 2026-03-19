@@ -62,6 +62,76 @@ ITERABLE_ELEMENTS = list(VARIABLE_PRIORITY_WEIGHTS.keys())
 # Known element values for catalog-based fallback when Thompson Sampling has
 # insufficient data.  Values must match the import prompt's constrained options
 # in meta_winner_import_service.py (extract_element_tags).
+# Hook transition guidance: maps each hook_type to visual rules and conflict detection.
+# When a conflict is detected, the pipeline skips the parent image as reference
+# so Gemini can generate a fresh visual matching the new hook.
+HOOK_TRANSITION_GUIDANCE = {
+    "transformation": {
+        "visual_rule": "show the AFTER/solution state, not the problem",
+        "conflicts_with": ["problem_solution", "before_after"],
+        "guidance": (
+            "The parent visual shows a problem/struggle state. "
+            "Adapt the visual to show the resolved/transformed outcome instead."
+        ),
+    },
+    "direct_benefit": {
+        "visual_rule": "show the benefit being enjoyed",
+        "conflicts_with": ["problem_solution", "fear_of_missing_out"],
+        "guidance": (
+            "The parent visual shows a negative state. Adapt to show "
+            "the positive outcome — the person enjoying the benefit."
+        ),
+    },
+    "problem_solution": {
+        "visual_rule": "show the problem state or pain point",
+        "conflicts_with": ["transformation", "direct_benefit"],
+        "guidance": (
+            "The parent visual shows a resolved/positive state. "
+            "Adapt to show the problem or struggle the product solves."
+        ),
+    },
+    "fear_of_missing_out": {
+        "visual_rule": "show what others enjoy that the viewer might miss",
+        "conflicts_with": ["testimonial", "story"],
+        "guidance": (
+            "The visual should create desire and exclusion anxiety. "
+            "Add social energy and aspirational elements."
+        ),
+    },
+    "social_proof": {
+        "visual_rule": "show social validation or community",
+        "conflicts_with": [],
+        "guidance": (
+            "Social proof works with most visuals. Add elements "
+            "suggesting popularity or community endorsement."
+        ),
+    },
+    "urgency": {
+        "visual_rule": "convey time pressure or limited availability",
+        "conflicts_with": ["story", "testimonial"],
+        "guidance": (
+            "The visual should feel urgent. If calm or reflective, "
+            "add energy and immediacy."
+        ),
+    },
+    "testimonial": {
+        "visual_rule": "show a real person's authentic experience",
+        "conflicts_with": ["statistic", "bold_claim"],
+        "guidance": (
+            "The visual should feel personal and authentic. "
+            "If clinical or abstract, humanize it."
+        ),
+    },
+    "before_after": {
+        "visual_rule": "show clear contrast between before and after states",
+        "conflicts_with": [],
+        "guidance": (
+            "The visual must show contrast. If the parent only shows "
+            "one state, create a split or progression visual."
+        ),
+    },
+}
+
 KNOWN_ELEMENT_VALUES = {
     "hook_type": [
         "curiosity_gap", "social_proof", "authority", "urgency", "scarcity",
@@ -868,6 +938,181 @@ class WinnerEvolutionService:
         }
 
     # =========================================================================
+    # Narrative Analysis & Evolution Instructions
+    # =========================================================================
+
+    async def _analyze_parent_narrative(
+        self,
+        parent_ad_id: UUID,
+        parent_image_b64: str,
+        element_tags: Dict,
+        hook_text: Optional[str] = None,
+    ) -> str:
+        """Analyze the parent ad's visual narrative using Gemini 3 Pro.
+
+        Checks element_tags for a cached 'visual_narrative' first.
+        If not cached, calls Gemini, caches the result in element_tags,
+        and writes it back to the generated_ads row.
+
+        Args:
+            parent_ad_id: Parent generated_ad UUID (for cache update).
+            parent_image_b64: Base64-encoded parent image.
+            element_tags: Parent's element_tags dict (mutated with cache on miss).
+            hook_text: Optional hook text for richer analysis context.
+
+        Returns:
+            Narrative description (2-4 sentences). Empty string on error.
+        """
+        # Check cache
+        cached = element_tags.get("visual_narrative")
+        if cached:
+            logger.info(f"Narrative cache hit for {parent_ad_id}")
+            return cached
+
+        # Call Gemini 3 Pro for narrative analysis
+        try:
+            from viraltracker.services.gemini_service import GeminiService
+            gemini = GeminiService(model="gemini-3-pro")
+
+            hook_context = f"\nCurrent hook text: '{hook_text}'" if hook_text else ""
+            prompt = (
+                "Analyze this ad image in 2-4 sentences. Describe:\n"
+                "1. WHAT the visual shows (people, objects, scene, emotional state)\n"
+                "2. WHY it works as an ad (what psychological lever does the visual pull?)\n"
+                "3. The relationship between the visual content and the messaging\n"
+                f"{hook_context}\n\n"
+                "Be specific and concrete about what you see."
+            )
+
+            narrative = await gemini.analyze_image(parent_image_b64, prompt)
+            if not narrative:
+                logger.warning(f"Narrative analysis returned empty for {parent_ad_id}")
+                return ""
+
+            # Truncate at sentence boundary before 500 chars
+            if len(narrative) > 500:
+                cut_point = narrative[:500].rfind(".")
+                if cut_point > 100:
+                    narrative = narrative[:cut_point + 1]
+                else:
+                    narrative = narrative[:500]
+
+            # Cache in element_tags and write back
+            element_tags["visual_narrative"] = narrative
+            self.supabase.table("generated_ads").update(
+                {"element_tags": element_tags}
+            ).eq("id", str(parent_ad_id)).execute()
+
+            logger.info(f"Narrative analyzed for {parent_ad_id}: '{narrative[:100]}...'")
+            return narrative
+
+        except Exception as e:
+            logger.warning(f"Narrative analysis failed for {parent_ad_id}: {e}")
+            return ""
+
+    def _has_visual_conflict(self, variable: str, new_value: str, parent_value: str) -> bool:
+        """Check if the variable change creates a visual-message conflict.
+
+        Only hook_type changes can produce visual conflicts. A conflict exists
+        when the parent's hook type is in the new hook type's conflicts_with list.
+
+        Args:
+            variable: Element being changed.
+            new_value: The new value for the element.
+            parent_value: The parent's current value.
+
+        Returns:
+            True if a visual conflict is detected.
+        """
+        if variable != "hook_type":
+            return False
+        transition = HOOK_TRANSITION_GUIDANCE.get(new_value, {})
+        return parent_value in transition.get("conflicts_with", [])
+
+    def _build_evolution_instructions(
+        self,
+        variable: str,
+        new_value: str,
+        parent_value: str,
+        narrative: str,
+        visual_conflict: bool,
+    ) -> str:
+        """Build contextual evolution instructions using parent narrative.
+
+        Args:
+            variable: Element being changed.
+            new_value: The new value.
+            parent_value: The parent's current value.
+            narrative: Visual narrative from _analyze_parent_narrative().
+            visual_conflict: Whether a visual conflict was detected.
+
+        Returns:
+            Instruction string for pipeline SpecialInstructions.
+        """
+        narrative_block = f"\nPARENT AD VISUAL: {narrative}\n" if narrative else ""
+
+        if variable == "hook_type":
+            transition = HOOK_TRANSITION_GUIDANCE.get(new_value, {})
+            transition_guidance = transition.get("guidance", "") if visual_conflict else ""
+
+            conflict_note = ""
+            if visual_conflict:
+                conflict_note = (
+                    f"Since the visual reference has been removed (visual conflict), "
+                    f"create a scene that matches a '{new_value}' hook — "
+                    f"{transition.get('visual_rule', 'adapt the visual accordingly')}."
+                )
+
+            parts = [
+                f"EVOLUTION: Change the hook persuasion type from '{parent_value}' to '{new_value}'.",
+                narrative_block,
+                transition_guidance,
+                "The visual and messaging must tell a coherent story together.",
+                "Keep the same brand style, color palette, and product presentation.",
+                conflict_note,
+            ]
+            return "\n".join(p for p in parts if p).strip()
+
+        elif variable == "template_category":
+            parts = [
+                f"EVOLUTION: Change the layout from '{parent_value}' to '{new_value}' template style.",
+                narrative_block,
+                f"Restructure the visual layout to match '{new_value}' conventions.",
+                "Preserve the core message, psychological approach, and brand style.",
+            ]
+            return "\n".join(p for p in parts if p).strip()
+
+        elif variable == "awareness_stage":
+            parts = [
+                f"EVOLUTION: Adapt the ad from '{parent_value}' to '{new_value}' awareness stage.",
+                narrative_block,
+                f"Adjust messaging sophistication for '{new_value}' awareness:",
+                "- unaware: Lead with the problem, don't mention the product yet",
+                "- problem_aware: Agitate the problem, hint at solutions",
+                "- solution_aware: Position the product as the best solution",
+                "- product_aware: Differentiate from alternatives, handle objections",
+                "- most_aware: Drive action with offers, urgency, social proof",
+                "",
+                "Keep the same visual style and brand identity.",
+            ]
+            return "\n".join(p for p in parts if p).strip()
+
+        elif variable == "color_mode":
+            if narrative:
+                return (
+                    f"PARENT AD VISUAL: {narrative}\n\n"
+                    f"Apply '{new_value}' color treatment while preserving the visual narrative."
+                )
+            return f"Apply '{new_value}' color treatment to the ad."
+
+        # Generic fallback
+        return (
+            f"EVOLUTION: Change '{variable}' from '{parent_value}' to '{new_value}'.\n"
+            f"{narrative_block}"
+            f"Keep the same brand style and overall approach."
+        )
+
+    # =========================================================================
     # Evolution Execution
     # =========================================================================
 
@@ -1096,27 +1341,44 @@ class WinnerEvolutionService:
         pipeline_params = self._build_base_pipeline_params(parent, element_tags, parent_image_b64, product_id)
 
         # Always use recreate_template — the parent image is the visual anchor.
-        # Instructions tell the pipeline what single variable to change.
         pipeline_params["content_source"] = "recreate_template"
 
-        # Apply the single variable change
-        if variable == "hook_type":
-            pipeline_params["additional_instructions"] = (
-                f"EVOLUTION: Use a hook with persuasion type '{new_value}'. "
-                f"Keep all other creative elements identical to the reference."
+        # Analyze parent narrative (cached after first call)
+        narrative = await self._analyze_parent_narrative(
+            UUID(parent["id"]),
+            parent_image_b64,
+            element_tags,
+            hook_text=parent.get("hook_text"),
+        )
+
+        # Detect visual conflict
+        visual_conflict = self._has_visual_conflict(variable, new_value, parent_value)
+
+        # Build contextual instructions using narrative + transition rules
+        pipeline_params["additional_instructions"] = self._build_evolution_instructions(
+            variable=variable,
+            new_value=new_value,
+            parent_value=parent_value,
+            narrative=narrative,
+            visual_conflict=visual_conflict,
+        )
+
+        # When visual conflict detected, skip template reference so instructions drive the visual
+        if visual_conflict:
+            pipeline_params["skip_template_reference"] = True
+            logger.info(
+                f"Visual conflict: {parent_value} → {new_value}. "
+                f"Skipping template reference image."
             )
-        elif variable == "color_mode":
+
+        # color_mode is still set mechanically (in addition to instructions)
+        if variable == "color_mode":
             pipeline_params["color_modes"] = [new_value]
-        elif variable == "template_category":
-            pipeline_params["additional_instructions"] = (
-                f"EVOLUTION: Use a '{new_value}' template style. "
-                f"Keep the same hook, messaging, and overall approach."
-            )
-        elif variable == "awareness_stage":
-            pipeline_params["additional_instructions"] = (
-                f"EVOLUTION: Adapt the ad for '{new_value}' awareness stage. "
-                f"Keep the same visual style and template structure."
-            )
+
+        logger.info(
+            f"Evolution instructions ({len(pipeline_params['additional_instructions'])} chars): "
+            f"'{pipeline_params['additional_instructions'][:150]}...'"
+        )
 
         pipeline_params["num_variations"] = num_variations or 1
 
@@ -1161,12 +1423,34 @@ class WinnerEvolutionService:
         pipeline_params["color_modes"] = refresh_colors[:1]
         pipeline_params["content_source"] = "recreate_template"
         pipeline_params["num_variations"] = num_variations or 3
-        pipeline_params["additional_instructions"] = (
-            "ANTI-FATIGUE REFRESH: Maintain the exact same psychological approach, "
-            "messaging, and hook type. Only change the visual execution — new layout, "
-            "new color palette, slightly reworded headline. "
-            "The core belief and persuasion mechanism must stay identical."
+
+        # Analyze parent narrative so the pipeline knows what to preserve
+        narrative = await self._analyze_parent_narrative(
+            UUID(parent["id"]),
+            parent_image_b64,
+            element_tags,
+            hook_text=parent.get("hook_text"),
         )
+
+        anti_fatigue_instructions = (
+            "ANTI-FATIGUE REFRESH: Create a fresh visual execution while preserving "
+            "the exact same psychological approach and messaging."
+        )
+        if narrative:
+            anti_fatigue_instructions += (
+                f"\n\nPARENT AD VISUAL: {narrative}\n\n"
+                f"PRESERVE: The core psychological lever described above — what makes "
+                f"this ad effective must remain in the new version.\n"
+                f"CHANGE: Layout, color palette, image composition, headline wording. "
+                f"The viewer should feel it's the same message in new packaging."
+            )
+        else:
+            anti_fatigue_instructions += (
+                "\n\nKeep the same hook type and messaging angle. "
+                "Fresh visual execution: new image, different color treatment."
+            )
+
+        pipeline_params["additional_instructions"] = anti_fatigue_instructions
         # Don't use the same template — let the pipeline pick a different one
         pipeline_params.pop("template_id", None)
 

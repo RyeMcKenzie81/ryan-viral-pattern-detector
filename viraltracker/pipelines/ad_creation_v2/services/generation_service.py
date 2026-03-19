@@ -402,10 +402,18 @@ class AdGenerationService:
             import base64
             logo_data = [base64.b64decode(logo_b64)]
 
-        reference_images = [template_data] + logo_data + product_images_data
+        # When skip_template_reference is set (visual conflict detected in evolution),
+        # omit the template to let instructions drive the visual instead of the
+        # reference image anchoring on the parent's incompatible scene.
+        if nano_banana_prompt.get('skip_template_reference'):
+            reference_images = logo_data + product_images_data
+            logger.info("Skipping template reference image (visual conflict evolution)")
+        else:
+            reference_images = [template_data] + logo_data + product_images_data
 
         logger.info(f"Reference images: {len(reference_images)} total "
-                    f"(1 template + {len(logo_data)} logo + {len(product_images_data)} product)")
+                    f"({0 if nano_banana_prompt.get('skip_template_reference') else 1} template "
+                    f"+ {len(logo_data)} logo + {len(product_images_data)} product)")
         if len(reference_images) > 12:
             logger.warning(f"Reference image count ({len(reference_images)}) exceeds 12 — may hit API limits")
 

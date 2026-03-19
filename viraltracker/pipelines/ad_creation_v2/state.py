@@ -59,6 +59,7 @@ class AdCreationPipelineState:
     project_id: Optional[str] = None
     auto_retry_rejected: bool = False
     max_retry_attempts: int = 1  # per rejected ad
+    skip_template_reference: bool = False  # When True, omit template image from Gemini reference_images
 
     # === POPULATED BY NODES ===
 

@@ -180,6 +180,9 @@ class RetryRejectedNode(BaseNode[AdCreationPipelineState]):
                     blueprint_context=ctx.state.blueprint_context,
                 )
 
+                # Pass skip_template_reference flag from state
+                prompt["skip_template_reference"] = ctx.state.skip_template_reference
+
                 # Execute generation
                 generated_ad = await generation_service.execute_generation(
                     nano_banana_prompt=prompt,
