@@ -59,6 +59,26 @@ VARIABLE_PRIORITY_WEIGHTS = {
 # Elements eligible for single-variable iteration
 ITERABLE_ELEMENTS = list(VARIABLE_PRIORITY_WEIGHTS.keys())
 
+# Known element values for catalog-based fallback when Thompson Sampling has
+# insufficient data.  Values must match the import prompt's constrained options
+# in meta_winner_import_service.py (extract_element_tags).
+KNOWN_ELEMENT_VALUES = {
+    "hook_type": [
+        "curiosity_gap", "social_proof", "authority", "urgency", "scarcity",
+        "fear_of_missing_out", "transformation", "before_after", "problem_solution",
+        "testimonial", "statistic", "question", "bold_claim", "story", "direct_benefit",
+    ],
+    "template_category": [
+        "Testimonial", "Problem-Solution", "Before-After", "Lifestyle", "Product-Focus",
+        "Comparison", "Educational", "Infographic", "Minimal-Text", "UGC-Style",
+        "Professional", "Collage",
+    ],
+    "color_mode": ["original", "complementary", "brand"],
+    "awareness_stage": [
+        "unaware", "problem_aware", "solution_aware", "product_aware", "most_aware",
+    ],
+}
+
 
 class WinnerEvolutionService:
     """Service for evolving winning ads into improved variants."""
@@ -750,6 +770,104 @@ class WinnerEvolutionService:
         }
 
     # =========================================================================
+    # Catalog-Based Fallback (Tier 2)
+    # =========================================================================
+
+    def _select_catalog_alternative(
+        self,
+        variable: str,
+        parent_value: str,
+    ) -> Optional[str]:
+        """Pick an alternative value from the known catalog, excluding parent's value.
+
+        Used when Thompson Sampling has insufficient data (< 2 tracked values
+        in creative_element_scores).
+
+        Args:
+            variable: Element name (hook_type, template_category, etc.).
+            parent_value: The parent ad's current value for this element.
+
+        Returns:
+            A randomly selected alternative value, or None if no alternatives exist.
+        """
+        known = KNOWN_ELEMENT_VALUES.get(variable, [])
+        alternatives = [v for v in known if v != parent_value]
+        if not alternatives:
+            return None
+        return np.random.choice(alternatives)
+
+    def _select_variable_from_classification(
+        self,
+        parent_ad_id: UUID,
+        element_tags: Dict,
+    ) -> Dict[str, Any]:
+        """Use ad classification data to pick which variable to change (Auto-Improve fallback).
+
+        When Thompson Sampling has no data for any variable, checks
+        ad_creative_classifications for the parent ad's meta_ad_id to inform
+        which element is weakest.  Falls back to hook_type (highest priority
+        in VARIABLE_PRIORITY_WEIGHTS) if no classification data exists.
+
+        Args:
+            parent_ad_id: The parent generated_ad UUID.
+            element_tags: Parent ad's element_tags dict.
+
+        Returns:
+            Dict with variable, new_value, parent_value, source.
+        """
+        # Default: change hook_type (highest priority weight)
+        variable = "hook_type"
+
+        # Try to look up classification data via meta_ad_mapping to pick
+        # a smarter variable.  If classification shows a different template_category
+        # than element_tags, that dimension has uncertainty worth testing.
+        try:
+            mapping = self.supabase.table("meta_ad_mapping").select(
+                "meta_ad_id"
+            ).eq("generated_ad_id", str(parent_ad_id)).limit(1).execute()
+
+            if mapping.data:
+                meta_ad_id = mapping.data[0]["meta_ad_id"]
+                classification = self.supabase.table("ad_creative_classifications").select(
+                    "hook_type, template_category, awareness_stage"
+                ).eq("meta_ad_id", meta_ad_id).limit(1).execute()
+
+                if classification.data:
+                    cls = classification.data[0]
+                    # If classification disagrees with element_tags on template_category,
+                    # that dimension is uncertain — test it instead of hook_type
+                    cls_template = cls.get("template_category")
+                    tag_template = element_tags.get("template_category")
+                    if cls_template and tag_template and cls_template != tag_template:
+                        variable = "template_category"
+                    # Otherwise keep hook_type (highest priority weight)
+        except Exception as e:
+            logger.warning(f"Classification lookup failed for {parent_ad_id}: {e}")
+
+        parent_value = str(element_tags.get(variable, ""))
+        new_value = self._select_catalog_alternative(variable, parent_value)
+
+        # If hook_type catalog fails (unlikely), try other variables
+        if not new_value:
+            for fallback_var in ITERABLE_ELEMENTS:
+                if fallback_var == variable:
+                    continue
+                pv = str(element_tags.get(fallback_var, ""))
+                nv = self._select_catalog_alternative(fallback_var, pv)
+                if nv:
+                    variable = fallback_var
+                    parent_value = pv
+                    new_value = nv
+                    break
+
+        return {
+            "variable": variable,
+            "new_value": new_value,
+            "parent_value": parent_value,
+            "source": "catalog",
+        }
+
+    # =========================================================================
     # Evolution Execution
     # =========================================================================
 
@@ -916,7 +1034,10 @@ class WinnerEvolutionService:
         Returns:
             Dict with ad_run_ids, child_ad_ids, variable_changed, old/new values.
         """
-        # Select variable to change via Thompson Sampling
+        # --- Variable selection: 3 paths ---
+        # Tier 1: Thompson Sampling (when creative_element_scores has data)
+        # Tier 2: Catalog-based fallback (KNOWN_ELEMENT_VALUES)
+
         from viraltracker.services.creative_genome_service import CreativeGenomeService
         genome = CreativeGenomeService()
 
@@ -925,36 +1046,50 @@ class WinnerEvolutionService:
         parent_value = ""
 
         if variable_override and variable_override in ITERABLE_ELEMENTS:
-            # User-specified variable — try Thompson Sampling for alternative value
-            sampled = genome.sample_element_scores(brand_id, variable_override)
-            pval = str(element_tags.get(variable_override, ""))
-            for s in sampled:
-                if s["value"] != pval:
-                    variable = variable_override
-                    new_value = s["value"]
-                    parent_value = pval
-                    break
-            if not new_value:
-                # No alternative in genome for this variable — fall through to
-                # auto-select from other variables that DO have alternatives
-                logger.warning(
-                    f"No alternative value for '{variable_override}' in genome, "
-                    f"trying other variables"
-                )
+            # Path A: User specified which variable to change
+            variable = variable_override
+            parent_value = str(element_tags.get(variable, ""))
 
-        if not variable:
-            # Auto-select: try each variable by information gain, skip those
-            # without at least 2 tracked values
+            # Tier 1: Try Thompson Sampling for the new value
+            sampled = genome.sample_element_scores(brand_id, variable)
+            for s in sampled:
+                if s["value"] != parent_value:
+                    new_value = s["value"]
+                    break
+
+            # Tier 2: Fall back to catalog if genome has no alternatives
+            if not new_value:
+                new_value = self._select_catalog_alternative(variable, parent_value)
+                logger.info(
+                    f"Catalog fallback for {variable}: "
+                    f"'{parent_value}' → '{new_value}'"
+                )
+        else:
+            # Path B: Auto-Improve — system picks variable AND value
+            # Tier 1: Thompson Sampling variable selection
             selection = await self.select_evolution_variable(brand_id, element_tags)
-            variable = selection["variable"]
-            new_value = selection.get("new_value")
-            parent_value = selection.get("parent_value", "")
+            if selection.get("new_value"):
+                variable = selection["variable"]
+                new_value = selection["new_value"]
+                parent_value = selection.get("parent_value", "")
+            else:
+                # Tier 2: Classification-informed catalog selection
+                parent_ad_id = UUID(parent["id"])
+                selection = self._select_variable_from_classification(
+                    parent_ad_id, element_tags
+                )
+                variable = selection["variable"]
+                new_value = selection["new_value"]
+                parent_value = selection.get("parent_value", "")
+                logger.info(
+                    f"Catalog fallback (auto-improve) for {variable}: "
+                    f"'{parent_value}' → '{new_value}'"
+                )
 
         if not new_value:
             raise ValueError(
-                f"No alternative value found for any variable. "
-                f"Need at least 2 tracked values per element in creative_element_scores. "
-                f"Run Creative Genome update for this brand first."
+                f"No alternative value found for any variable (including catalog). "
+                f"Parent element_tags: {element_tags}"
             )
 
         # Build V2 pipeline params with the changed variable

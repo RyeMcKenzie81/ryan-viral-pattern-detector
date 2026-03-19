@@ -19,6 +19,7 @@ from viraltracker.services.winner_evolution_service import (
     ALL_CANVAS_SIZES,
     VARIABLE_PRIORITY_WEIGHTS,
     ITERABLE_ELEMENTS,
+    KNOWN_ELEMENT_VALUES,
     _safe_avg,
 )
 
@@ -432,6 +433,183 @@ class TestVariableSelection:
         result = await evo_service.select_evolution_variable(BRAND_ID, parent_tags)
         assert result.get("fallback") is True
         assert result["variable"] in ITERABLE_ELEMENTS
+
+
+# ============================================================================
+# KNOWN_ELEMENT_VALUES tests
+# ============================================================================
+
+class TestKnownElementValues:
+    def test_all_iterable_elements_have_catalog(self):
+        """Every iterable element must have catalog values."""
+        for elem in ITERABLE_ELEMENTS:
+            assert elem in KNOWN_ELEMENT_VALUES, f"Missing catalog for {elem}"
+            assert len(KNOWN_ELEMENT_VALUES[elem]) >= 2, (
+                f"Catalog for {elem} needs at least 2 values"
+            )
+
+    def test_hook_type_values(self):
+        assert "social_proof" in KNOWN_ELEMENT_VALUES["hook_type"]
+        assert "curiosity_gap" in KNOWN_ELEMENT_VALUES["hook_type"]
+        assert len(KNOWN_ELEMENT_VALUES["hook_type"]) >= 10
+
+    def test_template_category_values(self):
+        assert "Testimonial" in KNOWN_ELEMENT_VALUES["template_category"]
+        assert "UGC-Style" in KNOWN_ELEMENT_VALUES["template_category"]
+
+    def test_color_mode_values(self):
+        assert "original" in KNOWN_ELEMENT_VALUES["color_mode"]
+        assert "complementary" in KNOWN_ELEMENT_VALUES["color_mode"]
+        assert "brand" in KNOWN_ELEMENT_VALUES["color_mode"]
+
+    def test_awareness_stage_values(self):
+        assert "unaware" in KNOWN_ELEMENT_VALUES["awareness_stage"]
+        assert "most_aware" in KNOWN_ELEMENT_VALUES["awareness_stage"]
+
+
+# ============================================================================
+# _select_catalog_alternative tests
+# ============================================================================
+
+class TestSelectCatalogAlternative:
+    def test_returns_different_value(self, evo_service):
+        """Catalog selection never returns the parent's own value."""
+        for _ in range(20):
+            result = evo_service._select_catalog_alternative("hook_type", "social_proof")
+            assert result is not None
+            assert result != "social_proof"
+            assert result in KNOWN_ELEMENT_VALUES["hook_type"]
+
+    def test_returns_none_for_unknown_variable(self, evo_service):
+        """Returns None for a variable not in the catalog."""
+        result = evo_service._select_catalog_alternative("nonexistent_var", "foo")
+        assert result is None
+
+    def test_returns_none_if_no_alternatives(self, evo_service):
+        """Returns None if parent value is the only value (shouldn't happen in practice)."""
+        # Mock a single-value catalog scenario
+        with patch("viraltracker.services.winner_evolution_service.KNOWN_ELEMENT_VALUES",
+                    {"test_var": ["only_value"]}):
+            result = evo_service._select_catalog_alternative("test_var", "only_value")
+            assert result is None
+
+    def test_all_iterable_elements_produce_alternatives(self, evo_service):
+        """Every iterable element can produce a catalog alternative for any valid parent value."""
+        for elem in ITERABLE_ELEMENTS:
+            for parent_val in KNOWN_ELEMENT_VALUES[elem]:
+                result = evo_service._select_catalog_alternative(elem, parent_val)
+                assert result is not None, (
+                    f"No alternative for {elem}={parent_val}"
+                )
+                assert result != parent_val
+
+
+# ============================================================================
+# _select_variable_from_classification tests
+# ============================================================================
+
+class TestSelectVariableFromClassification:
+    def test_defaults_to_hook_type_no_mapping(self, evo_service):
+        """Defaults to hook_type when no meta_ad_mapping exists."""
+        chain = _mock_table(evo_service, "meta_ad_mapping")
+        chain.select.return_value.eq.return_value.limit.return_value.execute.return_value = (
+            _make_execute_result([])
+        )
+
+        element_tags = {"hook_type": "social_proof", "template_category": "Testimonial"}
+        result = evo_service._select_variable_from_classification(AD_ID, element_tags)
+
+        assert result["variable"] == "hook_type"
+        assert result["new_value"] is not None
+        assert result["new_value"] != "social_proof"
+        assert result["source"] == "catalog"
+
+    def test_picks_template_when_classification_disagrees(self, evo_service):
+        """Picks template_category when classification disagrees with element_tags."""
+        # meta_ad_mapping returns a mapping
+        def mock_table_fn(table_name):
+            chain = MagicMock()
+            if table_name == "meta_ad_mapping":
+                chain.select.return_value.eq.return_value.limit.return_value.execute.return_value = (
+                    _make_execute_result([{"meta_ad_id": "meta123"}])
+                )
+            elif table_name == "ad_creative_classifications":
+                chain.select.return_value.eq.return_value.limit.return_value.execute.return_value = (
+                    _make_execute_result([{
+                        "hook_type": "social_proof",
+                        "template_category": "UGC-Style",  # Differs from element_tags
+                        "awareness_stage": "problem_aware",
+                    }])
+                )
+            return chain
+
+        evo_service.supabase.table = mock_table_fn
+
+        element_tags = {
+            "hook_type": "social_proof",
+            "template_category": "Testimonial",  # Different from classification
+        }
+        result = evo_service._select_variable_from_classification(AD_ID, element_tags)
+
+        assert result["variable"] == "template_category"
+        assert result["new_value"] != "Testimonial"
+        assert result["source"] == "catalog"
+
+    def test_keeps_hook_type_when_classification_agrees(self, evo_service):
+        """Keeps hook_type when classification agrees with element_tags on template."""
+        def mock_table_fn(table_name):
+            chain = MagicMock()
+            if table_name == "meta_ad_mapping":
+                chain.select.return_value.eq.return_value.limit.return_value.execute.return_value = (
+                    _make_execute_result([{"meta_ad_id": "meta123"}])
+                )
+            elif table_name == "ad_creative_classifications":
+                chain.select.return_value.eq.return_value.limit.return_value.execute.return_value = (
+                    _make_execute_result([{
+                        "hook_type": "social_proof",
+                        "template_category": "Testimonial",  # Same as element_tags
+                        "awareness_stage": "problem_aware",
+                    }])
+                )
+            return chain
+
+        evo_service.supabase.table = mock_table_fn
+
+        element_tags = {
+            "hook_type": "social_proof",
+            "template_category": "Testimonial",
+        }
+        result = evo_service._select_variable_from_classification(AD_ID, element_tags)
+
+        assert result["variable"] == "hook_type"
+        assert result["new_value"] != "social_proof"
+
+    def test_handles_db_exception_gracefully(self, evo_service):
+        """Falls back to hook_type if DB query fails."""
+        evo_service.supabase.table.side_effect = Exception("DB error")
+
+        element_tags = {"hook_type": "authority", "template_category": "Lifestyle"}
+        result = evo_service._select_variable_from_classification(AD_ID, element_tags)
+
+        assert result["variable"] == "hook_type"
+        assert result["new_value"] is not None
+        assert result["new_value"] != "authority"
+        assert result["source"] == "catalog"
+
+    def test_handles_missing_hook_type_in_element_tags(self, evo_service):
+        """Works even if element_tags has no hook_type (parent_value will be empty string)."""
+        chain = _mock_table(evo_service, "meta_ad_mapping")
+        chain.select.return_value.eq.return_value.limit.return_value.execute.return_value = (
+            _make_execute_result([])
+        )
+
+        element_tags = {"template_category": "Testimonial"}  # No hook_type
+        result = evo_service._select_variable_from_classification(AD_ID, element_tags)
+
+        # parent_value = str(None) = "None" — won't match any catalog value, so all are alternatives
+        assert result["variable"] == "hook_type"
+        assert result["new_value"] is not None
+        assert result["new_value"] in KNOWN_ELEMENT_VALUES["hook_type"]
 
 
 # ============================================================================
