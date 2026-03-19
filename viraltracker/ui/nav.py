@@ -46,6 +46,9 @@ _CUSTOM_URL_PATHS: Dict[str, str] = {
     "61_📅_Scheduled_Tasks.py": "scheduled-tasks",
     "64_🗄️_Database_Browser.py": "database-browser",
     "64_⚙️_Platform_Settings.py": "platform-settings",
+    "54_📧_Klaviyo_Dashboard.py": "klaviyo-dashboard",
+    "55_📨_Klaviyo_Campaigns.py": "klaviyo-campaigns",
+    "56_🔄_Klaviyo_Flows.py": "klaviyo-flows",
     "67_🔬_Public_Analysis.py": "Public_Analysis",
     "68_🏗️_Public_Blueprint.py": "Public_Blueprint",
 }
@@ -162,6 +165,11 @@ def _get_org_features_cached(org_id: str) -> Dict[str, bool]:
             FeatureKey.SEO_ARTICLE_PUBLISHER: True,
             FeatureKey.SEO_CLUSTER_MANAGER: True,
             FeatureKey.SEO_WORKFLOW: True,
+            # Email Marketing pages
+            FeatureKey.SECTION_EMAIL_MARKETING: True,
+            FeatureKey.KLAVIYO_DASHBOARD: True,
+            FeatureKey.KLAVIYO_CAMPAIGNS: True,
+            FeatureKey.KLAVIYO_FLOWS: True,
             # Video Tools pages
             FeatureKey.SECTION_VIDEO_TOOLS: True,
             FeatureKey.INSTAGRAM_CONTENT: True,
@@ -356,6 +364,30 @@ def build_navigation_pages() -> Dict[str, List[st.Page]]:
         content.append(st.Page("pages/53_🚀_SEO_Workflow.py", title="SEO Workflow", icon="🚀"))
     if content:
         pages["Content"] = content
+
+    # --- Email Marketing ---
+    SK_EMAIL = "section_email_marketing"
+    email_marketing: List[st.Page] = []
+    if visible(SK_EMAIL, "klaviyo_dashboard"):
+        email_marketing.append(st.Page(
+            "pages/54_📧_Klaviyo_Dashboard.py",
+            title="Klaviyo Dashboard", icon="📧",
+            url_path="klaviyo-dashboard",
+        ))
+    if visible(SK_EMAIL, "klaviyo_campaigns"):
+        email_marketing.append(st.Page(
+            "pages/55_📨_Klaviyo_Campaigns.py",
+            title="Klaviyo Campaigns", icon="📨",
+            url_path="klaviyo-campaigns",
+        ))
+    if visible(SK_EMAIL, "klaviyo_flows"):
+        email_marketing.append(st.Page(
+            "pages/56_🔄_Klaviyo_Flows.py",
+            title="Klaviyo Flows", icon="🔄",
+            url_path="klaviyo-flows",
+        ))
+    if email_marketing:
+        pages["Email Marketing"] = email_marketing
 
     # --- Video Tools ---
     SK_VIDEO = "section_video_tools"

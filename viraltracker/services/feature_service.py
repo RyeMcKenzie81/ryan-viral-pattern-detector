@@ -96,6 +96,11 @@ class FeatureKey:
     SEO_ARTICLE_PUBLISHER = "seo_article_publisher"
     SEO_CLUSTER_MANAGER = "seo_cluster_manager"
     SEO_WORKFLOW = "seo_workflow"
+    # Email Marketing
+    SECTION_EMAIL_MARKETING = "section_email_marketing"
+    KLAVIYO_DASHBOARD = "klaviyo_dashboard"
+    KLAVIYO_CAMPAIGNS = "klaviyo_campaigns"
+    KLAVIYO_FLOWS = "klaviyo_flows"
     # Video Tools
     SECTION_VIDEO_TOOLS = "section_video_tools"
     INSTAGRAM_CONTENT = "instagram_content"
@@ -277,6 +282,11 @@ class FeatureService:
             FeatureKey.SEO_ARTICLE_PUBLISHER,
             FeatureKey.SEO_CLUSTER_MANAGER,
             FeatureKey.SEO_WORKFLOW,
+            # Email Marketing pages
+            FeatureKey.SECTION_EMAIL_MARKETING,
+            FeatureKey.KLAVIYO_DASHBOARD,
+            FeatureKey.KLAVIYO_CAMPAIGNS,
+            FeatureKey.KLAVIYO_FLOWS,
             # Video Tools pages
             FeatureKey.SECTION_VIDEO_TOOLS,
             FeatureKey.INSTAGRAM_CONTENT,

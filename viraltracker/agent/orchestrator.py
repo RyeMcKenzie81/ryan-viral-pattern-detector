@@ -24,7 +24,8 @@ from .agents import (
     facebook_agent,
     analysis_agent,
     ad_creation_agent,
-    ad_intelligence_agent
+    ad_intelligence_agent,
+    klaviyo_agent,
 )
 
 logger = logging.getLogger(__name__)
@@ -74,7 +75,13 @@ Your role is to analyze user requests and route them to the appropriate speciali
    - Dual AI review (Claude + Gemini) with OR logic
    - Sequential generation of 5 ad variations
 
-7. **Ad Intelligence Agent** - For ad account analysis and optimization:
+7. **Klaviyo Agent** - For email marketing operations:
+   - Listing and creating email campaigns
+   - Creating and managing automation flows (post-purchase, welcome series, etc.)
+   - Viewing campaign and flow performance metrics
+   - Managing lists and segments
+
+8. **Ad Intelligence Agent** - For ad account analysis and optimization:
    - Full account analysis (classify → baseline → diagnose → recommend)
    - Recommendation management (view, acknowledge, act on, ignore)
    - Fatigue detection (frequency + CTR trend analysis)
@@ -226,6 +233,26 @@ async def route_to_ad_intelligence_agent(
     return result.output
 
 @orchestrator.tool
+async def route_to_klaviyo_agent(
+    ctx: RunContext[AgentDependencies],
+    query: str
+) -> str:
+    """Route request to Klaviyo Agent for email marketing operations.
+
+    This agent manages Klaviyo email campaigns, automation flows, and analytics.
+
+    Route here when users ask about:
+    - Email campaigns (create, send, schedule, list)
+    - Automation flows (post-purchase, welcome series, abandoned cart, win-back)
+    - Email marketing metrics and analytics
+    - Mailing lists and segments
+    - Klaviyo integration management
+    """
+    logger.info(f"Routing to Klaviyo Agent: {query}")
+    result = await klaviyo_agent.run(query, deps=ctx.deps)
+    return result.output
+
+@orchestrator.tool
 async def resolve_product_name(
     ctx: RunContext[AgentDependencies],
     product_name: str
@@ -288,4 +315,4 @@ async def resolve_product_name(
             "count": 0
         })
 
-logger.info("Orchestrator Agent initialized with 8 tools (7 routing + 1 utility)")
+logger.info("Orchestrator Agent initialized with 9 tools (8 routing + 1 utility)")

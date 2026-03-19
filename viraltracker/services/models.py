@@ -2539,3 +2539,76 @@ class ToolReadinessReport(BaseModel):
     not_applicable: List[ToolReadiness] = Field(default_factory=list)
     overall_pct: float
     generated_at: datetime
+
+
+# ============================================================================
+# Klaviyo Models
+# ============================================================================
+
+class KlaviyoAccount(BaseModel):
+    """Klaviyo account details."""
+    account_id: str = Field(..., description="Klaviyo account ID")
+    account_name: str = Field(default="", description="Account display name")
+    timezone: str = Field(default="UTC", description="Account timezone")
+    public_api_key: str = Field(default="", description="Public/site API key")
+
+
+class KlaviyoList(BaseModel):
+    """Klaviyo list (mailing list)."""
+    id: str = Field(..., description="List ID")
+    name: str = Field(default="", description="List name")
+    profile_count: int = Field(default=0, ge=0, description="Number of profiles")
+    created: str = Field(default="", description="ISO8601 created timestamp")
+    updated: str = Field(default="", description="ISO8601 updated timestamp")
+
+
+class KlaviyoSegment(BaseModel):
+    """Klaviyo segment."""
+    id: str = Field(..., description="Segment ID")
+    name: str = Field(default="", description="Segment name")
+    definition: Optional[Dict[str, Any]] = Field(default=None, description="Segment filter definition")
+    profile_count: int = Field(default=0, ge=0, description="Estimated profile count")
+    created: str = Field(default="", description="ISO8601 created timestamp")
+    updated: str = Field(default="", description="ISO8601 updated timestamp")
+
+
+class KlaviyoCampaign(BaseModel):
+    """Klaviyo email campaign."""
+    id: str = Field(..., description="Campaign ID")
+    name: str = Field(default="", description="Campaign name")
+    status: str = Field(default="draft", description="Campaign status")
+    channel: str = Field(default="email", description="Channel type")
+    audiences: Optional[Dict[str, Any]] = Field(default=None, description="Target audiences")
+    send_strategy: Optional[Dict[str, Any]] = Field(default=None, description="Send strategy config")
+    created_at: str = Field(default="", description="ISO8601 created timestamp")
+    updated_at: str = Field(default="", description="ISO8601 updated timestamp")
+    send_time: str = Field(default="", description="ISO8601 scheduled send time")
+
+
+class KlaviyoTemplate(BaseModel):
+    """Klaviyo email template."""
+    id: str = Field(..., description="Template ID")
+    name: str = Field(default="", description="Template name")
+    html: str = Field(default="", description="Template HTML content")
+    editor_type: str = Field(default="", description="Editor type (drag_and_drop, code)")
+    created: str = Field(default="", description="ISO8601 created timestamp")
+    updated: str = Field(default="", description="ISO8601 updated timestamp")
+
+
+class KlaviyoFlow(BaseModel):
+    """Klaviyo automation flow."""
+    id: str = Field(..., description="Flow ID")
+    name: str = Field(default="", description="Flow name")
+    status: str = Field(default="draft", description="Flow status (draft/manual/live)")
+    trigger_type: str = Field(default="", description="Trigger type")
+    action_count: int = Field(default=0, ge=0, description="Number of actions in flow")
+    created: str = Field(default="", description="ISO8601 created timestamp")
+    updated: str = Field(default="", description="ISO8601 updated timestamp")
+
+
+class KlaviyoFlowAction(BaseModel):
+    """Single action within a Klaviyo flow."""
+    id: str = Field(..., description="Action ID")
+    action_type: str = Field(default="", description="Action type (SEND_EMAIL, etc.)")
+    status: str = Field(default="", description="Action status")
+    settings: Optional[Dict[str, Any]] = Field(default=None, description="Action settings")

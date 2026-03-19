@@ -49,6 +49,10 @@ class Config:
     META_GRAPH_API_TOKEN: str = os.getenv('META_GRAPH_API_TOKEN', '')
     META_AD_ACCOUNT_ID: str = os.getenv('META_AD_ACCOUNT_ID', '')  # e.g., "act_123456789"
 
+    # Klaviyo (Email Marketing)
+    KLAVIYO_CLIENT_ID: str = os.getenv('KLAVIYO_CLIENT_ID', '')
+    KLAVIYO_CLIENT_SECRET: str = os.getenv('KLAVIYO_CLIENT_SECRET', '')
+
     # Kling AI (native API at api-singapore.klingai.com)
     KLING_ACCESS_KEY: str = os.getenv('KLING_ACCESS_KEY', '')
     KLING_SECRET_KEY: str = os.getenv('KLING_SECRET_KEY', '')
