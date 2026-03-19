@@ -155,7 +155,7 @@ def get_ads_for_run(ad_run_id: str):
             "id, prompt_index, storage_path, hook_text, final_status, "
             "claude_review, gemini_review, reviewers_agree, created_at, "
             "model_requested, model_used, generation_time_ms, generation_retries, "
-            "parent_ad_id, variant_size, is_imported"
+            "parent_ad_id, variant_size, is_imported, canvas_size"
         ).eq("ad_run_id", ad_run_id).order("prompt_index").execute()
         return result.data
     except Exception as e:
@@ -426,6 +426,16 @@ def get_ad_current_size(ad: dict) -> str:
     # Check if it's already a variant with a known size
     if ad.get('variant_size'):
         return ad.get('variant_size')
+
+    # Check canvas_size column (set by V2 pipeline)
+    canvas_size = ad.get('canvas_size')
+    if canvas_size:
+        size_map = {
+            "1080x1080px": "1:1", "1080x1350px": "4:5",
+            "1080x1920px": "9:16", "1920x1080px": "16:9",
+        }
+        if canvas_size in size_map:
+            return size_map[canvas_size]
 
     # Try to get from prompt_spec canvas
     prompt_spec = ad.get('prompt_spec') or {}
