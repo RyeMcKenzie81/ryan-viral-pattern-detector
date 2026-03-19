@@ -784,6 +784,7 @@ class WinnerEvolutionService:
             raise ValueError(f"Invalid evolution mode: {mode}. Must be one of {EVOLUTION_MODES}")
 
         # 1. Validate winner criteria (skippable for batch iterate)
+        winner = {}
         if not skip_winner_check:
             winner = await self.check_winner_criteria(parent_ad_id)
             if not winner["is_winner"]:
@@ -915,38 +916,56 @@ class WinnerEvolutionService:
         Returns:
             Dict with ad_run_ids, child_ad_ids, variable_changed, old/new values.
         """
-        # Select variable to change
+        # Select variable to change via Thompson Sampling
+        from viraltracker.services.creative_genome_service import CreativeGenomeService
+        genome = CreativeGenomeService()
+
+        variable = None
+        new_value = None
+        parent_value = ""
+
         if variable_override and variable_override in ITERABLE_ELEMENTS:
-            variable = variable_override
-            # Use Thompson Sampling to pick new value
-            from viraltracker.services.creative_genome_service import CreativeGenomeService
-            genome = CreativeGenomeService()
-            sampled = genome.sample_element_scores(brand_id, variable)
-            parent_value = str(element_tags.get(variable, ""))
-            new_value = None
+            # User-specified variable — try Thompson Sampling for alternative value
+            sampled = genome.sample_element_scores(brand_id, variable_override)
+            pval = str(element_tags.get(variable_override, ""))
             for s in sampled:
-                if s["value"] != parent_value:
+                if s["value"] != pval:
+                    variable = variable_override
                     new_value = s["value"]
+                    parent_value = pval
                     break
-        else:
+            if not new_value:
+                # No alternative in genome for this variable — fall through to
+                # auto-select from other variables that DO have alternatives
+                logger.warning(
+                    f"No alternative value for '{variable_override}' in genome, "
+                    f"trying other variables"
+                )
+
+        if not variable:
+            # Auto-select: try each variable by information gain, skip those
+            # without at least 2 tracked values
             selection = await self.select_evolution_variable(brand_id, element_tags)
             variable = selection["variable"]
-            new_value = selection["new_value"]
+            new_value = selection.get("new_value")
             parent_value = selection.get("parent_value", "")
 
         if not new_value:
             raise ValueError(
-                f"No alternative value found for variable '{variable}'. "
-                f"Need at least 2 tracked values in creative_element_scores."
+                f"No alternative value found for any variable. "
+                f"Need at least 2 tracked values per element in creative_element_scores. "
+                f"Run Creative Genome update for this brand first."
             )
 
         # Build V2 pipeline params with the changed variable
         pipeline_params = self._build_base_pipeline_params(parent, element_tags, parent_image_b64, product_id)
 
+        # Always use recreate_template — the parent image is the visual anchor.
+        # Instructions tell the pipeline what single variable to change.
+        pipeline_params["content_source"] = "recreate_template"
+
         # Apply the single variable change
         if variable == "hook_type":
-            # Need to find a hook with the new hook_type
-            pipeline_params["content_source"] = "hooks"
             pipeline_params["additional_instructions"] = (
                 f"EVOLUTION: Use a hook with persuasion type '{new_value}'. "
                 f"Keep all other creative elements identical to the reference."
@@ -954,7 +973,6 @@ class WinnerEvolutionService:
         elif variable == "color_mode":
             pipeline_params["color_modes"] = [new_value]
         elif variable == "template_category":
-            # Pick a different template (service will select based on category)
             pipeline_params["additional_instructions"] = (
                 f"EVOLUTION: Use a '{new_value}' template style. "
                 f"Keep the same hook, messaging, and overall approach."

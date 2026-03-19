@@ -233,11 +233,17 @@ class CreativeGenomeService:
             "id, element_tags, ad_run_id"
         ).not_.is_("element_tags", "null").execute()
 
-        # Get ad_runs for this brand to filter generated_ads
-        ad_runs = self.supabase.table("ad_runs").select(
+        # Get ad_runs for this brand by joining through products
+        # (ad_runs has product_id, not brand_id)
+        brand_products = self.supabase.table("products").select(
             "id"
         ).eq("brand_id", str(brand_id)).execute()
-        brand_run_ids = {r["id"] for r in (ad_runs.data or [])}
+        brand_product_ids = {p["id"] for p in (brand_products.data or [])}
+
+        ad_runs = self.supabase.table("ad_runs").select(
+            "id, product_id"
+        ).execute()
+        brand_run_ids = {r["id"] for r in (ad_runs.data or []) if r.get("product_id") in brand_product_ids}
 
         # Build lookup of generated_ads with element_tags for this brand
         eligible_ads = {}

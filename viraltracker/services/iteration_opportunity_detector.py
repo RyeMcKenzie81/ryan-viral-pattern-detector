@@ -571,6 +571,24 @@ class IterationOpportunityDetector:
         strategy_overrides = strategy_overrides or {}
         import_service = MetaWinnerImportService()
 
+        # Seed Creative Genome data for this brand so Thompson Sampling works.
+        # compute_rewards() finds matured ads with Meta performance data and
+        # computes composite rewards; update_element_scores() derives Beta
+        # distributions for each element value. Without this, winner_iteration
+        # mode fails with "No alternative value found".
+        try:
+            from viraltracker.services.creative_genome_service import CreativeGenomeService
+            genome = CreativeGenomeService()
+            reward_result = await genome.compute_rewards(UUID(brand_id))
+            if reward_result.get("new_rewards", 0) > 0:
+                await genome.update_element_scores(UUID(brand_id))
+                logger.info(
+                    f"Seeded Creative Genome: {reward_result['new_rewards']} rewards "
+                    f"computed for brand {brand_id}"
+                )
+        except Exception as e:
+            logger.warning(f"Creative Genome seeding failed (non-fatal): {e}")
+
         queued = 0
         imported = 0
         skipped = 0
