@@ -1,6 +1,6 @@
--- Migration: Add size_variant to scheduled_jobs job_type CHECK constraint
+-- Migration: Add size_variant and smart_edit to scheduled_jobs job_type CHECK constraint
 -- Date: 2026-03-19
--- Purpose: Allow queuing size variant creation as background jobs
+-- Purpose: Allow queuing size variant and smart edit as background jobs
 
 ALTER TABLE scheduled_jobs
 DROP CONSTRAINT IF EXISTS scheduled_jobs_job_type_check;
@@ -19,6 +19,7 @@ CHECK (job_type IN (
     'ad_intelligence_analysis',
     'iteration_auto_run',
     'size_variant',
+    'smart_edit',
     'analytics_sync',
     'seo_status_sync'
 ));

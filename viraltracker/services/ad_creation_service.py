@@ -1733,7 +1733,7 @@ This is a SIZE VARIANT - the content should be IDENTICAL, only the canvas dimens
                 dimensions = RATIO_TO_DIMS[vs]
         if not dimensions:
             dimensions = "1080x1080"
-            logger.warning(f"Could not detect dimensions for ad {ad_id}, falling back to 1080x1080")
+            logger.warning(f"Could not detect dimensions for ad {source_ad_id}, falling back to 1080x1080")
 
         # Build the edit prompt
         full_prompt = f"""Edit this Facebook ad image according to the following instructions.

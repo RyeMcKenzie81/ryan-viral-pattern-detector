@@ -499,6 +499,72 @@ def queue_size_variant_job(ad_id: str, target_sizes: list, brand_id: str = None)
         st.error(f"Failed to queue size variant job: {e}")
         return None
 
+def queue_smart_edit_job(
+    ad_id: str, edit_prompt: str, temperature: float = 0.3,
+    preserve_text: bool = True, preserve_colors: bool = True,
+    reference_image_ids: list = None, brand_id: str = None,
+) -> str:
+    """Queue a smart edit job for background processing. Returns job ID."""
+    import pytz
+    PST = pytz.timezone('US/Pacific')
+    run_now_time = datetime.now(PST) + timedelta(minutes=1)
+    short_prompt = edit_prompt[:40].replace('\n', ' ')
+    job_data = {
+        'job_type': 'smart_edit',
+        'brand_id': brand_id,
+        'name': f'Smart Edit: "{short_prompt}" on {ad_id[:8]}',
+        'schedule_type': 'one_time',
+        'cron_expression': None,
+        'scheduled_at': run_now_time.isoformat(),
+        'next_run_at': run_now_time.isoformat(),
+        'max_runs': None,
+        'parameters': {
+            'source_ad_id': ad_id,
+            'edit_prompt': edit_prompt,
+            'temperature': temperature,
+            'preserve_text': preserve_text,
+            'preserve_colors': preserve_colors,
+            'reference_image_ids': reference_image_ids,
+        },
+    }
+    try:
+        db = get_supabase_client()
+        result = db.table("scheduled_jobs").insert(job_data).execute()
+        return result.data[0]['id'] if result.data else None
+    except Exception as e:
+        st.error(f"Failed to queue smart edit job: {e}")
+        return None
+
+
+def queue_evolution_job(ad_id: str, mode: str, brand_id: str = None) -> str:
+    """Queue a winner evolution job for background processing. Returns job ID."""
+    import pytz
+    PST = pytz.timezone('US/Pacific')
+    run_now_time = datetime.now(PST) + timedelta(minutes=1)
+    mode_label = mode.replace("_", " ").title()
+    job_data = {
+        'job_type': 'winner_evolution',
+        'brand_id': brand_id,
+        'name': f'{mode_label} for {ad_id[:8]}',
+        'schedule_type': 'one_time',
+        'cron_expression': None,
+        'scheduled_at': run_now_time.isoformat(),
+        'next_run_at': run_now_time.isoformat(),
+        'max_runs': None,
+        'parameters': {
+            'parent_ad_id': ad_id,
+            'evolution_mode': mode,
+        },
+    }
+    try:
+        db = get_supabase_client()
+        result = db.table("scheduled_jobs").insert(job_data).execute()
+        return result.data[0]['id'] if result.data else None
+    except Exception as e:
+        st.error(f"Failed to queue evolution job: {e}")
+        return None
+
+
 async def delete_ad_async(ad_id: str, delete_variants: bool = True) -> dict:
     """Delete an ad using the AdCreationService."""
     service = get_ad_creation_service()
@@ -1512,52 +1578,44 @@ else:
                                                 help="Lower = more faithful to original, Higher = more creative"
                                             )
 
-                                            # Show result if available
-                                            if st.session_state.edit_result:
-                                                result = st.session_state.edit_result
-                                                if "ad_id" in result:
-                                                    st.success(f"✅ Edit created! New ad ID: {result['ad_id'][:8]}")
-                                                    st.caption(f"Generation time: {result.get('generation_time_ms', 0)}ms")
-                                                elif "error" in result:
-                                                    st.error(f"❌ Edit failed: {result['error']}")
-
                                             # Action buttons
                                             edit_btn_col1, edit_btn_col2 = st.columns(2)
                                             with edit_btn_col1:
                                                 # Use preset if selected, otherwise use text input
                                                 final_prompt = selected_preset or edit_prompt
-                                                can_generate = bool(final_prompt) and not st.session_state.edit_generating
+                                                can_generate = bool(final_prompt)
 
                                                 if st.button(
-                                                    "🎨 Generate Edit",
+                                                    "🎨 Queue Edit",
                                                     key=f"generate_edit_{ad_id}",
                                                     disabled=not can_generate,
                                                     type="primary"
                                                 ):
-                                                    st.session_state.edit_generating = True
-                                                    with st.spinner("Creating edited ad..."):
-                                                        try:
-                                                            result = asyncio.run(
-                                                                create_edited_ad_async(
-                                                                    ad_id=ad_id,
-                                                                    edit_prompt=final_prompt,
-                                                                    temperature=temperature,
-                                                                    preserve_text=preserve_text,
-                                                                    preserve_colors=preserve_colors,
-                                                                    reference_image_ids=selected_ref_images if selected_ref_images else None
-                                                                )
-                                                            )
-                                                            st.session_state.edit_result = result
-                                                        except Exception as e:
-                                                            st.session_state.edit_result = {"error": str(e)}
-                                                    st.session_state.edit_generating = False
-                                                    st.rerun()
+                                                    run_brand_id = run.get('products', {}).get('brand_id')
+                                                    job_id = queue_smart_edit_job(
+                                                        ad_id=ad_id,
+                                                        edit_prompt=final_prompt,
+                                                        temperature=temperature,
+                                                        preserve_text=preserve_text,
+                                                        preserve_colors=preserve_colors,
+                                                        reference_image_ids=selected_ref_images if selected_ref_images else None,
+                                                        brand_id=run_brand_id,
+                                                    )
+                                                    if job_id:
+                                                        st.session_state.edit_result = {"queued": True, "job_id": job_id}
+                                                        st.rerun()
 
                                             with edit_btn_col2:
                                                 if st.button("Cancel", key=f"cancel_edit_{ad_id}"):
                                                     st.session_state.edit_ad_id = None
                                                     st.session_state.edit_result = None
                                                     st.rerun()
+
+                                            # Show queued confirmation
+                                            if st.session_state.edit_result and st.session_state.edit_result.get("queued"):
+                                                queued = st.session_state.edit_result
+                                                st.success("Edit job queued. Will run in ~1 minute.")
+                                                st.caption(f"Job ID: {queued['job_id']}")
 
                                     # Winner Evolution button for approved ads (Phase 7A)
                                     if ad_status == 'approved' and ad_id and not is_variant:
@@ -1633,55 +1691,29 @@ else:
                                                             if untested:
                                                                 st.caption(f"Untested sizes: {', '.join(untested)}")
 
-                                                    # Show result if available
-                                                    if st.session_state.evolve_result:
-                                                        result = st.session_state.evolve_result
-                                                        if result.get("success"):
-                                                            st.success(
-                                                                f"Evolution submitted! "
-                                                                f"Variable: {result.get('variable_changed', 'N/A')} | "
-                                                                f"Children: {len(result.get('child_ad_ids', []))}"
-                                                            )
-                                                        elif result.get("error"):
-                                                            st.error(f"Evolution failed: {result['error']}")
-
                                                     # Submit button
                                                     evo_btn_col1, evo_btn_col2 = st.columns(2)
                                                     with evo_btn_col1:
-                                                        can_submit = (
-                                                            selected_label is not None
-                                                            and not st.session_state.evolve_submitting
-                                                        )
+                                                        can_submit = selected_label is not None
                                                         if st.button(
-                                                            "🚀 Evolve",
+                                                            "🚀 Queue Evolution",
                                                             key=f"submit_evolve_{ad_id}",
                                                             disabled=not can_submit,
                                                             type="primary"
                                                         ):
-                                                            st.session_state.evolve_submitting = True
                                                             selected_mode_val = mode_options[selected_label]
-                                                            with st.spinner("Submitting evolution job..."):
-                                                                try:
-                                                                    from viraltracker.services.winner_evolution_service import WinnerEvolutionService
-                                                                    from uuid import UUID as _EUUID2
-                                                                    import asyncio as _evo_asyncio2
-                                                                    evo_svc2 = WinnerEvolutionService()
-                                                                    evo_result = _evo_asyncio2.run(
-                                                                        evo_svc2.evolve_winner(
-                                                                            parent_ad_id=_EUUID2(ad_id),
-                                                                            mode=selected_mode_val["mode"],
-                                                                        )
-                                                                    )
-                                                                    st.session_state.evolve_result = {
-                                                                        "success": True, **evo_result
-                                                                    }
-                                                                except Exception as evo_err2:
-                                                                    st.session_state.evolve_result = {
-                                                                        "success": False,
-                                                                        "error": str(evo_err2),
-                                                                    }
-                                                            st.session_state.evolve_submitting = False
-                                                            st.rerun()
+                                                            run_brand_id = run.get('products', {}).get('brand_id')
+                                                            job_id = queue_evolution_job(
+                                                                ad_id=ad_id,
+                                                                mode=selected_mode_val["mode"],
+                                                                brand_id=run_brand_id,
+                                                            )
+                                                            if job_id:
+                                                                st.session_state.evolve_result = {
+                                                                    "queued": True, "job_id": job_id,
+                                                                    "mode": selected_mode_val["mode"],
+                                                                }
+                                                                st.rerun()
 
                                                     with evo_btn_col2:
                                                         if st.button("Cancel", key=f"cancel_evolve_{ad_id}"):
@@ -1689,6 +1721,13 @@ else:
                                                             st.session_state.evolve_options = None
                                                             st.session_state.evolve_result = None
                                                             st.rerun()
+
+                                                    # Show queued confirmation
+                                                    if st.session_state.evolve_result and st.session_state.evolve_result.get("queued"):
+                                                        queued = st.session_state.evolve_result
+                                                        mode_label = queued['mode'].replace('_', ' ').title()
+                                                        st.success(f"{mode_label} job queued. Will run in ~1 minute.")
+                                                        st.caption(f"Job ID: {queued['job_id']}")
 
                                     # Approve/Reject buttons for pending ads
                                     if ad_id and ad_status == 'pending':

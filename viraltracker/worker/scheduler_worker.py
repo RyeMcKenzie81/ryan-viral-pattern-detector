@@ -624,6 +624,8 @@ async def execute_job(job: Dict) -> Dict[str, Any]:
         return await execute_iteration_auto_run_job(job)
     elif job_type == 'size_variant':
         return await execute_size_variant_job(job)
+    elif job_type == 'smart_edit':
+        return await execute_smart_edit_job(job)
     else:
         # Hard-fail on unknown job types — never silently fall through to V1
         logger.error(f"Unknown job_type '{job_type}' for job {job_id} ({job_name}). "
@@ -4550,6 +4552,96 @@ async def execute_size_variant_job(job: Dict) -> Dict[str, Any]:
 
     except Exception as e:
         logger.error(f"Size variant job failed: {e}")
+        logs.append(f"ERROR: {e}")
+        update_job_run(run_id, {
+            "status": "failed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "error_message": str(e),
+            "logs": "\n".join(logs),
+        })
+        _reschedule_after_failure(job, job_id, get_run_attempt_number(run_id))
+        return {"success": False, "error": str(e)}
+
+
+async def execute_smart_edit_job(job: Dict) -> Dict[str, Any]:
+    """Execute a Smart Edit job — edit an existing ad with specific instructions.
+
+    Job parameters (in job['parameters'] JSONB):
+        source_ad_id: UUID of the ad to edit (REQUIRED)
+        edit_prompt: Edit instructions (REQUIRED)
+        temperature: Faithfulness slider value (default 0.3)
+        preserve_text: Keep text identical (default True)
+        preserve_colors: Keep colors identical (default True)
+        reference_image_ids: Optional list of image UUIDs for reference
+    """
+    job_id = job['id']
+    job_name = job['name']
+    params = job.get('parameters', {}) or {}
+
+    logger.info(f"Starting Smart Edit job: {job_name} (ID: {job_id})")
+
+    update_job(job_id, {"next_run_at": None})
+
+    run_id = create_job_run(job_id)
+    if not run_id:
+        logger.error(f"Failed to create run record for smart edit job {job_id}")
+        return {"success": False, "error": "Failed to create run record"}
+
+    logs = []
+
+    try:
+        from viraltracker.services.ad_creation_service import AdCreationService
+        from uuid import UUID
+
+        source_ad_id = params.get("source_ad_id")
+        edit_prompt = params.get("edit_prompt")
+
+        if not source_ad_id:
+            raise ValueError("source_ad_id is required for smart_edit")
+        if not edit_prompt:
+            raise ValueError("edit_prompt is required for smart_edit")
+
+        temperature = params.get("temperature", 0.3)
+        preserve_text = params.get("preserve_text", True)
+        preserve_colors = params.get("preserve_colors", True)
+        reference_image_ids = params.get("reference_image_ids")
+
+        ref_ids = [UUID(rid) for rid in reference_image_ids] if reference_image_ids else None
+
+        logs.append(f"Source ad: {source_ad_id}")
+        logs.append(f"Edit: {edit_prompt[:100]}")
+        logs.append(f"Temperature: {temperature}")
+
+        service = AdCreationService()
+        result = await service.create_edited_ad(
+            source_ad_id=UUID(source_ad_id),
+            edit_prompt=edit_prompt,
+            temperature=temperature,
+            preserve_text=preserve_text,
+            preserve_colors=preserve_colors,
+            reference_image_ids=ref_ids,
+        )
+
+        logs.append(f"Created edited ad: {result['ad_id']}")
+        logs.append(f"Generation time: {result.get('generation_time_ms', 0)}ms")
+
+        summary = {
+            "ad_id": result["ad_id"],
+            "storage_path": result.get("storage_path"),
+            "generation_time_ms": result.get("generation_time_ms", 0),
+        }
+
+        update_job_run(run_id, {
+            "status": "completed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "logs": "\n".join(logs),
+            "metadata": summary,
+        })
+
+        return {"success": True, **summary}
+
+    except Exception as e:
+        logger.error(f"Smart edit job failed: {e}")
         logs.append(f"ERROR: {e}")
         update_job_run(run_id, {
             "status": "failed",
