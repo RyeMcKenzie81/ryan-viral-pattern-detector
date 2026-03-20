@@ -1045,23 +1045,29 @@ This is a SIZE VARIANT - the content should be IDENTICAL, only the canvas dimens
     async def delete_generated_ad(
         self,
         ad_id: UUID,
-        delete_variants: bool = True
+        delete_variants: bool = True,
+        unlink_edits: bool = False
     ) -> Dict[str, Any]:
         """
-        Delete a generated ad and optionally its variants.
+        Delete a generated ad and optionally its variants/edit children.
 
         Removes the ad from the database and deletes the image from storage.
         If delete_variants is True, also deletes any size variants of this ad.
+        Edit children (via edit_parent_id) are either deleted or unlinked based
+        on the unlink_edits parameter.
 
         Args:
             ad_id: UUID of the ad to delete
-            delete_variants: If True, also delete any variants of this ad
+            delete_variants: If True, also delete any size variants of this ad
+            unlink_edits: If True, unlink edit children (set edit_parent_id=NULL)
+                          instead of deleting them
 
         Returns:
             Dict with deletion results:
             {
                 "deleted_ad_id": str,
                 "deleted_variants": int,
+                "unlinked_edits": int,
                 "storage_deleted": bool
             }
 
@@ -1070,7 +1076,7 @@ This is a SIZE VARIANT - the content should be IDENTICAL, only the canvas dimens
         """
         import asyncio
 
-        logger.info(f"Deleting ad {ad_id} (delete_variants={delete_variants})")
+        logger.info(f"Deleting ad {ad_id} (delete_variants={delete_variants}, unlink_edits={unlink_edits})")
 
         # Get the ad to find storage path
         result = self.supabase.table("generated_ads").select(
@@ -1084,34 +1090,66 @@ This is a SIZE VARIANT - the content should be IDENTICAL, only the canvas dimens
         storage_path = ad.get("storage_path", "")
 
         deleted_variants = 0
+        unlinked_edits = 0
 
-        # Delete variants first if requested
+        # Handle edit children first (edit_parent_id FK must be cleared before delete)
+        edits_result = self.supabase.table("generated_ads").select(
+            "id, storage_path"
+        ).eq("edit_parent_id", str(ad_id)).execute()
+        edit_children = edits_result.data or []
+
+        if edit_children:
+            if unlink_edits:
+                # Unlink: set edit_parent_id = NULL so children become standalone
+                for child in edit_children:
+                    self.supabase.table("generated_ads").update(
+                        {"edit_parent_id": None}
+                    ).eq("id", child["id"]).execute()
+                    unlinked_edits += 1
+                    logger.info(f"Unlinked edit child {child['id']} from parent {ad_id}")
+            else:
+                # Delete edit children
+                for child in edit_children:
+                    child_path = child.get("storage_path", "")
+                    if child_path:
+                        try:
+                            parts = child_path.split("/", 1)
+                            bucket = parts[0]
+                            path = parts[1] if len(parts) > 1 else child_path
+                            await asyncio.to_thread(
+                                lambda p=path: self.supabase.storage.from_(bucket).remove([p])
+                            )
+                        except Exception as e:
+                            logger.warning(f"Failed to delete child storage {child_path}: {e}")
+                    self.supabase.table("generated_ads").delete().eq(
+                        "id", child["id"]
+                    ).execute()
+                    deleted_variants += 1
+                    logger.info(f"Deleted edit child {child['id']}")
+
+        # Delete size variants if requested
         if delete_variants:
-            # Find all variants of this ad
             variants_result = self.supabase.table("generated_ads").select(
                 "id, storage_path"
             ).eq("parent_ad_id", str(ad_id)).execute()
 
-            for variant in variants_result.data:
-                # Delete variant from storage
-                variant_path = variant.get("storage_path", "")
-                if variant_path:
+            for child in (variants_result.data or []):
+                child_path = child.get("storage_path", "")
+                if child_path:
                     try:
-                        parts = variant_path.split("/", 1)
+                        parts = child_path.split("/", 1)
                         bucket = parts[0]
-                        path = parts[1] if len(parts) > 1 else variant_path
+                        path = parts[1] if len(parts) > 1 else child_path
                         await asyncio.to_thread(
                             lambda p=path: self.supabase.storage.from_(bucket).remove([p])
                         )
                     except Exception as e:
-                        logger.warning(f"Failed to delete variant storage {variant_path}: {e}")
-
-                # Delete variant from database
+                        logger.warning(f"Failed to delete child storage {child_path}: {e}")
                 self.supabase.table("generated_ads").delete().eq(
-                    "id", variant["id"]
+                    "id", child["id"]
                 ).execute()
                 deleted_variants += 1
-                logger.info(f"Deleted variant {variant['id']}")
+                logger.info(f"Deleted size variant {child['id']}")
 
         # Delete main ad from storage
         storage_deleted = False
@@ -1135,6 +1173,7 @@ This is a SIZE VARIANT - the content should be IDENTICAL, only the canvas dimens
         return {
             "deleted_ad_id": str(ad_id),
             "deleted_variants": deleted_variants,
+            "unlinked_edits": unlinked_edits,
             "storage_deleted": storage_deleted
         }
 

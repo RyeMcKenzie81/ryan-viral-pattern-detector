@@ -155,7 +155,7 @@ def get_ads_for_run(ad_run_id: str):
             "id, prompt_index, storage_path, hook_text, final_status, "
             "claude_review, gemini_review, reviewers_agree, created_at, "
             "model_requested, model_used, generation_time_ms, generation_retries, "
-            "parent_ad_id, variant_size, is_imported, canvas_size"
+            "parent_ad_id, edit_parent_id, variant_size, is_imported, canvas_size"
         ).eq("ad_run_id", ad_run_id).order("prompt_index").execute()
         return result.data
     except Exception as e:
@@ -565,12 +565,13 @@ def queue_evolution_job(ad_id: str, mode: str, brand_id: str = None) -> str:
         return None
 
 
-async def delete_ad_async(ad_id: str, delete_variants: bool = True) -> dict:
+async def delete_ad_async(ad_id: str, delete_variants: bool = True, unlink_edits: bool = False) -> dict:
     """Delete an ad using the AdCreationService."""
     service = get_ad_creation_service()
     return await service.delete_generated_ad(
         ad_id=UUID(ad_id),
-        delete_variants=delete_variants
+        delete_variants=delete_variants,
+        unlink_edits=unlink_edits
     )
 
 async def create_edited_ad_async(
@@ -1759,28 +1760,70 @@ else:
                                         else:
                                             # Confirmation UI
                                             st.warning("⚠️ Delete this ad?")
+                                            variant_count = 0
+                                            edit_count = 0
                                             if is_variant:
                                                 st.caption("This will delete this size variant.")
                                             else:
                                                 variant_count = len([a for a in ads if a.get('parent_ad_id') == ad_id])
+                                                edit_count = len([a for a in ads if a.get('edit_parent_id') == ad_id])
                                                 if variant_count > 0:
                                                     st.caption(f"This will also delete {variant_count} size variant(s).")
+                                                if edit_count > 0:
+                                                    st.caption(f"This ad has {edit_count} smart edit(s).")
 
-                                            del_col1, del_col2 = st.columns(2)
-                                            with del_col1:
-                                                if st.button("✅ Confirm Delete", key=f"confirm_delete_{ad_id}", type="primary"):
-                                                    with st.spinner("Deleting..."):
-                                                        try:
-                                                            result = asyncio.run(delete_ad_async(ad_id))
-                                                            st.session_state.delete_confirm_ad_id = None
-                                                            st.success(f"Deleted ad" + (f" and {result['deleted_variants']} variant(s)" if result['deleted_variants'] > 0 else ""))
-                                                            st.rerun()
-                                                        except Exception as e:
-                                                            st.error(f"Failed to delete: {e}")
-                                            with del_col2:
-                                                if st.button("Cancel", key=f"cancel_delete_{ad_id}"):
-                                                    st.session_state.delete_confirm_ad_id = None
-                                                    st.rerun()
+                                            if edit_count > 0:
+                                                # Show three options: delete all, unlink & delete, cancel
+                                                del_col1, del_col2, del_col3 = st.columns(3)
+                                                with del_col1:
+                                                    if st.button("🗑️ Delete All", key=f"confirm_delete_all_{ad_id}", type="primary"):
+                                                        with st.spinner("Deleting..."):
+                                                            try:
+                                                                result = asyncio.run(delete_ad_async(ad_id, unlink_edits=False))
+                                                                st.session_state.delete_confirm_ad_id = None
+                                                                deleted = result['deleted_variants']
+                                                                st.success(f"Deleted ad and {deleted} child(ren)")
+                                                                st.rerun()
+                                                            except Exception as e:
+                                                                st.error(f"Failed to delete: {e}")
+                                                with del_col2:
+                                                    if st.button("🔗 Unlink & Delete", key=f"confirm_unlink_{ad_id}"):
+                                                        with st.spinner("Unlinking edits and deleting..."):
+                                                            try:
+                                                                result = asyncio.run(delete_ad_async(ad_id, unlink_edits=True))
+                                                                st.session_state.delete_confirm_ad_id = None
+                                                                parts = []
+                                                                if result['deleted_variants'] > 0:
+                                                                    parts.append(f"{result['deleted_variants']} variant(s) deleted")
+                                                                if result['unlinked_edits'] > 0:
+                                                                    parts.append(f"{result['unlinked_edits']} edit(s) unlinked")
+                                                                msg = "Deleted ad"
+                                                                if parts:
+                                                                    msg += f" ({', '.join(parts)})"
+                                                                st.success(msg)
+                                                                st.rerun()
+                                                            except Exception as e:
+                                                                st.error(f"Failed to delete: {e}")
+                                                with del_col3:
+                                                    if st.button("Cancel", key=f"cancel_delete_{ad_id}"):
+                                                        st.session_state.delete_confirm_ad_id = None
+                                                        st.rerun()
+                                            else:
+                                                del_col1, del_col2 = st.columns(2)
+                                                with del_col1:
+                                                    if st.button("✅ Confirm Delete", key=f"confirm_delete_{ad_id}", type="primary"):
+                                                        with st.spinner("Deleting..."):
+                                                            try:
+                                                                result = asyncio.run(delete_ad_async(ad_id))
+                                                                st.session_state.delete_confirm_ad_id = None
+                                                                st.success(f"Deleted ad" + (f" and {result['deleted_variants']} variant(s)" if result['deleted_variants'] > 0 else ""))
+                                                                st.rerun()
+                                                            except Exception as e:
+                                                                st.error(f"Failed to delete: {e}")
+                                                with del_col2:
+                                                    if st.button("Cancel", key=f"cancel_delete_{ad_id}"):
+                                                        st.session_state.delete_confirm_ad_id = None
+                                                        st.rerun()
 
                                     st.markdown("---")
 
