@@ -1868,20 +1868,29 @@ images are reference materials to use."""
         edit_spec = original_spec.copy() if original_spec else {}
         edit_spec["edit_instructions"] = edit_prompt
 
+        # Map dimensions to canvas_size column value (e.g. "1080x1080px")
+        canvas_size = f"{dimensions}px" if dimensions else None
+
         # Get next prompt_index for this run (edits get higher indices)
+        # Filter out NULLs to avoid them sorting first in DESC order
         index_result = self.supabase.table("generated_ads").select(
             "prompt_index"
-        ).eq("ad_run_id", str(ad_run_id)).order("prompt_index", desc=True).limit(1).execute()
+        ).eq("ad_run_id", str(ad_run_id)).not_.is_(
+            "prompt_index", "null"
+        ).order("prompt_index", desc=True).limit(1).execute()
 
         next_index = 1
-        if index_result.data and index_result.data[0].get("prompt_index"):
-            next_index = index_result.data[0]["prompt_index"] + 1
+        if index_result.data:
+            max_idx = index_result.data[0].get("prompt_index")
+            if max_idx is not None:
+                next_index = max_idx + 1
 
         # Save to database
         data = {
             "id": str(new_ad_id),
             "ad_run_id": str(ad_run_id),
             "prompt_index": next_index,
+            "canvas_size": canvas_size,
             "prompt_text": full_prompt,
             "prompt_spec": edit_spec,
             "hook_text": hook_text,

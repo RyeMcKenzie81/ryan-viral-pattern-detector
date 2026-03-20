@@ -780,8 +780,16 @@ with tab_qw:
                     else:
                         st.write("")
                 with rc3:
-                    if j_status in ("completed", "failed"):
+                    if j_status == "completed":
                         if st.button("Load", key=f"seo_wf_load_{_jid}", use_container_width=True):
+                            st.session_state["seo_wf_active_job"] = _jid
+                            st.session_state["seo_wf_scroll_top"] = True
+                            st.rerun()
+                    elif j_status == "failed":
+                        if st.button("Retry", key=f"seo_wf_retry_{_jid}", use_container_width=True):
+                            from viraltracker.services.seo_pipeline.services.seo_workflow_service import SEOWorkflowService
+                            _retry_svc = SEOWorkflowService()
+                            _retry_svc.retry_job(_jid)
                             st.session_state["seo_wf_active_job"] = _jid
                             st.session_state["seo_wf_scroll_top"] = True
                             st.rerun()

@@ -696,6 +696,28 @@ def _load_source_totals(article_ids_tuple, source):
     return query.execute().data or []
 
 
+@st.cache_data(ttl=300)
+def _load_ga4_traffic_sources(_brand_id, _org_id):
+    """Fetch traffic-source breakdown from GA4 API."""
+    from viraltracker.services.seo_pipeline.services.ga4_service import GA4Service
+    try:
+        return GA4Service().fetch_traffic_sources(_brand_id, _org_id)
+    except Exception as e:
+        logger.warning(f"GA4 traffic sources fetch failed: {e}")
+        return []
+
+
+@st.cache_data(ttl=300)
+def _load_ga4_top_pages(_brand_id, _org_id):
+    """Fetch top pages by sessions from GA4 API."""
+    from viraltracker.services.seo_pipeline.services.ga4_service import GA4Service
+    try:
+        return GA4Service().fetch_top_pages(_brand_id, _org_id)
+    except Exception as e:
+        logger.warning(f"GA4 top pages fetch failed: {e}")
+        return []
+
+
 connected_integrations = _load_connected_integrations()
 
 # Default date range (used by GSC and GA4 sections)
@@ -1049,10 +1071,10 @@ else:
 
 # GA4 section — traffic data with time series
 if "ga4" in connected_integrations:
+    st.markdown("**Traffic (Google Analytics 4)**")
     ga4_article_ids = all_article_ids  # Include discovered pages
     ga4_rows = _load_ga4_analytics(tuple(ga4_article_ids), date_from.isoformat(), date_to.isoformat())
     if ga4_rows:
-        st.markdown("**Traffic (Google Analytics 4)**")
         ga4_df = pd.DataFrame(ga4_rows)
         ga4_df["date"] = pd.to_datetime(ga4_df["date"])
         ga4_df["sessions"] = ga4_df["sessions"].fillna(0).astype(int)
@@ -1107,8 +1129,76 @@ if "ga4" in connected_integrations:
         ]
         ga4_chart = alt.layer(*ga4_layers).resolve_scale(y="independent").properties(height=250)
         st.altair_chart(ga4_chart, use_container_width=True)
-    else:
-        st.info("GA4 connected. No data yet — click Sync Now or wait for daily sync.")
+
+    # Traffic sources + top pages (live API calls, cached)
+    ga4_tab1, ga4_tab2 = st.tabs(["Traffic Sources", "Top Pages"])
+
+    with ga4_tab1:
+        ga4_sources = _load_ga4_traffic_sources(brand_id, _real_org_id)
+        if ga4_sources:
+            src_df = pd.DataFrame(ga4_sources)
+            # Aggregate by channel
+            channel_totals = src_df.groupby("channel").agg(
+                sessions=("sessions", "sum"),
+                pageviews=("pageviews", "sum"),
+            ).reset_index().sort_values("sessions", ascending=False)
+
+            src_cols = st.columns(2)
+            with src_cols[0]:
+                # Bar chart
+                src_chart = alt.Chart(channel_totals).mark_bar(color="#4285F4").encode(
+                    x=alt.X("sessions:Q", title="Sessions"),
+                    y=alt.Y("channel:N", title="", sort="-x"),
+                    tooltip=[
+                        alt.Tooltip("channel:N", title="Channel"),
+                        alt.Tooltip("sessions:Q", format=",", title="Sessions"),
+                        alt.Tooltip("pageviews:Q", format=",", title="Pageviews"),
+                    ],
+                ).properties(height=max(len(channel_totals) * 30, 150))
+                st.altair_chart(src_chart, use_container_width=True)
+            with src_cols[1]:
+                st.dataframe(
+                    channel_totals.rename(columns={
+                        "channel": "Channel",
+                        "sessions": "Sessions",
+                        "pageviews": "Pageviews",
+                    }),
+                    column_config={
+                        "Sessions": st.column_config.NumberColumn(format="%d"),
+                        "Pageviews": st.column_config.NumberColumn(format="%d"),
+                    },
+                    use_container_width=True,
+                    hide_index=True,
+                )
+        else:
+            st.info("No traffic source data available.")
+
+    with ga4_tab2:
+        ga4_pages = _load_ga4_top_pages(brand_id, _real_org_id)
+        if ga4_pages:
+            pages_df = pd.DataFrame(ga4_pages)
+            st.dataframe(
+                pages_df.rename(columns={
+                    "page_path": "Page",
+                    "sessions": "Sessions",
+                    "pageviews": "Pageviews",
+                    "avg_time_on_page": "Avg Time (s)",
+                    "bounce_rate": "Bounce Rate (%)",
+                }),
+                column_config={
+                    "Sessions": st.column_config.NumberColumn(format="%d"),
+                    "Pageviews": st.column_config.NumberColumn(format="%d"),
+                    "Avg Time (s)": st.column_config.NumberColumn(format="%.0f"),
+                    "Bounce Rate (%)": st.column_config.NumberColumn(format="%.1f"),
+                },
+                use_container_width=True,
+                hide_index=True,
+            )
+        else:
+            st.info("No page data available.")
+
+    if not ga4_rows:
+        st.info("No synced GA4 data yet — click Sync Now to populate the time series chart.")
 else:
     with st.container(border=True):
         st.markdown("**Connect Google Analytics 4** to see traffic and engagement data.")
@@ -1276,6 +1366,8 @@ if connected_integrations:
                 _load_discovered_articles.clear()
                 _load_gsc_analytics.clear()
                 _load_ga4_analytics.clear()
+                _load_ga4_traffic_sources.clear()
+                _load_ga4_top_pages.clear()
 
                 for source, result in results.items():
                     if "error" in result:

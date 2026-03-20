@@ -9,7 +9,7 @@ SA JSON stored in brand_integrations config.
 import json
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from viraltracker.services.seo_pipeline.services.base_analytics_service import BaseAnalyticsService
 
@@ -114,6 +114,146 @@ class GA4Service(BaseAnalyticsService):
             rows.append({
                 "page_path": page_path,
                 "date": date_iso,
+                "sessions": int(row.metric_values[0].value or 0),
+                "pageviews": int(row.metric_values[1].value or 0),
+                "avg_time_on_page": float(row.metric_values[2].value or 0),
+                "bounce_rate": float(row.metric_values[3].value or 0),
+            })
+
+        return rows
+
+    def fetch_traffic_sources(
+        self,
+        brand_id: str,
+        organization_id: str,
+        days_back: int = 28,
+    ) -> List[Dict[str, Any]]:
+        """
+        Fetch traffic source breakdown from GA4 Data API.
+
+        Dimensions: sessionDefaultChannelGroup, date
+        Metrics: sessions, screenPageViews
+
+        Returns:
+            List of row dicts with channel, date, sessions, pageviews
+        """
+        from google.analytics.data_v1beta.types import (
+            DateRange,
+            Dimension,
+            Metric,
+            RunReportRequest,
+        )
+
+        config = self._load_integration_config(brand_id, organization_id, self.PLATFORM)
+        if not config:
+            raise ValueError("GA4 integration not configured")
+
+        property_id = config.get("property_id")
+        if not property_id:
+            raise ValueError("GA4 config missing property_id")
+
+        client = self._get_ga4_client(config)
+
+        end_date = datetime.now(timezone.utc).date()
+        start_date = end_date - timedelta(days=days_back)
+
+        request = RunReportRequest(
+            property=f"properties/{property_id}",
+            date_ranges=[DateRange(
+                start_date=start_date.isoformat(),
+                end_date=end_date.isoformat(),
+            )],
+            dimensions=[
+                Dimension(name="sessionDefaultChannelGroup"),
+                Dimension(name="date"),
+            ],
+            metrics=[
+                Metric(name="sessions"),
+                Metric(name="screenPageViews"),
+            ],
+            limit=10000,
+        )
+
+        response = client.run_report(request)
+
+        rows = []
+        for row in response.rows:
+            channel = row.dimension_values[0].value
+            date_str = row.dimension_values[1].value
+            date_iso = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
+
+            rows.append({
+                "channel": channel,
+                "date": date_iso,
+                "sessions": int(row.metric_values[0].value or 0),
+                "pageviews": int(row.metric_values[1].value or 0),
+            })
+
+        return rows
+
+    def fetch_top_pages(
+        self,
+        brand_id: str,
+        organization_id: str,
+        days_back: int = 28,
+    ) -> List[Dict[str, Any]]:
+        """
+        Fetch top pages by sessions from GA4 Data API.
+
+        Dimensions: pagePath
+        Metrics: sessions, screenPageViews, averageSessionDuration, bounceRate
+
+        Returns:
+            List of row dicts with page_path, sessions, pageviews, etc.
+        """
+        from google.analytics.data_v1beta.types import (
+            DateRange,
+            Dimension,
+            Metric,
+            OrderBy,
+            RunReportRequest,
+        )
+
+        config = self._load_integration_config(brand_id, organization_id, self.PLATFORM)
+        if not config:
+            raise ValueError("GA4 integration not configured")
+
+        property_id = config.get("property_id")
+        if not property_id:
+            raise ValueError("GA4 config missing property_id")
+
+        client = self._get_ga4_client(config)
+
+        end_date = datetime.now(timezone.utc).date()
+        start_date = end_date - timedelta(days=days_back)
+
+        request = RunReportRequest(
+            property=f"properties/{property_id}",
+            date_ranges=[DateRange(
+                start_date=start_date.isoformat(),
+                end_date=end_date.isoformat(),
+            )],
+            dimensions=[
+                Dimension(name="pagePath"),
+            ],
+            metrics=[
+                Metric(name="sessions"),
+                Metric(name="screenPageViews"),
+                Metric(name="averageSessionDuration"),
+                Metric(name="bounceRate"),
+            ],
+            order_bys=[
+                OrderBy(metric=OrderBy.MetricOrderBy(metric_name="sessions"), desc=True),
+            ],
+            limit=50,
+        )
+
+        response = client.run_report(request)
+
+        rows = []
+        for row in response.rows:
+            rows.append({
+                "page_path": row.dimension_values[0].value,
                 "sessions": int(row.metric_values[0].value or 0),
                 "pageviews": int(row.metric_values[1].value or 0),
                 "avg_time_on_page": float(row.metric_values[2].value or 0),

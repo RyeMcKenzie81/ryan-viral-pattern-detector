@@ -528,11 +528,36 @@ class ContentGenerationService:
 
         start_time = time.time()
 
-        response = self.anthropic_client.messages.create(
-            model=model,
-            max_tokens=8192,
-            messages=[{"role": "user", "content": prompt}],
-        )
+        # Retry on transient connection errors (HTTP/2 drops, timeouts)
+        max_retries = 3
+        last_error = None
+        for attempt in range(max_retries):
+            try:
+                response = self.anthropic_client.messages.create(
+                    model=model,
+                    max_tokens=8192,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                break
+            except Exception as e:
+                last_error = e
+                err_name = type(e).__name__
+                if attempt < max_retries - 1 and err_name in (
+                    "ConnectionTerminated", "RemoteProtocolError",
+                    "ConnectError", "ReadTimeout", "APIConnectionError",
+                ):
+                    wait = (attempt + 1) * 10
+                    logger.warning(
+                        f"Phase {phase.upper()} attempt {attempt + 1} failed ({err_name}), "
+                        f"retrying in {wait}s..."
+                    )
+                    time.sleep(wait)
+                    # Force new HTTP connection on retry
+                    self._anthropic = None
+                else:
+                    raise
+        else:
+            raise last_error
 
         duration_ms = int((time.time() - start_time) * 1000)
         content = response.content[0].text

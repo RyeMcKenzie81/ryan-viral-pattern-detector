@@ -11,7 +11,6 @@ Token refresh follows the same pattern as CMSPublisherService (auto-refresh on e
 import json
 import logging
 import os
-import base64
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
