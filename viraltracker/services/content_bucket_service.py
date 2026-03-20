@@ -44,7 +44,8 @@ VIDEO_ANALYSIS_PROMPT = """Analyze this video and return a JSON object with the 
   "solution": "The main solution or product positioning",
   "tone": "Overall tone (e.g., urgent, educational, testimonial, emotional)",
   "format_type": "Video format (e.g., UGC, talking head, slideshow, B-roll, before/after)",
-  "key_themes": ["Main themes or topics covered"]
+  "key_themes": ["Main themes or topics covered"],
+  "language": "Primary language of the spoken content (ISO 639-1 code, e.g., 'en' for English, 'es' for Spanish). If no speech, detect from text overlays. If neither, return 'en'."
 }
 
 Return ONLY the JSON object, no other text."""
@@ -62,20 +63,24 @@ IMAGE_ANALYSIS_PROMPT = """Analyze this image and return a JSON object with the 
   "solution": "The main solution or product positioning",
   "tone": "Overall tone (e.g., urgent, educational, testimonial, emotional)",
   "format_type": "Image format (e.g., static ad, carousel card, infographic, before/after, lifestyle, product shot)",
-  "key_themes": ["Main themes or topics covered"]
+  "key_themes": ["Main themes or topics covered"],
+  "language": "Primary language of the text in the image (ISO 639-1 code, e.g., 'en' for English, 'es' for Spanish). If no text, return 'en'."
 }
 
 Return ONLY the JSON object, no other text."""
 
 CATEGORIZATION_PROMPT_TEMPLATE = """You are a content categorizer for ad campaigns.
 
-Given a content analysis and a set of content buckets, determine which bucket is the BEST fit.
+Given a content analysis, a set of content buckets, and a product catalog, determine which bucket is the BEST fit and which product the content is about.
 
 ## Content Analysis
 {content_analysis}
 
 ## Available Buckets
 {buckets_description}
+
+## Product Catalog
+{product_catalog}
 
 ## Instructions
 Choose the single best-matching bucket based on:
@@ -84,18 +89,24 @@ Choose the single best-matching bucket based on:
 3. Solution mechanism match
 4. Tone and avatar fit
 
+Also identify which product from the catalog the content is about. If the content discusses a product that is NOT in the catalog, set `detected_product_id` to null but still set `detected_product_name` to the product name you detected from the content. This helps the user identify products missing from their catalog.
+
 Return a JSON object:
 {{
   "bucket_name": "Exact name of the chosen bucket",
   "confidence_score": 0.85,
-  "reasoning": "1-2 sentence explanation of why this bucket is the best fit"
+  "reasoning": "1-2 sentence explanation of why this bucket is the best fit",
+  "detected_product_id": "UUID from catalog or null if not in catalog",
+  "detected_product_name": "Product name from catalog, or best guess from content, or null if no product detected"
 }}
 
 If no bucket is a good fit (confidence < 0.3), return:
 {{
   "bucket_name": "Uncategorized",
   "confidence_score": 0.0,
-  "reasoning": "Explanation of why no bucket fits"
+  "reasoning": "Explanation of why no bucket fits",
+  "detected_product_id": null,
+  "detected_product_name": null
 }}
 
 Return ONLY the JSON object, no other text."""
@@ -261,6 +272,22 @@ class ContentBucketService:
         self._db.table("content_buckets").delete().eq("id", bucket_id).execute()
         return True
 
+    # ─── Product Catalog ──────────────────────────────────────────────
+
+    def get_products_for_brand(self, brand_id: str) -> List[Dict[str, Any]]:
+        """Fetch active products for a brand (used for product detection in categorization).
+
+        Args:
+            brand_id: Brand ID.
+
+        Returns:
+            List of product dicts with id, name, benefits, key_ingredients, etc.
+        """
+        result = self._db.table("products").select(
+            "id, name, description, benefits, key_ingredients, target_audience, unique_selling_points"
+        ).eq("brand_id", brand_id).eq("is_active", True).order("name").execute()
+        return result.data or []
+
     # ─── Content Analysis ──────────────────────────────────────────────
 
     def analyze_video(
@@ -404,19 +431,23 @@ class ContentBucketService:
             return {"error": str(e)[:500]}
 
     def categorize_content(
-        self, analysis: Dict[str, Any], buckets: List[Dict[str, Any]]
+        self, analysis: Dict[str, Any], buckets: List[Dict[str, Any]],
+        products: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """Categorize content into a bucket using text-only Gemini call.
 
         Works for both image and video analyses — conditionally includes
-        transcript/hook only when present.
+        transcript/hook only when present. Also detects which product
+        the content is about from the provided product catalog.
 
         Args:
             analysis: Analysis dict from analyze_video() or analyze_image().
             buckets: List of bucket dicts from get_buckets().
+            products: Optional product catalog for product detection.
 
         Returns:
-            Dict with bucket_name, confidence_score, reasoning.
+            Dict with bucket_name, confidence_score, reasoning,
+            detected_product_id, detected_product_name.
         """
         from google import genai
 
@@ -472,9 +503,45 @@ class ContentBucketService:
             )
             bucket_descs.append(desc)
 
+        # Build product catalog string
+        if products:
+            product_lines = []
+            for p in products:
+                benefits = p.get("benefits") or []
+                if isinstance(benefits, str):
+                    try:
+                        benefits = json.loads(benefits)
+                    except (json.JSONDecodeError, TypeError):
+                        benefits = [benefits] if benefits else []
+                ingredients = p.get("key_ingredients") or []
+                if isinstance(ingredients, str):
+                    try:
+                        ingredients = json.loads(ingredients)
+                    except (json.JSONDecodeError, TypeError):
+                        ingredients = [ingredients] if ingredients else []
+                usps = p.get("unique_selling_points") or []
+                if isinstance(usps, str):
+                    try:
+                        usps = json.loads(usps)
+                    except (json.JSONDecodeError, TypeError):
+                        usps = [usps] if usps else []
+
+                pline = (
+                    f"### {p['name']} (ID: {p['id']})\n"
+                    f"- Benefits: {', '.join(benefits[:5]) if benefits else 'N/A'}\n"
+                    f"- Key Ingredients: {', '.join(ingredients[:5]) if ingredients else 'N/A'}\n"
+                    f"- Target Audience: {p.get('target_audience') or 'N/A'}\n"
+                    f"- USPs: {', '.join(usps[:3]) if usps else 'N/A'}"
+                )
+                product_lines.append(pline)
+            product_catalog = "\n\n".join(product_lines)
+        else:
+            product_catalog = "No product catalog available. Return null for product fields."
+
         prompt = CATEGORIZATION_PROMPT_TEMPLATE.format(
             content_analysis=content_summary,
             buckets_description="\n\n".join(bucket_descs),
+            product_catalog=product_catalog,
         )
 
         try:
@@ -506,6 +573,7 @@ class ContentBucketService:
         session_id: str,
         progress_callback: Optional[Callable] = None,
         source: str = "upload",
+        brand_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Process a batch of files (images + videos): analyze each then categorize.
 
@@ -521,6 +589,7 @@ class ContentBucketService:
             session_id: UUID grouping this upload batch.
             progress_callback: Optional fn(index, total, filename, status_msg).
             source: Origin of the files ('upload' or 'google_drive').
+            brand_id: Optional brand ID for product detection.
 
         Returns:
             List of result dicts for each file.
@@ -528,6 +597,9 @@ class ContentBucketService:
         resolved_org = self._resolve_org_id(org_id, product_id)
         results = []
         total = len(files)
+
+        # Fetch product catalog for product detection
+        products = self.get_products_for_brand(brand_id) if brand_id else None
 
         # Build bucket lookup by name
         bucket_lookup = {b["name"]: b["id"] for b in buckets}
@@ -600,11 +672,22 @@ class ContentBucketService:
                 progress_callback(i, total, filename, "Categorizing...")
 
             # Step 2: Categorize (text-only call, media-agnostic)
-            categorization = self.categorize_content(analysis, buckets)
+            categorization = self.categorize_content(analysis, buckets, products=products)
 
             bucket_name = categorization.get("bucket_name", "Uncategorized")
             bucket_id = bucket_lookup.get(bucket_name)
             confidence = categorization.get("confidence_score", 0.0)
+
+            # Extract language from analysis, product from categorization
+            detected_language = analysis.get("language", "en")
+            detected_product_id = categorization.get("detected_product_id")
+            detected_product_name = categorization.get("detected_product_name")
+
+            # Validate product ID is a real UUID from catalog (Gemini may hallucinate)
+            if detected_product_id and products:
+                valid_ids = {p["id"] for p in products}
+                if detected_product_id not in valid_ids:
+                    detected_product_id = None
 
             # Step 3: Save to DB
             record = {
@@ -622,7 +705,11 @@ class ContentBucketService:
                 "session_id": session_id,
                 "media_type": media_type,
                 "source": source,
+                "detected_language": detected_language,
+                "detected_product_name": detected_product_name,
             }
+            if detected_product_id:
+                record["detected_product_id"] = detected_product_id
             self._db.table("content_bucket_categorizations").insert(record).execute()
 
             result = {
@@ -633,6 +720,8 @@ class ContentBucketService:
                 "reasoning": categorization.get("reasoning", ""),
                 "summary": analysis.get("summary", ""),
                 "media_type": media_type,
+                "detected_product_name": detected_product_name,
+                "detected_language": detected_language,
             }
             results.append(result)
 

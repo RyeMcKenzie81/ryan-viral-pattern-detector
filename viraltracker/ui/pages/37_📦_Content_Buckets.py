@@ -309,6 +309,7 @@ def render_categorize_content(product_id: str, org_id: str, brand_id: str):
             product_id=product_id,
             org_id=org_id,
             session_id=session_id,
+            brand_id=brand_id,
         )
 
         # Merge: replace old entries with new results
@@ -343,7 +344,7 @@ def render_categorize_content(product_id: str, org_id: str, brand_id: str):
         st.info(f"**{' + '.join(parts)}** ready. Estimated time: {est_str}.")
 
         if st.button("Analyze & Categorize", type="primary", disabled=st.session_state.vb_processing):
-            _run_batch(uploaded_files, buckets, product_id, org_id, service, source="upload")
+            _run_batch(uploaded_files, buckets, product_id, org_id, service, source="upload", brand_id=brand_id)
 
     elif uploaded_files and len(uploaded_files) > 30:
         st.error(f"Maximum 30 files per batch ({len(uploaded_files)} selected). Please reduce your selection.")
@@ -386,44 +387,51 @@ def render_categorize_content(product_id: str, org_id: str, brand_id: str):
                 _retry_files(error_filenames)
 
     # Results table with per-row retry buttons
-    hdr_cols = st.columns([3, 2, 1, 1, 1])
+    hdr_cols = st.columns([3, 2, 1.5, 0.5, 1, 1, 1])
     hdr_cols[0].markdown("**Filename**")
     hdr_cols[1].markdown("**Bucket**")
-    hdr_cols[2].markdown("**Confidence**")
-    hdr_cols[3].markdown("**Status**")
-    hdr_cols[4].markdown("**Action**")
+    hdr_cols[2].markdown("**Product**")
+    hdr_cols[3].markdown("**Lang**")
+    hdr_cols[4].markdown("**Confidence**")
+    hdr_cols[5].markdown("**Status**")
+    hdr_cols[6].markdown("**Action**")
 
     for i, r in enumerate(results):
-        row_cols = st.columns([3, 2, 1, 1, 1])
+        row_cols = st.columns([3, 2, 1.5, 0.5, 1, 1, 1])
         row_cols[0].text(r["filename"])
         row_cols[1].text(r.get("bucket_name", "—"))
+        row_cols[2].text(r.get("detected_product_name") or "—")
+        lang = r.get("detected_language", "en")
+        row_cols[3].text({"en": "EN", "es": "ES"}.get(lang, lang.upper() if lang else "—"))
         conf = r.get("confidence_score")
-        row_cols[2].text(f"{conf:.0%}" if conf else "—")
+        row_cols[4].text(f"{conf:.0%}" if conf else "—")
         status = r.get("status", "unknown")
-        row_cols[3].text(status)
+        row_cols[5].text(status)
 
         if status == "error":
-            if row_cols[4].button("Retry", key=f"retry_{i}_{r['filename']}"):
+            if row_cols[6].button("Retry", key=f"retry_{i}_{r['filename']}"):
                 with st.spinner(f"Retrying {r['filename']}..."):
                     _retry_files([r["filename"]])
 
-    # ── Download per bucket (ZIP) ──────────────────────────────────
+    # ── Download per Product x Language x Bucket (ZIP) ───────────
     file_map = st.session_state.vb_file_map
     categorized_results = [r for r in results if r.get("status") == "categorized" and r.get("bucket_name")]
     if categorized_results and file_map:
         st.divider()
         st.subheader("Download by Bucket")
 
-        # Group by bucket
-        buckets_map: dict[str, list] = {}
+        # Group by Product x Language x Bucket
+        groups: dict[str, list] = {}
         for r in categorized_results:
+            product_name = r.get("detected_product_name") or "Unknown"
+            lang = r.get("detected_language", "en")
+            lang_label = {"en": "English", "es": "Spanish"}.get(lang, lang.upper() if lang else "Unknown")
             bname = r["bucket_name"]
-            if bname not in buckets_map:
-                buckets_map[bname] = []
-            buckets_map[bname].append(r["filename"])
+            group_key = f"{product_name} / {lang_label} / {bname}"
+            groups.setdefault(group_key, []).append(r["filename"])
 
-        dl_cols = st.columns(min(len(buckets_map), 3))
-        for idx, (bucket_name, filenames) in enumerate(sorted(buckets_map.items())):
+        dl_cols = st.columns(min(len(groups), 3))
+        for idx, (group_key, filenames) in enumerate(sorted(groups.items())):
             available = [fn for fn in filenames if fn in file_map]
             if not available:
                 continue
@@ -433,17 +441,19 @@ def render_categorize_content(product_id: str, org_id: str, brand_id: str):
                     zf.writestr(fn, file_map[fn]["bytes"])
             zip_buffer.seek(0)
 
+            # Build a safe filename from the group key
+            safe_name = group_key.replace(" / ", "_").replace(" ", "_").replace(",", "")
             col = dl_cols[idx % len(dl_cols)]
             col.download_button(
-                f"Download {bucket_name} ({len(available)} files)",
+                f"{group_key} ({len(available)})",
                 data=zip_buffer.getvalue(),
-                file_name=f"{bucket_name.replace(' ', '_')}.zip",
+                file_name=f"{safe_name}.zip",
                 mime="application/zip",
                 key=f"dl_bucket_{idx}",
             )
 
 
-def _run_batch(uploaded_files, buckets, product_id, org_id, service, source="upload"):
+def _run_batch(uploaded_files, buckets, product_id, org_id, service, source="upload", brand_id=None):
     """Run the analyze + categorize batch for uploaded files."""
     session_id = str(uuid4())
     st.session_state.vb_session_id = session_id
@@ -482,6 +492,7 @@ def _run_batch(uploaded_files, buckets, product_id, org_id, service, source="upl
             session_id=session_id,
             progress_callback=progress_callback,
             source=source,
+            brand_id=brand_id,
         )
 
         st.session_state.vb_results = results
@@ -637,6 +648,7 @@ def _render_drive_import(brand_id, resolved_org, product_id, org_id, buckets, se
                 session_id=session_id,
                 progress_callback=progress_callback,
                 source="google_drive",
+                brand_id=brand_id,
             )
 
             st.session_state.vb_results = results
@@ -686,19 +698,53 @@ def render_results(product_id: str, org_id: str, brand_id: str):
         st.warning("No results found for this session.")
         return
 
+    # Filters
+    filter_cols = st.columns(3)
+
     # Media type filter
     media_types_in_session = set(r.get("media_type", "video") for r in results)
     if len(media_types_in_session) > 1:
-        filter_choice = st.radio(
-            "Filter by type",
-            ["All", "Images", "Videos"],
-            horizontal=True,
-            key=f"media_filter_{selected_session[:8]}",
-        )
-        if filter_choice == "Images":
-            results = [r for r in results if r.get("media_type") == "image"]
-        elif filter_choice == "Videos":
-            results = [r for r in results if r.get("media_type") == "video"]
+        with filter_cols[0]:
+            filter_choice = st.radio(
+                "Filter by type",
+                ["All", "Images", "Videos"],
+                horizontal=True,
+                key=f"media_filter_{selected_session[:8]}",
+            )
+            if filter_choice == "Images":
+                results = [r for r in results if r.get("media_type") == "image"]
+            elif filter_choice == "Videos":
+                results = [r for r in results if r.get("media_type") == "video"]
+
+    # Language filter
+    languages_in_session = set(r.get("detected_language", "en") for r in results)
+    if len(languages_in_session) > 1:
+        with filter_cols[1]:
+            lang_filter = st.radio(
+                "Filter by language",
+                ["All", "English", "Spanish"],
+                horizontal=True,
+                key=f"lang_filter_{selected_session[:8]}",
+            )
+            if lang_filter == "English":
+                results = [r for r in results if r.get("detected_language", "en") == "en"]
+            elif lang_filter == "Spanish":
+                results = [r for r in results if r.get("detected_language") == "es"]
+
+    # Product filter
+    products_in_session = sorted(set(
+        r.get("detected_product_name") or "Unknown"
+        for r in results if r.get("status") == "categorized"
+    ))
+    if len(products_in_session) > 1:
+        with filter_cols[2]:
+            product_filter = st.selectbox(
+                "Filter by product",
+                ["All"] + products_in_session,
+                key=f"product_filter_{selected_session[:8]}",
+            )
+            if product_filter != "All":
+                results = [r for r in results if (r.get("detected_product_name") or "Unknown") == product_filter]
 
     # Summary stats
     categorized = sum(1 for r in results if r.get("status") == "categorized")
@@ -746,6 +792,7 @@ def render_results(product_id: str, org_id: str, brand_id: str):
                         product_id=product_id,
                         org_id=org_id,
                         session_id=selected_session,
+                        brand_id=brand_id,
                     )
                 st.rerun()
 
@@ -756,6 +803,8 @@ def render_results(product_id: str, org_id: str, brand_id: str):
             "Filename": r["filename"],
             "Type": r.get("media_type", "video").capitalize(),
             "Bucket": r.get("bucket_name") or "—",
+            "Product": r.get("detected_product_name") or "—",
+            "Language": {"en": "EN", "es": "ES"}.get(r.get("detected_language", "en"), r.get("detected_language", "—").upper() if r.get("detected_language") else "—"),
             "Confidence": round(r.get("confidence_score") or 0, 2),
             "Reasoning": r.get("reasoning") or "—",
             "Status": r.get("status", "unknown"),
@@ -814,6 +863,13 @@ def render_results(product_id: str, org_id: str, brand_id: str):
     for r in results:
         media_type = r.get("media_type", "video")
         with st.expander(f"`{r['filename']}` → {r.get('bucket_name', '—')}"):
+            # Product and language
+            det_product = r.get("detected_product_name")
+            det_lang = r.get("detected_language", "en")
+            lang_display = {"en": "English", "es": "Spanish"}.get(det_lang, det_lang.upper() if det_lang else "Unknown")
+            if det_product:
+                st.markdown(f"**Product:** {det_product}")
+            st.markdown(f"**Language:** {lang_display}")
             if r.get("summary"):
                 st.markdown(f"**Summary:** {r['summary']}")
             if r.get("reasoning"):
@@ -907,23 +963,48 @@ def _render_drive_export(brand_id: str, org_id: str, session_id: str, results):
         uploaded_count = 0
         failed_count = 0
 
-        # Group by bucket for subfolder creation
-        by_bucket: dict[str, list] = {}
+        # Group by Product > Language > Bucket for nested subfolder creation
+        by_product_lang_bucket: dict[tuple, list] = {}
         for r in categorized_with_bytes:
+            product_name = r.get("detected_product_name") or "Unknown Product"
+            lang = r.get("detected_language", "en")
+            lang_label = {"en": "English", "es": "Spanish"}.get(lang, lang.upper() if lang else "Unknown")
             bname = r.get("bucket_name", "Uncategorized")
-            by_bucket.setdefault(bname, []).append(r)
+            key = (product_name, lang_label, bname)
+            by_product_lang_bucket.setdefault(key, []).append(r)
 
         skipped_count = 0
+        # Cache created folder IDs to avoid redundant API calls
+        folder_cache: dict[str, str] = {}
 
-        for bucket_name, bucket_results in by_bucket.items():
-            # Create per-bucket subfolder
+        for (product_name, lang_label, bucket_name), group_results in by_product_lang_bucket.items():
             try:
-                subfolder_id = GoogleDriveService.get_or_create_folder(
-                    token, bucket_name, selected["id"]
-                )
+                # Product folder
+                product_cache_key = product_name
+                if product_cache_key not in folder_cache:
+                    folder_cache[product_cache_key] = GoogleDriveService.get_or_create_folder(
+                        token, product_name, selected["id"]
+                    )
+                product_folder_id = folder_cache[product_cache_key]
+
+                # Language folder
+                lang_cache_key = f"{product_name}/{lang_label}"
+                if lang_cache_key not in folder_cache:
+                    folder_cache[lang_cache_key] = GoogleDriveService.get_or_create_folder(
+                        token, lang_label, product_folder_id
+                    )
+                lang_folder_id = folder_cache[lang_cache_key]
+
+                # Bucket folder
+                bucket_cache_key = f"{product_name}/{lang_label}/{bucket_name}"
+                if bucket_cache_key not in folder_cache:
+                    folder_cache[bucket_cache_key] = GoogleDriveService.get_or_create_folder(
+                        token, bucket_name, lang_folder_id
+                    )
+                subfolder_id = folder_cache[bucket_cache_key]
             except Exception as e:
-                st.warning(f"Failed to create folder '{bucket_name}': {e}")
-                failed_count += len(bucket_results)
+                st.warning(f"Failed to create folder '{product_name}/{lang_label}/{bucket_name}': {e}")
+                failed_count += len(group_results)
                 continue
 
             # List existing files in subfolder to avoid duplicates
@@ -933,7 +1014,7 @@ def _render_drive_export(brand_id: str, org_id: str, session_id: str, results):
             except Exception:
                 existing_names = set()
 
-            for r in bucket_results:
+            for r in group_results:
                 filename = r["filename"]
 
                 if filename in existing_names:
@@ -941,7 +1022,7 @@ def _render_drive_export(brand_id: str, org_id: str, session_id: str, results):
                     progress_bar.progress((uploaded_count + failed_count + skipped_count) / total)
                     continue
 
-                status.markdown(f"Uploading `{filename}` to `{bucket_name}/`...")
+                status.markdown(f"Uploading `{filename}` to `{product_name}/{lang_label}/{bucket_name}/`...")
 
                 try:
                     fb = file_map[filename]["bytes"]
@@ -973,7 +1054,7 @@ def _render_drive_export(brand_id: str, org_id: str, session_id: str, results):
 # ============================================
 
 def render_uploaded(product_id: str, org_id: str):
-    """Render a reference list of all files marked as uploaded, grouped by bucket."""
+    """Render a reference list of all files marked as uploaded, grouped by Product x Language x Bucket."""
     service = get_service()
     uploaded = service.get_uploaded_files(product_id, org_id)
 
@@ -981,19 +1062,21 @@ def render_uploaded(product_id: str, org_id: str):
         st.info("No files have been marked as uploaded yet. Use the **Results** tab to mark files after uploading them to your ad platform.")
         return
 
-    # Group by bucket
-    buckets_map: dict[str, list] = {}
+    # Group by Product x Language x Bucket
+    groups: dict[str, list] = {}
     for r in uploaded:
+        product_name = r.get("detected_product_name") or "Unknown"
+        lang = r.get("detected_language", "en")
+        lang_label = {"en": "English", "es": "Spanish"}.get(lang, lang.upper() if lang else "Unknown")
         bname = r.get("bucket_name") or "Uncategorized"
-        if bname not in buckets_map:
-            buckets_map[bname] = []
-        buckets_map[bname].append(r)
+        group_key = f"{product_name} / {lang_label} / {bname}"
+        groups.setdefault(group_key, []).append(r)
 
     st.subheader(f"Uploaded Files ({len(uploaded)} total)")
 
-    for bucket_name in sorted(buckets_map.keys()):
-        files = buckets_map[bucket_name]
-        with st.expander(f"**{bucket_name}** ({len(files)} files)", expanded=True):
+    for group_key in sorted(groups.keys()):
+        files = groups[group_key]
+        with st.expander(f"**{group_key}** ({len(files)} files)", expanded=True):
             for i, r in enumerate(files):
                 row_cols = st.columns([4, 2, 1])
                 row_cols[0].text(r["filename"])
