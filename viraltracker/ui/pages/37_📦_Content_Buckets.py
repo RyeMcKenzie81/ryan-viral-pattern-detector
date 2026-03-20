@@ -499,12 +499,12 @@ def _run_batch(uploaded_files, buckets, product_id, org_id, service, source="upl
 # DRIVE IMPORT HELPERS
 # ============================================
 
-def _render_drive_connect_button(brand_id: str, org_id: str):
+def _render_drive_connect_button(brand_id: str, org_id: str, key_suffix: str = "import"):
     """Show the Connect Google Drive button with OAuth flow."""
     from viraltracker.services.google_drive_service import GoogleDriveService
     from viraltracker.services.google_oauth_utils import encode_oauth_state
 
-    if st.button("Connect Google Drive", key="cb_drive_connect"):
+    if st.button("Connect Google Drive", key=f"cb_drive_connect_{key_suffix}"):
         nonce = str(uuid4())[:8]
         state = encode_oauth_state(brand_id, org_id, nonce)
         redirect_uri = _get_oauth_redirect_uri()
@@ -875,7 +875,7 @@ def _render_drive_export(brand_id: str, org_id: str, session_id: str, results):
     resolved_org = _resolve_org_id_for_brand(brand_id, org_id)
 
     if not drive_svc.is_connected(brand_id, resolved_org):
-        _render_drive_connect_button(brand_id, org_id)
+        _render_drive_connect_button(brand_id, org_id, key_suffix="export")
         return
 
     from viraltracker.ui.drive_picker import render_drive_folder_picker
