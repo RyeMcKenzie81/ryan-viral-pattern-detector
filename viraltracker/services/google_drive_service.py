@@ -699,6 +699,13 @@ class GoogleDriveService:
             except Exception as e:
                 logger.warning(f"Drive upload failed for {storage_path}: {e}")
                 failed += 1
+                # Surface folder-not-found early so user doesn't wait for all 404s
+                if "404" in str(e) and "File not found" in str(e) and uploaded == 0 and failed >= 3:
+                    raise Exception(
+                        f"Google Drive folder not found (ID: {folder_id}). "
+                        "The folder may have been deleted or you lost access. "
+                        "Please select a different folder and try again."
+                    )
 
             if progress_callback:
                 progress_callback(idx + 1, total)

@@ -539,15 +539,27 @@ class TemplateQueueService:
 
     def get_source_brands(self) -> List[str]:
         """Get distinct non-null source brand names from active templates."""
-        result = self.supabase.table("scraped_templates").select(
-            "source_brand"
-        ).eq("is_active", True).not_.is_("source_brand", "null").execute()
+        # Paginate to avoid Supabase default 1000-row limit
+        all_brands = set()
+        page_size = 1000
+        offset = 0
+        while True:
+            result = self.supabase.table("scraped_templates").select(
+                "source_brand"
+            ).eq("is_active", True).not_.is_(
+                "source_brand", "null"
+            ).range(offset, offset + page_size - 1).execute()
 
-        brands = sorted(set(
-            r["source_brand"] for r in (result.data or [])
-            if r.get("source_brand")
-        ))
-        return brands
+            rows = result.data or []
+            for r in rows:
+                if r.get("source_brand"):
+                    all_brands.add(r["source_brand"])
+
+            if len(rows) < page_size:
+                break
+            offset += page_size
+
+        return sorted(all_brands, key=lambda x: x.lower())
 
     def get_template_categories(self) -> List[str]:
         """Get list of valid template categories."""

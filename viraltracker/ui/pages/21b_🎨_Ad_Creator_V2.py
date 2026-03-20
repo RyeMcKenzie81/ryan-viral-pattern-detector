@@ -350,6 +350,7 @@ def _render_manual_template_selection():
         source_brand = st.selectbox(
             "Source Brand",
             options=brand_options,
+            format_func=lambda x: x.replace("_", " ").title() if x != "All" else x,
             key="v2_filter_source_brand",
         )
 
