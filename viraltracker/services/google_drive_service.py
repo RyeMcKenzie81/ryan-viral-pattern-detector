@@ -259,6 +259,8 @@ class GoogleDriveService:
                     "spaces": "drive",
                     "orderBy": "name",
                     "pageSize": min(page_size, 1000),
+                    "supportsAllDrives": "true",
+                    "includeItemsFromAllDrives": "true",
                 }
                 if page_token:
                     params["pageToken"] = page_token
@@ -311,6 +313,8 @@ class GoogleDriveService:
                     "spaces": "drive",
                     "orderBy": "name",
                     "pageSize": min(page_size, 1000),
+                    "supportsAllDrives": "true",
+                    "includeItemsFromAllDrives": "true",
                 }
                 if page_token:
                     params["pageToken"] = page_token
@@ -606,7 +610,11 @@ class GoogleDriveService:
                     "Authorization": f"Bearer {access_token}",
                     "Content-Type": f"multipart/related; boundary={boundary}",
                 },
-                params={"uploadType": "multipart", "fields": "id,name,webViewLink"},
+                params={
+                    "uploadType": "multipart",
+                    "fields": "id,name,webViewLink",
+                    "supportsAllDrives": "true",
+                },
                 content=body,
             )
 

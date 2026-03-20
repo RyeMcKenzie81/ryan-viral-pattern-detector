@@ -315,6 +315,7 @@ def _render_browse(prefix: str, access_token: str, allow_create: bool):
 
         # Pagination controls
         if total > _FOLDERS_PER_PAGE:
+            total_pages = (total + _FOLDERS_PER_PAGE - 1) // _FOLDERS_PER_PAGE
             pcol1, pcol2, pcol3 = st.columns([2, 3, 2])
             with pcol1:
                 if page > 0:
@@ -322,13 +323,24 @@ def _render_browse(prefix: str, access_token: str, allow_create: bool):
                         st.session_state[_ss(prefix, "display_page")] = page - 1
                         st.rerun()
             with pcol2:
-                total_pages = (total + _FOLDERS_PER_PAGE - 1) // _FOLDERS_PER_PAGE
-                st.caption(f"Page {page + 1} of {total_pages} ({total} folders)")
+                jump_page = st.number_input(
+                    "Page",
+                    min_value=1,
+                    max_value=total_pages,
+                    value=page + 1,
+                    step=1,
+                    key=f"{prefix}_page_jump",
+                    label_visibility="collapsed",
+                )
+                if jump_page != page + 1:
+                    st.session_state[_ss(prefix, "display_page")] = jump_page - 1
+                    st.rerun()
             with pcol3:
                 if end < total:
                     if st.button("Next →", key=f"{prefix}_next"):
                         st.session_state[_ss(prefix, "display_page")] = page + 1
                         st.rerun()
+            st.caption(f"Page {page + 1} of {total_pages} ({total} folders)")
 
     # ----- New Folder -----
     if allow_create:
