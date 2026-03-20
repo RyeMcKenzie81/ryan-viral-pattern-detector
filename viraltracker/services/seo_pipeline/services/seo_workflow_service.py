@@ -521,9 +521,9 @@ class SEOWorkflowService:
         t.start()
 
     def retry_job(self, job_id: str, from_step: Optional[str] = None) -> None:
-        """Retry a failed job from the failed step."""
+        """Retry a failed/cancelled/stuck job from the failed step."""
         job = self._load_job(job_id)
-        if not job or job.get("status") not in ("failed", "cancelled"):
+        if not job or job.get("status") not in ("failed", "cancelled", "running"):
             raise ValueError(f"Job {job_id} is not in a retryable state")
 
         progress = job.get("progress", {})

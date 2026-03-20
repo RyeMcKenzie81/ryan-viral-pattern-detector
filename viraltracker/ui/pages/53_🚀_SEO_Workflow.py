@@ -239,27 +239,40 @@ with tab_qw:
                             st.markdown(f"- {s}")
 
                 if status == "running":
-                    # Check for stalled job
+                    # Check for stalled job (no update in >5 minutes)
+                    stalled = False
                     updated = job.get("updated_at", "")
                     if updated:
                         try:
                             updated_dt = datetime.datetime.fromisoformat(updated.replace("Z", "+00:00"))
                             age = (datetime.datetime.now(datetime.timezone.utc) - updated_dt).total_seconds()
                             if age > 300:
-                                st.warning("This job may have stalled. Try refreshing or cancelling.")
+                                stalled = True
+                                st.warning("This job appears stalled (no progress for 5+ minutes). It may have crashed during a server restart.")
                         except Exception:
                             pass
 
-                    col_cancel, _ = st.columns([1, 3])
-                    with col_cancel:
-                        if st.button("Cancel", key="seo_wf_cancel"):
-                            workflow_svc.cancel_job(active_job_id)
-                            st.info("Cancelling...")
-                            st.rerun()
+                    if stalled:
+                        col_retry, col_cancel, _ = st.columns([1, 1, 2])
+                        with col_retry:
+                            if st.button("Retry", key="seo_wf_retry_stalled", type="primary"):
+                                workflow_svc.retry_job(active_job_id)
+                                st.rerun()
+                        with col_cancel:
+                            if st.button("Cancel", key="seo_wf_cancel"):
+                                workflow_svc.cancel_job(active_job_id)
+                                st.rerun()
+                    else:
+                        col_cancel, _ = st.columns([1, 3])
+                        with col_cancel:
+                            if st.button("Cancel", key="seo_wf_cancel"):
+                                workflow_svc.cancel_job(active_job_id)
+                                st.info("Cancelling...")
+                                st.rerun()
 
-                    # Auto-refresh
-                    time.sleep(5)
-                    st.rerun()
+                        # Auto-refresh only when not stalled
+                        time.sleep(5)
+                        st.rerun()
 
                 elif status == "paused":
                     paused_data = progress.get("paused_data", {})
@@ -786,6 +799,14 @@ with tab_qw:
                             st.session_state["seo_wf_scroll_top"] = True
                             st.rerun()
                     elif j_status == "failed":
+                        if st.button("Retry", key=f"seo_wf_retry_{_jid}", use_container_width=True):
+                            from viraltracker.services.seo_pipeline.services.seo_workflow_service import SEOWorkflowService
+                            _retry_svc = SEOWorkflowService()
+                            _retry_svc.retry_job(_jid)
+                            st.session_state["seo_wf_active_job"] = _jid
+                            st.session_state["seo_wf_scroll_top"] = True
+                            st.rerun()
+                    elif j_status == "running":
                         if st.button("Retry", key=f"seo_wf_retry_{_jid}", use_container_width=True):
                             from viraltracker.services.seo_pipeline.services.seo_workflow_service import SEOWorkflowService
                             _retry_svc = SEOWorkflowService()
