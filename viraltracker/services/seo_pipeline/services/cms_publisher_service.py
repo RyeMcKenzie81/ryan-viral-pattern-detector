@@ -726,7 +726,7 @@ class CMSPublisherService:
             cluster_svc = ClusterManagementService(supabase_client=self.supabase)
             cluster_svc.mark_spokes_published_for_article(article_id)
         except Exception as e:
-            logger.debug(f"Spoke status update skipped: {e}")
+            logger.warning(f"Spoke status update failed for article {article_id}: {e}")
 
         return result
 

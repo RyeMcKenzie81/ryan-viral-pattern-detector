@@ -1731,10 +1731,13 @@ class ClusterManagementService:
         Find a spoke by keyword_id and link the article to it.
 
         Called by Quick Write after creating an article so cluster status stays in sync.
+        Falls back to keyword text matching when keyword_id doesn't match (duplicate
+        keyword entries can cause ID mismatches between workflow and cluster spokes).
 
         Returns:
             True if a spoke was linked, False if no matching spoke found.
         """
+        # Try direct keyword_id match first
         result = (
             self.supabase.table("seo_cluster_spokes")
             .select("id")
@@ -1743,13 +1746,42 @@ class ClusterManagementService:
             .limit(1)
             .execute()
         )
-        if not result.data:
+        if result.data:
+            spoke_id = result.data[0]["id"]
+            self.assign_article_to_spoke(spoke_id, article_id)
+            logger.info(f"Linked article {article_id} to spoke {spoke_id} via keyword_id {keyword_id}")
+            return True
+
+        # Fallback: match by keyword text (handles duplicate keyword entries)
+        kw_result = (
+            self.supabase.table("seo_keywords")
+            .select("keyword")
+            .eq("id", keyword_id)
+            .limit(1)
+            .execute()
+        )
+        if not kw_result.data:
             return False
 
-        spoke_id = result.data[0]["id"]
-        self.assign_article_to_spoke(spoke_id, article_id)
-        logger.info(f"Linked article {article_id} to spoke {spoke_id} via keyword {keyword_id}")
-        return True
+        keyword_text = kw_result.data[0]["keyword"]
+        # Find spokes whose keyword text matches
+        spokes = (
+            self.supabase.table("seo_cluster_spokes")
+            .select("id, seo_keywords(keyword)")
+            .is_("article_id", "null")
+            .execute()
+        )
+        for spoke in (spokes.data or []):
+            spoke_kw = (spoke.get("seo_keywords") or {}).get("keyword", "")
+            if spoke_kw.lower().strip() == keyword_text.lower().strip():
+                self.assign_article_to_spoke(spoke["id"], article_id)
+                logger.info(
+                    f"Linked article {article_id} to spoke {spoke['id']} "
+                    f"via keyword text match '{keyword_text}'"
+                )
+                return True
+
+        return False
 
     def _update_spoke_count(self, cluster_id: str) -> None:
         """Recompute spoke_count on seo_clusters from the join table."""
