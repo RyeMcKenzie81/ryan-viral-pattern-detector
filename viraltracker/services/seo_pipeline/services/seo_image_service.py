@@ -49,6 +49,10 @@ _MARKER_PATTERNS = [
 class SEOImageService:
     """Service for generating and managing SEO article images."""
 
+    # Max product reference images to pass to Gemini (API limit is 14 total)
+    MAX_PRODUCT_REFERENCE_IMAGES = 4
+    PRODUCT_IMAGES_BUCKET = "product-images"
+
     def __init__(self, supabase_client=None, gemini_service=None):
         self._supabase = supabase_client
         self._gemini = gemini_service
@@ -77,6 +81,80 @@ class SEOImageService:
             from viraltracker.services.usage_tracker import UsageTracker
             self._usage_tracker = UsageTracker(self.supabase)
         return self._usage_tracker
+
+    # =========================================================================
+    # PRODUCT REFERENCE IMAGES
+    # =========================================================================
+
+    async def _load_product_reference_images(self, brand_id: str) -> List[str]:
+        """
+        Load product images for a brand from Supabase storage.
+
+        Returns base64-encoded image strings suitable for passing to
+        gemini.generate_image(reference_images=...).
+        """
+        # Find products for this brand
+        products = await asyncio.to_thread(
+            lambda: self.supabase.table("products")
+            .select("id")
+            .eq("brand_id", brand_id)
+            .execute()
+        )
+        if not products.data:
+            return []
+
+        product_ids = [p["id"] for p in products.data]
+
+        # Get product images, prioritizing is_main=True, skip PDFs
+        all_images = []
+        for pid in product_ids:
+            result = await asyncio.to_thread(
+                lambda pid=pid: self.supabase.table("product_images")
+                .select("storage_path, is_main")
+                .eq("product_id", pid)
+                .order("is_main", desc=True)
+                .order("sort_order")
+                .execute()
+            )
+            if result.data:
+                all_images.extend(result.data)
+
+        # Filter out non-image files (PDFs, etc.) and limit count
+        image_paths = []
+        for img in all_images:
+            path = img.get("storage_path", "")
+            if not path or path.lower().endswith(".pdf"):
+                continue
+            image_paths.append(path)
+            if len(image_paths) >= self.MAX_PRODUCT_REFERENCE_IMAGES:
+                break
+
+        if not image_paths:
+            return []
+
+        # Download and convert to base64
+        reference_images = []
+        for storage_path in image_paths:
+            try:
+                # storage_path format: "product-images/brand-slug/file.jpeg"
+                # Strip bucket prefix if present
+                path = storage_path
+                if path.startswith(f"{self.PRODUCT_IMAGES_BUCKET}/"):
+                    path = path[len(self.PRODUCT_IMAGES_BUCKET) + 1:]
+
+                data = await asyncio.to_thread(
+                    lambda p=path: self.supabase.storage
+                    .from_(self.PRODUCT_IMAGES_BUCKET)
+                    .download(p)
+                )
+                img_b64 = base64.b64encode(data).decode("utf-8")
+                reference_images.append(img_b64)
+            except Exception as e:
+                logger.warning(f"Failed to load product image {storage_path}: {e}")
+                continue
+
+        logger.info(f"Loaded {len(reference_images)} product reference images for brand {brand_id}")
+        return reference_images
 
     # =========================================================================
     # MARKER EXTRACTION
@@ -179,6 +257,9 @@ class SEOImageService:
                 "stats": {"total": 0, "success": 0, "failed": 0},
             }
 
+        # Load product reference images once for all images in this article
+        reference_images = await self._load_product_reference_images(brand_id)
+
         slug = self._generate_slug(keyword)
         image_metadata = []
         hero_image_url = None
@@ -200,6 +281,7 @@ class SEOImageService:
                 image_type=marker["type"],
                 index=idx,
                 image_style=image_style,
+                reference_images=reference_images,
             )
 
             image_metadata.append(result)
@@ -271,6 +353,8 @@ class SEOImageService:
         description = custom_prompt or old_entry.get("description", "")
         slug = self._generate_slug(article.get("keyword", "article"))
 
+        reference_images = await self._load_product_reference_images(brand_id)
+
         result = await self._generate_and_upload_single(
             description=description,
             brand_id=brand_id,
@@ -279,6 +363,7 @@ class SEOImageService:
             image_type=old_entry.get("type", "inline"),
             index=image_index,
             image_style=image_style,
+            reference_images=reference_images,
         )
 
         # Update metadata
@@ -315,6 +400,7 @@ class SEOImageService:
         image_type: str,
         index: int,
         image_style: Optional[str] = None,
+        reference_images: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """Generate a single image and upload to storage."""
         filename = self._generate_filename(slug, image_type, index)
@@ -333,11 +419,14 @@ class SEOImageService:
         }
 
         try:
-            prompt = self._enhance_prompt(description, image_style=image_style)
+            prompt = self._enhance_prompt(
+                description, image_style=image_style, has_reference_images=bool(reference_images),
+            )
             start_ms = time.time()
 
             image_base64 = await self.gemini.generate_image(
                 prompt=prompt,
+                reference_images=reference_images or None,
                 max_retries=2,
                 aspect_ratio=aspect_ratio,
             )
@@ -383,10 +472,23 @@ class SEOImageService:
 
         return entry
 
-    def _enhance_prompt(self, description: str, image_style: Optional[str] = None) -> str:
-        """Add photography style to prompt."""
+    def _enhance_prompt(
+        self,
+        description: str,
+        image_style: Optional[str] = None,
+        has_reference_images: bool = False,
+    ) -> str:
+        """Add photography style and reference image instructions to prompt."""
         style = image_style or PHOTOGRAPHY_STYLE
-        return f"{description}. {style}"
+        prompt = f"{description}. {style}"
+        if has_reference_images:
+            prompt += (
+                ". The attached reference images show the brand's actual product — "
+                "when the image should include the product, use these references "
+                "for accurate visual representation. Match the product's real "
+                "appearance, colors, and packaging."
+            )
+        return prompt
 
     @staticmethod
     def _generate_slug(keyword: str) -> str:
