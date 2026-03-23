@@ -86,22 +86,37 @@ class SEOImageService:
     # PRODUCT REFERENCE IMAGES
     # =========================================================================
 
-    async def _load_product_reference_images(self, brand_id: str) -> List[str]:
+    async def _load_product_reference_data(self, brand_id: str) -> Tuple[List[str], List[str]]:
         """
-        Load product images for a brand from Supabase storage.
+        Load product images and keywords for a brand.
 
-        Returns base64-encoded image strings suitable for passing to
-        gemini.generate_image(reference_images=...).
+        Returns:
+            Tuple of (base64_images, product_keywords) where product_keywords
+            are lowercased terms from product names used to decide whether a
+            given image description should include product references.
         """
         # Find products for this brand
         products = await asyncio.to_thread(
             lambda: self.supabase.table("products")
-            .select("id")
+            .select("id, name")
             .eq("brand_id", brand_id)
             .execute()
         )
         if not products.data:
-            return []
+            return [], []
+
+        # Build keyword list from product names for matching
+        # e.g. "Yakety Pack - Pause Play Connect" -> ["yakety", "pack", "pause", "play", "connect"]
+        product_keywords = set()
+        stop_words = {"the", "a", "an", "and", "or", "for", "of", "with", "in", "on", "to", "is"}
+        for p in products.data:
+            name = p.get("name", "")
+            for word in re.split(r'[\s\-–—/,]+', name.lower()):
+                word = word.strip()
+                if len(word) >= 3 and word not in stop_words:
+                    product_keywords.add(word)
+            # Also add the full name as a phrase match
+            product_keywords.add(name.lower().strip())
 
         product_ids = [p["id"] for p in products.data]
 
@@ -153,8 +168,25 @@ class SEOImageService:
                 logger.warning(f"Failed to load product image {storage_path}: {e}")
                 continue
 
-        logger.info(f"Loaded {len(reference_images)} product reference images for brand {brand_id}")
-        return reference_images
+        logger.info(
+            f"Loaded {len(reference_images)} product reference images for brand {brand_id} "
+            f"(keywords: {', '.join(sorted(product_keywords)[:10])})"
+        )
+        return reference_images, sorted(product_keywords)
+
+    @staticmethod
+    def _description_mentions_product(description: str, product_keywords: List[str]) -> bool:
+        """Check if an image description references the product."""
+        desc_lower = description.lower()
+        # Also match generic product terms
+        generic_terms = ["product", "package", "packaging", "box", "card game", "card deck", "cards"]
+        for term in generic_terms:
+            if term in desc_lower:
+                return True
+        for keyword in product_keywords:
+            if keyword in desc_lower:
+                return True
+        return False
 
     # =========================================================================
     # MARKER EXTRACTION
@@ -257,8 +289,8 @@ class SEOImageService:
                 "stats": {"total": 0, "success": 0, "failed": 0},
             }
 
-        # Load product reference images once for all images in this article
-        reference_images = await self._load_product_reference_images(brand_id)
+        # Load product reference images and keywords once for all images
+        product_images, product_keywords = await self._load_product_reference_data(brand_id)
 
         slug = self._generate_slug(keyword)
         image_metadata = []
@@ -273,6 +305,11 @@ class SEOImageService:
             if progress_callback:
                 progress_callback(idx, total, f"Generating image {idx + 1}/{total}: {marker['description'][:50]}")
 
+            # Only include product references when the description mentions the product
+            refs = product_images if self._description_mentions_product(
+                marker["description"], product_keywords
+            ) else None
+
             result = await self._generate_and_upload_single(
                 description=marker["description"],
                 brand_id=brand_id,
@@ -281,7 +318,7 @@ class SEOImageService:
                 image_type=marker["type"],
                 index=idx,
                 image_style=image_style,
-                reference_images=reference_images,
+                reference_images=refs,
             )
 
             image_metadata.append(result)
@@ -353,7 +390,10 @@ class SEOImageService:
         description = custom_prompt or old_entry.get("description", "")
         slug = self._generate_slug(article.get("keyword", "article"))
 
-        reference_images = await self._load_product_reference_images(brand_id)
+        product_images, product_keywords = await self._load_product_reference_data(brand_id)
+        refs = product_images if self._description_mentions_product(
+            description, product_keywords
+        ) else None
 
         result = await self._generate_and_upload_single(
             description=description,
@@ -363,7 +403,7 @@ class SEOImageService:
             image_type=old_entry.get("type", "inline"),
             index=image_index,
             image_style=image_style,
-            reference_images=reference_images,
+            reference_images=refs,
         )
 
         # Update metadata
