@@ -62,7 +62,7 @@ brand_id = render_brand_selector(key="exceptions_brand")
 if not brand_id:
     st.stop()
 
-from viraltracker.ui.auth import get_current_organization_id
+from viraltracker.ui.utils import get_current_organization_id
 organization_id = get_current_organization_id()
 
 # Load counts for tabs
