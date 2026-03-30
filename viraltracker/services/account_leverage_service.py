@@ -233,9 +233,17 @@ class AccountLeverageService:
         element_scores: Dict[str, List],
     ) -> Dict[str, Any]:
         """Assess data quality for confidence gating."""
-        meta = awareness_data.get("meta", {})
-        total_ads = meta.get("total_ads_in_account", 0)
-        classified_ads = meta.get("classified_ads", 0)
+        # get_breakdown_by_awareness returns: total_classified, total_unclassified,
+        # date_range: {start, end}, levels: [...]
+        classified_ads = awareness_data.get("total_classified", 0)
+        total_unclassified = awareness_data.get("total_unclassified", 0)
+        total_ads = classified_ads + total_unclassified
+
+        # Also count unique ads across levels as a fallback
+        if total_ads == 0:
+            levels = awareness_data.get("levels", [])
+            total_ads = sum(lv.get("ad_count", 0) for lv in levels)
+            classified_ads = total_ads  # all returned ads are classified
 
         # Count genome-scored ads by looking at total_observations across elements
         total_obs = 0
@@ -246,8 +254,9 @@ class AccountLeverageService:
         genome_scored_ads = total_obs // max(len(TRACKED_ELEMENTS), 1) if total_obs > 0 else 0
 
         # Days of data
-        date_start = meta.get("date_start")
-        date_end = meta.get("date_end")
+        date_range = awareness_data.get("date_range", {})
+        date_start = date_range.get("start")
+        date_end = date_range.get("end")
         if date_start and date_end:
             try:
                 d1 = datetime.fromisoformat(date_start).date() if isinstance(date_start, str) else date_start
@@ -358,7 +367,7 @@ class AccountLeverageService:
         for i, level_key in enumerate(AWARENESS_FUNNEL):
             level_data = level_map.get(level_key)
             ad_count = level_data.get("ad_count", 0) if level_data else 0
-            level_label = (level_data.get("level_label") or level_key.replace("_", " ").title()) if level_data else level_key.replace("_", " ").title()
+            level_label = (level_data.get("label") or level_data.get("level_label") or level_key.replace("_", " ").title()) if level_data else level_key.replace("_", " ").title()
             plain_label = AWARENESS_LABELS.get(level_key, level_key)
 
             if ad_count == 0:
