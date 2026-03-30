@@ -357,8 +357,8 @@ class AccountLeverageService:
 
         for i, level_key in enumerate(AWARENESS_FUNNEL):
             level_data = level_map.get(level_key)
-            ad_count = level_data["ad_count"] if level_data else 0
-            level_label = level_data["level_label"] if level_data else level_key.replace("_", " ").title()
+            ad_count = level_data.get("ad_count", 0) if level_data else 0
+            level_label = (level_data.get("level_label") or level_key.replace("_", " ").title()) if level_data else level_key.replace("_", " ").title()
             plain_label = AWARENESS_LABELS.get(level_key, level_key)
 
             if ad_count == 0:
