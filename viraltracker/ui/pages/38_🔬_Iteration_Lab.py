@@ -1,8 +1,10 @@
 """
-Iteration Lab - Find mixed-signal ads and analyze winner DNA.
+Iteration Lab - Find mixed-signal ads, analyze winner DNA, and find strategic leverage.
 
 Tab 1: Find Opportunities - Scan for ads with exploitable mixed signals
 Tab 2: Analyze Winners - Decompose what makes winning ads work
+Tab 3: Awareness Coverage - Funnel gap visualization
+Tab 4: Strategic Leverage - Cross-dimensional account analysis with ranked moves
 """
 
 import asyncio
@@ -62,6 +64,12 @@ def _get_gemini_service():
         return None
 
 
+def get_leverage_service():
+    """Get AccountLeverageService."""
+    from viraltracker.services.account_leverage_service import AccountLeverageService
+    return AccountLeverageService(get_supabase_client())
+
+
 def get_products_for_brand(brand_id: str) -> List[Dict]:
     """Get products for a brand."""
     try:
@@ -99,6 +107,12 @@ if "iter_cache_key" not in st.session_state:
     st.session_state.iter_cache_key = None
 if "iter_awareness_filter" not in st.session_state:
     st.session_state.iter_awareness_filter = None
+if "iter_leverage_data" not in st.session_state:
+    st.session_state.iter_leverage_data = None
+if "iter_leverage_timestamp" not in st.session_state:
+    st.session_state.iter_leverage_timestamp = None
+if "iter_leverage_acted" not in st.session_state:
+    st.session_state.iter_leverage_acted = set()
 
 
 # ============================================
@@ -1716,6 +1730,198 @@ def _safe_get(obj, field: str):
 
 
 # ============================================
+# TAB 4: STRATEGIC LEVERAGE
+# ============================================
+
+CATEGORY_STYLES = {
+    "Quick Win": {"icon": "🏆", "color": "green"},
+    "Strategic Bet": {"icon": "🔬", "color": "blue"},
+    "Explore": {"icon": "💡", "color": "violet"},
+}
+
+
+def render_leverage_tab(brand_id: str, product_id: Optional[str], org_id: str):
+    """Render the Strategic Leverage tab — auto-analyzes the account and shows ranked moves."""
+    from datetime import datetime, timedelta
+
+    # Auto-run: check if cache is stale (> 30 min) or missing
+    cache_ts = st.session_state.iter_leverage_timestamp
+    cache_stale = cache_ts is None or (datetime.now() - cache_ts) > timedelta(minutes=30)
+
+    if cache_stale and st.session_state.iter_leverage_data is None:
+        _run_leverage_analysis(brand_id, org_id, product_id)
+
+    data = st.session_state.iter_leverage_data
+
+    if data is None:
+        st.info("Click **Analyze Account** to find your highest-leverage moves.")
+        if st.button("Analyze Account", key="leverage_analyze_btn"):
+            _run_leverage_analysis(brand_id, org_id, product_id)
+            st.rerun()
+        return
+
+    # Header with stats and refresh
+    dq = data.get("data_quality", {})
+    col_info, col_refresh = st.columns([4, 1])
+    with col_info:
+        ts = st.session_state.iter_leverage_timestamp
+        if ts:
+            age = datetime.now() - ts
+            age_str = f"{int(age.total_seconds() // 60)} min ago" if age.total_seconds() > 60 else "just now"
+        else:
+            age_str = "unknown"
+        st.markdown(
+            f"**Account analyzed** · {dq.get('total_ads', 0)} ads over "
+            f"{dq.get('days_of_data', 0)} days · Last run: {age_str}"
+        )
+    with col_refresh:
+        if st.button("🔄 Refresh", key="leverage_refresh_btn"):
+            _run_leverage_analysis(brand_id, org_id, product_id)
+            st.rerun()
+
+    # Warnings
+    for warning in data.get("warnings", []):
+        st.warning(warning)
+
+    st.divider()
+
+    # -- Leverage Moves --
+    moves = data.get("leverage_moves", [])
+    if not moves:
+        st.info("No leverage moves found. This can happen if the account has very few ads or data.")
+        return
+
+    st.subheader("Your Top Moves")
+
+    acted_set = st.session_state.iter_leverage_acted
+
+    # Split into active and acted-on
+    active_moves = [(i, m) for i, m in enumerate(moves) if i not in acted_set]
+    acted_moves = [(i, m) for i, m in enumerate(moves) if i in acted_set]
+
+    # Render active moves
+    for rank, (idx, move) in enumerate(active_moves, 1):
+        style = CATEGORY_STYLES.get(move.move_category, {"icon": "📌", "color": "gray"})
+        with st.container():
+            st.markdown(
+                f"**{style['icon']} {move.move_category.upper()}** · #{rank}"
+            )
+            st.markdown(f"### {move.title}")
+
+            col_body, col_action = st.columns([3, 1])
+
+            with col_body:
+                st.markdown(f"**WHY:** {move.why}")
+                st.markdown(f"**EXPECTED RESULT:** {move.expected_outcome}")
+                st.markdown(f"**NEXT STEP:** {move.next_step}")
+
+            with col_action:
+                confidence_pct = f"{move.confidence:.0%}"
+                st.metric("Confidence", confidence_pct)
+                st.caption(f"{move.effort} ads recommended")
+
+                if st.button(
+                    "Create These Ads →",
+                    key=f"leverage_create_{idx}",
+                    type="primary",
+                ):
+                    # Mark as acted on
+                    st.session_state.iter_leverage_acted.add(idx)
+                    # Set prefill for Ad Scheduler
+                    st.session_state.prefill_scheduler = {
+                        "move_title": move.title,
+                        **move.recommended_action,
+                    }
+                    st.switch_page("pages/24_📅_Ad_Scheduler.py")
+
+            st.divider()
+
+    # Render acted-on moves (dimmed)
+    if acted_moves:
+        st.markdown("---")
+        st.caption("Previously acted on")
+        for idx, move in acted_moves:
+            st.markdown(
+                f"~~✅ {move.title}~~ — "
+                f"{move.move_category} · {move.effort} ads"
+            )
+
+    # -- Account Health Scorecard --
+    st.divider()
+    st.subheader("Account Health")
+
+    scores = data.get("dimension_scores", {})
+    account_score = data.get("account_score", 0)
+
+    score_col1, score_col2, score_col3, score_col4, score_col5 = st.columns(5)
+    with score_col1:
+        st.metric("Overall", f"{account_score}/100")
+    with score_col2:
+        st.metric("Awareness", f"{scores.get('awareness_coverage', 0)}")
+    with score_col3:
+        st.metric("Elements", f"{scores.get('element_diversity', 0)}")
+    with score_col4:
+        st.metric("Angles", f"{scores.get('angle_coverage', 0)}")
+    with score_col5:
+        st.metric("Formats", f"{scores.get('format_coverage', 0)}")
+
+    # -- Element Heatmap (only if genome coverage >= 50%) --
+    coverage_pct = dq.get("coverage_pct", 0)
+    if coverage_pct >= 0.5:
+        st.divider()
+        st.subheader("Element Performance")
+        _render_element_heatmap(data)
+
+
+def _run_leverage_analysis(brand_id: str, org_id: str, product_id: Optional[str]):
+    """Run the leverage analysis and cache results."""
+    from datetime import datetime
+
+    service = get_leverage_service()
+    with st.spinner("Analyzing your account for leverage opportunities..."):
+        try:
+            result = asyncio.run(service.analyze_account(
+                brand_id=brand_id,
+                org_id=org_id,
+                days_back=30,
+                product_id=product_id,
+            ))
+            st.session_state.iter_leverage_data = result
+            st.session_state.iter_leverage_timestamp = datetime.now()
+        except Exception as e:
+            logger.error(f"Leverage analysis failed: {e}")
+            st.error(f"Analysis failed: {e}")
+
+
+def _render_element_heatmap(data: Dict):
+    """Render a simple element performance overview."""
+    # This shows top-performing element values across dimensions
+    moves = data.get("leverage_moves", [])
+    element_moves = [m for m in moves if m.leverage_type in ("element_opportunity", "whitespace")]
+
+    if not element_moves:
+        st.caption("Element analysis found no standout patterns yet.")
+        return
+
+    for move in element_moves[:5]:
+        evidence = move.evidence
+        elem_a = evidence.get("element_a", evidence.get("element_name", ""))
+        elem_b = evidence.get("element_b", "")
+        reward = evidence.get("mean_reward", evidence.get("predicted_potential", 0))
+
+        label = elem_a
+        if elem_b:
+            label = f"{elem_a} + {elem_b}"
+
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            st.markdown(f"**{label}**")
+            st.caption(move.title)
+        with col2:
+            st.markdown(f"Score: **{reward:.2f}**")
+
+
+# ============================================
 # MAIN
 # ============================================
 
@@ -1744,13 +1950,17 @@ if st.session_state.get("iter_cache_key") != cache_key:
     st.session_state.iter_per_winner_result = None
     st.session_state.iter_scan_done = False
     st.session_state.iter_awareness_filter = None
+    st.session_state.iter_leverage_data = None
+    st.session_state.iter_leverage_timestamp = None
+    st.session_state.iter_leverage_acted = set()
     st.session_state.iter_cache_key = cache_key
 
 # Tabs
-tab1, tab2, tab3 = st.tabs([
+tab1, tab2, tab3, tab4 = st.tabs([
     "💡 Find Opportunities",
     "🧬 Analyze Winners",
     "📊 Awareness Coverage",
+    "🎯 Strategic Leverage",
 ])
 
 with tab1:
@@ -1768,3 +1978,7 @@ with tab2:
 with tab3:
     st.caption("See how your ad spend and performance distribute across consumer awareness levels.")
     render_awareness_tab(brand_id, product_id, org_id)
+
+with tab4:
+    st.caption("Find the highest-leverage moves to improve your ad account.")
+    render_leverage_tab(brand_id, product_id, org_id)

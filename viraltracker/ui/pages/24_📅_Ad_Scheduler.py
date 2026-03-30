@@ -2664,9 +2664,18 @@ def render_create_schedule():
 
     st.title("📅 " + ("Edit Schedule" if is_edit else "Create Schedule"))
 
+    # Check for Strategic Leverage prefill
+    prefill = st.session_state.pop("prefill_scheduler", None)
+    if prefill and not is_edit:
+        move_title = prefill.get("move_title", "Strategic Leverage")
+        st.info(f"📌 Pre-filled from Strategic Leverage: **{move_title}**. Review settings below and schedule when ready.")
+        # Store prefill values for form fields to pick up
+        st.session_state._leverage_prefill = prefill
+
     # Back button
     if st.button("← Back to List"):
         st.session_state.scheduler_view = 'list'
+        st.session_state.pop("_leverage_prefill", None)
         st.rerun()
 
     st.divider()
@@ -3559,11 +3568,13 @@ def render_create_schedule():
     col1, col2 = st.columns(2)
 
     with col1:
+        _lp = st.session_state.get("_leverage_prefill") or {}
+        _default_variations = _lp.get("num_variations") or existing_params.get('num_variations', 5)
         num_variations = st.slider(
             "Variations per template",
             min_value=1,
             max_value=15,
-            value=existing_params.get('num_variations', 5),
+            value=min(max(_default_variations, 1), 15),
             help="Number of ad variations to generate for each template"
         )
 
