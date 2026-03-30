@@ -77,9 +77,14 @@ if _incoming_prefill:
     st.session_state.v2_template_mode_radio = "smart_select"
     _effort = _incoming_prefill.get("num_variations", 5)
     st.session_state.v2_template_count = min(max(_effort, 1), 10)
+    # Map awareness stage string to integer (selectbox uses 1-5)
     _awareness = _incoming_prefill.get("awareness_stage")
+    _awareness_map = {
+        "unaware": 1, "problem_aware": 2, "solution_aware": 3,
+        "product_aware": 4, "most_aware": 5,
+    }
     if _awareness:
-        st.session_state.v2_scored_awareness = _awareness
+        st.session_state.v2_scored_awareness = _awareness_map.get(_awareness, _awareness)
     st.session_state.v2_num_variations = min(max(_effort, 1), 50)
     # Persona prefill (for persona_insight moves)
     _persona = _incoming_prefill.get("persona_id")
