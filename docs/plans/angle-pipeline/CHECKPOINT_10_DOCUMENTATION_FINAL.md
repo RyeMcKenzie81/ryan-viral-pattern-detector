@@ -59,7 +59,7 @@ Nodes:
 | Stale Threshold | `angle_pipeline.stale_threshold_days` | 30 | Days without evidence = stale |
 | Evidence Decay | `angle_pipeline.evidence_decay_halflife_days` | 60 | Frequency scoring decay |
 | Min Candidates | `angle_pipeline.min_candidates_pattern_discovery` | 10 | Threshold for pattern discovery |
-| Max Ads/Run | `angle_pipeline.max_ads_per_scheduled_run` | 50 | Scheduler limit |
+| Max Ads/Run | `angle_pipeline.max_ads_per_scheduled_run` | 200 | Scheduler limit (configurable via Platform Settings) |
 | Cluster Epsilon | `angle_pipeline.cluster_eps` | 0.3 | DBSCAN clustering sensitivity |
 | Min Cluster Size | `angle_pipeline.cluster_min_samples` | 2 | Minimum pattern size |
 

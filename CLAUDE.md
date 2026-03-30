@@ -651,7 +651,7 @@ The Ad Scheduler supports belief-first modes:
 }
 ```
 
-**Limits:** `MAX_ADS_PER_SCHEDULED_RUN = 50`
+**Limits:** `MAX_ADS_PER_SCHEDULED_RUN = 200` (configurable via Platform Settings)
 
 ### UI Pages
 

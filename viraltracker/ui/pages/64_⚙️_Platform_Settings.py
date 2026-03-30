@@ -262,7 +262,7 @@ with tab_angle:
         new_max_ads = st.number_input(
             "Max Ads Per Scheduled Run",
             min_value=10,
-            max_value=200,
+            max_value=500,
             value=current_max_ads,
             help="Maximum ads generated in a single scheduled job run"
         )

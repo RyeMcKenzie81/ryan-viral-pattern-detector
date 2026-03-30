@@ -184,11 +184,12 @@ SELECT COUNT(*) FROM product_template_usage WHERE template_id IS NULL;
 
 ### P1-2: Batch Size vs Scheduler Cap
 
-**Problem:** `MAX_ADS_PER_SCHEDULED_RUN = 50` counts only approved ads (line 891: `ads_generated += approved`). A run of 90 attempts that produces 45 approved ads would stay under the cap, but the generation cost is 90 Gemini calls.
+**Problem:** `MAX_ADS_PER_SCHEDULED_RUN` was hardcoded at 50 and counted only approved ads (line 891: `ads_generated += approved`). A run of 90 attempts that produces 45 approved ads would stay under the cap, but the generation cost is 90 Gemini calls.
 
 **Fix:**
 - V2 tracks both `ads_attempted` and `ads_approved` in job metadata
-- The 50-ad cap applies to **attempted** generations (Gemini API calls), not just approved
+- The cap (now default 200, configurable via `system_settings`) applies to **attempted** generations (Gemini API calls), not just approved
+- Worker reads limit dynamically from `system_settings` table via `get_max_ads_per_scheduled_run()`
 - UI shows: "This will attempt ~90 generations (~$1.80 est.)" with a configurable cap per org
 - If estimated attempts > cap, require user confirmation or split into multiple jobs
 

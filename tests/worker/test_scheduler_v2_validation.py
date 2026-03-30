@@ -16,7 +16,7 @@ import pytest
 
 VALID_CANVAS_SIZES = {"1080x1080px", "1080x1350px", "1080x1920px", "1200x628px"}
 VALID_COLOR_MODES = {"original", "complementary", "brand"}
-MAX_ADS_PER_SCHEDULED_RUN = 50
+MAX_ADS_PER_SCHEDULED_RUN = 200
 
 
 def validate_v2_params(params: dict) -> dict:
@@ -158,15 +158,15 @@ class TestCapMath:
         assert result["per_template_ads"] == 12
 
     def test_clamping_when_exceeds_cap(self):
-        """15 variations × 2 sizes × 2 colors = 60 > 50 → clamp."""
+        """60 variations × 2 sizes × 2 colors = 240 > 200 → clamp."""
         result = validate_v2_params({
-            "num_variations": 15,
+            "num_variations": 60,
             "canvas_sizes": ["1080x1080px", "1080x1350px"],
             "color_modes": ["original", "brand"],
         })
-        # 50 // (2 × 2) = 12
-        assert result["num_variations"] == 12
-        assert result["per_template_ads"] == 48  # 12 × 2 × 2
+        # 200 // (2 × 2) = 50
+        assert result["num_variations"] == 50
+        assert result["per_template_ads"] == 200  # 50 × 2 × 2
         assert any("clamped" in log.lower() for log in result["logs"])
 
     def test_clamping_minimum_1_variation(self):
@@ -176,9 +176,9 @@ class TestCapMath:
             "canvas_sizes": ["1080x1080px", "1080x1350px", "1080x1920px", "1200x628px"],
             "color_modes": ["original", "complementary", "brand"],
         })
-        # 50 // (4 × 3) = 4
-        assert result["num_variations"] == 4
-        assert result["per_template_ads"] == 48
+        # 200 // (4 × 3) = 16
+        assert result["num_variations"] == 16
+        assert result["per_template_ads"] == 192
 
     def test_no_clamping_at_exact_cap(self):
         """Exactly at cap: 5 × 2 × 5... well, 5 × 2 × 2 = 20, under cap."""

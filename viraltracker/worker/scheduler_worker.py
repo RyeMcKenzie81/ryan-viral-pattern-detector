@@ -38,7 +38,20 @@ PST = pytz.timezone('America/Los_Angeles')
 shutdown_requested = False
 
 # Maximum ads per scheduled run (configurable via system_settings)
-MAX_ADS_PER_SCHEDULED_RUN = 50
+DEFAULT_MAX_ADS_PER_SCHEDULED_RUN = 200
+
+
+def get_max_ads_per_scheduled_run() -> int:
+    """Read max ads limit from system_settings, falling back to default."""
+    try:
+        from viraltracker.core.database import get_supabase_client
+        db = get_supabase_client()
+        result = db.table("system_settings").select("value").eq("key", "angle_pipeline.max_ads_per_scheduled_run").execute()
+        if result.data:
+            return int(result.data[0]["value"])
+    except Exception:
+        pass
+    return DEFAULT_MAX_ADS_PER_SCHEDULED_RUN
 
 
 def handle_shutdown(signum, frame):
@@ -678,6 +691,7 @@ async def execute_ad_creation_v2_job(job: Dict) -> Dict[str, Any]:
     templates_used = []
     ads_attempted = 0
     ads_approved = 0
+    max_ads_limit = get_max_ads_per_scheduled_run()
 
     # Dataset freshness tracking
     from viraltracker.services.dataset_freshness_service import DatasetFreshnessService
@@ -720,10 +734,10 @@ async def execute_ad_creation_v2_job(job: Dict) -> Dict[str, Any]:
 
         # Pre-compute per-template fanout and check cap
         per_template_ads = num_variations * len(canvas_sizes) * len(color_modes)
-        if per_template_ads > MAX_ADS_PER_SCHEDULED_RUN:
+        if per_template_ads > max_ads_limit:
             logs.append(f"WARNING: per-template fanout ({per_template_ads}) exceeds cap "
-                        f"({MAX_ADS_PER_SCHEDULED_RUN}). Clamping variations.")
-            num_variations = max(1, MAX_ADS_PER_SCHEDULED_RUN // (len(canvas_sizes) * len(color_modes)))
+                        f"({max_ads_limit}). Clamping variations.")
+            num_variations = max(1, max_ads_limit // (len(canvas_sizes) * len(color_modes)))
             per_template_ads = num_variations * len(canvas_sizes) * len(color_modes)
 
         logs.append(f"V2 Pipeline | Mode: {template_selection_mode} | "
@@ -882,12 +896,12 @@ async def execute_ad_creation_v2_job(job: Dict) -> Dict[str, Any]:
                 logs.append("Shutdown requested, stopping V2 job execution")
                 break
 
-            if ads_attempted >= MAX_ADS_PER_SCHEDULED_RUN:
-                logs.append(f"Reached max ads limit ({MAX_ADS_PER_SCHEDULED_RUN}), stopping")
+            if ads_attempted >= max_ads_limit:
+                logs.append(f"Reached max ads limit ({max_ads_limit}), stopping")
                 break
 
             # Check remaining budget before starting a template
-            remaining_budget = MAX_ADS_PER_SCHEDULED_RUN - ads_attempted
+            remaining_budget = max_ads_limit - ads_attempted
             if remaining_budget < per_template_ads:
                 logs.append(f"Remaining budget ({remaining_budget}) < per-template fanout "
                             f"({per_template_ads}), stopping")
@@ -1100,6 +1114,7 @@ async def execute_ad_creation_job(job: Dict) -> Dict[str, Any]:
     templates_used = []
     angles_used = []
     ads_generated = 0
+    max_ads_limit = get_max_ads_per_scheduled_run()
 
     # Dataset freshness tracking (brand_id comes from product's brand join)
     from viraltracker.services.dataset_freshness_service import DatasetFreshnessService
@@ -1205,8 +1220,8 @@ async def execute_ad_creation_job(job: Dict) -> Dict[str, Any]:
             total_potential_ads = len(angles_to_process) * len(templates) * num_variations
             logs.append(f"Potential ads: {len(angles_to_process)} angles × {len(templates)} templates × {num_variations} variations = {total_potential_ads}")
 
-            if total_potential_ads > MAX_ADS_PER_SCHEDULED_RUN:
-                logs.append(f"⚠️ Exceeds limit of {MAX_ADS_PER_SCHEDULED_RUN}. Will stop after limit reached.")
+            if total_potential_ads > max_ads_limit:
+                logs.append(f"⚠️ Exceeds limit of {max_ads_limit}. Will stop after limit reached.")
 
         # Process based on content source
         if content_source in ['plan', 'angles']:
@@ -1216,8 +1231,8 @@ async def execute_ad_creation_job(job: Dict) -> Dict[str, Any]:
                     logs.append("Shutdown requested, stopping job execution")
                     break
 
-                if ads_generated >= MAX_ADS_PER_SCHEDULED_RUN:
-                    logs.append(f"Reached max ads limit ({MAX_ADS_PER_SCHEDULED_RUN}), stopping")
+                if ads_generated >= max_ads_limit:
+                    logs.append(f"Reached max ads limit ({max_ads_limit}), stopping")
                     break
 
                 angle_name = angle.get('name', 'Unknown')
@@ -1229,7 +1244,7 @@ async def execute_ad_creation_job(job: Dict) -> Dict[str, Any]:
                     if shutdown_requested:
                         break
 
-                    if ads_generated >= MAX_ADS_PER_SCHEDULED_RUN:
+                    if ads_generated >= max_ads_limit:
                         break
 
                     # Get template reference for logging (handle both dict and str)
@@ -1318,8 +1333,8 @@ async def execute_ad_creation_job(job: Dict) -> Dict[str, Any]:
                     logs.append("Shutdown requested, stopping job execution")
                     break
 
-                if ads_generated >= MAX_ADS_PER_SCHEDULED_RUN:
-                    logs.append(f"Reached max ads limit ({MAX_ADS_PER_SCHEDULED_RUN}), stopping")
+                if ads_generated >= max_ads_limit:
+                    logs.append(f"Reached max ads limit ({max_ads_limit}), stopping")
                     break
 
                 # Get template reference for logging (handle both dict and str)

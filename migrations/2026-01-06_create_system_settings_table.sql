@@ -37,7 +37,7 @@ INSERT INTO system_settings (key, value, description) VALUES
     ('angle_pipeline.stale_threshold_days', '30', 'Days without evidence before candidate is considered stale'),
     ('angle_pipeline.evidence_decay_halflife_days', '60', 'Half-life for evidence frequency decay scoring'),
     ('angle_pipeline.min_candidates_pattern_discovery', '10', 'Minimum candidates required to run pattern discovery'),
-    ('angle_pipeline.max_ads_per_scheduled_run', '50', 'Maximum ads generated per scheduled job run'),
+    ('angle_pipeline.max_ads_per_scheduled_run', '200', 'Maximum ads generated per scheduled job run'),
     ('angle_pipeline.cluster_eps', '0.3', 'DBSCAN epsilon - clustering sensitivity (lower = tighter clusters)'),
     ('angle_pipeline.cluster_min_samples', '2', 'Minimum candidates per cluster')
 ON CONFLICT (key) DO NOTHING;
