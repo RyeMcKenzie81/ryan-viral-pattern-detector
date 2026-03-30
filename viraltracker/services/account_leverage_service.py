@@ -81,6 +81,16 @@ class AccountLeverageService:
             await self._gather_data(brand_id, days_back, product_id)
         )
 
+        # Debug: log what we got back
+        logger.info(
+            f"Leverage gather results: awareness_levels={len(awareness_data.get('levels', []))}, "
+            f"total_classified={awareness_data.get('total_classified', 'MISSING')}, "
+            f"date_range={awareness_data.get('date_range', 'MISSING')}, "
+            f"format_groups={len(format_data.get('groups', []))}, "
+            f"interactions={len(interactions)}, whitespace={len(whitespace)}, "
+            f"element_keys={list(element_scores.keys())}"
+        )
+
         # -- Check data quality --
         data_quality = self._assess_data_quality(awareness_data, element_scores)
         if data_quality["classified_ads"] < 15:
