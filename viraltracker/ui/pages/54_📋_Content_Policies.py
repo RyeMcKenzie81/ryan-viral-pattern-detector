@@ -236,7 +236,8 @@ if publish_enabled:
     col1, col2 = st.columns(2)
     with col1:
         window_start_str = policy.get("publish_window_start", "09:00")
-        h_s, m_s = map(int, str(window_start_str).split(":"))
+        start_parts = str(window_start_str).split(":")
+        h_s, m_s = int(start_parts[0]), int(start_parts[1])
         from datetime import time as dt_time
         window_start = st.time_input(
             "Window start",
@@ -245,7 +246,8 @@ if publish_enabled:
         )
     with col2:
         window_end_str = policy.get("publish_window_end", "17:00")
-        h_e, m_e = map(int, str(window_end_str).split(":"))
+        end_parts = str(window_end_str).split(":")
+        h_e, m_e = int(end_parts[0]), int(end_parts[1])
         window_end = st.time_input(
             "Window end",
             value=dt_time(h_e, m_e),
