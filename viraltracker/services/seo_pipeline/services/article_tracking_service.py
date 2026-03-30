@@ -41,6 +41,8 @@ VALID_TRANSITIONS = {
         ArticleStatus.QA_FAILED.value,
     ],
     ArticleStatus.QA_PASSED.value: [
+        ArticleStatus.EVAL_PASSED.value,
+        ArticleStatus.EVAL_FAILED.value,
         ArticleStatus.PUBLISHING.value,
         ArticleStatus.OPTIMIZED.value,
     ],
@@ -48,8 +50,22 @@ VALID_TRANSITIONS = {
         ArticleStatus.OPTIMIZED.value,
         ArticleStatus.DRAFT_COMPLETE.value,
     ],
+    ArticleStatus.EVAL_PASSED.value: [
+        ArticleStatus.PUBLISH_QUEUED.value,
+        ArticleStatus.PUBLISHING.value,
+        ArticleStatus.QA_PASSED.value,
+    ],
+    ArticleStatus.EVAL_FAILED.value: [
+        ArticleStatus.QA_PASSED.value,
+        ArticleStatus.EVAL_PASSED.value,
+    ],
+    ArticleStatus.PUBLISH_QUEUED.value: [
+        ArticleStatus.PUBLISHING.value,
+        ArticleStatus.EVAL_PASSED.value,
+    ],
     ArticleStatus.PUBLISHING.value: [
         ArticleStatus.PUBLISHED.value,
+        ArticleStatus.PUBLISH_QUEUED.value,
         ArticleStatus.QA_PASSED.value,
     ],
     ArticleStatus.PUBLISHED.value: [
