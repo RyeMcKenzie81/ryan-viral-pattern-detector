@@ -1,5 +1,42 @@
 # ViralTracker Changelog
 
+## 2026-03-30 - SEO Content Autopilot
+
+### Added: End-to-end automation for SEO article publishing
+
+Articles now flow automatically from QA → content evaluation → publish queue → Shopify → interlinking, configured per-brand via content policies.
+
+**Content Evaluation** (`ContentEvalService`)
+- Claude Vision image evaluation with per-brand rules and confidence gating
+- QA + checklist + image eval aggregated into a single pass/fail verdict
+- Content hash (SHA256) prevents duplicate evaluations
+- Failed evaluations surface in the Exceptions dashboard for human review
+
+**Publish Queue** (`PublishQueueService`)
+- Time-slot scheduling based on brand publishing cadence (N posts/day within a configurable window)
+- Automatic weekend/day-of-week skipping
+- Retry logic with configurable max retries per entry
+- Idempotency: same content hash won't be enqueued twice
+
+**Brand Content Policies** (new UI page + DB table)
+- Per-brand configuration for image eval rules, publish windows, interlink modes
+- Configurable publish days, times per day, timezone
+- Enable/disable image eval, publishing, and interlinking independently
+
+**Scheduler Worker Integration**
+- Three new job types: `seo_content_eval`, `seo_publish`, `seo_auto_interlink`
+- Auto-interlinking chains as a one-time job after each successful publish
+- Non-fatal chaining: interlink failure doesn't block the publish job
+
+**New Article Statuses**
+- `eval_passed`, `eval_failed`, `publish_queued` added to ArticleStatus enum
+- VALID_TRANSITIONS map updated with all new status transitions
+
+**Database Migration** (`2026-03-30_seo_content_autopilot.sql`)
+- `brand_content_policies`: per-brand autopilot configuration
+- `seo_content_eval_results`: evaluation audit trail
+- `seo_publish_queue`: time-slot based publish scheduling
+
 ## 2025-11-20 - Agent Tool Selection Bug Fix
 
 ### Fixed: Agent Re-Scraping Instead of Analyzing Existing Data

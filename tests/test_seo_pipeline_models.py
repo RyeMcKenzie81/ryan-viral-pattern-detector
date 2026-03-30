@@ -58,6 +58,7 @@ class TestArticleStatus:
         expected = {
             "draft", "outline_complete", "draft_complete", "optimized",
             "qa_pending", "qa_passed", "qa_failed",
+            "eval_passed", "eval_failed", "publish_queued",
             "publishing", "published", "archived", "discovered",
         }
         actual = {s.value for s in ArticleStatus}
