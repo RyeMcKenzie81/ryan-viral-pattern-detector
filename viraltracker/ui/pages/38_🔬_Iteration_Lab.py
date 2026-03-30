@@ -1830,6 +1830,9 @@ def render_leverage_tab(brand_id: str, product_id: Optional[str], org_id: str):
                     # Set prefill for Ad Scheduler
                     st.session_state.prefill_scheduler = {
                         "move_title": move.title,
+                        "product_id": product_id,
+                        "brand_id": brand_id,
+                        "job_name": f"Leverage: {move.title[:50]}",
                         **move.recommended_action,
                     }
                     st.switch_page("pages/24_📅_Ad_Scheduler.py")
