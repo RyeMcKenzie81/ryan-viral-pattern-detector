@@ -96,6 +96,8 @@ class FeatureKey:
     SEO_ARTICLE_PUBLISHER = "seo_article_publisher"
     SEO_CLUSTER_MANAGER = "seo_cluster_manager"
     SEO_WORKFLOW = "seo_workflow"
+    SEO_CONTENT_POLICIES = "seo_content_policies"
+    SEO_EXCEPTIONS = "seo_exceptions"
     # Email Marketing
     SECTION_EMAIL_MARKETING = "section_email_marketing"
     KLAVIYO_DASHBOARD = "klaviyo_dashboard"

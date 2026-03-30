@@ -46,6 +46,8 @@ _CUSTOM_URL_PATHS: Dict[str, str] = {
     "61_📅_Scheduled_Tasks.py": "scheduled-tasks",
     "64_🗄️_Database_Browser.py": "database-browser",
     "64_⚙️_Platform_Settings.py": "platform-settings",
+    "54_📋_Content_Policies.py": "content-policies",
+    "55_⚠️_Exceptions.py": "seo-exceptions",
     "54_📧_Klaviyo_Dashboard.py": "klaviyo-dashboard",
     "55_📨_Klaviyo_Campaigns.py": "klaviyo-campaigns",
     "56_🔄_Klaviyo_Flows.py": "klaviyo-flows",
@@ -165,6 +167,8 @@ def _get_org_features_cached(org_id: str) -> Dict[str, bool]:
             FeatureKey.SEO_ARTICLE_PUBLISHER: True,
             FeatureKey.SEO_CLUSTER_MANAGER: True,
             FeatureKey.SEO_WORKFLOW: True,
+            FeatureKey.SEO_CONTENT_POLICIES: True,
+            FeatureKey.SEO_EXCEPTIONS: True,
             # Email Marketing pages
             FeatureKey.SECTION_EMAIL_MARKETING: True,
             FeatureKey.KLAVIYO_DASHBOARD: True,
@@ -362,6 +366,18 @@ def build_navigation_pages() -> Dict[str, List[st.Page]]:
         content.append(st.Page("pages/52_🗂️_SEO_Clusters.py", title="SEO Clusters", icon="🗂️"))
     if visible(SK_CONTENT, "seo_workflow"):
         content.append(st.Page("pages/53_🚀_SEO_Workflow.py", title="SEO Workflow", icon="🚀"))
+    if visible(SK_CONTENT, "seo_content_policies"):
+        content.append(st.Page(
+            "pages/54_📋_Content_Policies.py",
+            title="Content Policies", icon="📋",
+            url_path="content-policies",
+        ))
+    if visible(SK_CONTENT, "seo_exceptions"):
+        content.append(st.Page(
+            "pages/55_⚠️_Exceptions.py",
+            title="Exceptions", icon="⚠️",
+            url_path="seo-exceptions",
+        ))
     if content:
         pages["Content"] = content
 
