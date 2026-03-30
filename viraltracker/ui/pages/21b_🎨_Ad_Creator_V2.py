@@ -72,8 +72,15 @@ if 'v2_leverage_prefill' not in st.session_state:
 _incoming_prefill = st.session_state.pop("prefill_ad_creator_v2", None)
 if _incoming_prefill:
     st.session_state.v2_leverage_prefill = _incoming_prefill
-    # Pre-set template mode to smart_select
+    # Pre-set widget keys directly (Streamlit uses these over value/index params)
     st.session_state.v2_template_mode = "smart_select"
+    st.session_state.v2_template_mode_radio = "smart_select"
+    _effort = _incoming_prefill.get("num_variations", 5)
+    st.session_state.v2_template_count = min(max(_effort, 1), 10)
+    _awareness = _incoming_prefill.get("awareness_stage")
+    if _awareness:
+        st.session_state.v2_scored_awareness = _awareness
+    st.session_state.v2_num_variations = min(max(_effort, 1), 50)
 
 
 # ============================================================================
@@ -456,17 +463,12 @@ def _render_manual_template_selection():
 
 def _render_scored_template_selection(mode: str):
     """Render scored template selection (roll_the_dice or smart_select)."""
-    _lp = st.session_state.get("v2_leverage_prefill") or {}
-
     col1, col2 = st.columns(2)
 
     with col1:
-        _default_count = _lp.get("num_variations", 3)
-        # Template count: use leverage prefill effort as default if available
         template_count = st.slider(
             "Number of templates",
-            min_value=1, max_value=10,
-            value=min(max(_default_count, 1), 10),
+            min_value=1, max_value=10, value=3,
             key="v2_template_count",
         )
 
@@ -486,16 +488,9 @@ def _render_scored_template_selection(mode: str):
     awareness_options = [None] + [a['value'] for a in awareness_levels]
     awareness_labels = {None: "All", **{a['value']: a['label'] for a in awareness_levels}}
 
-    # Pre-select awareness level from leverage prefill
-    _prefill_awareness = _lp.get("awareness_stage")
-    _default_awareness_idx = 0
-    if _prefill_awareness and _prefill_awareness in awareness_options:
-        _default_awareness_idx = awareness_options.index(_prefill_awareness)
-
     awareness_stage = st.selectbox(
         "Awareness Level",
         options=awareness_options,
-        index=_default_awareness_idx,
         format_func=lambda x: awareness_labels.get(x, str(x)),
         key="v2_scored_awareness",
     )
