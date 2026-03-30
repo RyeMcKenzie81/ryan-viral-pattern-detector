@@ -934,3 +934,23 @@ This inconsistency requires every display site to know which service provided th
 - `tests/services/test_winner_dna_analyzer.py` (2 assertions)
 
 **Migration strategy**: Do as a single focused PR — normalize sources first, then search-and-replace all `f"{ctr:.2f}%"` → `f"{ctr*100:.1f}%"` patterns.
+
+---
+
+### 14. Creative Genome Update Not in Scheduler UI
+
+**Priority**: High (blocks Strategic Leverage element-based recommendations)
+**Complexity**: Low (worker already supports `creative_genome_update` job type, just needs a UI form)
+**Added**: 2026-03-30
+
+**Context**: The `creative_genome_update` job computes composite rewards for matured ads (`compute_rewards`) and derives Beta(α,β) scores per element value (`update_element_scores`). This populates `creative_element_scores` and `creative_element_rewards`, which the Strategic Leverage tab needs for element diversity scoring and element/whitespace/synergy-based move recommendations.
+
+**Problem**: The worker supports `creative_genome_update` and `genome_validation` job types (scheduler_worker.py:620-623), but neither is exposed in the Ad Scheduler UI. There's no way for users to create or schedule these jobs without directly inserting into the `scheduled_jobs` table.
+
+**Impact**: Without genome data, the Strategic Leverage tab shows Elements: 0 and suppresses 3 of 6 move generators (element opportunities, whitespace combos, synergy pairs). This is ~50% of the feature's value.
+
+**Fix**:
+1. Add `creative_genome_update` to the job type radio in `render_create_schedule()` (24_Ad_Scheduler.py)
+2. Create `_render_genome_update_form()` — minimal form: just brand selector + schedule config
+3. Optionally add `genome_validation` as well
+4. Consider auto-creating a daily genome update job during brand onboarding

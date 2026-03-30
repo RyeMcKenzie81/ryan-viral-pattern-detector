@@ -2782,9 +2782,15 @@ def render_create_schedule():
     product_options = {p['name']: p['id'] for p in products}
 
     default_product = None
+    _lp = st.session_state.get("_leverage_prefill") or {}
     if existing_job:
         for p in products:
             if p['id'] == existing_job['product_id']:
+                default_product = p['name']
+                break
+    elif _lp.get("product_id"):
+        for p in products:
+            if p['id'] == _lp["product_id"]:
                 default_product = p['name']
                 break
 
@@ -2809,9 +2815,15 @@ def render_create_schedule():
 
     st.subheader("2. Job Name")
 
+    _default_job_name = ""
+    if existing_job:
+        _default_job_name = existing_job.get('name', '')
+    elif _lp.get("job_name"):
+        _default_job_name = _lp["job_name"]
+
     job_name = st.text_input(
         "Name for this schedule",
-        value=existing_job.get('name', '') if existing_job else "",
+        value=_default_job_name,
         placeholder="e.g., Weekly Ad Refresh - Product X",
         help="A descriptive name to identify this scheduled job"
     )
@@ -2831,10 +2843,17 @@ def render_create_schedule():
     st.info(f"🕐 Current time: **{current_time.strftime('%I:%M %p PST')}** ({current_time.strftime('%b %d, %Y')})")
 
     with col1:
+        # Default to one-time when prefilled from Strategic Leverage
+        _default_sched_idx = 0
+        if existing_job and existing_job['schedule_type'] != 'recurring':
+            _default_sched_idx = 1
+        elif _lp:
+            _default_sched_idx = 1  # One-time for leverage moves
+
         schedule_type = st.radio(
             "Schedule Type",
             options=['recurring', 'one_time'],
-            index=0 if not existing_job or existing_job['schedule_type'] == 'recurring' else 1,
+            index=_default_sched_idx,
             format_func=lambda x: "🔄 Recurring" if x == 'recurring' else "1️⃣ One-time",
             horizontal=True
         )
