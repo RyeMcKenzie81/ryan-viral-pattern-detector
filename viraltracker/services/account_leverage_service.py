@@ -61,7 +61,7 @@ class AccountLeverageService:
     def __init__(self, supabase_client):
         self.supabase = supabase_client
 
-    async def analyze_account(
+    def analyze_account(
         self,
         brand_id: str,
         org_id: str,
@@ -78,7 +78,7 @@ class AccountLeverageService:
 
         # -- Gather data from existing services --
         awareness_data, format_data, coverage_result, interactions, whitespace, element_scores = (
-            await self._gather_data(brand_id, days_back, product_id)
+            self._gather_data(brand_id, days_back, product_id)
         )
 
         # Debug: log what we got back
@@ -165,54 +165,63 @@ class AccountLeverageService:
     # DATA GATHERING
     # ========================================================================
 
-    async def _gather_data(
+    def _gather_data(
         self,
         brand_id: str,
         days_back: int,
         product_id: Optional[str],
     ):
-        """Gather data from all child services concurrently."""
-        from viraltracker.services.ad_intelligence.coverage_analyzer import CoverageAnalyzer
+        """Gather data from all child services sequentially."""
         from viraltracker.services.ad_performance_query_service import AdPerformanceQueryService
         from viraltracker.services.creative_genome_service import CreativeGenomeService
-        from viraltracker.services.interaction_detector_service import InteractionDetectorService
         from viraltracker.services.whitespace_identification_service import WhitespaceIdentificationService
 
-        coverage_analyzer = CoverageAnalyzer(self.supabase)
         perf_service = AdPerformanceQueryService(self.supabase)
         genome_service = CreativeGenomeService()
-        interaction_service = InteractionDetectorService()
         whitespace_service = WhitespaceIdentificationService()
 
         brand_uuid = UUID(brand_id) if isinstance(brand_id, str) else brand_id
 
-        # Run async + sync services concurrently
-        coverage_task = coverage_analyzer.analyze_coverage(brand_uuid, date.today(), days_back)
-        awareness_task = asyncio.to_thread(
-            perf_service.get_breakdown_by_awareness, brand_id, days_back, product_id
-        )
-        format_task = asyncio.to_thread(
-            perf_service.get_breakdown_by_media_type, brand_id, days_back
-        )
-        interaction_task = interaction_service.get_top_interactions(brand_uuid, 15)
+        # Awareness breakdown (sync)
+        try:
+            awareness_data = perf_service.get_breakdown_by_awareness(
+                brand_id, days_back, product_id
+            )
+            logger.info(
+                f"Awareness data: {len(awareness_data.get('levels', []))} levels, "
+                f"total_classified={awareness_data.get('total_classified', 'MISSING')}"
+            )
+        except Exception as e:
+            logger.error(f"Awareness breakdown failed: {e}", exc_info=True)
+            awareness_data = {"levels": [], "gaps": [], "total_classified": 0, "total_unclassified": 0, "date_range": {}}
 
-        coverage_result, awareness_data, format_data, interactions = await asyncio.gather(
-            coverage_task, awareness_task, format_task, interaction_task,
-            return_exceptions=True,
-        )
+        # Format breakdown (sync)
+        try:
+            format_data = perf_service.get_breakdown_by_media_type(brand_id, days_back)
+        except Exception as e:
+            logger.error(f"Format breakdown failed: {e}")
+            format_data = {"groups": []}
 
-        # Handle exceptions gracefully
-        if isinstance(coverage_result, Exception):
-            logger.error(f"Coverage analysis failed: {coverage_result}")
-            coverage_result = None
-        if isinstance(awareness_data, Exception):
-            logger.error(f"Awareness breakdown failed: {awareness_data}")
-            awareness_data = {"levels": [], "gaps": [], "meta": {}}
-        if isinstance(format_data, Exception):
-            logger.error(f"Format breakdown failed: {format_data}")
-            format_data = {"groups": [], "meta": {}}
-        if isinstance(interactions, Exception):
-            logger.error(f"Interactions lookup failed: {interactions}")
+        # Coverage analyzer (async — run in a small event loop)
+        coverage_result = None
+        try:
+            from viraltracker.services.ad_intelligence.coverage_analyzer import CoverageAnalyzer
+            coverage_analyzer = CoverageAnalyzer(self.supabase)
+            coverage_result = asyncio.run(
+                coverage_analyzer.analyze_coverage(brand_uuid, date.today(), days_back)
+            )
+        except Exception as e:
+            logger.error(f"Coverage analysis failed: {e}")
+
+        # Interactions (async — run in a small event loop)
+        try:
+            from viraltracker.services.interaction_detector_service import InteractionDetectorService
+            interaction_service = InteractionDetectorService()
+            interactions = asyncio.run(
+                interaction_service.get_top_interactions(brand_uuid, 15)
+            )
+        except Exception as e:
+            logger.error(f"Interactions lookup failed: {e}")
             interactions = []
 
         # Element scores (sync, fast per call)
