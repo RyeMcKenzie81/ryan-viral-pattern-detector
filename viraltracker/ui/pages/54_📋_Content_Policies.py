@@ -43,9 +43,19 @@ def _load_policy(brand_id: str):
     return None
 
 
+def _resolve_org_id(organization_id: str, brand_id: str) -> str:
+    """Resolve 'all' superuser org to the real org UUID from the brand."""
+    if organization_id != "all":
+        return organization_id
+    db = get_db()
+    row = db.table("brands").select("organization_id").eq("id", brand_id).limit(1).execute()
+    return row.data[0]["organization_id"] if row.data else organization_id
+
+
 def _save_policy(brand_id: str, organization_id: str, policy_data: dict):
     """Create or update a brand content policy."""
     db = get_db()
+    organization_id = _resolve_org_id(organization_id, brand_id)
     existing = (
         db.table("brand_content_policies")
         .select("id")
