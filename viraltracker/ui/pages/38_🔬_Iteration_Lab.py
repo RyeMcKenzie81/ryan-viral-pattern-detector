@@ -1880,16 +1880,16 @@ def _run_leverage_analysis(brand_id: str, org_id: str, product_id: Optional[str]
     service = get_leverage_service()
     with st.spinner("Analyzing your account for leverage opportunities..."):
         try:
-            result = asyncio.run(service.analyze_account(
+            result = service.analyze_account(
                 brand_id=brand_id,
                 org_id=org_id,
                 days_back=30,
                 product_id=product_id,
-            ))
+            )
             st.session_state.iter_leverage_data = result
             st.session_state.iter_leverage_timestamp = datetime.now()
         except Exception as e:
-            logger.error(f"Leverage analysis failed: {e}")
+            logger.error(f"Leverage analysis failed: {e}", exc_info=True)
             st.error(f"Analysis failed: {e}")
 
 
