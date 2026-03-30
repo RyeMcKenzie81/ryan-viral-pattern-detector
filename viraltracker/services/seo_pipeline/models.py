@@ -36,6 +36,9 @@ class ArticleStatus(str, Enum):
     QA_PENDING = "qa_pending"
     QA_PASSED = "qa_passed"
     QA_FAILED = "qa_failed"
+    EVAL_PASSED = "eval_passed"        # Content evaluation passed, ready for publish queue
+    EVAL_FAILED = "eval_failed"        # Content evaluation failed, needs human review
+    PUBLISH_QUEUED = "publish_queued"   # In publish queue, waiting for scheduled slot
     PUBLISHING = "publishing"
     PUBLISHED = "published"
     ARCHIVED = "archived"
