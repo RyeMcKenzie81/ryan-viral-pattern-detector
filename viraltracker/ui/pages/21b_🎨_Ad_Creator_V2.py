@@ -81,6 +81,14 @@ if _incoming_prefill:
     if _awareness:
         st.session_state.v2_scored_awareness = _awareness
     st.session_state.v2_num_variations = min(max(_effort, 1), 50)
+    # Persona prefill (for persona_insight moves)
+    _persona = _incoming_prefill.get("persona_id")
+    if _persona:
+        st.session_state.v2_persona_id = _persona
+    # Content source prefill (angles for angle_expansion moves)
+    _content_source = _incoming_prefill.get("content_source")
+    if _content_source:
+        st.session_state.v2_content_source = _content_source
 
 
 # ============================================================================
