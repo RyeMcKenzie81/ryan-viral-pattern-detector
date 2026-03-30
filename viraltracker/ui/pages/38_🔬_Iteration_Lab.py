@@ -1827,15 +1827,16 @@ def render_leverage_tab(brand_id: str, product_id: Optional[str], org_id: str):
                 ):
                     # Mark as acted on
                     st.session_state.iter_leverage_acted.add(idx)
-                    # Set prefill for Ad Scheduler
-                    st.session_state.prefill_scheduler = {
+                    # Set prefill for Ad Creator V2 (Smart Select)
+                    st.session_state.prefill_ad_creator_v2 = {
                         "move_title": move.title,
                         "product_id": product_id,
                         "brand_id": brand_id,
-                        "job_name": f"Leverage: {move.title[:50]}",
                         **move.recommended_action,
                     }
-                    st.switch_page("pages/24_📅_Ad_Scheduler.py")
+                    # Pre-set brand/product so V2 page picks them up
+                    st.session_state.selected_brand_id = brand_id
+                    st.switch_page("pages/21b_🎨_Ad_Creator_V2.py")
 
             st.divider()
 
