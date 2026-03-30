@@ -16,6 +16,7 @@ Run with: python -m viraltracker.worker.scheduler_worker
 """
 
 import asyncio
+import json
 import logging
 import signal
 import sys
@@ -639,6 +640,12 @@ async def execute_job(job: Dict) -> Dict[str, Any]:
         return await execute_size_variant_job(job)
     elif job_type == 'smart_edit':
         return await execute_smart_edit_job(job)
+    elif job_type == 'seo_content_eval':
+        return await execute_seo_content_eval_job(job)
+    elif job_type == 'seo_publish':
+        return await execute_seo_publish_job(job)
+    elif job_type == 'seo_auto_interlink':
+        return await execute_seo_auto_interlink_job(job)
     else:
         # Hard-fail on unknown job types — never silently fall through to V1
         logger.error(f"Unknown job_type '{job_type}' for job {job_id} ({job_name}). "
@@ -4687,6 +4694,455 @@ def main():
         sys.exit(1)
 
     logger.info("Worker shutdown complete")
+
+
+# =============================================================================
+# SEO CONTENT AUTOPILOT JOBS
+# =============================================================================
+
+
+async def execute_seo_content_eval_job(job: Dict) -> Dict[str, Any]:
+    """
+    Evaluate pending SEO articles (QA + image eval) and enqueue passing ones.
+
+    Finds articles with status qa_passed/optimized that haven't been evaluated,
+    runs ContentEvalService, and enqueues passing articles in the publish queue.
+
+    Parameters (from job['parameters']):
+        max_articles: int - Max articles to evaluate per run (default: 10)
+    """
+    job_id = job['id']
+    job_name = job.get('name', 'SEO Content Eval')
+    brand_id = job.get('brand_id')
+    brand_info = job.get('brands') or {}
+    brand_name = brand_info.get('name', 'Unknown')
+    params = job.get('parameters') or {}
+    max_articles = params.get('max_articles', 10)
+
+    logger.info(f"Starting seo_content_eval job: {job_name} (brand: {brand_name})")
+
+    update_job(job_id, {"next_run_at": None})
+    run_id = create_job_run(job_id)
+    if not run_id:
+        return {"success": False, "error": "Failed to create run record"}
+
+    logs = []
+
+    try:
+        from viraltracker.services.seo_pipeline.services.content_eval_service import ContentEvalService
+        from viraltracker.services.seo_pipeline.services.publish_queue_service import PublishQueueService
+
+        eval_service = ContentEvalService()
+        queue_service = PublishQueueService()
+
+        # Find pending articles
+        pending = eval_service.get_pending_articles(brand_id=brand_id)
+        articles_to_eval = pending[:max_articles]
+
+        if not articles_to_eval:
+            logs.append("No articles pending evaluation")
+            update_job_run(run_id, {
+                "status": "completed",
+                "completed_at": datetime.now(PST).isoformat(),
+                "logs": "\n".join(logs),
+                "metadata": json.dumps({"evaluated": 0, "passed": 0, "failed": 0}),
+            })
+            _update_job_next_run(job, job_id)
+            return {"success": True, "evaluated": 0}
+
+        evaluated = 0
+        passed = 0
+        failed = 0
+
+        for article in articles_to_eval:
+            article_id = article["id"]
+            art_brand_id = article.get("brand_id", brand_id)
+            art_org_id = article.get("organization_id", "")
+
+            try:
+                result = eval_service.evaluate_article(article_id, art_brand_id, art_org_id)
+                evaluated += 1
+
+                if result["verdict"] == "passed":
+                    passed += 1
+                    logs.append(f"PASS: {article.get('keyword', article_id)}")
+
+                    # Enqueue for publishing
+                    full_article = eval_service._get_article(article_id)
+                    if full_article:
+                        content_hash = ContentEvalService.compute_content_hash(full_article)
+                        policy = eval_service._get_policy(art_brand_id)
+                        if policy.get("publish_enabled", False):
+                            queue_service.enqueue_article(
+                                article_id, art_brand_id, art_org_id,
+                                content_hash, policy,
+                            )
+                            logs.append(f"  → Enqueued for publishing")
+                        else:
+                            logs.append(f"  → Publishing disabled for brand, skipping enqueue")
+                else:
+                    failed += 1
+                    logs.append(
+                        f"FAIL: {article.get('keyword', article_id)} "
+                        f"({result['failed_checks']} errors, {result['warning_count']} warnings)"
+                    )
+
+            except Exception as e:
+                logs.append(f"ERROR evaluating {article.get('keyword', article_id)}: {e}")
+                logger.error(f"Error evaluating article {article_id}: {e}")
+
+        metadata = {"evaluated": evaluated, "passed": passed, "failed": failed}
+        logs.append(f"\nSummary: {evaluated} evaluated, {passed} passed, {failed} failed")
+
+        update_job_run(run_id, {
+            "status": "completed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "logs": "\n".join(logs),
+            "metadata": json.dumps(metadata),
+        })
+        _update_job_next_run(job, job_id)
+
+        logger.info(f"Completed seo_content_eval: {evaluated} evaluated, {passed} passed")
+        return {"success": True, **metadata}
+
+    except Exception as e:
+        error_msg = str(e)
+        logs.append(f"Job failed: {error_msg}")
+        logger.error(f"seo_content_eval job failed: {error_msg}")
+        update_job_run(run_id, {
+            "status": "failed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "error_message": error_msg,
+            "logs": "\n".join(logs),
+        })
+        _reschedule_after_failure(job, job_id, get_run_attempt_number(run_id))
+        return {"success": False, "error": error_msg}
+
+
+async def execute_seo_publish_job(job: Dict) -> Dict[str, Any]:
+    """
+    Publish due articles from the publish queue to Shopify.
+
+    Checks the seo_publish_queue for entries past their publish_at time,
+    publishes each to Shopify (draft→live or new→live), and triggers
+    auto-interlinking via a chained one-time job.
+
+    Parameters (from job['parameters']):
+        max_publishes: int - Max articles to publish per run (default: 5)
+    """
+    job_id = job['id']
+    job_name = job.get('name', 'SEO Publish')
+    params = job.get('parameters') or {}
+    max_publishes = params.get('max_publishes', 5)
+
+    logger.info(f"Starting seo_publish job: {job_name}")
+
+    update_job(job_id, {"next_run_at": None})
+    run_id = create_job_run(job_id)
+    if not run_id:
+        return {"success": False, "error": "Failed to create run record"}
+
+    logs = []
+
+    try:
+        from viraltracker.services.seo_pipeline.services.publish_queue_service import PublishQueueService
+        from viraltracker.services.seo_pipeline.services.content_eval_service import ContentEvalService
+        from viraltracker.services.seo_pipeline.services.cms_publisher_service import CMSPublisherService
+
+        queue_service = PublishQueueService()
+        eval_svc = ContentEvalService()
+        cms_service = CMSPublisherService()
+
+        due_articles = queue_service.get_due_articles()[:max_publishes]
+
+        if not due_articles:
+            logs.append("No articles due for publishing")
+            update_job_run(run_id, {
+                "status": "completed",
+                "completed_at": datetime.now(PST).isoformat(),
+                "logs": "\n".join(logs),
+                "metadata": json.dumps({"published": 0}),
+            })
+            _update_job_next_run(job, job_id)
+            return {"success": True, "published": 0}
+
+        published = 0
+        failed_count = 0
+
+        for queue_entry in due_articles:
+            queue_id = queue_entry["id"]
+            article_data = queue_entry.get("seo_articles") or {}
+            article_id = queue_entry["article_id"]
+            entry_brand_id = queue_entry["brand_id"]
+            entry_org_id = queue_entry["organization_id"]
+
+            try:
+                queue_service.mark_publishing(queue_id)
+
+                # Get full article for publishing
+                full_article = eval_svc._get_article(article_id)
+                if not full_article:
+                    queue_service.mark_failed(queue_id, "Article not found")
+                    logs.append(f"SKIP: Article {article_id} not found")
+                    failed_count += 1
+                    continue
+
+                # Get CMS publisher for this brand
+                publisher = cms_service.get_publisher(entry_brand_id, entry_org_id)
+                if not publisher:
+                    queue_service.mark_failed(queue_id, "No Shopify publisher configured for brand")
+                    logs.append(f"SKIP: No publisher for brand {entry_brand_id}")
+                    failed_count += 1
+                    continue
+
+                # Build article payload
+                article_payload = {
+                    "title": full_article.get("title", ""),
+                    "body_html": full_article.get("content_html", ""),
+                    "author": full_article.get("author_name", ""),
+                    "seo_title": full_article.get("seo_title", ""),
+                    "meta_description": full_article.get("meta_description", ""),
+                    "keyword": full_article.get("keyword", ""),
+                    "tags": full_article.get("tags", ""),
+                    "schema_markup": full_article.get("schema_markup"),
+                    "hero_image_url": full_article.get("hero_image_url"),
+                    "summary_html": full_article.get("summary_html"),
+                }
+
+                cms_article_id = full_article.get("cms_article_id")
+
+                if cms_article_id:
+                    # Promote draft to live
+                    result = publisher.update(cms_article_id, article_payload, draft=False)
+                    logs.append(f"PUBLISHED (draft→live): {full_article.get('keyword', article_id)}")
+                else:
+                    # Create and publish live
+                    result = publisher.publish(article_payload, draft=False)
+                    # Save CMS article ID back
+                    new_cms_id = result.get("cms_article_id")
+                    if new_cms_id:
+                        eval_svc.supabase.table("seo_articles").update({
+                            "cms_article_id": new_cms_id,
+                            "published_url": result.get("published_url"),
+                        }).eq("id", article_id).execute()
+                    logs.append(f"PUBLISHED (new): {full_article.get('keyword', article_id)}")
+
+                queue_service.mark_published(queue_id, article_id)
+                published += 1
+
+                # Chain auto-interlink job (Run Now pattern)
+                _chain_interlink_job(article_id, entry_brand_id, entry_org_id)
+
+            except Exception as e:
+                error_msg = str(e)
+                has_retries = queue_service.mark_failed(queue_id, error_msg)
+                status = "will retry" if has_retries else "max retries exceeded"
+                logs.append(f"FAILED ({status}): {article_data.get('keyword', article_id)} - {error_msg}")
+                failed_count += 1
+                logger.error(f"Failed to publish article {article_id}: {e}")
+
+        metadata = {"published": published, "failed": failed_count}
+        logs.append(f"\nSummary: {published} published, {failed_count} failed")
+
+        update_job_run(run_id, {
+            "status": "completed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "logs": "\n".join(logs),
+            "metadata": json.dumps(metadata),
+        })
+        _update_job_next_run(job, job_id)
+
+        logger.info(f"Completed seo_publish: {published} published, {failed_count} failed")
+        return {"success": True, **metadata}
+
+    except Exception as e:
+        error_msg = str(e)
+        logs.append(f"Job failed: {error_msg}")
+        logger.error(f"seo_publish job failed: {error_msg}")
+        update_job_run(run_id, {
+            "status": "failed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "error_message": error_msg,
+            "logs": "\n".join(logs),
+        })
+        _reschedule_after_failure(job, job_id, get_run_attempt_number(run_id))
+        return {"success": False, "error": error_msg}
+
+
+def _chain_interlink_job(article_id: str, brand_id: str, organization_id: str):
+    """Create a one-time seo_auto_interlink job using the Run Now pattern."""
+    try:
+        from viraltracker.core.database import get_supabase_client
+        db = get_supabase_client()
+        next_run = (datetime.now(PST) + timedelta(minutes=1)).isoformat()
+        db.table("scheduled_jobs").insert({
+            "name": f"Auto-interlink: {article_id[:8]}",
+            "job_type": "seo_auto_interlink",
+            "brand_id": brand_id,
+            "status": "active",
+            "is_recurring": False,
+            "next_run_at": next_run,
+            "parameters": {
+                "article_id": article_id,
+                "organization_id": organization_id,
+            },
+        }).execute()
+        logger.info(f"Chained seo_auto_interlink for article {article_id}")
+    except Exception as e:
+        logger.error(f"Failed to chain interlink job for {article_id}: {e}")
+
+
+async def execute_seo_auto_interlink_job(job: Dict) -> Dict[str, Any]:
+    """
+    Auto-interlink an article after it has been published.
+
+    Runs interlinking modes enabled in the brand's content policy:
+    - suggest: Generate link suggestions
+    - auto_link: Insert <a> tags into article HTML
+    - bidirectional: Add "Related Articles" sections
+
+    Then pushes updated HTML to Shopify.
+
+    Parameters (from job['parameters']):
+        article_id: str - Article UUID that was just published
+        organization_id: str - Organization UUID
+    """
+    job_id = job['id']
+    job_name = job.get('name', 'SEO Auto-Interlink')
+    brand_id = job.get('brand_id')
+    brand_info = job.get('brands') or {}
+    brand_name = brand_info.get('name', 'Unknown')
+    params = job.get('parameters') or {}
+    article_id = params.get('article_id')
+    organization_id = params.get('organization_id', '')
+
+    if not article_id:
+        logger.error("seo_auto_interlink job missing article_id parameter")
+        return {"success": False, "error": "Missing article_id"}
+
+    logger.info(f"Starting seo_auto_interlink job: {job_name} (article: {article_id})")
+
+    update_job(job_id, {"next_run_at": None})
+    run_id = create_job_run(job_id)
+    if not run_id:
+        return {"success": False, "error": "Failed to create run record"}
+
+    logs = []
+
+    try:
+        from viraltracker.services.seo_pipeline.services.interlinking_service import InterlinkingService
+        from viraltracker.services.seo_pipeline.services.content_eval_service import ContentEvalService
+
+        interlink_service = InterlinkingService()
+        eval_service = ContentEvalService()
+
+        # Get brand content policy
+        policy = eval_service._get_policy(brand_id)
+        if not policy.get("interlink_enabled", True):
+            logs.append("Interlinking disabled for this brand")
+            update_job_run(run_id, {
+                "status": "completed",
+                "completed_at": datetime.now(PST).isoformat(),
+                "logs": "\n".join(logs),
+            })
+            update_job(job_id, {"status": "completed"})
+            return {"success": True, "skipped": True}
+
+        enabled_modes = policy.get("interlink_modes", ["auto_link", "bidirectional"])
+        article = eval_service._get_article(article_id)
+        if not article:
+            raise ValueError(f"Article not found: {article_id}")
+
+        keyword = article.get("keyword", "Unknown")
+        logs.append(f"Article: {keyword}")
+        logs.append(f"Enabled modes: {', '.join(enabled_modes)}")
+
+        # Find the article's cluster
+        cluster_spoke = (
+            eval_service.supabase.table("seo_cluster_spokes")
+            .select("cluster_id")
+            .eq("article_id", article_id)
+            .limit(1)
+            .execute()
+        )
+
+        total_links_added = 0
+        related_sections_added = 0
+        suggestions = None
+
+        # Step 1: Suggest links (always run to feed step 3)
+        if "suggest" in enabled_modes or "bidirectional" in enabled_modes:
+            try:
+                suggestions = interlink_service.suggest_links(article_id, save=True)
+                suggestion_count = suggestions.get("suggestion_count", 0)
+                logs.append(f"Suggest: {suggestion_count} links suggested")
+            except Exception as e:
+                logs.append(f"Suggest failed: {e}")
+                logger.error(f"suggest_links failed for {article_id}: {e}")
+
+        # Step 2: Auto-link (insert <a> tags in HTML)
+        if "auto_link" in enabled_modes:
+            try:
+                result = interlink_service.auto_link_article(
+                    article_id, push_to_cms=True,
+                    brand_id=brand_id, organization_id=organization_id,
+                )
+                links_added = result.get("links_added", 0)
+                total_links_added += links_added
+                logs.append(f"Auto-link: {links_added} links inserted")
+            except Exception as e:
+                logs.append(f"Auto-link failed: {e}")
+                logger.error(f"auto_link_article failed for {article_id}: {e}")
+
+        # Step 3: Bidirectional (add Related Articles section)
+        if "bidirectional" in enabled_modes and suggestions:
+            related_ids = [
+                s["target_article_id"]
+                for s in suggestions.get("suggestions", [])
+            ]
+            if related_ids:
+                try:
+                    result = interlink_service.add_related_section(
+                        article_id, related_ids, push_to_cms=True,
+                        brand_id=brand_id, organization_id=organization_id,
+                    )
+                    related_sections_added = result.get("articles_linked", 0)
+                    logs.append(f"Bidirectional: {related_sections_added} related articles linked")
+                except Exception as e:
+                    logs.append(f"Bidirectional failed: {e}")
+                    logger.error(f"add_related_section failed for {article_id}: {e}")
+
+        metadata = {
+            "links_added": total_links_added,
+            "related_sections_added": related_sections_added,
+        }
+        logs.append(f"\nTotal: {total_links_added} auto-links, {related_sections_added} related sections")
+
+        update_job_run(run_id, {
+            "status": "completed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "logs": "\n".join(logs),
+            "metadata": json.dumps(metadata),
+        })
+
+        # One-time job, no reschedule needed
+        update_job(job_id, {"status": "completed"})
+
+        logger.info(f"Completed seo_auto_interlink for {article_id}: {total_links_added} links")
+        return {"success": True, **metadata}
+
+    except Exception as e:
+        error_msg = str(e)
+        logs.append(f"Job failed: {error_msg}")
+        logger.error(f"seo_auto_interlink job failed: {error_msg}")
+        update_job_run(run_id, {
+            "status": "failed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "error_message": error_msg,
+            "logs": "\n".join(logs),
+        })
+        _reschedule_after_failure(job, job_id, get_run_attempt_number(run_id))
+        return {"success": False, "error": error_msg}
 
 
 if __name__ == "__main__":
