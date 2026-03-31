@@ -548,7 +548,18 @@ def cron_to_description(cron: str, schedule_type: str) -> str:
         '4': 'Thursday', '5': 'Friday', '6': 'Saturday', '7': 'Sunday'
     }
 
-    time_str = f"{int(hour)}:{minute.zfill(2)} PST"
+    # Handle interval-style cron (e.g., */30 * * * * or 0 */2 * * *)
+    if '/' in minute:
+        interval = minute.split('/')[1]
+        return f"Every {interval} minutes"
+    if '/' in hour:
+        interval = hour.split('/')[1]
+        return f"Every {interval} hour{'s' if int(interval) > 1 else ''}"
+
+    try:
+        time_str = f"{int(hour)}:{minute.zfill(2)} PST"
+    except ValueError:
+        return cron
 
     if day_of_week != '*':
         return f"Weekly on {days.get(day_of_week, day_of_week)}s at {time_str}"
@@ -584,6 +595,24 @@ def calculate_next_run(schedule_type: str, cron: str = None, scheduled_at: datet
         return None
 
     minute, hour, day_of_month, month, day_of_week = parts
+
+    # Handle interval-style cron (e.g., */30 * * * * or 0 */2 * * *)
+    if '/' in minute:
+        interval_min = int(minute.split('/')[1])
+        # Next run at the next interval boundary
+        current_min = now.minute
+        next_min = ((current_min // interval_min) + 1) * interval_min
+        if next_min >= 60:
+            return (now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1))
+        return now.replace(minute=next_min, second=0, microsecond=0)
+    if '/' in hour:
+        interval_hr = int(hour.split('/')[1])
+        current_hr = now.hour
+        next_hr = ((current_hr // interval_hr) + 1) * interval_hr
+        if next_hr >= 24:
+            return (now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1))
+        return now.replace(hour=next_hr, minute=0, second=0, microsecond=0)
+
     hour = int(hour)
 
     # Simple calculation - just find next occurrence
@@ -2129,7 +2158,7 @@ def _render_seo_content_eval_form(existing_job, is_edit):
             else:
                 next_run = None
                 if schedule_type == 'recurring' and cron_expression:
-                    next_run = calculate_next_run(cron_expression)
+                    next_run = calculate_next_run(schedule_type, cron_expression)
                     if next_run:
                         next_run = next_run.isoformat()
                 elif scheduled_at:
@@ -2379,7 +2408,7 @@ def _render_seo_publish_form(existing_job, is_edit):
             else:
                 next_run = None
                 if schedule_type == 'recurring' and cron_expression:
-                    next_run = calculate_next_run(cron_expression)
+                    next_run = calculate_next_run(schedule_type, cron_expression)
                     if next_run:
                         next_run = next_run.isoformat()
                 elif scheduled_at:
