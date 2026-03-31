@@ -304,7 +304,7 @@ class CreativeCorrelationService:
                 for i in range(0, len(id_list), 50):
                     batch = id_list[i:i + 50]
                     result = self.supabase.table("meta_ads_performance").select(
-                        "meta_ad_id, impressions, link_ctr, roas, cpa, spend"
+                        "meta_ad_id, impressions, link_ctr, roas, cpm, spend"
                     ).eq(
                         "brand_id", str(brand_id)
                     ).gte(
@@ -319,7 +319,7 @@ class CreativeCorrelationService:
                 page_size = 1000
                 while True:
                     result = self.supabase.table("meta_ads_performance").select(
-                        "meta_ad_id, impressions, link_ctr, roas, cpa, spend"
+                        "meta_ad_id, impressions, link_ctr, roas, cpm, spend"
                     ).eq(
                         "brand_id", str(brand_id)
                     ).gte(

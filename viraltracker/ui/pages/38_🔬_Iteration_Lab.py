@@ -2040,7 +2040,7 @@ def render_creative_intelligence_tab(brand_id: str, org_id: str):
             use_container_width=True,
             hide_index=True,
         )
-        st.caption(f"Showing {len(df)} hooks with 100+ impressions")
+        st.caption(f"Showing {len(df)} hooks with 500+ impressions")
 
         # Hook type breakdown
         st.markdown("---")
