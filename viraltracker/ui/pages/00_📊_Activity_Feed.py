@@ -371,7 +371,7 @@ def render_while_you_were_away(summary: Dict, last_seen_at: datetime):
         st.divider()
 
 
-def render_event_card(event: Dict, brand_names: Dict[str, str]):
+def render_event_card(event: Dict, brand_names: Dict[str, str], key_prefix: str = ""):
     """Render a single event in the timeline."""
     severity = event.get("severity", "info")
     icon = SEVERITY_ICONS.get(severity, "🔵")
@@ -435,10 +435,11 @@ def render_event_card(event: Dict, brand_names: Dict[str, str]):
 
     # Action buttons
     job_id = details.get("job_id")
+    event_id = event.get("id", "")
     cols = st.columns([1, 1, 6])
     if severity == "error" and job_id:
-        retry_key = f"retry_{event.get('id', '')}"
-        retried_key = f"retried_{event.get('id', '')}"
+        retry_key = f"{key_prefix}retry_{event_id}"
+        retried_key = f"{key_prefix}retried_{event_id}"
         with cols[0]:
             if st.session_state.get(retried_key):
                 st.markdown("✅ *Retry scheduled*")
@@ -450,7 +451,7 @@ def render_event_card(event: Dict, brand_names: Dict[str, str]):
     link_page = event.get("link_page")
     if link_page and job_id:
         with cols[1]:
-            if st.button("📋 View", key=f"view_{event.get('id', '')}"):
+            if st.button("📋 View", key=f"{key_prefix}view_{event_id}"):
                 st.query_params["job_id"] = job_id
                 # Map page slugs to actual page files
                 page_map = {
@@ -542,7 +543,7 @@ with tab_all:
     events = get_activity_events(org_id, brand_id, severity_filter=None, since=since, limit=PAGE_SIZE)
     if events:
         for event in events:
-            render_event_card(event, brand_names)
+            render_event_card(event, brand_names, key_prefix="all_")
             st.markdown("---")
         if len(events) >= PAGE_SIZE:
             if st.button("Show more", key="more_all"):
@@ -551,7 +552,7 @@ with tab_all:
                     limit=PAGE_SIZE, offset=PAGE_SIZE,
                 )
                 for event in more:
-                    render_event_card(event, brand_names)
+                    render_event_card(event, brand_names, key_prefix="all2_")
                     st.markdown("---")
     else:
         st.info("No activity events yet. Events will appear here as jobs run.")
@@ -560,7 +561,7 @@ with tab_failures:
     events = get_activity_events(org_id, brand_id, severity_filter="errors", since=since, limit=PAGE_SIZE)
     if events:
         for event in events:
-            render_event_card(event, brand_names)
+            render_event_card(event, brand_names, key_prefix="fail_")
             st.markdown("---")
     else:
         st.success("No failures. All systems operational.")
@@ -569,7 +570,7 @@ with tab_success:
     events = get_activity_events(org_id, brand_id, severity_filter="success", since=since, limit=PAGE_SIZE)
     if events:
         for event in events:
-            render_event_card(event, brand_names)
+            render_event_card(event, brand_names, key_prefix="ok_")
             st.markdown("---")
     else:
         st.info("No completed events in this time range.")
