@@ -300,13 +300,13 @@ class ContentEvalService:
                 schema_markup=schema_markup,
             )
 
-            failures = [c for c in checks if not c.get("passed") and c.get("severity") == "error"]
-            warnings = [c for c in checks if not c.get("passed") and c.get("severity") == "warning"]
+            failures = [c for c in checks if not c.passed and c.severity == "error"]
+            warnings = [c for c in checks if not c.passed and c.severity == "warning"]
 
             return {
                 "passed": len(failures) == 0,
                 "total_checks": len(checks),
-                "passed_checks": sum(1 for c in checks if c.get("passed")),
+                "passed_checks": sum(1 for c in checks if c.passed),
                 "checks": checks,
                 "failures": failures,
                 "warnings": warnings,
