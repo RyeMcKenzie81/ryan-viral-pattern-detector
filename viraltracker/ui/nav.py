@@ -162,6 +162,7 @@ def _get_org_features_cached(org_id: str) -> Dict[str, bool]:
             FeatureKey.KNOWLEDGE_BASE: True,
             FeatureKey.VEO_AVATARS: True,
             FeatureKey.SORA_MVP: True,
+            FeatureKey.SECTION_SEO: True,
             FeatureKey.SEO_DASHBOARD: True,
             FeatureKey.SEO_KEYWORD_RESEARCH: True,
             FeatureKey.SEO_ARTICLE_WRITER: True,
@@ -285,8 +286,7 @@ def build_navigation_pages() -> Dict[str, List[st.Page]]:
     if has_section(SK_ADS):
         ads.append(st.Page("pages/23_🖼️_Ad_Gallery.py", title="Ad Gallery", icon="🖼️"))
     if visible(SK_ADS, "ad_creator"):
-        ads.append(st.Page("pages/21_🎨_Ad_Creator.py", title="Ad Creator", icon="🎨"))
-        ads.append(st.Page("pages/21b_🎨_Ad_Creator_V2.py", title="Ad Creator V2", icon="🎨"))
+        ads.append(st.Page("pages/21b_🎨_Ad_Creator_V2.py", title="Ad Creator", icon="🎨"))
     if visible(SK_ADS, "ad_history"):
         ads.append(st.Page("pages/22_📊_Ad_History.py", title="Ad History", icon="📊"))
     if visible(SK_ADS, "ad_export"):
@@ -355,32 +355,38 @@ def build_navigation_pages() -> Dict[str, List[st.Page]]:
         content.append(st.Page("pages/47_🎭_Avatars.py", title="Avatars", icon="🎭"))
     if visible(SK_CONTENT, "sora_mvp"):
         content.append(st.Page("pages/99_🎥_Sora_MVP.py", title="Sora MVP", icon="🎥"))
-    if visible(SK_CONTENT, "seo_dashboard"):
-        content.append(st.Page("pages/48_🔍_SEO_Dashboard.py", title="SEO Dashboard", icon="🔍"))
-    if visible(SK_CONTENT, "seo_keyword_research"):
-        content.append(st.Page("pages/49_🔑_Keyword_Research.py", title="Keyword Research", icon="🔑"))
-    if visible(SK_CONTENT, "seo_article_writer"):
-        content.append(st.Page("pages/50_✍️_Article_Writer.py", title="Article Writer", icon="✍️"))
-    if visible(SK_CONTENT, "seo_article_publisher"):
-        content.append(st.Page("pages/51_📤_Article_Publisher.py", title="Article Publisher", icon="📤"))
-    if visible(SK_CONTENT, "seo_cluster_manager"):
-        content.append(st.Page("pages/52_🗂️_SEO_Clusters.py", title="SEO Clusters", icon="🗂️"))
-    if visible(SK_CONTENT, "seo_workflow"):
-        content.append(st.Page("pages/53_🚀_SEO_Workflow.py", title="SEO Workflow", icon="🚀"))
-    if visible(SK_CONTENT, "seo_content_policies"):
-        content.append(st.Page(
+    if content:
+        pages["Content"] = content
+
+    # --- SEO ---
+    SK_SEO = "section_seo"
+    seo: List[st.Page] = []
+    if visible(SK_SEO, "seo_dashboard"):
+        seo.append(st.Page("pages/48_🔍_SEO_Dashboard.py", title="SEO Dashboard", icon="🔍"))
+    if visible(SK_SEO, "seo_keyword_research"):
+        seo.append(st.Page("pages/49_🔑_Keyword_Research.py", title="Keyword Research", icon="🔑"))
+    if visible(SK_SEO, "seo_article_writer"):
+        seo.append(st.Page("pages/50_✍️_Article_Writer.py", title="Article Writer", icon="✍️"))
+    if visible(SK_SEO, "seo_article_publisher"):
+        seo.append(st.Page("pages/51_📤_Article_Publisher.py", title="Article Publisher", icon="📤"))
+    if visible(SK_SEO, "seo_cluster_manager"):
+        seo.append(st.Page("pages/52_🗂️_SEO_Clusters.py", title="SEO Clusters", icon="🗂️"))
+    if visible(SK_SEO, "seo_workflow"):
+        seo.append(st.Page("pages/53_🚀_SEO_Workflow.py", title="SEO Workflow", icon="🚀"))
+    if visible(SK_SEO, "seo_content_policies"):
+        seo.append(st.Page(
             "pages/54_📋_Content_Policies.py",
             title="Content Policies", icon="📋",
             url_path="content-policies",
         ))
-    if visible(SK_CONTENT, "seo_exceptions"):
-        content.append(st.Page(
+    if visible(SK_SEO, "seo_exceptions"):
+        seo.append(st.Page(
             "pages/55_⚠️_Exceptions.py",
             title="Exceptions", icon="⚠️",
             url_path="seo-exceptions",
         ))
-    if content:
-        pages["Content"] = content
+    if seo:
+        pages["SEO"] = seo
 
     # --- Email Marketing ---
     SK_EMAIL = "section_email_marketing"
@@ -445,5 +451,12 @@ def build_navigation_pages() -> Dict[str, List[st.Page]]:
         system.append(st.Page("pages/69_🔧_Admin.py", title="Admin", icon="🔧"))
     if system:
         pages["System"] = system
+
+    # --- Deprecated ---
+    deprecated: List[st.Page] = []
+    if visible(SK_ADS, "ad_creator"):
+        deprecated.append(st.Page("pages/21_🎨_Ad_Creator.py", title="Ad Creator (Legacy)", icon="🎨"))
+    if deprecated:
+        pages["Deprecated"] = deprecated
 
     return pages
