@@ -937,102 +937,288 @@ class AccountLeverageService:
             if not top:
                 return moves
 
-            # Field name → (plain language label, description of what the value means)
+            # Field name → (plain language label, short title phrase, longer description)
+            # "title" = short phrase for the move title (e.g., "Question-style headlines")
+            # "explain" = longer description for the why/next_step sections
             field_descriptions = {
                 "emotional_tone": {
                     "label": "emotional tone",
-                    "explain": lambda v: f"ads that evoke a sense of {v.replace('_', ' ')}",
+                    "title": lambda v: {
+                        "fear": "Fear-based messaging",
+                        "urgency": "Urgency-driven messaging",
+                        "curiosity": "Curiosity-driven messaging",
+                        "trust": "Trust-building messaging",
+                        "empathy": "Empathy-driven messaging",
+                        "excitement": "Excitement-driven messaging",
+                        "frustration": "Frustration-based messaging",
+                        "hope": "Hope-based messaging",
+                        "humor": "Humor-based messaging",
+                        "aspiration": "Aspirational messaging",
+                    }.get(v, f"{v.replace('_', ' ').title()} emotional tone"),
+                    "explain": lambda v: f"ads that tap into {v.replace('_', ' ')} as the primary emotion",
                 },
                 "hook_pattern": {
                     "label": "headline style",
+                    "title": lambda v: {
+                        "question": "Question-style headlines",
+                        "statement": "Bold statement headlines",
+                        "testimonial": "Testimonial-led headlines",
+                        "before_after": "Before/after headlines",
+                        "statistic": "Statistic-led headlines",
+                        "curiosity": "Curiosity-gap headlines",
+                        "how_to": "How-to headlines",
+                        "list": "List-style headlines",
+                        "command": "Command-style headlines",
+                        "story": "Story-led headlines",
+                    }.get(v, f"'{v.replace('_', ' ').title()}' headlines"),
                     "explain": lambda v: {
-                        "question": "ads that lead with a question",
-                        "statement": "ads that lead with a bold statement",
-                        "testimonial": "ads that lead with a customer testimonial",
-                        "before_after": "ads showing a before/after transformation",
-                        "statistic": "ads that lead with a statistic or data point",
-                        "curiosity": "ads that use a curiosity gap",
-                    }.get(v, f"ads using a '{v.replace('_', ' ')}' headline style"),
+                        "question": "image ads that lead with a question in the headline",
+                        "statement": "image ads that open with a bold, direct statement",
+                        "testimonial": "image ads that lead with a customer testimonial or quote",
+                        "before_after": "image ads that show a before/after transformation",
+                        "statistic": "image ads that lead with a data point or statistic",
+                        "curiosity": "image ads that tease information to spark curiosity",
+                        "how_to": "image ads that teach or show how to do something",
+                        "list": "image ads that use numbered lists or bullet points",
+                        "command": "image ads that tell the viewer what to do directly",
+                        "story": "image ads that lead with a story or narrative",
+                    }.get(v, f"image ads using a {v.replace('_', ' ')} headline approach"),
                 },
                 "cta_style": {
-                    "label": "call-to-action approach",
+                    "label": "call-to-action",
+                    "title": lambda v: {
+                        "direct": "'Buy Now' / 'Shop Today' CTAs",
+                        "soft": "'Learn More' / 'See How' CTAs",
+                        "curiosity": "'See Why...' curiosity CTAs",
+                        "none": "No call-to-action",
+                        "urgency": "'Limited Time' / 'Don't Miss Out' CTAs",
+                        "social_proof": "'Join 10,000+' social proof CTAs",
+                    }.get(v, f"'{v.replace('_', ' ').title()}' CTAs"),
                     "explain": lambda v: {
-                        "direct": "ads with a clear, explicit CTA (e.g., 'Buy Now', 'Shop Today')",
-                        "soft": "ads with a low-pressure CTA (e.g., 'Learn More', 'See How')",
-                        "curiosity": "ads that use curiosity to drive clicks (e.g., 'See Why...')",
-                        "none": "ads with no explicit call-to-action",
-                        "urgency": "ads with urgency-driven CTAs (e.g., 'Limited Time', 'Don't Miss Out')",
-                    }.get(v, f"ads using a '{v.replace('_', ' ')}' call-to-action"),
+                        "direct": "image ads with explicit purchase CTAs like 'Buy Now', 'Shop Today', 'Get Yours'",
+                        "soft": "image ads with low-pressure CTAs like 'Learn More', 'See How It Works'",
+                        "curiosity": "image ads using curiosity-driven CTAs like 'See Why...', 'Find Out How'",
+                        "none": "image ads that let the creative speak without an explicit call-to-action",
+                        "urgency": "image ads with time-pressure CTAs like 'Limited Time', 'Don't Miss Out'",
+                        "social_proof": "image ads with social proof CTAs like 'Join 10,000+ Customers'",
+                    }.get(v, f"image ads using a {v.replace('_', ' ')} call-to-action approach"),
                 },
                 "messaging_theme": {
                     "label": "messaging approach",
-                    "explain": lambda v: f"ads using a {v.replace('_', ' ')} messaging approach",
+                    "title": lambda v: {
+                        "problem_solution": "Problem → Solution messaging",
+                        "social_proof": "Social proof messaging",
+                        "education": "Educational messaging",
+                        "aspiration": "Aspirational messaging",
+                        "fear_of_missing_out": "FOMO messaging",
+                        "authority": "Authority/expert messaging",
+                        "comparison": "Us vs. them comparison",
+                        "story": "Story-driven messaging",
+                        "benefit_focused": "Benefit-focused messaging",
+                        "ingredient_focused": "Ingredient/feature callout",
+                        "value_proposition": "Value proposition messaging",
+                        "emotional_appeal": "Emotional appeal messaging",
+                    }.get(v, f"{v.replace('_', ' ').title()} messaging"),
+                    "explain": lambda v: {
+                        "problem_solution": "image ads that name a problem the viewer has, then present the product as the fix",
+                        "social_proof": "image ads that use reviews, testimonials, or customer counts as proof",
+                        "education": "image ads that teach the viewer something (tips, facts, how-tos)",
+                        "aspiration": "image ads that show the ideal outcome or lifestyle",
+                        "fear_of_missing_out": "image ads that create urgency through scarcity or fear of missing out",
+                        "authority": "image ads that leverage expert endorsements, certifications, or clinical data",
+                        "comparison": "image ads that compare the product against competitors or the status quo",
+                        "story": "image ads that tell a customer story or narrative arc",
+                        "benefit_focused": "image ads that lead with specific product benefits",
+                        "ingredient_focused": "image ads that highlight specific ingredients or features",
+                        "value_proposition": "image ads focused on the core value proposition or offer",
+                        "emotional_appeal": "image ads that lead with an emotional connection",
+                    }.get(v, f"image ads using a {v.replace('_', ' ')} messaging approach"),
                 },
                 "people_role": {
-                    "label": "person type in the ad",
+                    "label": "person type",
+                    "title": lambda v: {
+                        "spokesperson": "Spokesperson-led ads",
+                        "customer_testimonial": "Customer testimonial ads",
+                        "lifestyle_model": "Lifestyle model ads",
+                        "ugc_creator": "UGC creator ads",
+                        "founder": "Founder-led ads",
+                        "expert": "Expert/doctor-led ads",
+                        "no_people": "No-people ads",
+                    }.get(v, f"{v.replace('_', ' ').title()} ads"),
                     "explain": lambda v: {
-                        "spokesperson": "ads featuring a spokesperson or presenter",
-                        "customer_testimonial": "ads featuring real customer testimonials",
-                        "lifestyle_model": "ads with lifestyle/aspirational models",
-                        "ugc_creator": "ads from UGC creators",
-                        "founder": "ads featuring the brand founder",
-                        "expert": "ads featuring a doctor, expert, or authority figure",
-                        "no_people": "ads with no people in them",
-                    }.get(v, f"ads featuring a {v.replace('_', ' ')}"),
+                        "spokesperson": "image ads featuring a spokesperson or presenter",
+                        "customer_testimonial": "image ads featuring real customer testimonials",
+                        "lifestyle_model": "image ads with aspirational lifestyle models",
+                        "ugc_creator": "image ads from UGC creators (organic, authentic feel)",
+                        "founder": "image ads featuring the brand founder",
+                        "expert": "image ads featuring a doctor, expert, or authority figure",
+                        "no_people": "image ads with no people — product-focused visuals only",
+                    }.get(v, f"image ads featuring a {v.replace('_', ' ')}"),
                 },
                 "visual_color_mood": {
-                    "label": "visual color mood",
-                    "explain": lambda v: f"ads with a {v.replace('_', ' ')} color palette",
+                    "label": "color palette",
+                    "title": lambda v: {
+                        "warm": "Warm-toned visuals",
+                        "cool": "Cool-toned visuals",
+                        "neutral": "Neutral-toned visuals",
+                        "bright": "Bright, vibrant visuals",
+                        "dark": "Dark, moody visuals",
+                        "pastel": "Pastel-toned visuals",
+                        "high_contrast": "High-contrast visuals",
+                        "monochrome": "Monochrome visuals",
+                    }.get(v, f"{v.replace('_', ' ').title()} color palette"),
+                    "explain": lambda v: f"image ads using a {v.replace('_', ' ')} color palette",
                 },
                 "visual_imagery_type": {
                     "label": "visual style",
+                    "title": lambda v: {
+                        "product_hero": "Product hero shot ads",
+                        "lifestyle": "Lifestyle imagery ads",
+                        "before_after": "Before/after visual ads",
+                        "infographic": "Infographic-style ads",
+                        "testimonial_card": "Review/testimonial card ads",
+                        "ugc": "UGC-style visual ads",
+                        "screenshot": "Screenshot-based ads (reviews, texts, DMs)",
+                        "text_overlay": "Text-on-background ads",
+                        "collage": "Multi-image collage ads",
+                    }.get(v, f"{v.replace('_', ' ').title()} visual ads"),
                     "explain": lambda v: {
-                        "product_hero": "ads with a prominent product shot as the main visual",
-                        "lifestyle": "ads showing the product in a real-life context",
-                        "before_after": "ads showing a visual before/after comparison",
-                        "infographic": "ads using data, charts, or infographic-style visuals",
-                        "testimonial_card": "ads styled as testimonial/review cards",
-                        "ugc": "ads with user-generated or raw/organic-looking visuals",
-                        "screenshot": "ads featuring screenshots (e.g., reviews, texts, social proof)",
-                        "text_overlay": "ads that are primarily text on a background",
-                    }.get(v, f"ads using {v.replace('_', ' ')} imagery"),
+                        "product_hero": "image ads built around a prominent product shot as the main visual",
+                        "lifestyle": "image ads showing the product in a real-life, aspirational context",
+                        "before_after": "image ads using a side-by-side before/after comparison",
+                        "infographic": "image ads with data, charts, or infographic-style layouts",
+                        "testimonial_card": "image ads designed as review or testimonial cards",
+                        "ugc": "image ads with raw, user-generated, organic-looking visuals",
+                        "screenshot": "image ads built around screenshots — review sites, text messages, DMs, social posts",
+                        "text_overlay": "image ads that are primarily text overlaid on a background",
+                        "collage": "image ads combining multiple images in a collage layout",
+                    }.get(v, f"image ads using {v.replace('_', ' ')} imagery"),
                 },
                 "visual_production_quality": {
                     "label": "production quality",
+                    "title": lambda v: {
+                        "raw": "Raw/unpolished (UGC-style) ads",
+                        "polished": "Clean, polished ads",
+                        "professional": "Studio-quality professional ads",
+                    }.get(v, f"{v.replace('_', ' ').title()} production ads"),
                     "explain": lambda v: {
-                        "raw": "raw, unpolished ads (UGC-style, authentic feel)",
-                        "polished": "clean, polished ads with good design",
-                        "professional": "high-production professional ads (studio quality)",
-                    }.get(v, f"ads with {v.replace('_', ' ')} production quality"),
+                        "raw": "image ads with a raw, unpolished feel (UGC-style, authentic look)",
+                        "polished": "image ads with clean design and good production quality",
+                        "professional": "image ads with high-end, studio-quality production",
+                    }.get(v, f"image ads with {v.replace('_', ' ')} production quality"),
                 },
                 "hook_type": {
                     "label": "video hook style",
-                    "explain": lambda v: f"videos that open with a {v.replace('_', ' ')} hook",
+                    "title": lambda v: {
+                        "question": "Question-opening video hooks",
+                        "statement": "Bold statement video hooks",
+                        "testimonial": "Testimonial video hooks",
+                        "visual_shock": "Visual shock video hooks",
+                        "story": "Story-opening video hooks",
+                        "demonstration": "Demo-opening video hooks",
+                        "problem": "Problem-opening video hooks",
+                        "statistic": "Statistic-opening video hooks",
+                    }.get(v, f"'{v.replace('_', ' ').title()}' video hooks"),
+                    "explain": lambda v: {
+                        "question": "videos that open by asking the viewer a question",
+                        "statement": "videos that open with a bold, attention-grabbing statement",
+                        "testimonial": "videos that open with a customer telling their story",
+                        "visual_shock": "videos that open with a surprising or unexpected visual",
+                        "story": "videos that open with a narrative or personal story",
+                        "demonstration": "videos that open by showing the product in action",
+                        "problem": "videos that open by describing a problem the viewer has",
+                        "statistic": "videos that open with a surprising data point or stat",
+                    }.get(v, f"videos that open with a {v.replace('_', ' ')} hook"),
                 },
                 "format_type": {
                     "label": "video format",
-                    "explain": lambda v: f"videos using a {v.replace('_', ' ')} format",
+                    "title": lambda v: {
+                        "talking_head": "Talking head videos",
+                        "product_demo": "Product demo videos",
+                        "slideshow": "Slideshow-style videos",
+                        "testimonial": "Testimonial videos",
+                        "ugc": "UGC-style videos",
+                        "animation": "Animated videos",
+                        "lifestyle": "Lifestyle videos",
+                        "unboxing": "Unboxing videos",
+                        "tutorial": "Tutorial/how-to videos",
+                        "comparison": "Comparison videos",
+                    }.get(v, f"{v.replace('_', ' ').title()} videos"),
+                    "explain": lambda v: {
+                        "talking_head": "videos with a person speaking directly to camera",
+                        "product_demo": "videos demonstrating the product in use",
+                        "slideshow": "videos that cycle through images or slides",
+                        "testimonial": "videos featuring customer testimonials",
+                        "ugc": "videos with a raw, user-generated content feel",
+                        "animation": "videos using motion graphics or animation",
+                        "lifestyle": "videos showing the product in aspirational real-life settings",
+                        "unboxing": "videos showing the product being unboxed or revealed",
+                        "tutorial": "videos teaching the viewer how to use the product",
+                        "comparison": "videos comparing the product against alternatives",
+                    }.get(v, f"videos using a {v.replace('_', ' ')} format"),
                 },
                 "production_quality": {
                     "label": "video production quality",
-                    "explain": lambda v: f"videos with {v.replace('_', ' ')} production quality",
+                    "title": lambda v: {
+                        "raw": "Raw/unpolished (UGC-style) videos",
+                        "polished": "Clean, polished videos",
+                        "professional": "Studio-quality professional videos",
+                    }.get(v, f"{v.replace('_', ' ').title()} production videos"),
+                    "explain": lambda v: {
+                        "raw": "videos with a raw, unpolished feel (phone-recorded, authentic)",
+                        "polished": "videos with clean editing and good production quality",
+                        "professional": "videos with high-end, studio-quality production",
+                    }.get(v, f"videos with {v.replace('_', ' ')} production quality"),
                 },
                 "video_emotional_drivers": {
                     "label": "emotional driver",
-                    "explain": lambda v: f"videos that evoke a sense of {v.replace('_', ' ')}",
+                    "title": lambda v: {
+                        "fear": "Fear-based video messaging",
+                        "urgency": "Urgency-driven video messaging",
+                        "curiosity": "Curiosity-driven video messaging",
+                        "trust": "Trust-building video messaging",
+                        "empathy": "Empathy-driven video messaging",
+                        "excitement": "Excitement-driven video messaging",
+                        "humor": "Humor-based video messaging",
+                    }.get(v, f"{v.replace('_', ' ').title()} emotional driver in videos"),
+                    "explain": lambda v: f"videos that tap into {v.replace('_', ' ')} as the primary emotion",
                 },
                 "video_people_role": {
-                    "label": "person type in the video",
-                    "explain": lambda v: f"videos featuring a {v.replace('_', ' ')}",
+                    "label": "person type",
+                    "title": lambda v: {
+                        "spokesperson": "Spokesperson-led videos",
+                        "customer_testimonial": "Customer testimonial videos",
+                        "lifestyle_model": "Lifestyle model videos",
+                        "ugc_creator": "UGC creator videos",
+                        "founder": "Founder-led videos",
+                        "expert": "Expert/doctor-led videos",
+                        "no_people": "No-people videos",
+                    }.get(v, f"{v.replace('_', ' ').title()} videos"),
+                    "explain": lambda v: {
+                        "spokesperson": "videos featuring a spokesperson or presenter",
+                        "customer_testimonial": "videos featuring real customer testimonials",
+                        "lifestyle_model": "videos with aspirational lifestyle models",
+                        "ugc_creator": "videos from UGC creators (organic, authentic feel)",
+                        "founder": "videos featuring the brand founder",
+                        "expert": "videos featuring a doctor, expert, or authority figure",
+                        "no_people": "videos with no people — product-focused visuals only",
+                    }.get(v, f"videos featuring a {v.replace('_', ' ')}"),
                 },
                 "awareness_level": {
-                    "label": "audience awareness level",
+                    "label": "audience awareness",
+                    "title": lambda v: {
+                        "unaware": "Cold audience (unaware) ads",
+                        "problem_aware": "Problem-aware audience ads",
+                        "solution_aware": "Solution-aware audience ads",
+                        "product_aware": "Product-aware audience ads",
+                        "most_aware": "Warm audience (most aware) ads",
+                    }.get(v, f"{v.replace('_', ' ').title()} audience ads"),
                     "explain": lambda v: {
                         "unaware": "ads targeting cold audiences who don't know they have a problem",
-                        "problem_aware": "ads targeting people who know their problem but not the solution",
-                        "solution_aware": "ads targeting people who know solutions exist but not your product",
-                        "product_aware": "ads targeting people who know your product but haven't bought",
-                        "most_aware": "ads targeting warm audiences who just need the right offer",
+                        "problem_aware": "ads targeting people who know their problem but haven't found a solution",
+                        "solution_aware": "ads targeting people who know solutions exist but haven't heard of your product",
+                        "product_aware": "ads targeting people who know your product but haven't purchased yet",
+                        "most_aware": "ads targeting warm audiences who just need the right offer to buy",
                     }.get(v, f"ads targeting {v.replace('_', ' ')} audiences"),
                 },
             }
@@ -1047,12 +1233,14 @@ class AccountLeverageService:
 
                 field_info = field_descriptions.get(field, {
                     "label": field.replace("_", " "),
-                    "explain": lambda v, f=field: f"ads using '{v}' {f.replace('_', ' ')}",
+                    "title": lambda v, f=field: f"'{v.replace('_', ' ').title()}' {f.replace('_', ' ')}",
+                    "explain": lambda v, f=field: f"ads using '{v.replace('_', ' ')}' as the {f.replace('_', ' ')}",
                 })
                 field_label = field_info["label"]
                 value_explained = field_info["explain"](value)
+                title_phrase = field_info["title"](value)
                 format_tag = "image" if "image" in source_table else "video" if "video" in source_table else ""
-                format_prefix = f"[{'Image' if format_tag == 'image' else 'Video'}] " if format_tag else ""
+                format_label = "📸 Image" if format_tag == "image" else "🎬 Video" if format_tag == "video" else ""
 
                 # Only surface strong outperformers (> 1.5x) or patterns with many ads
                 if vs_avg < 1.5:
@@ -1068,12 +1256,13 @@ class AccountLeverageService:
                     category = "Explore"
 
                 ad_type = "image ads" if format_tag == "image" else "videos" if format_tag == "video" else "ads"
+                format_prefix = f"[{format_label}] " if format_label else ""
 
                 moves.append(LeverageMove(
                     leverage_type="creative_insight",
                     move_category=category,
                     confidence=confidence,
-                    title=f"{format_prefix}{value_explained.capitalize()} outperform by {multiplier}",
+                    title=f"{format_prefix}{title_phrase} outperform by {multiplier}",
                     why=(
                         f"Across {ad_count} {ad_type}, {value_explained} "
                         f"perform {multiplier} better than your account average."
@@ -1082,7 +1271,7 @@ class AccountLeverageService:
                         f"Creating more {ad_type} following this pattern could improve "
                         f"overall ROAS based on the {multiplier} outperformance."
                     ),
-                    next_step=f"Create 5 new {ad_type} that follow this pattern: {value_explained}.",
+                    next_step=f"Create 5 new {ad_type} following this pattern: {value_explained}.",
                     recommended_action={
                         "creative_insight": field,
                         "creative_value": value,
