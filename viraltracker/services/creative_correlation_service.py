@@ -74,24 +74,41 @@ class CreativeCorrelationService:
         """
         cutoff = (datetime.now(timezone.utc) - timedelta(days=days_back)).strftime("%Y-%m-%d")
 
-        # Load performance data for this brand
-        perf_data = self._load_performance(brand_id, cutoff)
+        # Load image and video analyses first so we know which meta_ad_ids to load perf for
+        image_analyses = self._load_image_analyses(brand_id)
+        video_analyses = self._load_video_analyses(brand_id)
+
+        # Collect all meta_ad_ids we need performance data for
+        analysis_ids = set(image_analyses.keys()) | set(video_analyses.keys())
+        logger.info(
+            f"Loaded {len(image_analyses)} image analyses + {len(video_analyses)} video analyses "
+            f"= {len(analysis_ids)} unique meta_ad_ids"
+        )
+
+        if not analysis_ids:
+            return {"correlations": 0, "message": "No analyses found"}
+
+        # Load performance data only for ads we have analyses for
+        perf_data = self._load_performance(brand_id, cutoff, meta_ad_ids=analysis_ids)
         if not perf_data:
-            return {"correlations": 0, "message": "No performance data found"}
+            return {"correlations": 0, "message": "No performance data found for analyzed ads"}
+
+        logger.info(
+            f"Performance data: {len(perf_data)} ads with 100+ impressions "
+            f"(out of {len(analysis_ids)} analyzed)"
+        )
 
         # Compute account averages
         account_avg = self._compute_averages(list(perf_data.values()))
         if not account_avg:
             return {"correlations": 0, "message": "No performance data for account average"}
-        # Need at least CTR or ROAS to compute relative performance
         if account_avg.get("mean_ctr", 0) == 0 and account_avg.get("mean_roas", 0) == 0:
             return {"correlations": 0, "message": "No CTR or ROAS data for account average"}
 
-        # Load image analyses
-        image_analyses = self._load_image_analyses(brand_id)
-
-        # Load video analyses
-        video_analyses = self._load_video_analyses(brand_id)
+        logger.info(
+            f"Account averages: CTR={account_avg.get('mean_ctr', 0):.4f}, "
+            f"ROAS={account_avg.get('mean_roas', 0):.2f}"
+        )
 
         total_correlations = 0
 
@@ -138,14 +155,11 @@ class CreativeCorrelationService:
         """
         cutoff = (datetime.now(timezone.utc) - timedelta(days=days_back)).strftime("%Y-%m-%d")
 
-        # Load performance data
-        perf = self._load_performance(brand_id, cutoff)
-        if not perf:
-            return []
-
         hooks = []
+        image_rows = []
+        video_rows = []
 
-        # Image hooks (headline_text)
+        # Load all analyses first to collect meta_ad_ids
         try:
             image_results = self.supabase.table("ad_image_analysis").select(
                 "meta_ad_id, headline_text, hook_pattern, messaging_theme, "
@@ -155,31 +169,10 @@ class CreativeCorrelationService:
             ).eq(
                 "status", "ok"
             ).execute()
-
-            for row in (image_results.data or []):
-                hook_text = row.get("headline_text") or row.get("messaging_theme")
-                if not hook_text:
-                    continue
-                mid = row["meta_ad_id"]
-                p = perf.get(mid)
-                if not p or p["impressions"] < min_impressions:
-                    continue
-                hooks.append({
-                    "hook_text": hook_text,
-                    "hook_type": row.get("hook_pattern", "unknown"),
-                    "source": "image",
-                    "meta_ad_id": mid,
-                    "ctr": p["mean_ctr"],
-                    "impressions": p["impressions"],
-                    "roas": p.get("mean_roas", 0),
-                    "messaging_theme": row.get("messaging_theme"),
-                    "emotional_tone": row.get("emotional_tone", []),
-                    "awareness_level": row.get("awareness_level"),
-                })
+            image_rows = image_results.data or []
         except Exception as e:
             logger.error(f"Failed to load image hooks: {e}")
 
-        # Video hooks (hook_transcript_spoken)
         try:
             video_results = self.supabase.table("ad_video_analysis").select(
                 "meta_ad_id, hook_transcript_spoken, hook_transcript_overlay, "
@@ -189,30 +182,62 @@ class CreativeCorrelationService:
             ).eq(
                 "status", "ok"
             ).execute()
-
-            for row in (video_results.data or []):
-                # Use spoken hook, fall back to overlay
-                hook_text = row.get("hook_transcript_spoken") or row.get("hook_transcript_overlay")
-                if not hook_text:
-                    continue
-                mid = row["meta_ad_id"]
-                p = perf.get(mid)
-                if not p or p["impressions"] < min_impressions:
-                    continue
-                hooks.append({
-                    "hook_text": hook_text,
-                    "hook_type": row.get("hook_type", "unknown"),
-                    "source": "video",
-                    "meta_ad_id": mid,
-                    "ctr": p["mean_ctr"],
-                    "impressions": p["impressions"],
-                    "roas": p.get("mean_roas", 0),
-                    "messaging_theme": None,
-                    "emotional_tone": row.get("emotional_drivers", []),
-                    "awareness_level": row.get("awareness_level"),
-                })
+            video_rows = video_results.data or []
         except Exception as e:
             logger.error(f"Failed to load video hooks: {e}")
+
+        # Collect all meta_ad_ids and load perf in batches
+        all_ids = {r["meta_ad_id"] for r in image_rows} | {r["meta_ad_id"] for r in video_rows}
+        if not all_ids:
+            return []
+
+        perf = self._load_performance(brand_id, cutoff, meta_ad_ids=all_ids)
+        if not perf:
+            return []
+
+        # Build hook list from image analyses
+        for row in image_rows:
+            hook_text = row.get("headline_text") or row.get("messaging_theme")
+            if not hook_text:
+                continue
+            mid = row["meta_ad_id"]
+            p = perf.get(mid)
+            if not p or p["impressions"] < min_impressions:
+                continue
+            hooks.append({
+                "hook_text": hook_text,
+                "hook_type": row.get("hook_pattern", "unknown"),
+                "source": "image",
+                "meta_ad_id": mid,
+                "ctr": p["mean_ctr"],
+                "impressions": p["impressions"],
+                "roas": p.get("mean_roas", 0),
+                "messaging_theme": row.get("messaging_theme"),
+                "emotional_tone": row.get("emotional_tone", []),
+                "awareness_level": row.get("awareness_level"),
+            })
+
+        # Build hook list from video analyses
+        for row in video_rows:
+            hook_text = row.get("hook_transcript_spoken") or row.get("hook_transcript_overlay")
+            if not hook_text:
+                continue
+            mid = row["meta_ad_id"]
+            p = perf.get(mid)
+            if not p or p["impressions"] < min_impressions:
+                continue
+            hooks.append({
+                "hook_text": hook_text,
+                "hook_type": row.get("hook_type", "unknown"),
+                "source": "video",
+                "meta_ad_id": mid,
+                "ctr": p["mean_ctr"],
+                "impressions": p["impressions"],
+                "roas": p.get("mean_roas", 0),
+                "messaging_theme": None,
+                "emotional_tone": row.get("emotional_drivers", []),
+                "awareness_level": row.get("awareness_level"),
+            })
 
         # Sort by CTR descending
         hooks.sort(key=lambda x: x["ctr"], reverse=True)
@@ -257,27 +282,64 @@ class CreativeCorrelationService:
         self,
         brand_id: UUID,
         cutoff: str,
+        meta_ad_ids: set = None,
     ) -> Dict[str, Dict]:
         """Load aggregated performance per meta_ad_id.
 
-        Returns dict of meta_ad_id -> {mean_ctr, mean_roas, mean_cpa, impressions, reward}.
+        Args:
+            brand_id: Brand UUID.
+            cutoff: Date cutoff string.
+            meta_ad_ids: Optional set of meta_ad_ids to load. If provided,
+                loads only these IDs (in batches) to avoid Supabase row limits.
+
+        Returns:
+            Dict of meta_ad_id -> {mean_ctr, mean_roas, impressions, total_spend}.
         """
         try:
-            # Get performance data
-            result = self.supabase.table("meta_ads_performance").select(
-                "meta_ad_id, impressions, link_ctr, roas, cpa, spend"
-            ).eq(
-                "brand_id", str(brand_id)
-            ).gte(
-                "date", cutoff
-            ).execute()
+            all_rows = []
 
-            if not result.data:
+            if meta_ad_ids:
+                # Query in batches of 50 to avoid URL length limits
+                id_list = list(meta_ad_ids)
+                for i in range(0, len(id_list), 50):
+                    batch = id_list[i:i + 50]
+                    result = self.supabase.table("meta_ads_performance").select(
+                        "meta_ad_id, impressions, link_ctr, roas, cpa, spend"
+                    ).eq(
+                        "brand_id", str(brand_id)
+                    ).gte(
+                        "date", cutoff
+                    ).in_(
+                        "meta_ad_id", batch
+                    ).limit(5000).execute()
+                    all_rows.extend(result.data or [])
+            else:
+                # Paginate to avoid 1000-row default limit
+                offset = 0
+                page_size = 1000
+                while True:
+                    result = self.supabase.table("meta_ads_performance").select(
+                        "meta_ad_id, impressions, link_ctr, roas, cpa, spend"
+                    ).eq(
+                        "brand_id", str(brand_id)
+                    ).gte(
+                        "date", cutoff
+                    ).limit(page_size).offset(offset).execute()
+                    rows = result.data or []
+                    all_rows.extend(rows)
+                    if len(rows) < page_size:
+                        break
+                    offset += page_size
+
+            if not all_rows:
+                logger.warning(f"No performance rows found for brand {brand_id}")
                 return {}
+
+            logger.info(f"Loaded {len(all_rows)} performance rows for {len(meta_ad_ids or [])} requested ads")
 
             # Aggregate by meta_ad_id
             agg: Dict[str, Dict] = {}
-            for row in result.data:
+            for row in all_rows:
                 mid = row["meta_ad_id"]
                 if mid not in agg:
                     agg[mid] = {
@@ -285,7 +347,6 @@ class CreativeCorrelationService:
                         "weighted_ctr": 0.0,
                         "weighted_roas": 0.0,
                         "total_spend": 0.0,
-                        "total_purchases": 0.0,
                     }
                 imp = row.get("impressions") or 0
                 agg[mid]["impressions"] += imp
@@ -308,9 +369,12 @@ class CreativeCorrelationService:
                     "total_spend": data["total_spend"],
                 }
 
+            logger.info(
+                f"Aggregated: {len(agg)} unique ads, {len(perf)} with 100+ impressions"
+            )
+
             # Try to join with creative_element_rewards for reward scores
             if perf:
-                # Get generated_ad_ids for these meta_ad_ids
                 mappings = self.supabase.table("meta_ad_mapping").select(
                     "meta_ad_id, generated_ad_id"
                 ).in_(
