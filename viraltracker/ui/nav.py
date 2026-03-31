@@ -247,7 +247,6 @@ def build_navigation_pages() -> Dict[str, List[st.Page]]:
     # Default page (always visible)
     pages[""] = [
         st.Page("pages/00_📊_Activity_Feed.py", title="Activity Feed", icon="📊", default=True),
-        st.Page("pages/08_🎯_Agent_Chat.py", title="Agent Chat", icon="🎯"),
     ]
 
     # --- Brands ---
