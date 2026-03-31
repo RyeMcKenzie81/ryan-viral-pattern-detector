@@ -98,6 +98,7 @@ class FeatureKey:
     SEO_WORKFLOW = "seo_workflow"
     SEO_CONTENT_POLICIES = "seo_content_policies"
     SEO_EXCEPTIONS = "seo_exceptions"
+    SECTION_SEO = "section_seo"
     # Email Marketing
     SECTION_EMAIL_MARKETING = "section_email_marketing"
     KLAVIYO_DASHBOARD = "klaviyo_dashboard"
