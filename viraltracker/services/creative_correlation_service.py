@@ -121,7 +121,7 @@ class CreativeCorrelationService:
         self,
         brand_id: UUID,
         days_back: int = 60,
-        min_impressions: int = 500,
+        min_impressions: int = 100,
     ) -> List[Dict]:
         """Get individual hooks ranked by CTR (thumb-stop rate).
 
@@ -157,7 +157,7 @@ class CreativeCorrelationService:
             ).execute()
 
             for row in (image_results.data or []):
-                hook_text = row.get("headline_text")
+                hook_text = row.get("headline_text") or row.get("messaging_theme")
                 if not hook_text:
                     continue
                 mid = row["meta_ad_id"]

@@ -2040,7 +2040,7 @@ def render_creative_intelligence_tab(brand_id: str, org_id: str):
             use_container_width=True,
             hide_index=True,
         )
-        st.caption(f"Showing {len(df)} hooks with 500+ impressions")
+        st.caption(f"Showing {len(df)} hooks with 100+ impressions")
 
         # Hook type breakdown
         st.markdown("---")
@@ -2079,7 +2079,7 @@ def render_creative_intelligence_tab(brand_id: str, org_id: str):
                 hide_index=True,
             )
     else:
-        st.info("No hooks found with 500+ impressions. Run Creative Deep Analysis on more ads.")
+        st.info("No hooks found with 100+ impressions. Run Creative Deep Analysis on more ads.")
 
     st.divider()
 
