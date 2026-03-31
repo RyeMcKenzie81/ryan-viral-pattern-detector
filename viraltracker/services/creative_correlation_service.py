@@ -53,11 +53,93 @@ class CreativeCorrelationService:
             from viraltracker.core.database import get_supabase_client
             self.supabase = get_supabase_client()
 
+    def get_product_ad_ids(
+        self,
+        brand_id: UUID,
+        product_id: str,
+    ) -> set:
+        """Get meta_ad_ids belonging to a product via offer variant URLs.
+
+        Maps product → offer variants → landing_page_urls, then matches
+        against meta_ads_performance.destination_url to find ads for that product.
+
+        Args:
+            brand_id: Brand UUID.
+            product_id: Product UUID string.
+
+        Returns:
+            Set of meta_ad_id strings for that product.
+        """
+        from urllib.parse import urlparse
+
+        try:
+            # Get offer variants for this product
+            ovs = self.supabase.table("product_offer_variants").select(
+                "landing_page_url"
+            ).eq("product_id", product_id).execute()
+
+            if not ovs.data:
+                logger.warning(f"No offer variants for product {product_id}")
+                return set()
+
+            # Build set of normalized URLs (strip query params, trailing slashes)
+            ov_urls = set()
+            for ov in ovs.data:
+                url = ov.get("landing_page_url")
+                if url:
+                    parsed = urlparse(url)
+                    normalized = f"{parsed.scheme}://{parsed.netloc}{parsed.path.rstrip('/')}"
+                    ov_urls.add(normalized)
+
+            if not ov_urls:
+                return set()
+
+            # Get all ads with destination_url for this brand
+            # Paginate to avoid 1000-row limit
+            all_rows = []
+            offset = 0
+            while True:
+                result = self.supabase.table("meta_ads_performance").select(
+                    "meta_ad_id, destination_url"
+                ).eq(
+                    "brand_id", str(brand_id)
+                ).not_.is_(
+                    "destination_url", "null"
+                ).limit(1000).offset(offset).execute()
+                rows = result.data or []
+                all_rows.extend(rows)
+                if len(rows) < 1000:
+                    break
+                offset += 1000
+
+            # Match ads whose destination_url matches any offer variant URL
+            matching_ids = set()
+            for row in all_rows:
+                dest = row.get("destination_url")
+                if not dest:
+                    continue
+                parsed = urlparse(dest)
+                normalized = f"{parsed.scheme}://{parsed.netloc}{parsed.path.rstrip('/')}"
+                if normalized in ov_urls:
+                    matching_ids.add(row["meta_ad_id"])
+
+            logger.info(
+                f"Product {product_id}: {len(ov_urls)} offer variant URLs, "
+                f"{len(matching_ids)} matching meta_ad_ids (from {len(all_rows)} with destination_url)"
+            )
+            return matching_ids
+
+        except Exception as e:
+            logger.error(f"Failed to get product ad IDs: {e}")
+            return set()
+
     def compute_correlations(
         self,
         brand_id: UUID,
         organization_id: UUID,
         days_back: int = 60,
+        product_id: str = None,
+        source_filter: str = None,
     ) -> Dict[str, Any]:
         """Compute performance correlations for all analysis fields.
 
@@ -68,15 +150,29 @@ class CreativeCorrelationService:
             brand_id: Brand UUID.
             organization_id: Organization UUID.
             days_back: Performance look-back window.
+            product_id: Optional product UUID to filter by.
+            source_filter: Optional "image" or "video" to filter by source type.
 
         Returns:
             Summary dict with correlation counts.
         """
         cutoff = (datetime.now(timezone.utc) - timedelta(days=days_back)).strftime("%Y-%m-%d")
 
+        # If product filter, get the set of meta_ad_ids for that product
+        product_ad_ids = None
+        if product_id:
+            product_ad_ids = self.get_product_ad_ids(brand_id, product_id)
+            if not product_ad_ids:
+                return {"correlations": 0, "message": "No ads found for this product"}
+
         # Load image and video analyses first so we know which meta_ad_ids to load perf for
-        image_analyses = self._load_image_analyses(brand_id)
-        video_analyses = self._load_video_analyses(brand_id)
+        image_analyses = {} if source_filter == "video" else self._load_image_analyses(brand_id)
+        video_analyses = {} if source_filter == "image" else self._load_video_analyses(brand_id)
+
+        # Filter by product if specified
+        if product_ad_ids is not None:
+            image_analyses = {k: v for k, v in image_analyses.items() if k in product_ad_ids}
+            video_analyses = {k: v for k, v in video_analyses.items() if k in product_ad_ids}
 
         # Collect all meta_ad_ids we need performance data for
         analysis_ids = set(image_analyses.keys()) | set(video_analyses.keys())
@@ -139,6 +235,8 @@ class CreativeCorrelationService:
         brand_id: UUID,
         days_back: int = 60,
         min_impressions: int = 100,
+        product_id: str = None,
+        source_filter: str = None,
     ) -> List[Dict]:
         """Get individual hooks ranked by CTR (thumb-stop rate).
 
@@ -149,42 +247,57 @@ class CreativeCorrelationService:
             brand_id: Brand UUID.
             days_back: Performance look-back window.
             min_impressions: Minimum impressions for a hook to qualify.
+            product_id: Optional product UUID to filter by.
+            source_filter: Optional "image" or "video" to filter by source type.
 
         Returns:
             List of hook dicts sorted by CTR descending.
         """
         cutoff = (datetime.now(timezone.utc) - timedelta(days=days_back)).strftime("%Y-%m-%d")
 
+        # If product filter, get the set of meta_ad_ids for that product
+        product_ad_ids = None
+        if product_id:
+            product_ad_ids = self.get_product_ad_ids(brand_id, product_id)
+            if not product_ad_ids:
+                return []
+
         hooks = []
         image_rows = []
         video_rows = []
 
-        # Load all analyses first to collect meta_ad_ids
-        try:
-            image_results = self.supabase.table("ad_image_analysis").select(
-                "meta_ad_id, headline_text, hook_pattern, messaging_theme, "
-                "emotional_tone, visual_style, awareness_level"
-            ).eq(
-                "brand_id", str(brand_id)
-            ).eq(
-                "status", "ok"
-            ).execute()
-            image_rows = image_results.data or []
-        except Exception as e:
-            logger.error(f"Failed to load image hooks: {e}")
+        # Load analyses (skip source if filtered out)
+        if source_filter != "video":
+            try:
+                image_results = self.supabase.table("ad_image_analysis").select(
+                    "meta_ad_id, headline_text, hook_pattern, messaging_theme, "
+                    "emotional_tone, visual_style, awareness_level"
+                ).eq(
+                    "brand_id", str(brand_id)
+                ).eq(
+                    "status", "ok"
+                ).execute()
+                image_rows = image_results.data or []
+                if product_ad_ids is not None:
+                    image_rows = [r for r in image_rows if r["meta_ad_id"] in product_ad_ids]
+            except Exception as e:
+                logger.error(f"Failed to load image hooks: {e}")
 
-        try:
-            video_results = self.supabase.table("ad_video_analysis").select(
-                "meta_ad_id, hook_transcript_spoken, hook_transcript_overlay, "
-                "hook_type, awareness_level, emotional_drivers"
-            ).eq(
-                "brand_id", str(brand_id)
-            ).eq(
-                "status", "ok"
-            ).execute()
-            video_rows = video_results.data or []
-        except Exception as e:
-            logger.error(f"Failed to load video hooks: {e}")
+        if source_filter != "image":
+            try:
+                video_results = self.supabase.table("ad_video_analysis").select(
+                    "meta_ad_id, hook_transcript_spoken, hook_transcript_overlay, "
+                    "hook_type, awareness_level, emotional_drivers"
+                ).eq(
+                    "brand_id", str(brand_id)
+                ).eq(
+                    "status", "ok"
+                ).execute()
+                video_rows = video_results.data or []
+                if product_ad_ids is not None:
+                    video_rows = [r for r in video_rows if r["meta_ad_id"] in product_ad_ids]
+            except Exception as e:
+                logger.error(f"Failed to load video hooks: {e}")
 
         # Collect all meta_ad_ids and load perf in batches
         all_ids = {r["meta_ad_id"] for r in image_rows} | {r["meta_ad_id"] for r in video_rows}
@@ -248,6 +361,7 @@ class CreativeCorrelationService:
         brand_id: UUID,
         min_confidence: float = 0.3,
         limit: int = 20,
+        source_filter: str = None,
     ) -> List[Dict]:
         """Get top correlations sorted by relative performance.
 
@@ -255,20 +369,28 @@ class CreativeCorrelationService:
             brand_id: Brand UUID.
             min_confidence: Minimum confidence threshold.
             limit: Max results.
+            source_filter: Optional "image" or "video" to filter by source type.
 
         Returns:
             List of correlation dicts.
         """
         try:
-            result = self.supabase.table("creative_performance_correlations").select(
+            query = self.supabase.table("creative_performance_correlations").select(
                 "analysis_field, field_value, source_table, ad_count, "
-                "mean_reward, mean_ctr, mean_roas, mean_cpa, "
+                "mean_reward, mean_ctr, mean_roas, "
                 "vs_account_avg, confidence"
             ).eq(
                 "brand_id", str(brand_id)
             ).gte(
                 "confidence", min_confidence
-            ).order(
+            )
+
+            if source_filter == "image":
+                query = query.eq("source_table", "ad_image_analysis")
+            elif source_filter == "video":
+                query = query.eq("source_table", "ad_video_analysis")
+
+            result = query.order(
                 "vs_account_avg", desc=True
             ).limit(limit).execute()
 

@@ -1936,7 +1936,7 @@ def _render_element_heatmap(data: Dict):
 # TAB 5: CREATIVE INTELLIGENCE
 # ============================================
 
-def render_creative_intelligence_tab(brand_id: str, org_id: str):
+def render_creative_intelligence_tab(brand_id: str, org_id: str, product_id: str = None):
     """Render the Creative Intelligence tab — hook leaderboard + correlation dashboard."""
     import pandas as pd
 
@@ -1967,13 +1967,38 @@ def render_creative_intelligence_tab(brand_id: str, org_id: str):
         )
         return
 
+    # ── Global filters ──
+    filter_col1, filter_col2 = st.columns(2)
+    with filter_col1:
+        source_options = {"All": None, "🖼️ Images Only": "image", "🎬 Videos Only": "video"}
+        source_choice = st.selectbox(
+            "Format",
+            list(source_options.keys()),
+            key="ci_global_source_filter",
+        )
+        source_filter = source_options[source_choice]
+
+    with filter_col2:
+        if product_id:
+            # Show which product is filtering
+            try:
+                prod = service.supabase.table("products").select("name").eq(
+                    "id", product_id
+                ).limit(1).execute()
+                prod_name = prod.data[0]["name"] if prod.data else "Selected product"
+            except Exception:
+                prod_name = "Selected product"
+            st.info(f"Filtered to product: **{prod_name}**")
+        else:
+            st.caption("Select a product above to filter by product.")
+
     # ── Hook Leaderboard ──
     st.subheader("🎣 Hook Leaderboard — Thumb-Stop Rate")
     st.caption("Which hooks grab the most attention? Ranked by CTR (click-through rate).")
 
-    # Cache hooks in session state for 30 min
-    cache_key = f"ci_hooks_{brand_id}"
-    cache_ts_key = f"ci_hooks_ts_{brand_id}"
+    # Cache hooks in session state for 30 min (keyed by filters)
+    cache_key = f"ci_hooks_{brand_id}_{product_id}_{source_filter}"
+    cache_ts_key = f"ci_hooks_ts_{brand_id}_{product_id}_{source_filter}"
     from datetime import datetime, timedelta
 
     hooks_stale = (
@@ -1984,7 +2009,10 @@ def render_creative_intelligence_tab(brand_id: str, org_id: str):
 
     if hooks_stale:
         with st.spinner("Loading hook performance..."):
-            hooks = service.get_hook_performance(brand_id, days_back=60, min_impressions=500)
+            hooks = service.get_hook_performance(
+                brand_id, days_back=60, min_impressions=500,
+                product_id=product_id, source_filter=source_filter,
+            )
             st.session_state[cache_key] = hooks
             st.session_state[cache_ts_key] = datetime.now()
     else:
@@ -2016,18 +2044,6 @@ def render_creative_intelligence_tab(brand_id: str, org_id: str):
                 f"**Top hook:** \"{best['hook_text'][:80]}\" — "
                 f"**{best['ctr']:.2%} CTR** ({multiplier:.1f}x your average)"
             )
-
-        # Filter by source
-        source_filter = st.radio(
-            "Filter by format",
-            ["All", "Images", "Videos"],
-            horizontal=True,
-            key="ci_hook_source_filter",
-        )
-        if source_filter == "Images":
-            df = df[df["Format"] == "🖼️"]
-        elif source_filter == "Videos":
-            df = df[df["Format"] == "🎬"]
 
         # Display table
         st.dataframe(
@@ -2090,9 +2106,9 @@ def render_creative_intelligence_tab(brand_id: str, org_id: str):
         "Sorted by performance vs account average."
     )
 
-    # Cache correlations
-    corr_key = f"ci_correlations_{brand_id}"
-    corr_ts_key = f"ci_correlations_ts_{brand_id}"
+    # Cache correlations (keyed by filters)
+    corr_key = f"ci_correlations_{brand_id}_{source_filter}"
+    corr_ts_key = f"ci_correlations_ts_{brand_id}_{source_filter}"
 
     corr_stale = (
         corr_key not in st.session_state
@@ -2102,7 +2118,10 @@ def render_creative_intelligence_tab(brand_id: str, org_id: str):
 
     if corr_stale:
         with st.spinner("Loading correlations..."):
-            correlations = service.get_top_correlations(brand_id, min_confidence=0.2, limit=50)
+            correlations = service.get_top_correlations(
+                brand_id, min_confidence=0.2, limit=50,
+                source_filter=source_filter,
+            )
             st.session_state[corr_key] = correlations
             st.session_state[corr_ts_key] = datetime.now()
     else:
@@ -2190,17 +2209,19 @@ def render_creative_intelligence_tab(brand_id: str, org_id: str):
     if st.button("🔄 Recompute Correlations", key="ci_recompute_btn"):
         with st.spinner("Recomputing correlations (this may take a minute)..."):
             try:
-                result = service.compute_correlations(brand_id, org_id, days_back=60)
+                result = service.compute_correlations(
+                    brand_id, org_id, days_back=60,
+                    source_filter=source_filter,
+                )
                 st.success(
                     f"Computed {result.get('correlations', 0)} correlations from "
                     f"{result.get('image_ads_analyzed', 0)} images and "
                     f"{result.get('video_ads_analyzed', 0)} videos"
                 )
-                # Clear cache to reload
-                st.session_state.pop(corr_key, None)
-                st.session_state.pop(corr_ts_key, None)
-                st.session_state.pop(cache_key, None)
-                st.session_state.pop(cache_ts_key, None)
+                # Clear all CI caches to reload
+                keys_to_clear = [k for k in st.session_state if k.startswith("ci_")]
+                for k in keys_to_clear:
+                    st.session_state.pop(k, None)
                 st.rerun()
             except Exception as e:
                 st.error(f"Correlation computation failed: {e}")
@@ -2271,4 +2292,4 @@ with tab4:
 
 with tab5:
     st.caption("See which hooks, tones, and creative elements drive the best performance.")
-    render_creative_intelligence_tab(brand_id, org_id)
+    render_creative_intelligence_tab(brand_id, org_id, product_id)
