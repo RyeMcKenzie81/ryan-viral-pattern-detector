@@ -821,6 +821,52 @@ with tab_vclusters:
         st.warning(f"Could not load visual cluster data: {e}")
 
 
+# ============================================================================
+# Notifications
+# ============================================================================
+st.markdown("---")
+st.subheader("📢 Notifications")
+
+_notif_get = get_system_setting if 'get_system_setting' in dir() else None
+_notif_set = set_system_setting if 'set_system_setting' in dir() else None
+
+# Redefine locally if needed (these are nested in an expander above)
+def _get_setting(key, default):
+    try:
+        from viraltracker.core.database import get_supabase_client
+        db = get_supabase_client()
+        result = db.table("system_settings").select("value").eq("key", key).execute()
+        if result.data:
+            return result.data[0]["value"]
+        return default
+    except Exception:
+        return default
+
+def _set_setting(key, value):
+    try:
+        from viraltracker.core.database import get_supabase_client
+        db = get_supabase_client()
+        db.table("system_settings").upsert({"key": key, "value": value}, on_conflict="key").execute()
+        return True
+    except Exception as e:
+        st.error(f"Failed to save: {e}")
+        return False
+
+current_webhook = _get_setting("slack_failure_webhook_url", "")
+new_webhook = st.text_input(
+    "Slack Failure Webhook URL",
+    value=current_webhook or "",
+    placeholder="https://hooks.slack.com/services/...",
+    help="When a scheduled job fails, a notification will be sent to this Slack webhook. Leave empty to disable.",
+    type="password",
+)
+if new_webhook != (current_webhook or ""):
+    if st.button("Save Webhook URL", key="save_slack_webhook"):
+        if _set_setting("slack_failure_webhook_url", new_webhook):
+            st.success("Slack webhook URL saved!")
+            st.rerun()
+
+
 # Display current configuration summary
 st.markdown("---")
 st.subheader("Current LLM Configuration Snapshot")

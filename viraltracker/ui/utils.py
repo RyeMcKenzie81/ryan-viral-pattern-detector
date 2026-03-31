@@ -917,3 +917,40 @@ def render_freshness_banner(brand_id: str, page_key: str):
     # Show stale warnings
     for msg in stale:
         st.warning(msg)
+
+
+# ============================================================================
+# JOB TYPE BADGES (shared between Activity Feed and Scheduled Tasks)
+# ============================================================================
+
+def job_type_badge(job_type: str):
+    """Get (emoji, label) for a job type.
+
+    Returns a tuple of (emoji, human_label).
+    """
+    badges = {
+        'ad_creation': ('🎨', 'Ad Creation'),
+        'ad_creation_v2': ('🎨', 'Ad Creation V2'),
+        'meta_sync': ('🔄', 'Meta Sync'),
+        'scorecard': ('📊', 'Scorecard'),
+        'template_scrape': ('📥', 'Template Scrape'),
+        'template_approval': ('✅', 'Template Approval'),
+        'congruence_reanalysis': ('🔗', 'Congruence Reanalysis'),
+        'ad_classification': ('🔬', 'Ad Classification'),
+        'asset_download': ('📦', 'Asset Download'),
+        'competitor_scrape': ('🕵️', 'Competitor Scrape'),
+        'reddit_scrape': ('💬', 'Reddit Scrape'),
+        'amazon_review_scrape': ('⭐', 'Amazon Reviews'),
+        'ad_intelligence_analysis': ('🧠', 'Ad Intelligence Analysis'),
+        'analytics_sync': ('📈', 'Analytics Sync'),
+        'seo_status_sync': ('🔍', 'SEO Status Sync'),
+        'creative_genome_update': ('🧬', 'Creative Genome Update'),
+        'genome_validation': ('🧬', 'Genome Validation'),
+        'winner_evolution': ('🏆', 'Winner Evolution'),
+        'experiment_analysis': ('🧪', 'Experiment Analysis'),
+        'quality_calibration': ('🎯', 'Quality Calibration'),
+        'iteration_auto_run': ('🔁', 'Iteration Auto Run'),
+        'size_variant': ('📐', 'Size Variant'),
+        'smart_edit': ('✏️', 'Smart Edit'),
+    }
+    return badges.get(job_type, ('❓', job_type))

@@ -71,6 +71,179 @@ if threading.current_thread() is threading.main_thread():
 
 
 # ============================================================================
+# Activity Event Emission
+# ============================================================================
+
+# Module-level cache for Slack webhook URL (re-fetched if None)
+_slack_webhook_url_cache = None
+_slack_webhook_checked = False
+
+JOB_TYPE_LABELS = {
+    'ad_creation': 'Ad Creation',
+    'ad_creation_v2': 'Ad Creation V2',
+    'meta_sync': 'Meta Sync',
+    'scorecard': 'Scorecard',
+    'template_scrape': 'Template Scrape',
+    'template_approval': 'Template Approval',
+    'congruence_reanalysis': 'Congruence Reanalysis',
+    'ad_classification': 'Ad Classification',
+    'asset_download': 'Asset Download',
+    'competitor_scrape': 'Competitor Scrape',
+    'reddit_scrape': 'Reddit Scrape',
+    'amazon_review_scrape': 'Amazon Reviews',
+    'ad_intelligence_analysis': 'Ad Intelligence',
+    'analytics_sync': 'Analytics Sync',
+    'seo_status_sync': 'SEO Status Sync',
+    'creative_genome_update': 'Creative Genome Update',
+    'genome_validation': 'Genome Validation',
+    'winner_evolution': 'Winner Evolution',
+    'experiment_analysis': 'Experiment Analysis',
+    'quality_calibration': 'Quality Calibration',
+    'iteration_auto_run': 'Iteration Auto Run',
+    'size_variant': 'Size Variant',
+    'smart_edit': 'Smart Edit',
+}
+
+# Map job_type to page slug for deep linking
+JOB_TYPE_PAGE_SLUGS = {
+    'ad_creation': 'ad_scheduler',
+    'ad_creation_v2': 'ad_scheduler',
+    'meta_sync': 'ad_scheduler',
+    'scorecard': 'ad_scheduler',
+    'template_scrape': 'ad_scheduler',
+    'template_approval': 'ad_scheduler',
+    'congruence_reanalysis': 'ad_scheduler',
+    'ad_classification': 'ad_scheduler',
+    'asset_download': 'ad_scheduler',
+    'competitor_scrape': 'ad_scheduler',
+    'reddit_scrape': 'ad_scheduler',
+    'amazon_review_scrape': 'ad_scheduler',
+    'ad_intelligence_analysis': 'ad_scheduler',
+    'analytics_sync': 'ad_scheduler',
+    'seo_status_sync': 'ad_scheduler',
+    'creative_genome_update': 'ad_scheduler',
+    'genome_validation': 'ad_scheduler',
+    'winner_evolution': 'ad_scheduler',
+    'experiment_analysis': 'ad_scheduler',
+    'quality_calibration': 'ad_scheduler',
+    'iteration_auto_run': 'ad_scheduler',
+    'size_variant': 'ad_scheduler',
+    'smart_edit': 'ad_scheduler',
+}
+
+
+def _humanize_job_type(job_type: str) -> str:
+    """Convert job_type to human-readable label."""
+    return JOB_TYPE_LABELS.get(job_type, job_type.replace('_', ' ').title())
+
+
+def _get_slack_webhook_url() -> Optional[str]:
+    """Get Slack webhook URL from system_settings, cached at module level."""
+    global _slack_webhook_url_cache, _slack_webhook_checked
+    if _slack_webhook_checked and _slack_webhook_url_cache is not None:
+        return _slack_webhook_url_cache
+    try:
+        db = get_supabase_client()
+        result = db.table("system_settings").select("value").eq(
+            "key", "slack_failure_webhook_url"
+        ).execute()
+        if result.data and result.data[0].get("value"):
+            _slack_webhook_url_cache = result.data[0]["value"]
+        _slack_webhook_checked = True
+    except Exception:
+        pass
+    return _slack_webhook_url_cache
+
+
+def _send_slack_failure_notification(title: str, details: dict, link_page: str = None):
+    """Send a Slack notification for a failure event. Non-blocking."""
+    url = _get_slack_webhook_url()
+    if not url:
+        return
+    try:
+        import urllib.request
+        import json
+        error_msg = details.get('error', '') or details.get('error_message', '')
+        text = f":red_circle: *{title}*"
+        if error_msg:
+            text += f"\n>{error_msg}"
+        payload = json.dumps({"text": text}).encode('utf-8')
+        req = urllib.request.Request(url, data=payload, headers={'Content-Type': 'application/json'})
+        urllib.request.urlopen(req, timeout=5)
+    except Exception as e:
+        logger.warning(f"Slack notification failed: {e}")
+
+
+def _emit_activity_event(
+    event_type: str,
+    severity: str,
+    title: str,
+    brand_id: str = None,
+    product_id: str = None,
+    organization_id: str = None,
+    details: dict = None,
+    source_id: str = None,
+    link_page: str = None,
+    link_params: dict = None,
+    duration_ms: int = None,
+):
+    """Emit an activity event. Fire-and-forget, never breaks job execution.
+
+    Resolves organization_id from brand_id if not provided.
+    """
+    try:
+        db = get_supabase_client()
+
+        # Resolve organization_id from brand_id if not directly provided
+        org_id = organization_id
+        if not org_id and brand_id:
+            try:
+                brand_row = db.table("brands").select("organization_id").eq(
+                    "id", brand_id
+                ).limit(1).execute()
+                if brand_row.data:
+                    org_id = brand_row.data[0]["organization_id"]
+            except Exception:
+                pass
+
+        row = {
+            "organization_id": org_id,
+            "brand_id": brand_id,
+            "product_id": product_id,
+            "event_type": event_type,
+            "severity": severity,
+            "title": title,
+            "details": details or {},
+            "source_type": "scheduler",
+            "source_id": source_id,
+            "link_page": link_page,
+            "link_params": link_params or {},
+        }
+        if duration_ms is not None:
+            row["duration_ms"] = duration_ms
+
+        db.table("activity_events").insert(row).execute()
+
+        # Slack notification on errors
+        if severity == 'error':
+            _send_slack_failure_notification(title, details or {}, link_page)
+    except Exception as e:
+        logger.warning(f"Failed to emit activity event: {e}")
+
+
+def _extract_brand_id_from_job(job: Dict) -> Optional[str]:
+    """Extract brand_id from a job dict, handling the two join patterns."""
+    # Direct brand_id on the job
+    brand_id = job.get('brand_id')
+    if brand_id:
+        return brand_id
+    # Via products join
+    products = job.get('products') or {}
+    brands = products.get('brands') or {}
+    return brands.get('id')
+
+
+# ============================================================================
 # Database Functions
 # ============================================================================
 
@@ -116,12 +289,14 @@ def get_due_jobs() -> List[Dict]:
         return []
 
 
-def create_job_run(job_id: str) -> Optional[str]:
+def create_job_run(job_id: str, job: Dict = None) -> Optional[str]:
     """Create a new job run record. Returns run ID.
 
     Automatically determines attempt_number:
     - If the last run for this job failed, increment its attempt_number
     - Otherwise, start at attempt_number=1
+
+    If ``job`` dict is provided, emits a ``job_started`` activity event.
     """
     try:
         db = get_supabase_client()
@@ -148,7 +323,27 @@ def create_job_run(job_id: str) -> Optional[str]:
 
         run_data = result.data[0] if result.data else None
         if run_data:
-            return run_data['id']
+            run_id = run_data['id']
+            # Emit job_started event
+            if job:
+                job_type = job.get('job_type', 'ad_creation')
+                brand_id = _extract_brand_id_from_job(job)
+                _emit_activity_event(
+                    event_type='job_started',
+                    severity='info',
+                    title=f"{_humanize_job_type(job_type)} started",
+                    brand_id=brand_id,
+                    details={
+                        'job_id': job_id,
+                        'run_id': run_id,
+                        'job_name': job.get('name', ''),
+                        'attempt': attempt_number,
+                    },
+                    source_id=run_id,
+                    link_page=JOB_TYPE_PAGE_SLUGS.get(job_type, 'ad_scheduler'),
+                    link_params={'job_id': job_id},
+                )
+            return run_id
         return None
     except Exception as e:
         logger.error(f"Failed to create job run: {e}")
@@ -170,10 +365,82 @@ def get_run_attempt_number(run_id: str) -> int:
 
 
 def update_job_run(run_id: str, updates: Dict):
-    """Update a job run record."""
+    """Update a job run record. Emits activity events on terminal status."""
     try:
         db = get_supabase_client()
         db.table("scheduled_job_runs").update(updates).eq("id", run_id).execute()
+
+        # Emit activity event on terminal status (completed or failed)
+        status = updates.get("status")
+        if status in ("completed", "failed"):
+            try:
+                # Look up parent job for brand context
+                run_row = db.table("scheduled_job_runs").select(
+                    "scheduled_job_id, started_at"
+                ).eq("id", run_id).limit(1).execute()
+                if not run_row.data:
+                    return
+                parent_job_id = run_row.data[0]["scheduled_job_id"]
+                started_at = run_row.data[0].get("started_at")
+
+                job_row = db.table("scheduled_jobs").select(
+                    "job_type, name, brand_id"
+                ).eq("id", parent_job_id).limit(1).execute()
+                if not job_row.data:
+                    return
+                job_info = job_row.data[0]
+                job_type = job_info["job_type"]
+                brand_id = job_info.get("brand_id")
+                job_name = job_info.get("name", "")
+
+                # Compute duration
+                duration_ms = None
+                completed_at_str = updates.get("completed_at")
+                if started_at and completed_at_str:
+                    try:
+                        started = datetime.fromisoformat(started_at.replace('Z', '+00:00'))
+                        completed = datetime.fromisoformat(completed_at_str.replace('Z', '+00:00'))
+                        duration_ms = int((completed - started).total_seconds() * 1000)
+                    except Exception:
+                        pass
+
+                if status == "completed":
+                    _emit_activity_event(
+                        event_type='job_completed',
+                        severity='success',
+                        title=f"{_humanize_job_type(job_type)} completed",
+                        brand_id=brand_id,
+                        details={
+                            'job_id': parent_job_id,
+                            'run_id': run_id,
+                            'job_name': job_name,
+                            'metadata': updates.get('metadata'),
+                        },
+                        source_id=run_id,
+                        link_page=JOB_TYPE_PAGE_SLUGS.get(job_type, 'ad_scheduler'),
+                        link_params={'job_id': parent_job_id},
+                        duration_ms=duration_ms,
+                    )
+                else:
+                    error_msg = updates.get("error_message", "")
+                    _emit_activity_event(
+                        event_type='job_failed',
+                        severity='error',
+                        title=f"{_humanize_job_type(job_type)} failed",
+                        brand_id=brand_id,
+                        details={
+                            'job_id': parent_job_id,
+                            'run_id': run_id,
+                            'job_name': job_name,
+                            'error': error_msg,
+                        },
+                        source_id=run_id,
+                        link_page=JOB_TYPE_PAGE_SLUGS.get(job_type, 'ad_scheduler'),
+                        link_params={'job_id': parent_job_id},
+                        duration_ms=duration_ms,
+                    )
+            except Exception as e:
+                logger.warning(f"Failed to emit terminal status event for run {run_id}: {e}")
     except Exception as e:
         logger.error(f"Failed to update job run {run_id}: {e}")
 
@@ -236,6 +503,31 @@ def recover_stuck_runs(stuck_threshold_minutes: int = 30):
                 "completed_at": datetime.now(PST).isoformat(),
                 "error_message": f"Run stuck for >{stuck_threshold_minutes}m, marked failed by recovery sweep",
             }).eq("id", run["id"]).execute()
+
+            # Emit stuck recovery event
+            try:
+                job_lookup = db.table("scheduled_jobs").select(
+                    "job_type, name, brand_id"
+                ).eq("id", run["scheduled_job_id"]).limit(1).execute()
+                if job_lookup.data:
+                    ji = job_lookup.data[0]
+                    _emit_activity_event(
+                        event_type='job_stuck_recovered',
+                        severity='warning',
+                        title=f"{_humanize_job_type(ji['job_type'])} recovered (was stuck)",
+                        brand_id=ji.get('brand_id'),
+                        details={
+                            'job_id': run['scheduled_job_id'],
+                            'run_id': run['id'],
+                            'job_name': ji.get('name', ''),
+                            'stuck_since': run.get('started_at'),
+                        },
+                        source_id=run['id'],
+                        link_page=JOB_TYPE_PAGE_SLUGS.get(ji['job_type'], 'ad_scheduler'),
+                        link_params={'job_id': run['scheduled_job_id']},
+                    )
+            except Exception:
+                pass  # Emission failure is non-fatal
 
             # Reschedule the parent job
             try:
@@ -690,7 +982,7 @@ async def execute_ad_creation_v2_job(job: Dict) -> Dict[str, Any]:
     update_job(job_id, {"next_run_at": None})
 
     # Create job run record
-    run_id = create_job_run(job_id)
+    run_id = create_job_run(job_id, job)
     if not run_id:
         logger.error(f"Failed to create run record for V2 job {job_id}")
         return {"success": False, "error": "Failed to create run record"}
@@ -1113,7 +1405,7 @@ async def execute_ad_creation_job(job: Dict) -> Dict[str, Any]:
     update_job(job_id, {"next_run_at": None})
 
     # Create job run record
-    run_id = create_job_run(job_id)
+    run_id = create_job_run(job_id, job)
     if not run_id:
         logger.error(f"Failed to create run record for job {job_id}")
         return {"success": False, "error": "Failed to create run record"}
@@ -1473,6 +1765,25 @@ async def execute_ad_creation_job(job: Dict) -> Dict[str, Any]:
         update_job(job_id, job_updates)
 
         logger.info(f"Completed job: {job_name}")
+
+        # Rich activity event: ads generated
+        if ads_generated > 0:
+            _emit_activity_event(
+                event_type="ads_generated",
+                severity="info",
+                title=f"{ads_generated} ad{'s' if ads_generated != 1 else ''} generated",
+                brand_id=brand_id,
+                product_id=product_id,
+                details={
+                    "ads_generated": ads_generated,
+                    "templates_used": templates_used[:10],
+                    "ad_run_ids": ad_run_ids[:10],
+                    "content_source": params.get("content_source", "hooks"),
+                },
+                source_id=str(job_id),
+                link_page="ad_scheduler",
+            )
+
         result = {
             "success": True,
             "ad_run_ids": ad_run_ids,
@@ -1616,7 +1927,7 @@ async def execute_meta_sync_job(job: Dict) -> Dict[str, Any]:
     update_job(job_id, {"next_run_at": None})
 
     # Create job run record
-    run_id = create_job_run(job_id)
+    run_id = create_job_run(job_id, job)
     if not run_id:
         logger.error(f"Failed to create run record for job {job_id}")
         return {"success": False, "error": "Failed to create run record"}
@@ -1780,6 +2091,23 @@ async def execute_meta_sync_job(job: Dict) -> Dict[str, Any]:
         update_job(job_id, job_updates)
 
         logger.info(f"Completed Meta sync job: {job_name} - {ads_synced} ads synced")
+
+        # Rich activity event: sync completed
+        if ads_synced > 0 or rows_inserted > 0:
+            _emit_activity_event(
+                event_type="sync_completed",
+                severity="info",
+                title=f"Meta sync: {ads_synced} ad{'s' if ads_synced != 1 else ''}, {rows_inserted} row{'s' if rows_inserted != 1 else ''}",
+                brand_id=brand_id,
+                details={
+                    "ads_synced": ads_synced,
+                    "rows_inserted": rows_inserted,
+                    "days_back": params.get("days_back", 7),
+                },
+                source_id=str(job_id),
+                link_page="ad_scheduler",
+            )
+
         return {"success": True, "ads_synced": ads_synced, "rows_inserted": rows_inserted}
 
     except Exception as e:
@@ -1832,7 +2160,7 @@ async def execute_scorecard_job(job: Dict) -> Dict[str, Any]:
     update_job(job_id, {"next_run_at": None})
 
     # Create job run record
-    run_id = create_job_run(job_id)
+    run_id = create_job_run(job_id, job)
     if not run_id:
         logger.error(f"Failed to create run record for job {job_id}")
         return {"success": False, "error": "Failed to create run record"}
@@ -2068,7 +2396,7 @@ async def execute_template_scrape_job(job: Dict) -> Dict[str, Any]:
     update_job(job_id, {"next_run_at": None})
 
     # Create job run record
-    run_id = create_job_run(job_id)
+    run_id = create_job_run(job_id, job)
     if not run_id:
         logger.error(f"Failed to create run record for job {job_id}")
         return {"success": False, "error": "Failed to create run record"}
@@ -2328,6 +2656,24 @@ async def execute_template_scrape_job(job: Dict) -> Dict[str, Any]:
         _update_job_next_run(job, job_id)
 
         logger.info(f"Completed template scrape job: {job_name} - {new_count} new, {updated_count} updated")
+
+        # Rich activity event: templates scraped
+        if new_count > 0 or updated_count > 0:
+            _emit_activity_event(
+                event_type="templates_scraped",
+                severity="info",
+                title=f"Scraped {new_count} new, {updated_count} updated template{'s' if (new_count + updated_count) != 1 else ''}",
+                brand_id=brand_id,
+                details={
+                    "new_ads": new_count,
+                    "updated_ads": updated_count,
+                    "queued": queued_count,
+                    "max_ads": params.get("max_ads", 50),
+                },
+                source_id=str(job_id),
+                link_page="ad_scheduler",
+            )
+
         return {
             "success": True,
             "new_ads": new_count,
@@ -2370,6 +2716,9 @@ def _reschedule_after_failure(job: Dict, job_id: str, run_attempt_number: int = 
     """
     max_retries = job.get('max_retries', 3)
 
+    job_type = job.get('job_type', 'unknown')
+    brand_id = job.get('brand_id')
+
     if run_attempt_number < max_retries:
         # Retry with exponential backoff: 5min, 10min, 20min, capped at 60min
         backoff_minutes = min(5 * (2 ** (run_attempt_number - 1)), 60)
@@ -2380,6 +2729,25 @@ def _reschedule_after_failure(job: Dict, job_id: str, run_attempt_number: int = 
             "last_error": f"Attempt {run_attempt_number} failed, retrying at {retry_at.strftime('%I:%M %p')}",
         })
         logger.info(f"Job {job_id}: attempt {run_attempt_number} failed, retry in {backoff_minutes}m")
+
+        # Emit retrying event
+        _emit_activity_event(
+            event_type='job_retrying',
+            severity='warning',
+            title=f"{_humanize_job_type(job_type)} retrying (attempt {run_attempt_number + 1}/{max_retries})",
+            brand_id=brand_id,
+            details={
+                'job_id': job_id,
+                'job_name': job.get('name', ''),
+                'attempt': run_attempt_number,
+                'max_retries': max_retries,
+                'next_attempt_at': retry_at.isoformat(),
+                'backoff_minutes': backoff_minutes,
+            },
+            source_id=job_id,
+            link_page=JOB_TYPE_PAGE_SLUGS.get(job_type, 'ad_scheduler'),
+            link_params={'job_id': job_id},
+        )
     else:
         # Retries exhausted — fall back to normal schedule (or stay dead for one-time)
         job_updates = {"last_error": f"All {max_retries} attempts failed"}
@@ -2447,7 +2815,7 @@ async def execute_template_approval_job(job: Dict) -> Dict[str, Any]:
     update_job(job_id, {"next_run_at": None})
 
     # Create job run record
-    run_id = create_job_run(job_id)
+    run_id = create_job_run(job_id, job)
     if not run_id:
         logger.error(f"Failed to create run record for job {job_id}")
         return {"success": False, "error": "Failed to create run record"}
@@ -2618,7 +2986,7 @@ async def execute_congruence_reanalysis_job(job: Dict) -> Dict[str, Any]:
     update_job(job_id, {"next_run_at": None})
 
     # Create job run record
-    run_id = create_job_run(job_id)
+    run_id = create_job_run(job_id, job)
     if not run_id:
         logger.error(f"Failed to create run record for job {job_id}")
         return {"success": False, "error": "Failed to create run record"}
@@ -2946,7 +3314,7 @@ async def execute_ad_classification_job(job: Dict) -> Dict[str, Any]:
     update_job(job_id, {"next_run_at": None})
 
     # Create job run record
-    run_id = create_job_run(job_id)
+    run_id = create_job_run(job_id, job)
     if not run_id:
         logger.error(f"Failed to create run record for job {job_id}")
         return {"success": False, "error": "Failed to create run record"}
@@ -3065,7 +3433,7 @@ async def execute_ad_intelligence_analysis_job(job: Dict) -> Dict[str, Any]:
     logger.info(f"Starting ad intelligence analysis job for brand {brand_name}")
 
     update_job(job_id, {"next_run_at": None})
-    run_id = create_job_run(job_id)
+    run_id = create_job_run(job_id, job)
     if not run_id:
         return {"success": False, "error": "Failed to create run record"}
 
@@ -3154,7 +3522,7 @@ async def execute_analytics_sync_job(job: Dict) -> Dict[str, Any]:
     logger.info(f"Starting analytics sync job for brand {brand_id}")
 
     update_job(job_id, {"next_run_at": None})
-    run_id = create_job_run(job_id)
+    run_id = create_job_run(job_id, job)
     if not run_id:
         return {"success": False, "error": "Failed to create run record"}
 
@@ -3256,7 +3624,7 @@ async def execute_seo_status_sync_job(job: Dict) -> Dict[str, Any]:
     logger.info(f"Starting SEO status sync job for brand {brand_name}")
 
     update_job(job_id, {"next_run_at": None})
-    run_id = create_job_run(job_id)
+    run_id = create_job_run(job_id, job)
     if not run_id:
         return {"success": False, "error": "Failed to create run record"}
 
@@ -3344,7 +3712,7 @@ async def execute_asset_download_job(job: Dict) -> Dict[str, Any]:
     update_job(job_id, {"next_run_at": None})
 
     # Create job run record
-    run_id = create_job_run(job_id)
+    run_id = create_job_run(job_id, job)
     if not run_id:
         logger.error(f"Failed to create run record for job {job_id}")
         return {"success": False, "error": "Failed to create run record"}
@@ -3446,7 +3814,7 @@ async def execute_competitor_scrape_job(job: Dict) -> Dict[str, Any]:
     update_job(job_id, {"next_run_at": None})
 
     # Create job run record
-    run_id = create_job_run(job_id)
+    run_id = create_job_run(job_id, job)
     if not run_id:
         logger.error(f"Failed to create run record for job {job_id}")
         return {"success": False, "error": "Failed to create run record"}
@@ -3578,7 +3946,7 @@ async def execute_reddit_scrape_job(job: Dict) -> Dict[str, Any]:
     update_job(job_id, {"next_run_at": None})
 
     # Create job run record
-    run_id = create_job_run(job_id)
+    run_id = create_job_run(job_id, job)
     if not run_id:
         logger.error(f"Failed to create run record for job {job_id}")
         return {"success": False, "error": "Failed to create run record"}
@@ -3712,7 +4080,7 @@ async def execute_amazon_review_scrape_job(job: Dict) -> Dict[str, Any]:
     update_job(job_id, {"next_run_at": None})
 
     # Create job run record
-    run_id = create_job_run(job_id)
+    run_id = create_job_run(job_id, job)
     if not run_id:
         logger.error(f"Failed to create run record for job {job_id}")
         return {"success": False, "error": "Failed to create run record"}
@@ -3863,7 +4231,7 @@ async def execute_creative_genome_update_job(job: Dict) -> Dict[str, Any]:
 
     update_job(job_id, {"next_run_at": None})
 
-    run_id = create_job_run(job_id)
+    run_id = create_job_run(job_id, job)
     if not run_id:
         logger.error(f"Failed to create run record for genome update job {job_id}")
         return {"success": False, "error": "Failed to create run record"}
@@ -4061,7 +4429,7 @@ async def execute_genome_validation_job(job: Dict) -> Dict[str, Any]:
 
     update_job(job_id, {"next_run_at": None})
 
-    run_id = create_job_run(job_id)
+    run_id = create_job_run(job_id, job)
     if not run_id:
         logger.error(f"Failed to create run record for genome validation job {job_id}")
         return {"success": False, "error": "Failed to create run record"}
@@ -4197,7 +4565,7 @@ async def execute_winner_evolution_job(job: Dict) -> Dict[str, Any]:
 
     update_job(job_id, {"next_run_at": None})
 
-    run_id = create_job_run(job_id)
+    run_id = create_job_run(job_id, job)
     if not run_id:
         logger.error(f"Failed to create run record for evolution job {job_id}")
         return {"success": False, "error": "Failed to create run record"}
@@ -4298,7 +4666,7 @@ async def execute_experiment_analysis_job(job: Dict) -> Dict[str, Any]:
 
     update_job(job_id, {"next_run_at": None})
 
-    run_id = create_job_run(job_id)
+    run_id = create_job_run(job_id, job)
     if not run_id:
         logger.error(f"Failed to create run record for experiment analysis job {job_id}")
         return {"success": False, "error": "Failed to create run record"}
@@ -4413,7 +4781,7 @@ async def execute_quality_calibration_job(job: Dict) -> Dict[str, Any]:
 
     update_job(job_id, {"next_run_at": None})
 
-    run_id = create_job_run(job_id)
+    run_id = create_job_run(job_id, job)
     if not run_id:
         logger.error(f"Failed to create run record for quality calibration job {job_id}")
         return {"success": False, "error": "Failed to create run record"}
@@ -4511,7 +4879,7 @@ async def execute_iteration_auto_run_job(job: Dict) -> Dict[str, Any]:
     update_job(job_id, {"next_run_at": None})
 
     # Create job run record
-    run_id = create_job_run(job_id)
+    run_id = create_job_run(job_id, job)
     if not run_id:
         logger.error(f"Failed to create run record for job {job_id}")
         return {"success": False, "error": "Failed to create run record"}
@@ -4658,7 +5026,7 @@ async def execute_size_variant_job(job: Dict) -> Dict[str, Any]:
 
     update_job(job_id, {"next_run_at": None})
 
-    run_id = create_job_run(job_id)
+    run_id = create_job_run(job_id, job)
     if not run_id:
         logger.error(f"Failed to create run record for size variant job {job_id}")
         return {"success": False, "error": "Failed to create run record"}
@@ -4745,7 +5113,7 @@ async def execute_smart_edit_job(job: Dict) -> Dict[str, Any]:
 
     update_job(job_id, {"next_run_at": None})
 
-    run_id = create_job_run(job_id)
+    run_id = create_job_run(job_id, job)
     if not run_id:
         logger.error(f"Failed to create run record for smart edit job {job_id}")
         return {"success": False, "error": "Failed to create run record"}
