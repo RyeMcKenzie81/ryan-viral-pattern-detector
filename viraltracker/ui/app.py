@@ -144,9 +144,15 @@ if is_authenticated():
         render_organization_selector()
         st.divider()
 
-        # Render top-level pages (Activity Feed, Agent Chat, etc.)
+        # Render top-level pages (Activity Feed, etc.)
         for page in pages.get("", []):
             st.page_link(page, icon=page.icon)
+        # Agent Chat is a separate Chainlit service
+        st.link_button(
+            "🎯 Agent Chat",
+            "https://truthful-playfulness-production-ae7a.up.railway.app",
+            use_container_width=True,
+        )
 
         # Render page links grouped by section
         for section, page_list in pages.items():
