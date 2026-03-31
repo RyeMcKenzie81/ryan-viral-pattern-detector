@@ -325,6 +325,8 @@ class CreativeCorrelationService:
                 "ctr": p["mean_ctr"],
                 "impressions": p["impressions"],
                 "roas": p.get("mean_roas", 0),
+                "purchases": p.get("total_purchases", 0),
+                "purchase_value": p.get("total_purchase_value", 0),
                 "messaging_theme": row.get("messaging_theme"),
                 "emotional_tone": row.get("emotional_tone", []),
                 "awareness_level": row.get("awareness_level"),
@@ -349,6 +351,8 @@ class CreativeCorrelationService:
                 "hold_rate": p.get("mean_hold_rate", 0),
                 "impressions": p["impressions"],
                 "roas": p.get("mean_roas", 0),
+                "purchases": p.get("total_purchases", 0),
+                "purchase_value": p.get("total_purchase_value", 0),
                 "messaging_theme": None,
                 "emotional_tone": row.get("emotional_drivers", []),
                 "awareness_level": row.get("awareness_level"),
@@ -428,7 +432,7 @@ class CreativeCorrelationService:
                 for i in range(0, len(id_list), 50):
                     batch = id_list[i:i + 50]
                     result = self.supabase.table("meta_ads_performance").select(
-                        "meta_ad_id, impressions, link_ctr, roas, cpm, spend, hook_rate, hold_rate"
+                        "meta_ad_id, impressions, link_ctr, roas, cpm, spend, hook_rate, hold_rate, purchases, purchase_value"
                     ).eq(
                         "brand_id", str(brand_id)
                     ).gte(
@@ -443,7 +447,7 @@ class CreativeCorrelationService:
                 page_size = 1000
                 while True:
                     result = self.supabase.table("meta_ads_performance").select(
-                        "meta_ad_id, impressions, link_ctr, roas, cpm, spend, hook_rate, hold_rate"
+                        "meta_ad_id, impressions, link_ctr, roas, cpm, spend, hook_rate, hold_rate, purchases, purchase_value"
                     ).eq(
                         "brand_id", str(brand_id)
                     ).gte(
@@ -473,6 +477,8 @@ class CreativeCorrelationService:
                         "weighted_hook_rate": 0.0,
                         "weighted_hold_rate": 0.0,
                         "total_spend": 0.0,
+                        "total_purchases": 0,
+                        "total_purchase_value": 0.0,
                     }
                 imp = row.get("impressions") or 0
                 agg[mid]["impressions"] += imp
@@ -485,6 +491,8 @@ class CreativeCorrelationService:
                 if row.get("hold_rate") is not None:
                     agg[mid]["weighted_hold_rate"] += (row["hold_rate"] or 0) * imp
                 agg[mid]["total_spend"] += row.get("spend") or 0
+                agg[mid]["total_purchases"] += row.get("purchases") or 0
+                agg[mid]["total_purchase_value"] += float(row.get("purchase_value") or 0)
 
             # Compute averages
             perf = {}
@@ -500,6 +508,8 @@ class CreativeCorrelationService:
                     "mean_hook_rate": (data["weighted_hook_rate"] / imp * 100) if imp > 0 else 0,
                     "mean_hold_rate": (data["weighted_hold_rate"] / imp * 100) if imp > 0 else 0,
                     "total_spend": data["total_spend"],
+                    "total_purchases": data["total_purchases"],
+                    "total_purchase_value": data["total_purchase_value"],
                 }
 
             logger.info(
