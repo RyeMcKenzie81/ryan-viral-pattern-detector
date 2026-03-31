@@ -1936,6 +1936,52 @@ def _render_element_heatmap(data: Dict):
 # TAB 5: CREATIVE INTELLIGENCE
 # ============================================
 
+def _render_type_breakdown(hooks_list, label, field_key, pd, st):
+    """Render a type/theme breakdown table for a list of hooks."""
+    groups = {}
+    for h in hooks_list:
+        val = h.get(field_key) or h.get("hook_type") or "unknown"
+        if isinstance(val, str):
+            val = val.replace("_", " ").title()
+        else:
+            val = "Unknown"
+        if val not in groups:
+            groups[val] = {"ctrs": [], "count": 0, "total_imp": 0, "total_sales": 0, "total_revenue": 0}
+        groups[val]["ctrs"].append(h["ctr"])
+        groups[val]["count"] += 1
+        groups[val]["total_imp"] += h["impressions"]
+        groups[val]["total_sales"] += h.get("purchases", 0)
+        groups[val]["total_revenue"] += h.get("purchase_value", 0)
+
+    rows = []
+    for val, data in groups.items():
+        if data["count"] >= 2:
+            avg = sum(data["ctrs"]) / len(data["ctrs"])
+            rows.append({
+                label: val,
+                "Ads": data["count"],
+                "Avg CTR": avg,
+                "Total Impressions": data["total_imp"],
+                "Total Sales": data["total_sales"],
+                "Total Revenue": data["total_revenue"],
+            })
+    rows.sort(key=lambda x: x["Avg CTR"], reverse=True)
+
+    if rows:
+        st.markdown(f"**{label} Performance**")
+        st.dataframe(
+            pd.DataFrame(rows),
+            column_config={
+                "Avg CTR": st.column_config.NumberColumn("Avg CTR", format="%.3f%%"),
+                "Total Impressions": st.column_config.NumberColumn("Total Impressions", format="%d"),
+                "Total Sales": st.column_config.NumberColumn("Total Sales", format="%d"),
+                "Total Revenue": st.column_config.NumberColumn("Total Revenue", format="$%.2f"),
+            },
+            use_container_width=True,
+            hide_index=True,
+        )
+
+
 def render_creative_intelligence_tab(brand_id: str, org_id: str, product_id: str = None):
     """Render the Creative Intelligence tab — hook leaderboard + correlation dashboard."""
     import pandas as pd
@@ -1992,10 +2038,6 @@ def render_creative_intelligence_tab(brand_id: str, org_id: str, product_id: str
         else:
             st.caption("Select a product above to filter by product.")
 
-    # ── Hook Leaderboard ──
-    st.subheader("🎣 Hook Leaderboard — Thumb-Stop Rate")
-    st.caption("Which hooks grab the most attention? Ranked by CTR (click-through rate).")
-
     # Cache hooks in session state for 30 min (keyed by filters)
     cache_key = f"ci_hooks_{brand_id}_{product_id}_{source_filter}"
     cache_ts_key = f"ci_hooks_ts_{brand_id}_{product_id}_{source_filter}"
@@ -2008,7 +2050,7 @@ def render_creative_intelligence_tab(brand_id: str, org_id: str, product_id: str
     )
 
     if hooks_stale:
-        with st.spinner("Loading hook performance..."):
+        with st.spinner("Loading creative performance..."):
             hooks = service.get_hook_performance(
                 brand_id, days_back=60, min_impressions=500,
                 product_id=product_id, source_filter=source_filter,
@@ -2018,8 +2060,8 @@ def render_creative_intelligence_tab(brand_id: str, org_id: str, product_id: str
     else:
         hooks = st.session_state[cache_key]
 
+    # ── Shared Filters ──
     if hooks:
-        # ── Filters ──
         fcol1, fcol2, fcol3 = st.columns(3)
         with fcol1:
             min_imp = st.number_input(
@@ -2044,14 +2086,12 @@ def render_creative_intelligence_tab(brand_id: str, org_id: str, product_id: str
                 key="ci_sort_by",
             )
 
-        # Apply filters
-        filtered_hooks = [
+        all_filtered = [
             h for h in hooks
             if h["impressions"] >= min_imp
             and h.get("purchases", 0) >= min_sales
         ]
 
-        # Sort
         sort_keys = {
             "CTR": lambda h: h["ctr"],
             "Impressions": lambda h: h["impressions"],
@@ -2059,119 +2099,130 @@ def render_creative_intelligence_tab(brand_id: str, org_id: str, product_id: str
             "Revenue": lambda h: h.get("purchase_value", 0),
             "ROAS": lambda h: h.get("roas", 0),
         }
-        filtered_hooks.sort(key=sort_keys[sort_by], reverse=True)
+        all_filtered.sort(key=sort_keys[sort_by], reverse=True)
 
-        # Build dataframe — include video-specific metrics
-        has_video = any(h["source"] == "video" for h in filtered_hooks)
-        hook_rows = []
-        for h in filtered_hooks:
-            ad_name = h.get("ad_name") or h["meta_ad_id"][:12]
-            adset = h.get("adset_name") or ""
-            campaign = h.get("campaign_name") or ""
-            context_parts = [p for p in [adset, campaign] if p]
-            row_data = {
-                "Ad Name": ad_name,
-                "Ad Set / Campaign": " / ".join(context_parts) if context_parts else "",
-                "Hook": h["hook_text"][:120] + ("..." if len(h["hook_text"]) > 120 else ""),
-                "Type": (h.get("hook_type") or "unknown").replace("_", " ").title(),
-                "Format": "🖼️" if h["source"] == "image" else "🎬",
-                "CTR": h["ctr"],
-            }
-            if has_video:
-                row_data["Hook Rate"] = h.get("hook_rate", 0) if h["source"] == "video" else None
-                row_data["Hold Rate"] = h.get("hold_rate", 0) if h["source"] == "video" else None
-            row_data["Impressions"] = h["impressions"]
-            row_data["Sales"] = h.get("purchases", 0)
-            row_data["Revenue"] = h.get("purchase_value", 0)
-            row_data["ROAS"] = h.get("roas", 0)
-            row_data["Awareness"] = (h.get("awareness_level") or "").replace("_", " ").title()
-            row_data["Tone"] = ", ".join(h.get("emotional_tone", [])[:2])
-            hook_rows.append(row_data)
+        video_hooks = [h for h in all_filtered if h["source"] == "video"]
+        image_hooks = [h for h in all_filtered if h["source"] == "image"]
 
-        df = pd.DataFrame(hook_rows)
-
-        # Top performer callout
-        if filtered_hooks:
-            best = filtered_hooks[0]
-            avg_ctr = sum(h["ctr"] for h in filtered_hooks) / len(filtered_hooks)
-            if avg_ctr > 0:
-                multiplier = best["ctr"] / avg_ctr
-                st.success(
-                    f"**Top hook:** \"{best['hook_text'][:80]}\" — "
-                    f"**{best['ctr']:.2%} CTR** ({multiplier:.1f}x your average)"
-                )
-
-        # Display table
-        col_config = {
+        # Shared column config for both tables
+        base_col_config = {
             "CTR": st.column_config.NumberColumn("CTR", format="%.3f%%"),
             "Impressions": st.column_config.NumberColumn("Impressions", format="%d"),
             "Sales": st.column_config.NumberColumn("Sales", format="%d"),
             "Revenue": st.column_config.NumberColumn("Revenue", format="$%.2f"),
             "ROAS": st.column_config.NumberColumn("ROAS", format="%.2fx"),
         }
-        if has_video:
-            col_config["Hook Rate"] = st.column_config.NumberColumn(
-                "Hook Rate", format="%.1f%%",
-                help="% of viewers who watched past 3 seconds",
-            )
-            col_config["Hold Rate"] = st.column_config.NumberColumn(
-                "Hold Rate", format="%.1f%%",
-                help="% of viewers who watched to completion",
-            )
-        st.dataframe(
-            df,
-            column_config=col_config,
-            use_container_width=True,
-            hide_index=True,
-        )
-        st.caption(f"Showing {len(df)} hooks (filtered from {len(hooks)} total)")
 
-        # Hook type breakdown
-        st.markdown("---")
-        st.markdown("**Hook Type Performance**")
-        type_groups = {}
-        for h in filtered_hooks:
-            ht = (h.get("hook_type") or "unknown").replace("_", " ").title()
-            if ht not in type_groups:
-                type_groups[ht] = {"ctrs": [], "count": 0, "total_imp": 0, "total_sales": 0, "total_revenue": 0}
-            type_groups[ht]["ctrs"].append(h["ctr"])
-            type_groups[ht]["count"] += 1
-            type_groups[ht]["total_imp"] += h["impressions"]
-            type_groups[ht]["total_sales"] += h.get("purchases", 0)
-            type_groups[ht]["total_revenue"] += h.get("purchase_value", 0)
+        # ── Video Hook Leaderboard ──
+        if video_hooks and source_filter != "image":
+            st.subheader("🎬 Video Hook Leaderboard")
+            st.caption("Which video hooks grab the most attention? Ranked by thumb-stop rate.")
 
-        type_rows = []
-        for ht, data in type_groups.items():
-            if data["count"] >= 2:
-                avg = sum(data["ctrs"]) / len(data["ctrs"])
-                type_rows.append({
-                    "Hook Type": ht,
-                    "Ads": data["count"],
-                    "Avg CTR": avg,
-                    "Total Impressions": data["total_imp"],
-                    "Total Sales": data["total_sales"],
-                    "Total Revenue": data["total_revenue"],
+            best_v = video_hooks[0]
+            avg_ctr_v = sum(h["ctr"] for h in video_hooks) / len(video_hooks)
+            if avg_ctr_v > 0:
+                mult = best_v["ctr"] / avg_ctr_v
+                st.success(
+                    f"**Top hook:** \"{best_v['hook_text'][:80]}\" — "
+                    f"**{best_v['ctr']:.2%} CTR** ({mult:.1f}x your average)"
+                )
+
+            vid_rows = []
+            for h in video_hooks:
+                ad_name = h.get("ad_name") or h["meta_ad_id"][:12]
+                adset = h.get("adset_name") or ""
+                campaign = h.get("campaign_name") or ""
+                context = " / ".join(p for p in [adset, campaign] if p)
+                vid_rows.append({
+                    "Ad Name": ad_name,
+                    "Ad Set / Campaign": context,
+                    "Hook": h["hook_text"][:120] + ("..." if len(h["hook_text"]) > 120 else ""),
+                    "Hook Type": (h.get("hook_type") or "unknown").replace("_", " ").title(),
+                    "CTR": h["ctr"],
+                    "Hook Rate": h.get("hook_rate", 0),
+                    "Hold Rate": h.get("hold_rate", 0),
+                    "Impressions": h["impressions"],
+                    "Sales": h.get("purchases", 0),
+                    "Revenue": h.get("purchase_value", 0),
+                    "ROAS": h.get("roas", 0),
                 })
-        type_rows.sort(key=lambda x: x["Avg CTR"], reverse=True)
 
-        if type_rows:
+            vid_config = {
+                **base_col_config,
+                "Hook Rate": st.column_config.NumberColumn(
+                    "Hook Rate", format="%.1f%%",
+                    help="% of viewers who watched past 3 seconds",
+                ),
+                "Hold Rate": st.column_config.NumberColumn(
+                    "Hold Rate", format="%.1f%%",
+                    help="% of viewers who watched to completion",
+                ),
+            }
             st.dataframe(
-                pd.DataFrame(type_rows),
-                column_config={
-                    "Avg CTR": st.column_config.NumberColumn("Avg CTR", format="%.3f%%"),
-                    "Total Impressions": st.column_config.NumberColumn(
-                        "Total Impressions", format="%d"
-                    ),
-                    "Total Sales": st.column_config.NumberColumn("Total Sales", format="%d"),
-                    "Total Revenue": st.column_config.NumberColumn("Total Revenue", format="$%.2f"),
-                },
+                pd.DataFrame(vid_rows),
+                column_config=vid_config,
                 use_container_width=True,
                 hide_index=True,
             )
-    else:
-        st.info("No hooks found with 100+ impressions. Run Creative Deep Analysis on more ads.")
+            st.caption(f"Showing {len(vid_rows)} video hooks")
 
-    st.divider()
+            # Hook type breakdown for videos
+            _render_type_breakdown(video_hooks, "Hook Type", "hook_type", pd, st)
+            st.divider()
+
+        # ── Image Messaging Leaderboard ──
+        if image_hooks and source_filter != "video":
+            st.subheader("🖼️ Image Messaging Leaderboard")
+            st.caption("Which headlines and messaging themes drive the most clicks on your image ads?")
+
+            best_i = image_hooks[0]
+            avg_ctr_i = sum(h["ctr"] for h in image_hooks) / len(image_hooks)
+            if avg_ctr_i > 0:
+                mult = best_i["ctr"] / avg_ctr_i
+                st.success(
+                    f"**Top headline:** \"{best_i['hook_text'][:80]}\" — "
+                    f"**{best_i['ctr']:.2%} CTR** ({mult:.1f}x your average)"
+                )
+
+            img_rows = []
+            for h in image_hooks:
+                ad_name = h.get("ad_name") or h["meta_ad_id"][:12]
+                adset = h.get("adset_name") or ""
+                campaign = h.get("campaign_name") or ""
+                context = " / ".join(p for p in [adset, campaign] if p)
+                theme = (h.get("messaging_theme") or "").replace("_", " ").title()
+                img_rows.append({
+                    "Ad Name": ad_name,
+                    "Ad Set / Campaign": context,
+                    "Headline": h["hook_text"][:120] + ("..." if len(h["hook_text"]) > 120 else ""),
+                    "Messaging Theme": theme,
+                    "CTR": h["ctr"],
+                    "Impressions": h["impressions"],
+                    "Sales": h.get("purchases", 0),
+                    "Revenue": h.get("purchase_value", 0),
+                    "ROAS": h.get("roas", 0),
+                    "Awareness": (h.get("awareness_level") or "").replace("_", " ").title(),
+                    "Tone": ", ".join(h.get("emotional_tone", [])[:2]),
+                })
+
+            st.dataframe(
+                pd.DataFrame(img_rows),
+                column_config=base_col_config,
+                use_container_width=True,
+                hide_index=True,
+            )
+            st.caption(f"Showing {len(img_rows)} image ads")
+
+            # Messaging theme breakdown for images
+            _render_type_breakdown(image_hooks, "Messaging Theme", "messaging_theme", pd, st)
+            st.divider()
+
+        if not video_hooks and not image_hooks:
+            st.info("No ads match the current filters.")
+            st.divider()
+    else:
+        st.info("No ads found with sufficient impressions. Run Creative Deep Analysis on more ads.")
+        st.divider()
 
     # ── Correlation Dashboard ──
     st.subheader("📊 Performance Correlations")
