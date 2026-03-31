@@ -2019,19 +2019,24 @@ def render_creative_intelligence_tab(brand_id: str, org_id: str, product_id: str
         hooks = st.session_state[cache_key]
 
     if hooks:
-        # Build dataframe
+        # Build dataframe — include video-specific metrics
+        has_video = any(h["source"] == "video" for h in hooks)
         hook_rows = []
         for h in hooks:
-            hook_rows.append({
+            row_data = {
                 "Hook": h["hook_text"][:120] + ("..." if len(h["hook_text"]) > 120 else ""),
                 "Type": (h.get("hook_type") or "unknown").replace("_", " ").title(),
                 "Format": "🖼️" if h["source"] == "image" else "🎬",
                 "CTR": h["ctr"],
-                "Impressions": h["impressions"],
-                "ROAS": h.get("roas", 0),
-                "Awareness": (h.get("awareness_level") or "").replace("_", " ").title(),
-                "Tone": ", ".join(h.get("emotional_tone", [])[:2]),
-            })
+            }
+            if has_video:
+                row_data["Hook Rate"] = h.get("hook_rate", 0) if h["source"] == "video" else None
+                row_data["Hold Rate"] = h.get("hold_rate", 0) if h["source"] == "video" else None
+            row_data["Impressions"] = h["impressions"]
+            row_data["ROAS"] = h.get("roas", 0)
+            row_data["Awareness"] = (h.get("awareness_level") or "").replace("_", " ").title()
+            row_data["Tone"] = ", ".join(h.get("emotional_tone", [])[:2])
+            hook_rows.append(row_data)
 
         df = pd.DataFrame(hook_rows)
 
@@ -2046,13 +2051,23 @@ def render_creative_intelligence_tab(brand_id: str, org_id: str, product_id: str
             )
 
         # Display table
+        col_config = {
+            "CTR": st.column_config.NumberColumn("CTR", format="%.3f%%"),
+            "Impressions": st.column_config.NumberColumn("Impressions", format="%d"),
+            "ROAS": st.column_config.NumberColumn("ROAS", format="%.2fx"),
+        }
+        if has_video:
+            col_config["Hook Rate"] = st.column_config.NumberColumn(
+                "Hook Rate", format="%.1f%%",
+                help="% of viewers who watched past 3 seconds",
+            )
+            col_config["Hold Rate"] = st.column_config.NumberColumn(
+                "Hold Rate", format="%.1f%%",
+                help="% of viewers who watched to completion",
+            )
         st.dataframe(
             df,
-            column_config={
-                "CTR": st.column_config.NumberColumn("CTR", format="%.3f%%"),
-                "Impressions": st.column_config.NumberColumn("Impressions", format="%d"),
-                "ROAS": st.column_config.NumberColumn("ROAS", format="%.2fx"),
-            },
+            column_config=col_config,
             use_container_width=True,
             hide_index=True,
         )

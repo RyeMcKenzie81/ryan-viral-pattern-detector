@@ -345,6 +345,8 @@ class CreativeCorrelationService:
                 "source": "video",
                 "meta_ad_id": mid,
                 "ctr": p["mean_ctr"],
+                "hook_rate": p.get("mean_hook_rate", 0),
+                "hold_rate": p.get("mean_hold_rate", 0),
                 "impressions": p["impressions"],
                 "roas": p.get("mean_roas", 0),
                 "messaging_theme": None,
@@ -426,7 +428,7 @@ class CreativeCorrelationService:
                 for i in range(0, len(id_list), 50):
                     batch = id_list[i:i + 50]
                     result = self.supabase.table("meta_ads_performance").select(
-                        "meta_ad_id, impressions, link_ctr, roas, cpm, spend"
+                        "meta_ad_id, impressions, link_ctr, roas, cpm, spend, hook_rate, hold_rate"
                     ).eq(
                         "brand_id", str(brand_id)
                     ).gte(
@@ -441,7 +443,7 @@ class CreativeCorrelationService:
                 page_size = 1000
                 while True:
                     result = self.supabase.table("meta_ads_performance").select(
-                        "meta_ad_id, impressions, link_ctr, roas, cpm, spend"
+                        "meta_ad_id, impressions, link_ctr, roas, cpm, spend, hook_rate, hold_rate"
                     ).eq(
                         "brand_id", str(brand_id)
                     ).gte(
@@ -468,6 +470,8 @@ class CreativeCorrelationService:
                         "impressions": 0,
                         "weighted_ctr": 0.0,
                         "weighted_roas": 0.0,
+                        "weighted_hook_rate": 0.0,
+                        "weighted_hold_rate": 0.0,
                         "total_spend": 0.0,
                     }
                 imp = row.get("impressions") or 0
@@ -476,6 +480,10 @@ class CreativeCorrelationService:
                     agg[mid]["weighted_ctr"] += (row["link_ctr"] or 0) * imp
                 if row.get("roas") is not None:
                     agg[mid]["weighted_roas"] += (row["roas"] or 0) * imp
+                if row.get("hook_rate") is not None:
+                    agg[mid]["weighted_hook_rate"] += (row["hook_rate"] or 0) * imp
+                if row.get("hold_rate") is not None:
+                    agg[mid]["weighted_hold_rate"] += (row["hold_rate"] or 0) * imp
                 agg[mid]["total_spend"] += row.get("spend") or 0
 
             # Compute averages
@@ -488,6 +496,9 @@ class CreativeCorrelationService:
                     "impressions": imp,
                     "mean_ctr": data["weighted_ctr"] / imp if imp > 0 else 0,
                     "mean_roas": data["weighted_roas"] / imp if imp > 0 else 0,
+                    # hook_rate/hold_rate stored as decimals (0.28 = 28%), convert to %
+                    "mean_hook_rate": (data["weighted_hook_rate"] / imp * 100) if imp > 0 else 0,
+                    "mean_hold_rate": (data["weighted_hold_rate"] / imp * 100) if imp > 0 else 0,
                     "total_spend": data["total_spend"],
                 }
 
