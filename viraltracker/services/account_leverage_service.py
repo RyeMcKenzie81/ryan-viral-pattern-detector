@@ -937,22 +937,104 @@ class AccountLeverageService:
             if not top:
                 return moves
 
-            # Field name → plain language label
-            field_labels = {
-                "emotional_tone": "emotional tone",
-                "hook_pattern": "hook pattern",
-                "cta_style": "CTA style",
-                "messaging_theme": "messaging theme",
-                "people_role": "person type",
-                "visual_color_mood": "color mood",
-                "visual_imagery_type": "imagery type",
-                "visual_production_quality": "production quality",
-                "hook_type": "hook type",
-                "format_type": "ad format",
-                "production_quality": "production quality",
-                "video_emotional_drivers": "emotional driver",
-                "video_people_role": "person type (video)",
-                "awareness_level": "awareness level",
+            # Field name → (plain language label, description of what the value means)
+            field_descriptions = {
+                "emotional_tone": {
+                    "label": "emotional tone",
+                    "explain": lambda v: f"ads that evoke a sense of {v.replace('_', ' ')}",
+                },
+                "hook_pattern": {
+                    "label": "headline style",
+                    "explain": lambda v: {
+                        "question": "ads that lead with a question",
+                        "statement": "ads that lead with a bold statement",
+                        "testimonial": "ads that lead with a customer testimonial",
+                        "before_after": "ads showing a before/after transformation",
+                        "statistic": "ads that lead with a statistic or data point",
+                        "curiosity": "ads that use a curiosity gap",
+                    }.get(v, f"ads using a '{v.replace('_', ' ')}' headline style"),
+                },
+                "cta_style": {
+                    "label": "call-to-action approach",
+                    "explain": lambda v: {
+                        "direct": "ads with a clear, explicit CTA (e.g., 'Buy Now', 'Shop Today')",
+                        "soft": "ads with a low-pressure CTA (e.g., 'Learn More', 'See How')",
+                        "curiosity": "ads that use curiosity to drive clicks (e.g., 'See Why...')",
+                        "none": "ads with no explicit call-to-action",
+                        "urgency": "ads with urgency-driven CTAs (e.g., 'Limited Time', 'Don't Miss Out')",
+                    }.get(v, f"ads using a '{v.replace('_', ' ')}' call-to-action"),
+                },
+                "messaging_theme": {
+                    "label": "messaging approach",
+                    "explain": lambda v: f"ads using a {v.replace('_', ' ')} messaging approach",
+                },
+                "people_role": {
+                    "label": "person type in the ad",
+                    "explain": lambda v: {
+                        "spokesperson": "ads featuring a spokesperson or presenter",
+                        "customer_testimonial": "ads featuring real customer testimonials",
+                        "lifestyle_model": "ads with lifestyle/aspirational models",
+                        "ugc_creator": "ads from UGC creators",
+                        "founder": "ads featuring the brand founder",
+                        "expert": "ads featuring a doctor, expert, or authority figure",
+                        "no_people": "ads with no people in them",
+                    }.get(v, f"ads featuring a {v.replace('_', ' ')}"),
+                },
+                "visual_color_mood": {
+                    "label": "visual color mood",
+                    "explain": lambda v: f"ads with a {v.replace('_', ' ')} color palette",
+                },
+                "visual_imagery_type": {
+                    "label": "visual style",
+                    "explain": lambda v: {
+                        "product_hero": "ads with a prominent product shot as the main visual",
+                        "lifestyle": "ads showing the product in a real-life context",
+                        "before_after": "ads showing a visual before/after comparison",
+                        "infographic": "ads using data, charts, or infographic-style visuals",
+                        "testimonial_card": "ads styled as testimonial/review cards",
+                        "ugc": "ads with user-generated or raw/organic-looking visuals",
+                        "screenshot": "ads featuring screenshots (e.g., reviews, texts, social proof)",
+                        "text_overlay": "ads that are primarily text on a background",
+                    }.get(v, f"ads using {v.replace('_', ' ')} imagery"),
+                },
+                "visual_production_quality": {
+                    "label": "production quality",
+                    "explain": lambda v: {
+                        "raw": "raw, unpolished ads (UGC-style, authentic feel)",
+                        "polished": "clean, polished ads with good design",
+                        "professional": "high-production professional ads (studio quality)",
+                    }.get(v, f"ads with {v.replace('_', ' ')} production quality"),
+                },
+                "hook_type": {
+                    "label": "video hook style",
+                    "explain": lambda v: f"videos that open with a {v.replace('_', ' ')} hook",
+                },
+                "format_type": {
+                    "label": "video format",
+                    "explain": lambda v: f"videos using a {v.replace('_', ' ')} format",
+                },
+                "production_quality": {
+                    "label": "video production quality",
+                    "explain": lambda v: f"videos with {v.replace('_', ' ')} production quality",
+                },
+                "video_emotional_drivers": {
+                    "label": "emotional driver",
+                    "explain": lambda v: f"videos that evoke a sense of {v.replace('_', ' ')}",
+                },
+                "video_people_role": {
+                    "label": "person type in the video",
+                    "explain": lambda v: f"videos featuring a {v.replace('_', ' ')}",
+                },
+                "awareness_level": {
+                    "label": "audience awareness level",
+                    "explain": lambda v: {
+                        "unaware": "ads targeting cold audiences who don't know they have a problem",
+                        "problem_aware": "ads targeting people who know their problem but not the solution",
+                        "solution_aware": "ads targeting people who know solutions exist but not your product",
+                        "product_aware": "ads targeting people who know your product but haven't bought",
+                        "most_aware": "ads targeting warm audiences who just need the right offer",
+                    }.get(v, f"ads targeting {v.replace('_', ' ')} audiences"),
+                },
             }
 
             for corr in top:
@@ -961,7 +1043,16 @@ class AccountLeverageService:
                 confidence = corr.get("confidence", 0)
                 field = corr.get("analysis_field", "")
                 value = corr.get("field_value", "")
-                field_label = field_labels.get(field, field.replace("_", " "))
+                source_table = corr.get("source_table", "")
+
+                field_info = field_descriptions.get(field, {
+                    "label": field.replace("_", " "),
+                    "explain": lambda v, f=field: f"ads using '{v}' {f.replace('_', ' ')}",
+                })
+                field_label = field_info["label"]
+                value_explained = field_info["explain"](value)
+                format_tag = "image" if "image" in source_table else "video" if "video" in source_table else ""
+                format_prefix = f"[{'Image' if format_tag == 'image' else 'Video'}] " if format_tag else ""
 
                 # Only surface strong outperformers (> 1.5x) or patterns with many ads
                 if vs_avg < 1.5:
@@ -976,24 +1067,27 @@ class AccountLeverageService:
                 else:
                     category = "Explore"
 
+                ad_type = "image ads" if format_tag == "image" else "videos" if format_tag == "video" else "ads"
+
                 moves.append(LeverageMove(
                     leverage_type="creative_insight",
                     move_category=category,
                     confidence=confidence,
-                    title=f"Ads with '{value}' {field_label} outperform by {multiplier}",
+                    title=f"{format_prefix}{value_explained.capitalize()} outperform by {multiplier}",
                     why=(
-                        f"Across {ad_count} ads, those using '{value}' as the "
-                        f"{field_label} perform {multiplier} better than your account average."
+                        f"Across {ad_count} {ad_type}, {value_explained} "
+                        f"perform {multiplier} better than your account average."
                     ),
                     expected_outcome=(
-                        f"Creating more ads with this {field_label} could improve "
-                        f"overall ROAS based on the {multiplier} outperformance pattern."
+                        f"Creating more {ad_type} following this pattern could improve "
+                        f"overall ROAS based on the {multiplier} outperformance."
                     ),
-                    next_step=f"Create 5 ads that use '{value}' as the {field_label}.",
+                    next_step=f"Create 5 new {ad_type} that follow this pattern: {value_explained}.",
                     recommended_action={
                         "creative_insight": field,
                         "creative_value": value,
                         "num_variations": 5,
+                        "format": format_tag,
                     },
                     evidence={
                         "analysis_field": field,
@@ -1002,7 +1096,7 @@ class AccountLeverageService:
                         "ad_count": ad_count,
                         "mean_roas": corr.get("mean_roas"),
                         "mean_ctr": corr.get("mean_ctr"),
-                        "source_table": corr.get("source_table"),
+                        "source_table": source_table,
                     },
                     effort=5,
                 ))
