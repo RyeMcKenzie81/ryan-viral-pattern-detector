@@ -81,8 +81,11 @@ class CreativeCorrelationService:
 
         # Compute account averages
         account_avg = self._compute_averages(list(perf_data.values()))
-        if not account_avg or account_avg.get("mean_reward", 0) == 0:
-            return {"correlations": 0, "message": "No reward data for account average"}
+        if not account_avg:
+            return {"correlations": 0, "message": "No performance data for account average"}
+        # Need at least CTR or ROAS to compute relative performance
+        if account_avg.get("mean_ctr", 0) == 0 and account_avg.get("mean_roas", 0) == 0:
+            return {"correlations": 0, "message": "No CTR or ROAS data for account average"}
 
         # Load image analyses
         image_analyses = self._load_image_analyses(brand_id)
