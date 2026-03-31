@@ -5,6 +5,7 @@ Tab 1: Find Opportunities - Scan for ads with exploitable mixed signals
 Tab 2: Analyze Winners - Decompose what makes winning ads work
 Tab 3: Awareness Coverage - Funnel gap visualization
 Tab 4: Strategic Leverage - Cross-dimensional account analysis with ranked moves
+Tab 5: Creative Intelligence - Hook leaderboard (thumb-stop rate) + correlation dashboard
 """
 
 import asyncio
@@ -68,6 +69,12 @@ def get_leverage_service():
     """Get AccountLeverageService."""
     from viraltracker.services.account_leverage_service import AccountLeverageService
     return AccountLeverageService(get_supabase_client())
+
+
+def get_correlation_service():
+    """Get CreativeCorrelationService."""
+    from viraltracker.services.creative_correlation_service import CreativeCorrelationService
+    return CreativeCorrelationService(get_supabase_client())
 
 
 def get_products_for_brand(brand_id: str) -> List[Dict]:
@@ -1926,6 +1933,280 @@ def _render_element_heatmap(data: Dict):
 
 
 # ============================================
+# TAB 5: CREATIVE INTELLIGENCE
+# ============================================
+
+def render_creative_intelligence_tab(brand_id: str, org_id: str):
+    """Render the Creative Intelligence tab — hook leaderboard + correlation dashboard."""
+    import pandas as pd
+
+    service = get_correlation_service()
+
+    # Check analysis coverage
+    try:
+        image_count = service.supabase.table("ad_image_analysis").select(
+            "id", count="exact"
+        ).eq("brand_id", brand_id).eq("status", "ok").execute()
+        video_count = service.supabase.table("ad_video_analysis").select(
+            "id", count="exact"
+        ).eq("brand_id", brand_id).eq("status", "ok").execute()
+        n_images = image_count.count or 0
+        n_videos = video_count.count or 0
+    except Exception:
+        n_images = 0
+        n_videos = 0
+
+    st.markdown(
+        f"**{n_images} image ads** and **{n_videos} video ads** deep-analyzed"
+    )
+
+    if n_images == 0 and n_videos == 0:
+        st.info(
+            "No ads have been deep-analyzed yet. Schedule a **Creative Deep Analysis** "
+            "job in the Ad Scheduler to get started."
+        )
+        return
+
+    # ── Hook Leaderboard ──
+    st.subheader("🎣 Hook Leaderboard — Thumb-Stop Rate")
+    st.caption("Which hooks grab the most attention? Ranked by CTR (click-through rate).")
+
+    # Cache hooks in session state for 30 min
+    cache_key = f"ci_hooks_{brand_id}"
+    cache_ts_key = f"ci_hooks_ts_{brand_id}"
+    from datetime import datetime, timedelta
+
+    hooks_stale = (
+        cache_key not in st.session_state
+        or cache_ts_key not in st.session_state
+        or (datetime.now() - st.session_state[cache_ts_key]) > timedelta(minutes=30)
+    )
+
+    if hooks_stale:
+        with st.spinner("Loading hook performance..."):
+            hooks = service.get_hook_performance(brand_id, days_back=60, min_impressions=500)
+            st.session_state[cache_key] = hooks
+            st.session_state[cache_ts_key] = datetime.now()
+    else:
+        hooks = st.session_state[cache_key]
+
+    if hooks:
+        # Build dataframe
+        hook_rows = []
+        for h in hooks:
+            hook_rows.append({
+                "Hook": h["hook_text"][:120] + ("..." if len(h["hook_text"]) > 120 else ""),
+                "Type": (h.get("hook_type") or "unknown").replace("_", " ").title(),
+                "Format": "🖼️" if h["source"] == "image" else "🎬",
+                "CTR": h["ctr"],
+                "Impressions": h["impressions"],
+                "ROAS": h.get("roas", 0),
+                "Awareness": (h.get("awareness_level") or "").replace("_", " ").title(),
+                "Tone": ", ".join(h.get("emotional_tone", [])[:2]),
+            })
+
+        df = pd.DataFrame(hook_rows)
+
+        # Top performer callout
+        best = hooks[0]
+        avg_ctr = sum(h["ctr"] for h in hooks) / len(hooks) if hooks else 0
+        if avg_ctr > 0:
+            multiplier = best["ctr"] / avg_ctr
+            st.success(
+                f"**Top hook:** \"{best['hook_text'][:80]}\" — "
+                f"**{best['ctr']:.2%} CTR** ({multiplier:.1f}x your average)"
+            )
+
+        # Filter by source
+        source_filter = st.radio(
+            "Filter by format",
+            ["All", "Images", "Videos"],
+            horizontal=True,
+            key="ci_hook_source_filter",
+        )
+        if source_filter == "Images":
+            df = df[df["Format"] == "🖼️"]
+        elif source_filter == "Videos":
+            df = df[df["Format"] == "🎬"]
+
+        # Display table
+        st.dataframe(
+            df,
+            column_config={
+                "CTR": st.column_config.NumberColumn("CTR", format="%.3f%%"),
+                "Impressions": st.column_config.NumberColumn("Impressions", format="%d"),
+                "ROAS": st.column_config.NumberColumn("ROAS", format="%.2fx"),
+            },
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.caption(f"Showing {len(df)} hooks with 500+ impressions")
+
+        # Hook type breakdown
+        st.markdown("---")
+        st.markdown("**Hook Type Performance**")
+        type_groups = {}
+        for h in hooks:
+            ht = (h.get("hook_type") or "unknown").replace("_", " ").title()
+            if ht not in type_groups:
+                type_groups[ht] = {"ctrs": [], "count": 0, "total_imp": 0}
+            type_groups[ht]["ctrs"].append(h["ctr"])
+            type_groups[ht]["count"] += 1
+            type_groups[ht]["total_imp"] += h["impressions"]
+
+        type_rows = []
+        for ht, data in type_groups.items():
+            if data["count"] >= 2:
+                avg = sum(data["ctrs"]) / len(data["ctrs"])
+                type_rows.append({
+                    "Hook Type": ht,
+                    "Ads": data["count"],
+                    "Avg CTR": avg,
+                    "Total Impressions": data["total_imp"],
+                })
+        type_rows.sort(key=lambda x: x["Avg CTR"], reverse=True)
+
+        if type_rows:
+            st.dataframe(
+                pd.DataFrame(type_rows),
+                column_config={
+                    "Avg CTR": st.column_config.NumberColumn("Avg CTR", format="%.3f%%"),
+                    "Total Impressions": st.column_config.NumberColumn(
+                        "Total Impressions", format="%d"
+                    ),
+                },
+                use_container_width=True,
+                hide_index=True,
+            )
+    else:
+        st.info("No hooks found with 500+ impressions. Run Creative Deep Analysis on more ads.")
+
+    st.divider()
+
+    # ── Correlation Dashboard ──
+    st.subheader("📊 Performance Correlations")
+    st.caption(
+        "Which creative elements drive the best results? "
+        "Sorted by performance vs account average."
+    )
+
+    # Cache correlations
+    corr_key = f"ci_correlations_{brand_id}"
+    corr_ts_key = f"ci_correlations_ts_{brand_id}"
+
+    corr_stale = (
+        corr_key not in st.session_state
+        or corr_ts_key not in st.session_state
+        or (datetime.now() - st.session_state[corr_ts_key]) > timedelta(minutes=30)
+    )
+
+    if corr_stale:
+        with st.spinner("Loading correlations..."):
+            correlations = service.get_top_correlations(brand_id, min_confidence=0.2, limit=50)
+            st.session_state[corr_key] = correlations
+            st.session_state[corr_ts_key] = datetime.now()
+    else:
+        correlations = st.session_state[corr_key]
+
+    if correlations:
+        # Field filter
+        all_fields = sorted(set(c["analysis_field"] for c in correlations))
+        field_labels = {f: f.replace("_", " ").replace("visual ", "").title() for f in all_fields}
+
+        selected_field = st.selectbox(
+            "Filter by dimension",
+            ["All"] + all_fields,
+            format_func=lambda x: "All Dimensions" if x == "All" else field_labels.get(x, x),
+            key="ci_corr_field_filter",
+        )
+
+        filtered = correlations
+        if selected_field != "All":
+            filtered = [c for c in correlations if c["analysis_field"] == selected_field]
+
+        corr_rows = []
+        for c in filtered:
+            vs_avg = c.get("vs_account_avg", 1.0)
+            # Color indicator
+            if vs_avg >= 1.5:
+                indicator = "🟢"
+            elif vs_avg >= 1.0:
+                indicator = "🟡"
+            else:
+                indicator = "🔴"
+
+            corr_rows.append({
+                "": indicator,
+                "Dimension": c["analysis_field"].replace("_", " ").replace("visual ", "").title(),
+                "Value": c["field_value"].replace("_", " ").title(),
+                "Ads": c["ad_count"],
+                "Avg CTR": c.get("mean_ctr", 0),
+                "Avg ROAS": c.get("mean_roas", 0),
+                "vs Account": vs_avg,
+                "Confidence": c.get("confidence", 0),
+                "Source": "🖼️" if "image" in c.get("source_table", "") else "🎬",
+            })
+
+        if corr_rows:
+            st.dataframe(
+                pd.DataFrame(corr_rows),
+                column_config={
+                    "Avg CTR": st.column_config.NumberColumn("Avg CTR", format="%.3f%%"),
+                    "Avg ROAS": st.column_config.NumberColumn("Avg ROAS", format="%.2fx"),
+                    "vs Account": st.column_config.NumberColumn(
+                        "vs Account Avg", format="%.2fx"
+                    ),
+                    "Confidence": st.column_config.ProgressColumn(
+                        "Confidence", min_value=0, max_value=1, format="%.0%%"
+                    ),
+                },
+                use_container_width=True,
+                hide_index=True,
+            )
+
+            # Summary insight
+            top_performers = [c for c in filtered if c.get("vs_account_avg", 0) >= 1.5]
+            if top_performers:
+                st.markdown("**Key Insights:**")
+                for c in top_performers[:5]:
+                    field = c["analysis_field"].replace("_", " ").title()
+                    value = c["field_value"].replace("_", " ").title()
+                    vs = c.get("vs_account_avg", 1.0)
+                    n = c["ad_count"]
+                    st.markdown(
+                        f"- **{value}** ({field}) performs **{vs:.1f}x** better "
+                        f"than average across {n} ads"
+                    )
+        else:
+            st.info("No correlations found for this filter.")
+    else:
+        st.info(
+            "No correlations computed yet. Run a **Creative Deep Analysis** job "
+            "to analyze ads and compute performance correlations."
+        )
+
+    # Refresh button
+    st.divider()
+    if st.button("🔄 Recompute Correlations", key="ci_recompute_btn"):
+        with st.spinner("Recomputing correlations (this may take a minute)..."):
+            try:
+                result = service.compute_correlations(brand_id, org_id, days_back=60)
+                st.success(
+                    f"Computed {result.get('correlations', 0)} correlations from "
+                    f"{result.get('image_ads_analyzed', 0)} images and "
+                    f"{result.get('video_ads_analyzed', 0)} videos"
+                )
+                # Clear cache to reload
+                st.session_state.pop(corr_key, None)
+                st.session_state.pop(corr_ts_key, None)
+                st.session_state.pop(cache_key, None)
+                st.session_state.pop(cache_ts_key, None)
+                st.rerun()
+            except Exception as e:
+                st.error(f"Correlation computation failed: {e}")
+
+
+# ============================================
 # MAIN
 # ============================================
 
@@ -1960,11 +2241,12 @@ if st.session_state.get("iter_cache_key") != cache_key:
     st.session_state.iter_cache_key = cache_key
 
 # Tabs
-tab1, tab2, tab3, tab4 = st.tabs([
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "💡 Find Opportunities",
     "🧬 Analyze Winners",
     "📊 Awareness Coverage",
     "🎯 Strategic Leverage",
+    "🔍 Creative Intelligence",
 ])
 
 with tab1:
@@ -1986,3 +2268,7 @@ with tab3:
 with tab4:
     st.caption("Find the highest-leverage moves to improve your ad account.")
     render_leverage_tab(brand_id, product_id, org_id)
+
+with tab5:
+    st.caption("See which hooks, tones, and creative elements drive the best performance.")
+    render_creative_intelligence_tab(brand_id, org_id)

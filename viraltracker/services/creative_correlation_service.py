@@ -114,6 +114,107 @@ class CreativeCorrelationService:
             "video_ads_analyzed": len(video_analyses),
         }
 
+    def get_hook_performance(
+        self,
+        brand_id: UUID,
+        days_back: int = 60,
+        min_impressions: int = 500,
+    ) -> List[Dict]:
+        """Get individual hooks ranked by CTR (thumb-stop rate).
+
+        Joins ad_image_analysis.headline_text and ad_video_analysis.hook_transcript_spoken
+        with meta_ads_performance to rank hooks by CTR.
+
+        Args:
+            brand_id: Brand UUID.
+            days_back: Performance look-back window.
+            min_impressions: Minimum impressions for a hook to qualify.
+
+        Returns:
+            List of hook dicts sorted by CTR descending.
+        """
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days_back)).strftime("%Y-%m-%d")
+
+        # Load performance data
+        perf = self._load_performance(brand_id, cutoff)
+        if not perf:
+            return []
+
+        hooks = []
+
+        # Image hooks (headline_text)
+        try:
+            image_results = self.supabase.table("ad_image_analysis").select(
+                "meta_ad_id, headline_text, hook_pattern, messaging_theme, "
+                "emotional_tone, visual_style, awareness_level"
+            ).eq(
+                "brand_id", str(brand_id)
+            ).eq(
+                "status", "ok"
+            ).execute()
+
+            for row in (image_results.data or []):
+                hook_text = row.get("headline_text")
+                if not hook_text:
+                    continue
+                mid = row["meta_ad_id"]
+                p = perf.get(mid)
+                if not p or p["impressions"] < min_impressions:
+                    continue
+                hooks.append({
+                    "hook_text": hook_text,
+                    "hook_type": row.get("hook_pattern", "unknown"),
+                    "source": "image",
+                    "meta_ad_id": mid,
+                    "ctr": p["mean_ctr"],
+                    "impressions": p["impressions"],
+                    "roas": p.get("mean_roas", 0),
+                    "messaging_theme": row.get("messaging_theme"),
+                    "emotional_tone": row.get("emotional_tone", []),
+                    "awareness_level": row.get("awareness_level"),
+                })
+        except Exception as e:
+            logger.error(f"Failed to load image hooks: {e}")
+
+        # Video hooks (hook_transcript_spoken)
+        try:
+            video_results = self.supabase.table("ad_video_analysis").select(
+                "meta_ad_id, hook_transcript_spoken, hook_transcript_overlay, "
+                "hook_type, awareness_level, emotional_drivers"
+            ).eq(
+                "brand_id", str(brand_id)
+            ).eq(
+                "status", "ok"
+            ).execute()
+
+            for row in (video_results.data or []):
+                # Use spoken hook, fall back to overlay
+                hook_text = row.get("hook_transcript_spoken") or row.get("hook_transcript_overlay")
+                if not hook_text:
+                    continue
+                mid = row["meta_ad_id"]
+                p = perf.get(mid)
+                if not p or p["impressions"] < min_impressions:
+                    continue
+                hooks.append({
+                    "hook_text": hook_text,
+                    "hook_type": row.get("hook_type", "unknown"),
+                    "source": "video",
+                    "meta_ad_id": mid,
+                    "ctr": p["mean_ctr"],
+                    "impressions": p["impressions"],
+                    "roas": p.get("mean_roas", 0),
+                    "messaging_theme": None,
+                    "emotional_tone": row.get("emotional_drivers", []),
+                    "awareness_level": row.get("awareness_level"),
+                })
+        except Exception as e:
+            logger.error(f"Failed to load video hooks: {e}")
+
+        # Sort by CTR descending
+        hooks.sort(key=lambda x: x["ctr"], reverse=True)
+        return hooks
+
     def get_top_correlations(
         self,
         brand_id: UUID,
