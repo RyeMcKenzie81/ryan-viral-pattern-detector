@@ -144,10 +144,14 @@ if is_authenticated():
         render_organization_selector()
         st.divider()
 
-        # Render page links grouped by section (skip hidden sections)
+        # Render top-level pages (Activity Feed, Agent Chat, etc.)
+        for page in pages.get("", []):
+            st.page_link(page, icon=page.icon)
+
+        # Render page links grouped by section
         for section, page_list in pages.items():
             if not section:
-                continue  # Hidden pages (e.g. public share pages) — routable but not in sidebar
+                continue  # Already rendered above
             st.header(section)
             for page in page_list:
                 st.page_link(page, icon=page.icon)
