@@ -2065,7 +2065,13 @@ def render_creative_intelligence_tab(brand_id: str, org_id: str, product_id: str
         has_video = any(h["source"] == "video" for h in filtered_hooks)
         hook_rows = []
         for h in filtered_hooks:
+            ad_name = h.get("ad_name") or h["meta_ad_id"][:12]
+            adset = h.get("adset_name") or ""
+            campaign = h.get("campaign_name") or ""
+            context_parts = [p for p in [adset, campaign] if p]
             row_data = {
+                "Ad Name": ad_name,
+                "Ad Set / Campaign": " / ".join(context_parts) if context_parts else "",
                 "Hook": h["hook_text"][:120] + ("..." if len(h["hook_text"]) > 120 else ""),
                 "Type": (h.get("hook_type") or "unknown").replace("_", " ").title(),
                 "Format": "🖼️" if h["source"] == "image" else "🎬",
