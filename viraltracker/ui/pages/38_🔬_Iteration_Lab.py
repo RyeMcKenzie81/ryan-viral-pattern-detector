@@ -2278,6 +2278,188 @@ def render_creative_intelligence_tab(brand_id: str, org_id: str, product_id: str
             "to analyze ads and compute performance correlations."
         )
 
+    # ── Performance Heatmap ──
+    if correlations:
+        st.divider()
+        st.subheader("🗺️ Performance Heatmap")
+        st.caption("Visual overview of how each creative element performs vs account average.")
+
+        try:
+            import plotly.graph_objects as go
+
+            # Group correlations by dimension
+            dimensions = {}
+            for c in correlations:
+                dim = c["analysis_field"].replace("_", " ").replace("visual ", "").title()
+                if dim not in dimensions:
+                    dimensions[dim] = []
+                dimensions[dim].append(c)
+
+            # Build heatmap data — one row per field value, columns = CTR vs avg, ROAS vs avg
+            heatmap_values = []
+            heatmap_labels = []
+            heatmap_dimensions = []
+            acct_ctr = None
+            acct_roas = None
+
+            # Compute account averages from correlation data for reference
+            for dim_name, dim_corrs in sorted(dimensions.items()):
+                for c in sorted(dim_corrs, key=lambda x: x.get("vs_account_avg", 1), reverse=True):
+                    label = c["field_value"].replace("_", " ").title()
+                    vs = c.get("vs_account_avg", 1.0)
+                    n = c.get("ad_count", 0)
+                    heatmap_labels.append(f"{label} ({n})")
+                    heatmap_dimensions.append(dim_name)
+                    heatmap_values.append(vs)
+
+            if heatmap_labels:
+                # Color scale: red (underperform) → white (average) → green (outperform)
+                fig = go.Figure(data=go.Heatmap(
+                    z=[heatmap_values],
+                    x=heatmap_labels,
+                    y=["vs Account Avg"],
+                    colorscale=[
+                        [0, "#ef4444"],
+                        [0.5, "#fafafa"],
+                        [1, "#22c55e"],
+                    ],
+                    zmid=1.0,
+                    text=[[f"{v:.2f}x" for v in heatmap_values]],
+                    texttemplate="%{text}",
+                    textfont={"size": 11},
+                    hovertemplate="%{x}<br>%{z:.2f}x vs avg<extra></extra>",
+                    colorbar=dict(title="vs Avg", ticksuffix="x"),
+                ))
+                fig.update_layout(
+                    height=150,
+                    margin=dict(l=20, r=20, t=10, b=80),
+                    xaxis=dict(tickangle=-45, tickfont=dict(size=10)),
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+                # Dimension-grouped detail heatmap
+                if len(dimensions) > 1:
+                    for dim_name, dim_corrs in sorted(dimensions.items()):
+                        if len(dim_corrs) < 2:
+                            continue
+                        sorted_corrs = sorted(dim_corrs, key=lambda x: x.get("vs_account_avg", 1), reverse=True)
+                        labels = [c["field_value"].replace("_", " ").title() for c in sorted_corrs]
+                        vals = [c.get("vs_account_avg", 1.0) for c in sorted_corrs]
+                        counts = [c.get("ad_count", 0) for c in sorted_corrs]
+
+                        fig2 = go.Figure(data=go.Bar(
+                            x=labels,
+                            y=vals,
+                            text=[f"{v:.2f}x ({n})" for v, n in zip(vals, counts)],
+                            textposition="auto",
+                            marker_color=[
+                                "#22c55e" if v >= 1.5 else "#eab308" if v >= 1.0 else "#ef4444"
+                                for v in vals
+                            ],
+                        ))
+                        fig2.update_layout(
+                            title=dict(text=dim_name, font=dict(size=14)),
+                            height=250,
+                            margin=dict(l=20, r=20, t=40, b=40),
+                            yaxis=dict(title="vs Account Avg"),
+                            showlegend=False,
+                        )
+                        # Add baseline at 1.0x
+                        fig2.add_hline(y=1.0, line_dash="dash", line_color="gray", opacity=0.5)
+                        st.plotly_chart(fig2, use_container_width=True)
+
+        except ImportError:
+            st.warning("Install plotly for heatmap visualization: `pip install plotly`")
+
+    # ── Combination Analysis + Winning Recipes ──
+    st.divider()
+    st.subheader("🧪 Creative Combinations")
+    st.caption(
+        "Which combinations of creative elements work best together? "
+        "Finds synergistic pairs that outperform their individual components."
+    )
+
+    combo_key = f"ci_combos_{brand_id}_{product_id}_{source_filter}"
+    combo_ts_key = f"ci_combos_ts_{brand_id}_{product_id}_{source_filter}"
+
+    combo_stale = (
+        combo_key not in st.session_state
+        or combo_ts_key not in st.session_state
+        or (datetime.now() - st.session_state[combo_ts_key]) > timedelta(minutes=30)
+    )
+
+    if combo_stale:
+        with st.spinner("Analyzing creative combinations..."):
+            combo_result = service.get_combination_performance(
+                brand_id, days_back=60, min_ads=3,
+                product_id=product_id, source_filter=source_filter,
+            )
+            st.session_state[combo_key] = combo_result
+            st.session_state[combo_ts_key] = datetime.now()
+    else:
+        combo_result = st.session_state[combo_key]
+
+    combos = combo_result.get("combinations", [])
+    recipes = combo_result.get("recipes", [])
+
+    # Winning Recipes callout
+    if recipes:
+        st.markdown("#### 🏆 Winning Recipes")
+        st.caption("Your top-performing creative combinations — use these as a starting point for new ads.")
+        for i, r in enumerate(recipes, 1):
+            fa = r["field_a"].replace("_", " ").title()
+            va = r["value_a"].replace("_", " ").title()
+            fb = r["field_b"].replace("_", " ").title()
+            vb = r["value_b"].replace("_", " ").title()
+            fmt = "🖼️" if r["source"] == "image" else "🎬"
+            st.success(
+                f"**Recipe #{i}** {fmt}: **{va}** ({fa}) + **{vb}** ({fb}) — "
+                f"**{r['vs_avg']:.1f}x** vs account avg "
+                f"({r['ad_count']} ads, {r['total_impressions']:,} impressions)"
+            )
+        st.markdown("")
+
+    # Full combination table
+    if combos:
+        combo_rows = []
+        for c in combos:
+            vs = c["vs_avg"]
+            if vs >= 1.5:
+                indicator = "🟢"
+            elif vs >= 1.0:
+                indicator = "🟡"
+            else:
+                indicator = "🔴"
+
+            combo_rows.append({
+                "": indicator,
+                "Element 1": f"{c['value_a'].replace('_', ' ').title()} ({c['field_a'].replace('_', ' ').title()})",
+                "Element 2": f"{c['value_b'].replace('_', ' ').title()} ({c['field_b'].replace('_', ' ').title()})",
+                "Ads": c["ad_count"],
+                "Avg CTR": c["mean_ctr"],
+                "Avg ROAS": c["mean_roas"],
+                "vs Account": c["vs_avg"],
+                "Confidence": c["confidence"],
+                "Format": "🖼️" if c["source"] == "image" else "🎬",
+            })
+
+        st.dataframe(
+            pd.DataFrame(combo_rows),
+            column_config={
+                "Avg CTR": st.column_config.NumberColumn("Avg CTR", format="%.3f%%"),
+                "Avg ROAS": st.column_config.NumberColumn("Avg ROAS", format="%.2fx"),
+                "vs Account": st.column_config.NumberColumn("vs Account Avg", format="%.2fx"),
+                "Confidence": st.column_config.ProgressColumn(
+                    "Confidence", min_value=0, max_value=1, format="%.0%%"
+                ),
+            },
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.caption(f"Showing {len(combo_rows)} combinations with 3+ ads")
+    else:
+        st.info("Not enough data for combination analysis. Need at least 3 ads sharing element pairs.")
+
     # Refresh button
     st.divider()
     if st.button("🔄 Recompute Correlations", key="ci_recompute_btn"):

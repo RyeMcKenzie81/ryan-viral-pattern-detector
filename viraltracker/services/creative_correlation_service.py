@@ -412,6 +412,202 @@ class CreativeCorrelationService:
             logger.error(f"Failed to get correlations for brand {brand_id}: {e}")
             return []
 
+    def get_combination_performance(
+        self,
+        brand_id: UUID,
+        days_back: int = 60,
+        min_ads: int = 3,
+        product_id: str = None,
+        source_filter: str = None,
+    ) -> Dict[str, Any]:
+        """Find synergistic combinations of creative elements.
+
+        For each pair of analysis fields (e.g., hook_pattern × emotional_tone),
+        finds ads sharing both values, computes combined performance, and compares
+        to each individual factor's performance to surface synergistic combos.
+
+        Args:
+            brand_id: Brand UUID.
+            days_back: Performance look-back window.
+            min_ads: Minimum ads in a combination to qualify.
+            product_id: Optional product UUID to filter by.
+            source_filter: Optional "image" or "video" to filter by source type.
+
+        Returns:
+            Dict with 'combinations' (list of combo dicts) and 'recipes' (top combos).
+        """
+        import math
+
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days_back)).strftime("%Y-%m-%d")
+
+        product_ad_ids = None
+        if product_id:
+            product_ad_ids = self.get_product_ad_ids(brand_id, product_id)
+            if not product_ad_ids:
+                return {"combinations": [], "recipes": []}
+
+        image_analyses = {} if source_filter == "video" else self._load_image_analyses(brand_id)
+        video_analyses = {} if source_filter == "image" else self._load_video_analyses(brand_id)
+
+        if product_ad_ids is not None:
+            image_analyses = {k: v for k, v in image_analyses.items() if k in product_ad_ids}
+            video_analyses = {k: v for k, v in video_analyses.items() if k in product_ad_ids}
+
+        analysis_ids = set(image_analyses.keys()) | set(video_analyses.keys())
+        if not analysis_ids:
+            return {"combinations": [], "recipes": []}
+
+        perf_data = self._load_performance(brand_id, cutoff, meta_ad_ids=analysis_ids)
+        if not perf_data:
+            return {"combinations": [], "recipes": []}
+
+        account_avg = self._compute_averages(list(perf_data.values()))
+        if not account_avg:
+            return {"combinations": [], "recipes": []}
+
+        combinations = []
+
+        # Extract field values per ad for image analyses
+        if image_analyses:
+            image_field_pairs = [
+                ("hook_pattern", "emotional_tone"),
+                ("hook_pattern", "cta_style"),
+                ("hook_pattern", "awareness_level"),
+                ("messaging_theme", "emotional_tone"),
+                ("messaging_theme", "awareness_level"),
+                ("cta_style", "awareness_level"),
+            ]
+            ad_fields = self._extract_ad_field_values(image_analyses, "image")
+            combinations.extend(self._compute_pair_combos(
+                ad_fields, perf_data, account_avg, image_field_pairs, min_ads, "image"
+            ))
+
+        # Extract field values per ad for video analyses
+        if video_analyses:
+            video_field_pairs = [
+                ("hook_type", "format_type"),
+                ("hook_type", "production_quality"),
+                ("hook_type", "awareness_level"),
+                ("format_type", "production_quality"),
+            ]
+            ad_fields = self._extract_ad_field_values(video_analyses, "video")
+            combinations.extend(self._compute_pair_combos(
+                ad_fields, perf_data, account_avg, video_field_pairs, min_ads, "video"
+            ))
+
+        # Sort by vs_account_avg descending
+        combinations.sort(key=lambda x: x["vs_avg"], reverse=True)
+
+        # Winning recipes = top combinations that are synergistic (vs_avg > 1.3)
+        recipes = [c for c in combinations if c["vs_avg"] >= 1.3][:5]
+
+        return {"combinations": combinations, "recipes": recipes}
+
+    def _extract_ad_field_values(
+        self,
+        analyses: Dict[str, Dict],
+        source_type: str,
+    ) -> Dict[str, Dict[str, List[str]]]:
+        """Extract field values per ad for combination analysis.
+
+        Returns: {meta_ad_id: {field_name: [values]}}
+        """
+        ad_fields: Dict[str, Dict[str, List[str]]] = {}
+
+        for meta_ad_id, analysis in analyses.items():
+            fields: Dict[str, List[str]] = {}
+
+            if source_type == "image":
+                for f in ["hook_pattern", "cta_style", "messaging_theme", "awareness_level"]:
+                    val = analysis.get(f)
+                    if val and isinstance(val, str):
+                        fields[f] = [val]
+                # Array field
+                tones = analysis.get("emotional_tone")
+                if isinstance(tones, list):
+                    fields["emotional_tone"] = [t for t in tones if isinstance(t, str)]
+            else:
+                for f in ["hook_type", "format_type", "production_quality", "awareness_level"]:
+                    val = analysis.get(f)
+                    if val and isinstance(val, str):
+                        fields[f] = [val]
+
+            if fields:
+                ad_fields[meta_ad_id] = fields
+
+        return ad_fields
+
+    def _compute_pair_combos(
+        self,
+        ad_fields: Dict[str, Dict[str, List[str]]],
+        perf_data: Dict[str, Dict],
+        account_avg: Dict,
+        field_pairs: List[tuple],
+        min_ads: int,
+        source_type: str,
+    ) -> List[Dict]:
+        """Compute combination performance for given field pairs."""
+        import math
+
+        results = []
+
+        for field_a, field_b in field_pairs:
+            # Group ads by (value_a, value_b) combo
+            combo_groups: Dict[tuple, List[str]] = {}
+
+            for mid, fields in ad_fields.items():
+                if mid not in perf_data:
+                    continue
+                vals_a = fields.get(field_a, [])
+                vals_b = fields.get(field_b, [])
+                for va in vals_a:
+                    for vb in vals_b:
+                        combo_groups.setdefault((va, vb), []).append(mid)
+
+            for (val_a, val_b), ad_ids in combo_groups.items():
+                if len(ad_ids) < min_ads:
+                    continue
+
+                perfs = [perf_data[mid] for mid in ad_ids if mid in perf_data]
+                if not perfs:
+                    continue
+
+                total_imp = sum(p["impressions"] for p in perfs)
+                if total_imp == 0:
+                    continue
+
+                mean_ctr = sum(
+                    p["mean_ctr"] * p["impressions"] for p in perfs
+                ) / total_imp
+                mean_roas = sum(
+                    p["mean_roas"] * p["impressions"] for p in perfs
+                ) / total_imp
+
+                acct_roas = account_avg.get("mean_roas", 0)
+                if acct_roas and acct_roas > 0:
+                    vs_avg = mean_roas / acct_roas
+                else:
+                    acct_ctr = account_avg.get("mean_ctr", 0)
+                    vs_avg = mean_ctr / acct_ctr if acct_ctr > 0 else 1.0
+
+                confidence = 1 / (1 + math.exp(-0.3 * (len(ad_ids) - 5)))
+
+                results.append({
+                    "field_a": field_a,
+                    "value_a": val_a,
+                    "field_b": field_b,
+                    "value_b": val_b,
+                    "ad_count": len(ad_ids),
+                    "mean_ctr": mean_ctr,
+                    "mean_roas": mean_roas,
+                    "vs_avg": round(vs_avg, 2),
+                    "confidence": round(confidence, 2),
+                    "source": source_type,
+                    "total_impressions": total_imp,
+                })
+
+        return results
+
     def _load_performance(
         self,
         brand_id: UUID,
