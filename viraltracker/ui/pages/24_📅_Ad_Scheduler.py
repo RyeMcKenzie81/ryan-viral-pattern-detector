@@ -2029,21 +2029,67 @@ def _render_seo_content_eval_form(existing_job, is_edit):
     scheduled_at = None
 
     if schedule_type == 'recurring':
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            day_of_week = st.selectbox(
-                "Day of Week",
-                options=['*', 0, 1, 2, 3, 4, 5, 6],
-                index=0,
-                format_func=lambda x: 'Every day' if x == '*' else ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'][x],
-                key="seo_eval_day"
-            )
-        with col2:
-            run_hour = st.number_input("Hour (PST, 0-23)", min_value=0, max_value=23, value=8, key="seo_eval_hour")
-        with col3:
-            run_minute = st.number_input("Minute", min_value=0, max_value=59, value=0, step=15, key="seo_eval_minute")
+        frequency = st.selectbox(
+            "Frequency",
+            options=['interval', 'daily', 'weekly'],
+            index=0,
+            format_func=lambda x: {
+                'interval': 'Every N minutes/hours',
+                'daily': 'Once per day',
+                'weekly': 'Once per week',
+            }.get(x, x),
+            key="seo_eval_frequency"
+        )
 
-        cron_expression = f"{run_minute} {run_hour} * * {day_of_week}"
+        if frequency == 'interval':
+            col1, col2 = st.columns(2)
+            with col1:
+                interval_unit = st.selectbox(
+                    "Interval unit",
+                    options=['minutes', 'hours'],
+                    key="seo_eval_interval_unit"
+                )
+            with col2:
+                if interval_unit == 'minutes':
+                    interval_value = st.selectbox(
+                        "Every",
+                        options=[5, 10, 15, 20, 30],
+                        index=2,
+                        format_func=lambda x: f"Every {x} minutes",
+                        key="seo_eval_interval_value_min"
+                    )
+                    cron_expression = f"*/{interval_value} * * * *"
+                else:
+                    interval_value = st.selectbox(
+                        "Every",
+                        options=[1, 2, 3, 4, 6, 8, 12],
+                        index=0,
+                        format_func=lambda x: f"Every {x} hour{'s' if x > 1 else ''}",
+                        key="seo_eval_interval_value_hr"
+                    )
+                    cron_expression = f"0 */{interval_value} * * *"
+        elif frequency == 'daily':
+            col1, col2 = st.columns(2)
+            with col1:
+                run_hour = st.number_input("Hour (PST, 0-23)", min_value=0, max_value=23, value=8, key="seo_eval_hour")
+            with col2:
+                run_minute = st.number_input("Minute", min_value=0, max_value=59, value=0, step=15, key="seo_eval_minute")
+            cron_expression = f"{run_minute} {run_hour} * * *"
+        else:
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                day_of_week = st.selectbox(
+                    "Day of Week",
+                    options=[0, 1, 2, 3, 4, 5, 6],
+                    index=0,
+                    format_func=lambda x: ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'][x],
+                    key="seo_eval_day"
+                )
+            with col2:
+                run_hour = st.number_input("Hour (PST, 0-23)", min_value=0, max_value=23, value=8, key="seo_eval_wk_hour")
+            with col3:
+                run_minute = st.number_input("Minute", min_value=0, max_value=59, value=0, step=15, key="seo_eval_wk_minute")
+            cron_expression = f"{run_minute} {run_hour} * * {day_of_week}"
     else:
         col1, col2 = st.columns(2)
         with col1:
@@ -2233,21 +2279,67 @@ def _render_seo_publish_form(existing_job, is_edit):
     scheduled_at = None
 
     if schedule_type == 'recurring':
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            day_of_week = st.selectbox(
-                "Day of Week",
-                options=['*', 0, 1, 2, 3, 4, 5, 6],
-                index=0,
-                format_func=lambda x: 'Every day' if x == '*' else ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'][x],
-                key="seo_pub_day"
-            )
-        with col2:
-            run_hour = st.number_input("Hour (PST, 0-23)", min_value=0, max_value=23, value=9, key="seo_pub_hour")
-        with col3:
-            run_minute = st.number_input("Minute", min_value=0, max_value=59, value=0, step=15, key="seo_pub_minute")
+        frequency = st.selectbox(
+            "Frequency",
+            options=['interval', 'daily', 'weekly'],
+            index=0,
+            format_func=lambda x: {
+                'interval': 'Every N minutes/hours',
+                'daily': 'Once per day',
+                'weekly': 'Once per week',
+            }.get(x, x),
+            key="seo_pub_frequency"
+        )
 
-        cron_expression = f"{run_minute} {run_hour} * * {day_of_week}"
+        if frequency == 'interval':
+            col1, col2 = st.columns(2)
+            with col1:
+                interval_unit = st.selectbox(
+                    "Interval unit",
+                    options=['minutes', 'hours'],
+                    key="seo_pub_interval_unit"
+                )
+            with col2:
+                if interval_unit == 'minutes':
+                    interval_value = st.selectbox(
+                        "Every",
+                        options=[5, 10, 15, 20, 30],
+                        index=2,
+                        format_func=lambda x: f"Every {x} minutes",
+                        key="seo_pub_interval_value_min"
+                    )
+                    cron_expression = f"*/{interval_value} * * * *"
+                else:
+                    interval_value = st.selectbox(
+                        "Every",
+                        options=[1, 2, 3, 4, 6, 8, 12],
+                        index=0,
+                        format_func=lambda x: f"Every {x} hour{'s' if x > 1 else ''}",
+                        key="seo_pub_interval_value_hr"
+                    )
+                    cron_expression = f"0 */{interval_value} * * *"
+        elif frequency == 'daily':
+            col1, col2 = st.columns(2)
+            with col1:
+                run_hour = st.number_input("Hour (PST, 0-23)", min_value=0, max_value=23, value=9, key="seo_pub_hour")
+            with col2:
+                run_minute = st.number_input("Minute", min_value=0, max_value=59, value=0, step=15, key="seo_pub_minute")
+            cron_expression = f"{run_minute} {run_hour} * * *"
+        else:
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                day_of_week = st.selectbox(
+                    "Day of Week",
+                    options=[0, 1, 2, 3, 4, 5, 6],
+                    index=0,
+                    format_func=lambda x: ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'][x],
+                    key="seo_pub_day"
+                )
+            with col2:
+                run_hour = st.number_input("Hour (PST, 0-23)", min_value=0, max_value=23, value=9, key="seo_pub_wk_hour")
+            with col3:
+                run_minute = st.number_input("Minute", min_value=0, max_value=59, value=0, step=15, key="seo_pub_wk_minute")
+            cron_expression = f"{run_minute} {run_hour} * * {day_of_week}"
     else:
         col1, col2 = st.columns(2)
         with col1:
