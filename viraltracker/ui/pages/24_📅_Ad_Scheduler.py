@@ -2477,19 +2477,29 @@ def _render_creative_deep_analysis_form(existing_job, is_edit):
 
     st.subheader("3. Analysis Settings")
 
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
 
     with col1:
         max_images = st.number_input(
-            "Max image analyses per run",
+            "Max image analyses",
             min_value=1,
             max_value=200,
             value=existing_params.get('max_images', 50),
-            help="Max Gemini API calls for image ads per run (~$0.01 each)",
+            help="Max Gemini calls for image ads per run (~$0.01 each)",
             key="deep_analysis_max_images"
         )
 
     with col2:
+        max_videos = st.number_input(
+            "Max video analyses",
+            min_value=1,
+            max_value=50,
+            value=existing_params.get('max_videos', 20),
+            help="Max Gemini calls for video ads per run (~$0.05 each, uses Files API)",
+            key="deep_analysis_max_videos"
+        )
+
+    with col3:
         days_back = st.number_input(
             "Days back",
             min_value=7,
@@ -2501,10 +2511,10 @@ def _render_creative_deep_analysis_form(existing_job, is_edit):
 
     st.info(
         "**What this does:**\n"
-        "1. Sends each ad image to Gemini for deep analysis\n"
-        "2. Extracts: messaging theme, emotional tone, hook pattern, who's in the ad, visual style\n"
+        "1. Sends each ad image and video to Gemini for deep analysis\n"
+        "2. Extracts: messaging theme, emotional tone, hook pattern/text, who's in the ad, visual style\n"
         "3. Computes performance correlations (which creative patterns drive results)\n"
-        "4. Results appear as insights in the Strategic Leverage tab\n\n"
+        "4. Results appear in **Creative Intelligence** tab and **Strategic Leverage** moves\n\n"
         "Also auto-runs after Ad Classification jobs for this brand."
     )
 
@@ -2655,6 +2665,7 @@ def _render_creative_deep_analysis_form(existing_job, is_edit):
 
             parameters = {
                 'max_images': max_images,
+                'max_videos': max_videos,
                 'days_back': days_back,
             }
 
@@ -2693,6 +2704,7 @@ def _render_creative_deep_analysis_form(existing_job, is_edit):
 
             parameters = {
                 'max_images': max_images,
+                'max_videos': max_videos,
                 'days_back': days_back,
             }
 

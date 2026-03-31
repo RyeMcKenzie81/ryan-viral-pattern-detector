@@ -3949,14 +3949,16 @@ async def execute_creative_deep_analysis_job(job: Dict) -> Dict[str, Any]:
     try:
         from uuid import UUID
         from viraltracker.services.image_analysis_service import ImageAnalysisService
+        from viraltracker.services.video_analysis_service import VideoAnalysisService
         from viraltracker.services.creative_correlation_service import CreativeCorrelationService
 
         if not brand_id:
             raise ValueError("brand_id is required for creative_deep_analysis")
 
         brand_uuid = UUID(brand_id)
-        max_images = parameters.get('max_images', 50)
+        max_analyses = parameters.get('max_images', parameters.get('max_analyses', 50))
         days_back = parameters.get('days_back', 60)
+        max_videos = parameters.get('max_videos', 20)
 
         # Resolve organization_id from brand
         db = get_supabase_client()
@@ -3966,12 +3968,12 @@ async def execute_creative_deep_analysis_job(job: Dict) -> Dict[str, Any]:
         org_id = UUID(brand_row.data[0]["organization_id"])
 
         # Step 1: Analyze images
-        logs.append(f"Analyzing image ads (max {max_images})...")
+        logs.append(f"Analyzing image ads (max {max_analyses})...")
         image_service = ImageAnalysisService(supabase_client=db)
         image_result = image_service.analyze_batch(
             brand_id=brand_uuid,
             organization_id=org_id,
-            max_new=max_images,
+            max_new=max_analyses,
             days_back=days_back,
         )
         logs.append(
@@ -3980,7 +3982,22 @@ async def execute_creative_deep_analysis_job(job: Dict) -> Dict[str, Any]:
             f"{image_result.get('errors', 0)} errors"
         )
 
-        # Step 2: Compute correlations
+        # Step 2: Analyze videos
+        logs.append(f"Analyzing video ads (max {max_videos})...")
+        video_service = VideoAnalysisService(supabase=db)
+        video_result = await video_service.analyze_batch(
+            brand_id=brand_uuid,
+            organization_id=org_id,
+            max_new=max_videos,
+            days_back=days_back,
+        )
+        logs.append(
+            f"Videos: {video_result.get('analyzed', 0)} analyzed, "
+            f"{video_result.get('skipped', 0)} skipped, "
+            f"{video_result.get('errors', 0)} errors"
+        )
+
+        # Step 3: Compute correlations
         logs.append("Computing performance correlations...")
         corr_service = CreativeCorrelationService(supabase_client=db)
         corr_result = corr_service.compute_correlations(
@@ -3994,6 +4011,9 @@ async def execute_creative_deep_analysis_job(job: Dict) -> Dict[str, Any]:
             "images_analyzed": image_result.get("analyzed", 0),
             "images_skipped": image_result.get("skipped", 0),
             "images_errors": image_result.get("errors", 0),
+            "videos_analyzed": video_result.get("analyzed", 0),
+            "videos_skipped": video_result.get("skipped", 0),
+            "videos_errors": video_result.get("errors", 0),
             "correlations": corr_result.get("correlations", 0),
         }
         logs.append(f"Deep analysis complete: {summary}")

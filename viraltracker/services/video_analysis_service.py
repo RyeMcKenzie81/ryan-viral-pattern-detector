@@ -884,6 +884,92 @@ class VideoAnalysisService:
             logger.error(f"Error saving video analysis for {result.meta_ad_id}: {e}")
             return None
 
+    async def analyze_batch(
+        self,
+        brand_id: UUID,
+        organization_id: UUID,
+        max_new: int = 20,
+        days_back: int = 30,
+    ) -> Dict[str, Any]:
+        """Analyze unanalyzed video ads in batch.
+
+        Finds video ads with stored assets that haven't been deep-analyzed yet.
+        Processes up to max_new videos.
+
+        Args:
+            brand_id: Brand UUID.
+            organization_id: Organization UUID.
+            max_new: Maximum new analyses per run.
+            days_back: Look-back window for active ads.
+
+        Returns:
+            Summary dict with counts.
+        """
+        from datetime import timedelta, timezone
+
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days_back)).strftime("%Y-%m-%d")
+
+        # Get active video ads for this brand
+        ads = self.supabase.table("meta_ads_performance").select(
+            "meta_ad_id, ad_copy"
+        ).eq(
+            "brand_id", str(brand_id)
+        ).gte(
+            "date", cutoff
+        ).eq(
+            "is_video", True
+        ).execute()
+
+        if not ads.data:
+            return {"analyzed": 0, "skipped": 0, "errors": 0, "message": "No video ads found"}
+
+        # Deduplicate by meta_ad_id
+        ad_map = {}
+        for ad in ads.data:
+            ad_map[ad["meta_ad_id"]] = ad
+
+        # Get already-analyzed ad IDs
+        existing = self.supabase.table("ad_video_analysis").select(
+            "meta_ad_id"
+        ).eq(
+            "brand_id", str(brand_id)
+        ).eq(
+            "prompt_version", PROMPT_VERSION
+        ).execute()
+        existing_ids = {r["meta_ad_id"] for r in (existing.data or [])}
+
+        # Filter to unanalyzed
+        to_analyze = [
+            ad for mid, ad in ad_map.items()
+            if mid not in existing_ids
+        ][:max_new]
+
+        analyzed = 0
+        skipped = 0
+        errors = 0
+
+        for ad in to_analyze:
+            result = await self.deep_analyze_video(
+                meta_ad_id=ad["meta_ad_id"],
+                brand_id=brand_id,
+                organization_id=organization_id,
+                ad_copy=ad.get("ad_copy"),
+            )
+
+            if result is None:
+                skipped += 1
+            elif result.status == "error":
+                errors += 1
+            else:
+                analyzed += 1
+
+        return {
+            "analyzed": analyzed,
+            "skipped": skipped,
+            "errors": errors,
+            "total_candidates": len(to_analyze),
+        }
+
     async def get_latest_analysis(
         self,
         meta_ad_id: str,
