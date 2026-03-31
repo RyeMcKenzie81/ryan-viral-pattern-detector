@@ -2019,10 +2019,52 @@ def render_creative_intelligence_tab(brand_id: str, org_id: str, product_id: str
         hooks = st.session_state[cache_key]
 
     if hooks:
+        # ── Filters ──
+        fcol1, fcol2, fcol3 = st.columns(3)
+        with fcol1:
+            min_imp = st.number_input(
+                "Min impressions",
+                min_value=0,
+                value=500,
+                step=500,
+                key="ci_min_impressions",
+            )
+        with fcol2:
+            min_sales = st.number_input(
+                "Min sales",
+                min_value=0,
+                value=0,
+                step=1,
+                key="ci_min_sales",
+            )
+        with fcol3:
+            sort_by = st.selectbox(
+                "Sort by",
+                ["CTR", "Impressions", "Sales", "Revenue", "ROAS"],
+                key="ci_sort_by",
+            )
+
+        # Apply filters
+        filtered_hooks = [
+            h for h in hooks
+            if h["impressions"] >= min_imp
+            and h.get("purchases", 0) >= min_sales
+        ]
+
+        # Sort
+        sort_keys = {
+            "CTR": lambda h: h["ctr"],
+            "Impressions": lambda h: h["impressions"],
+            "Sales": lambda h: h.get("purchases", 0),
+            "Revenue": lambda h: h.get("purchase_value", 0),
+            "ROAS": lambda h: h.get("roas", 0),
+        }
+        filtered_hooks.sort(key=sort_keys[sort_by], reverse=True)
+
         # Build dataframe — include video-specific metrics
-        has_video = any(h["source"] == "video" for h in hooks)
+        has_video = any(h["source"] == "video" for h in filtered_hooks)
         hook_rows = []
-        for h in hooks:
+        for h in filtered_hooks:
             row_data = {
                 "Hook": h["hook_text"][:120] + ("..." if len(h["hook_text"]) > 120 else ""),
                 "Type": (h.get("hook_type") or "unknown").replace("_", " ").title(),
@@ -2033,6 +2075,8 @@ def render_creative_intelligence_tab(brand_id: str, org_id: str, product_id: str
                 row_data["Hook Rate"] = h.get("hook_rate", 0) if h["source"] == "video" else None
                 row_data["Hold Rate"] = h.get("hold_rate", 0) if h["source"] == "video" else None
             row_data["Impressions"] = h["impressions"]
+            row_data["Sales"] = h.get("purchases", 0)
+            row_data["Revenue"] = h.get("purchase_value", 0)
             row_data["ROAS"] = h.get("roas", 0)
             row_data["Awareness"] = (h.get("awareness_level") or "").replace("_", " ").title()
             row_data["Tone"] = ", ".join(h.get("emotional_tone", [])[:2])
@@ -2041,19 +2085,22 @@ def render_creative_intelligence_tab(brand_id: str, org_id: str, product_id: str
         df = pd.DataFrame(hook_rows)
 
         # Top performer callout
-        best = hooks[0]
-        avg_ctr = sum(h["ctr"] for h in hooks) / len(hooks) if hooks else 0
-        if avg_ctr > 0:
-            multiplier = best["ctr"] / avg_ctr
-            st.success(
-                f"**Top hook:** \"{best['hook_text'][:80]}\" — "
-                f"**{best['ctr']:.2%} CTR** ({multiplier:.1f}x your average)"
-            )
+        if filtered_hooks:
+            best = filtered_hooks[0]
+            avg_ctr = sum(h["ctr"] for h in filtered_hooks) / len(filtered_hooks)
+            if avg_ctr > 0:
+                multiplier = best["ctr"] / avg_ctr
+                st.success(
+                    f"**Top hook:** \"{best['hook_text'][:80]}\" — "
+                    f"**{best['ctr']:.2%} CTR** ({multiplier:.1f}x your average)"
+                )
 
         # Display table
         col_config = {
             "CTR": st.column_config.NumberColumn("CTR", format="%.3f%%"),
             "Impressions": st.column_config.NumberColumn("Impressions", format="%d"),
+            "Sales": st.column_config.NumberColumn("Sales", format="%d"),
+            "Revenue": st.column_config.NumberColumn("Revenue", format="$%.2f"),
             "ROAS": st.column_config.NumberColumn("ROAS", format="%.2fx"),
         }
         if has_video:
@@ -2071,19 +2118,21 @@ def render_creative_intelligence_tab(brand_id: str, org_id: str, product_id: str
             use_container_width=True,
             hide_index=True,
         )
-        st.caption(f"Showing {len(df)} hooks with 500+ impressions")
+        st.caption(f"Showing {len(df)} hooks (filtered from {len(hooks)} total)")
 
         # Hook type breakdown
         st.markdown("---")
         st.markdown("**Hook Type Performance**")
         type_groups = {}
-        for h in hooks:
+        for h in filtered_hooks:
             ht = (h.get("hook_type") or "unknown").replace("_", " ").title()
             if ht not in type_groups:
-                type_groups[ht] = {"ctrs": [], "count": 0, "total_imp": 0}
+                type_groups[ht] = {"ctrs": [], "count": 0, "total_imp": 0, "total_sales": 0, "total_revenue": 0}
             type_groups[ht]["ctrs"].append(h["ctr"])
             type_groups[ht]["count"] += 1
             type_groups[ht]["total_imp"] += h["impressions"]
+            type_groups[ht]["total_sales"] += h.get("purchases", 0)
+            type_groups[ht]["total_revenue"] += h.get("purchase_value", 0)
 
         type_rows = []
         for ht, data in type_groups.items():
@@ -2094,6 +2143,8 @@ def render_creative_intelligence_tab(brand_id: str, org_id: str, product_id: str
                     "Ads": data["count"],
                     "Avg CTR": avg,
                     "Total Impressions": data["total_imp"],
+                    "Total Sales": data["total_sales"],
+                    "Total Revenue": data["total_revenue"],
                 })
         type_rows.sort(key=lambda x: x["Avg CTR"], reverse=True)
 
@@ -2105,6 +2156,8 @@ def render_creative_intelligence_tab(brand_id: str, org_id: str, product_id: str
                     "Total Impressions": st.column_config.NumberColumn(
                         "Total Impressions", format="%d"
                     ),
+                    "Total Sales": st.column_config.NumberColumn("Total Sales", format="%d"),
+                    "Total Revenue": st.column_config.NumberColumn("Total Revenue", format="$%.2f"),
                 },
                 use_container_width=True,
                 hide_index=True,
