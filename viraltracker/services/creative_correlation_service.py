@@ -322,6 +322,9 @@ class CreativeCorrelationService:
                 "hook_type": row.get("hook_pattern", "unknown"),
                 "source": "image",
                 "meta_ad_id": mid,
+                "ad_name": p.get("ad_name"),
+                "adset_name": p.get("adset_name"),
+                "campaign_name": p.get("campaign_name"),
                 "ctr": p["mean_ctr"],
                 "impressions": p["impressions"],
                 "roas": p.get("mean_roas", 0),
@@ -346,6 +349,9 @@ class CreativeCorrelationService:
                 "hook_type": row.get("hook_type", "unknown"),
                 "source": "video",
                 "meta_ad_id": mid,
+                "ad_name": p.get("ad_name"),
+                "adset_name": p.get("adset_name"),
+                "campaign_name": p.get("campaign_name"),
                 "ctr": p["mean_ctr"],
                 "hook_rate": p.get("mean_hook_rate", 0),
                 "hold_rate": p.get("mean_hold_rate", 0),
@@ -432,7 +438,7 @@ class CreativeCorrelationService:
                 for i in range(0, len(id_list), 50):
                     batch = id_list[i:i + 50]
                     result = self.supabase.table("meta_ads_performance").select(
-                        "meta_ad_id, impressions, link_ctr, roas, cpm, spend, hook_rate, hold_rate, purchases, purchase_value"
+                        "meta_ad_id, ad_name, adset_name, campaign_name, impressions, link_ctr, roas, cpm, spend, hook_rate, hold_rate, purchases, purchase_value"
                     ).eq(
                         "brand_id", str(brand_id)
                     ).gte(
@@ -447,7 +453,7 @@ class CreativeCorrelationService:
                 page_size = 1000
                 while True:
                     result = self.supabase.table("meta_ads_performance").select(
-                        "meta_ad_id, impressions, link_ctr, roas, cpm, spend, hook_rate, hold_rate, purchases, purchase_value"
+                        "meta_ad_id, ad_name, adset_name, campaign_name, impressions, link_ctr, roas, cpm, spend, hook_rate, hold_rate, purchases, purchase_value"
                     ).eq(
                         "brand_id", str(brand_id)
                     ).gte(
@@ -479,6 +485,9 @@ class CreativeCorrelationService:
                         "total_spend": 0.0,
                         "total_purchases": 0,
                         "total_purchase_value": 0.0,
+                        "ad_name": row.get("ad_name"),
+                        "adset_name": row.get("adset_name"),
+                        "campaign_name": row.get("campaign_name"),
                     }
                 imp = row.get("impressions") or 0
                 agg[mid]["impressions"] += imp
@@ -510,6 +519,9 @@ class CreativeCorrelationService:
                     "total_spend": data["total_spend"],
                     "total_purchases": data["total_purchases"],
                     "total_purchase_value": data["total_purchase_value"],
+                    "ad_name": data.get("ad_name"),
+                    "adset_name": data.get("adset_name"),
+                    "campaign_name": data.get("campaign_name"),
                 }
 
             logger.info(
