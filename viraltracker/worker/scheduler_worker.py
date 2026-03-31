@@ -620,6 +620,8 @@ async def execute_job(job: Dict) -> Dict[str, Any]:
         return await execute_ad_creation_job(job)
     elif job_type == 'creative_genome_update':
         return await execute_creative_genome_update_job(job)
+    elif job_type == 'creative_deep_analysis':
+        return await execute_creative_deep_analysis_job(job)
     elif job_type == 'genome_validation':
         return await execute_genome_validation_job(job)
     elif job_type == 'winner_evolution':
@@ -3001,6 +3003,22 @@ async def execute_ad_classification_job(job: Dict) -> Dict[str, Any]:
             f"Completed ad classification job: {job_name} - "
             f"{result['classified']} classified, {result['video']} video"
         )
+
+        # Auto-chain: trigger creative deep analysis after classification
+        try:
+            if brand_id and result.get('classified', 0) > 0:
+                logger.info(f"Auto-chaining creative deep analysis for brand {brand_id}")
+                chain_job = {
+                    'id': f"chain_{job_id}",
+                    'name': f"Auto Deep Analysis — {job_name}",
+                    'brand_id': brand_id,
+                    'parameters': {'max_images': 50, 'days_back': 60},
+                    'schedule_type': 'one_time',
+                }
+                await execute_creative_deep_analysis_job(chain_job)
+        except Exception as chain_err:
+            logger.warning(f"Auto-chain deep analysis failed (non-fatal): {chain_err}")
+
         return {"success": True, **result}
 
     except Exception as e:
@@ -3894,6 +3912,109 @@ async def execute_creative_genome_update_job(job: Dict) -> Dict[str, Any]:
 
     except Exception as e:
         logger.error(f"Creative Genome update failed: {e}")
+        logs.append(f"ERROR: {e}")
+        update_job_run(run_id, {
+            "status": "failed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "error_message": str(e),
+            "logs": "\n".join(logs),
+        })
+        _reschedule_after_failure(job, job_id, get_run_attempt_number(run_id))
+        return {"success": False, "error": str(e)}
+
+
+async def execute_creative_deep_analysis_job(job: Dict) -> Dict[str, Any]:
+    """Execute a Creative Deep Analysis job — Gemini analysis of image/video ads.
+
+    Processes unanalyzed ads in batch:
+    1. Analyzes image ads (messaging, tone, persona, visual style)
+    2. Computes performance correlations
+    """
+    job_id = job['id']
+    job_name = job['name']
+    brand_id = job.get('brand_id')
+    parameters = job.get('parameters') or {}
+
+    logger.info(f"Starting Creative Deep Analysis: {job_name}")
+
+    update_job(job_id, {"next_run_at": None})
+
+    run_id = create_job_run(job_id)
+    if not run_id:
+        logger.error(f"Failed to create run record for deep analysis job {job_id}")
+        return {"success": False, "error": "Failed to create run record"}
+
+    logs = []
+
+    try:
+        from uuid import UUID
+        from viraltracker.services.image_analysis_service import ImageAnalysisService
+        from viraltracker.services.creative_correlation_service import CreativeCorrelationService
+
+        if not brand_id:
+            raise ValueError("brand_id is required for creative_deep_analysis")
+
+        brand_uuid = UUID(brand_id)
+        max_images = parameters.get('max_images', 50)
+        days_back = parameters.get('days_back', 60)
+
+        # Resolve organization_id from brand
+        db = get_supabase_client()
+        brand_row = db.table("brands").select("organization_id").eq("id", brand_id).limit(1).execute()
+        if not brand_row.data:
+            raise ValueError(f"Brand {brand_id} not found")
+        org_id = UUID(brand_row.data[0]["organization_id"])
+
+        # Step 1: Analyze images
+        logs.append(f"Analyzing image ads (max {max_images})...")
+        image_service = ImageAnalysisService(supabase_client=db)
+        image_result = image_service.analyze_batch(
+            brand_id=brand_uuid,
+            organization_id=org_id,
+            max_new=max_images,
+            days_back=days_back,
+        )
+        logs.append(
+            f"Images: {image_result.get('analyzed', 0)} analyzed, "
+            f"{image_result.get('skipped', 0)} skipped, "
+            f"{image_result.get('errors', 0)} errors"
+        )
+
+        # Step 2: Compute correlations
+        logs.append("Computing performance correlations...")
+        corr_service = CreativeCorrelationService(supabase_client=db)
+        corr_result = corr_service.compute_correlations(
+            brand_id=brand_uuid,
+            organization_id=org_id,
+            days_back=days_back,
+        )
+        logs.append(f"Correlations computed: {corr_result.get('correlations', 0)}")
+
+        summary = {
+            "images_analyzed": image_result.get("analyzed", 0),
+            "images_skipped": image_result.get("skipped", 0),
+            "images_errors": image_result.get("errors", 0),
+            "correlations": corr_result.get("correlations", 0),
+        }
+        logs.append(f"Deep analysis complete: {summary}")
+
+        update_job_run(run_id, {
+            "status": "completed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "logs": "\n".join(logs),
+            "metadata": summary,
+        })
+
+        # Reschedule for next run
+        if job.get('schedule_type') == 'recurring' and job.get('cron_expression'):
+            next_run = calculate_next_run(job['cron_expression'])
+            if next_run:
+                update_job(job_id, {"next_run_at": next_run.isoformat()})
+
+        return {"success": True, **summary}
+
+    except Exception as e:
+        logger.error(f"Creative Deep Analysis failed: {e}")
         logs.append(f"ERROR: {e}")
         update_job_run(run_id, {
             "status": "failed",

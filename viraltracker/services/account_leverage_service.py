@@ -127,6 +127,7 @@ class AccountLeverageService:
         moves.extend(self._format_expansion_moves(format_data, element_scores))
         moves.extend(self._persona_insight_moves(brand_id))
         moves.extend(self._angle_expansion_moves(brand_id))
+        moves.extend(self._creative_insight_moves(brand_id))
 
         # Apply low-confidence cap
         if low_confidence:
@@ -914,5 +915,102 @@ class AccountLeverageService:
 
         except Exception as e:
             logger.warning(f"Angle expansion analysis failed: {e}")
+
+        return moves
+
+    def _creative_insight_moves(self, brand_id: str) -> List[LeverageMove]:
+        """Generate moves from Gemini creative analysis correlations.
+
+        Reads creative_performance_correlations to find messaging themes,
+        emotional tones, hook patterns, and persona types that significantly
+        outperform or underperform the account average.
+        """
+        moves = []
+        try:
+            from viraltracker.services.creative_correlation_service import CreativeCorrelationService
+            corr_service = CreativeCorrelationService(supabase_client=self.supabase)
+
+            top = corr_service.get_top_correlations(
+                UUID(brand_id), min_confidence=0.3, limit=10
+            )
+
+            if not top:
+                return moves
+
+            # Field name → plain language label
+            field_labels = {
+                "emotional_tone": "emotional tone",
+                "hook_pattern": "hook pattern",
+                "cta_style": "CTA style",
+                "messaging_theme": "messaging theme",
+                "people_role": "person type",
+                "visual_color_mood": "color mood",
+                "visual_imagery_type": "imagery type",
+                "visual_production_quality": "production quality",
+                "hook_type": "hook type",
+                "format_type": "ad format",
+                "production_quality": "production quality",
+                "video_emotional_drivers": "emotional driver",
+                "video_people_role": "person type (video)",
+                "awareness_level": "awareness level",
+            }
+
+            for corr in top:
+                vs_avg = corr.get("vs_account_avg", 1.0)
+                ad_count = corr.get("ad_count", 0)
+                confidence = corr.get("confidence", 0)
+                field = corr.get("analysis_field", "")
+                value = corr.get("field_value", "")
+                field_label = field_labels.get(field, field.replace("_", " "))
+
+                # Only surface strong outperformers (> 1.5x) or patterns with many ads
+                if vs_avg < 1.5:
+                    continue
+
+                multiplier = f"{vs_avg:.1f}x"
+
+                if confidence >= 0.7 and ad_count >= 5:
+                    category = "Quick Win"
+                elif confidence >= 0.4:
+                    category = "Strategic Bet"
+                else:
+                    category = "Explore"
+
+                moves.append(LeverageMove(
+                    leverage_type="creative_insight",
+                    move_category=category,
+                    confidence=confidence,
+                    title=f"Ads with '{value}' {field_label} outperform by {multiplier}",
+                    why=(
+                        f"Across {ad_count} ads, those using '{value}' as the "
+                        f"{field_label} perform {multiplier} better than your account average."
+                    ),
+                    expected_outcome=(
+                        f"Creating more ads with this {field_label} could improve "
+                        f"overall ROAS based on the {multiplier} outperformance pattern."
+                    ),
+                    next_step=f"Create 5 ads that use '{value}' as the {field_label}.",
+                    recommended_action={
+                        "creative_insight": field,
+                        "creative_value": value,
+                        "num_variations": 5,
+                    },
+                    evidence={
+                        "analysis_field": field,
+                        "field_value": value,
+                        "vs_account_avg": vs_avg,
+                        "ad_count": ad_count,
+                        "mean_roas": corr.get("mean_roas"),
+                        "mean_ctr": corr.get("mean_ctr"),
+                        "source_table": corr.get("source_table"),
+                    },
+                    effort=5,
+                ))
+
+                if len(moves) >= 4:
+                    break
+
+        except Exception as e:
+            logger.warning(f"Creative insight analysis failed: {e}")
 
         return moves

@@ -749,6 +749,8 @@ def render_schedule_list():
                     type_badge = "📦 "
                 elif job_type == 'creative_genome_update':
                     type_badge = "🧬 "
+                elif job_type == 'creative_deep_analysis':
+                    type_badge = "🔍 "
                 st.markdown(f"{status_emoji} {type_badge}**{job['name']}**")
 
                 # Show brand → product for ad_creation, just brand for others, system-wide for template_approval
@@ -2410,6 +2412,317 @@ def _render_creative_genome_update_form(existing_job, is_edit):
             st.rerun()
 
 
+def _render_creative_deep_analysis_form(existing_job, is_edit):
+    """Render the creative deep analysis job creation form."""
+
+    # ========================================================================
+    # Section 1: Brand Selection
+    # ========================================================================
+
+    st.subheader("1. Select Brand")
+
+    brands = get_brands()
+    if not brands:
+        st.error("No brands found")
+        return
+
+    brand_options = {b['name']: b['id'] for b in brands}
+    brand_names = list(brand_options.keys())
+
+    default_index = 0
+    if existing_job:
+        for i, b in enumerate(brands):
+            if b['id'] == existing_job.get('brand_id'):
+                default_index = i
+                break
+    else:
+        cookie_brand = _get_brand_from_cookie()
+        if cookie_brand:
+            for i, name in enumerate(brand_names):
+                if brand_options[name] == cookie_brand:
+                    default_index = i
+                    break
+
+    selected_brand_name = st.selectbox(
+        "Brand",
+        options=brand_names,
+        index=default_index,
+        help="Select the brand to analyze ad creatives for",
+        key="deep_analysis_brand_selector"
+    )
+    selected_brand_id = brand_options[selected_brand_name]
+    _save_brand_to_cookie(selected_brand_id)
+
+    st.divider()
+
+    # ========================================================================
+    # Section 2: Job Name
+    # ========================================================================
+
+    st.subheader("2. Job Name")
+
+    existing_params = (existing_job or {}).get('parameters') or {}
+
+    job_name = st.text_input(
+        "Job name",
+        value=existing_job['name'] if existing_job else f"Creative Deep Analysis — {selected_brand_name}",
+        key="deep_analysis_job_name"
+    )
+
+    st.divider()
+
+    # ========================================================================
+    # Section 3: Settings
+    # ========================================================================
+
+    st.subheader("3. Analysis Settings")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        max_images = st.number_input(
+            "Max image analyses per run",
+            min_value=1,
+            max_value=200,
+            value=existing_params.get('max_images', 50),
+            help="Max Gemini API calls for image ads per run (~$0.01 each)",
+            key="deep_analysis_max_images"
+        )
+
+    with col2:
+        days_back = st.number_input(
+            "Days back",
+            min_value=7,
+            max_value=180,
+            value=existing_params.get('days_back', 60),
+            help="Look-back window for active ads",
+            key="deep_analysis_days_back"
+        )
+
+    st.info(
+        "**What this does:**\n"
+        "1. Sends each ad image to Gemini for deep analysis\n"
+        "2. Extracts: messaging theme, emotional tone, hook pattern, who's in the ad, visual style\n"
+        "3. Computes performance correlations (which creative patterns drive results)\n"
+        "4. Results appear as insights in the Strategic Leverage tab\n\n"
+        "Also auto-runs after Ad Classification jobs for this brand."
+    )
+
+    st.divider()
+
+    # ========================================================================
+    # Section 4: Schedule
+    # ========================================================================
+
+    st.subheader("4. Schedule")
+
+    current_time = datetime.now(PST)
+    st.info(f"Current time: **{current_time.strftime('%I:%M %p PST')}** ({current_time.strftime('%b %d, %Y')})")
+
+    schedule_type = st.radio(
+        "Schedule Type",
+        options=['recurring', 'one_time'],
+        index=0 if not existing_job or existing_job.get('schedule_type') == 'recurring' else 1,
+        format_func=lambda x: "Recurring" if x == 'recurring' else "One-time",
+        horizontal=True,
+        key="deep_analysis_schedule_type"
+    )
+
+    if schedule_type == 'recurring':
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            frequency = st.selectbox(
+                "Frequency",
+                options=['daily', 'weekly'],
+                index=0,
+                format_func=lambda x: x.capitalize(),
+                key="deep_analysis_frequency"
+            )
+
+        with col2:
+            if frequency == 'weekly':
+                day_of_week = st.selectbox(
+                    "Day of Week",
+                    options=[0, 1, 2, 3, 4, 5, 6],
+                    index=0,
+                    format_func=lambda x: ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'][x],
+                    key="deep_analysis_day_of_week"
+                )
+            else:
+                day_of_week = 0
+
+        with col3:
+            st.markdown("**Time (PST)**")
+            time_col1, time_col2, time_col3 = st.columns(3)
+
+            with time_col1:
+                run_hour_12 = st.selectbox(
+                    "Hour",
+                    options=list(range(1, 13)),
+                    index=5,  # 6 AM default
+                    key="deep_analysis_hour"
+                )
+
+            with time_col2:
+                run_minute = st.number_input(
+                    "Minute",
+                    min_value=0,
+                    max_value=59,
+                    value=30,
+                    key="deep_analysis_minute"
+                )
+
+            with time_col3:
+                run_ampm = st.selectbox(
+                    "AM/PM",
+                    options=["AM", "PM"],
+                    index=0,
+                    key="deep_analysis_ampm"
+                )
+
+            if run_ampm == "AM":
+                run_hour = run_hour_12 if run_hour_12 != 12 else 0
+            else:
+                run_hour = run_hour_12 + 12 if run_hour_12 != 12 else 12
+
+        cron_expression = build_cron_expression(frequency, day_of_week, run_hour, run_minute)
+        scheduled_at = None
+
+    else:
+        col1, col2 = st.columns(2)
+
+        with col1:
+            run_date = st.date_input(
+                "Date",
+                value=datetime.now(PST).date() + timedelta(days=1),
+                min_value=datetime.now(PST).date(),
+                key="deep_analysis_date"
+            )
+
+        with col2:
+            st.markdown("**Time (PST)**")
+            time_col1, time_col2, time_col3 = st.columns(3)
+
+            with time_col1:
+                onetime_hour_12 = st.selectbox(
+                    "Hour",
+                    options=list(range(1, 13)),
+                    index=5,
+                    key="deep_analysis_onetime_hour"
+                )
+
+            with time_col2:
+                onetime_minute = st.number_input(
+                    "Minute",
+                    min_value=0,
+                    max_value=59,
+                    value=0,
+                    key="deep_analysis_onetime_minute"
+                )
+
+            with time_col3:
+                onetime_ampm = st.selectbox(
+                    "AM/PM",
+                    options=["AM", "PM"],
+                    index=0,
+                    key="deep_analysis_onetime_ampm"
+                )
+
+            if onetime_ampm == "AM":
+                onetime_hour = onetime_hour_12 if onetime_hour_12 != 12 else 0
+            else:
+                onetime_hour = onetime_hour_12 + 12 if onetime_hour_12 != 12 else 12
+
+            run_time = time(onetime_hour, onetime_minute)
+
+        scheduled_at = PST.localize(datetime.combine(run_date, run_time))
+        cron_expression = None
+
+    st.divider()
+
+    # ========================================================================
+    # Submit Buttons
+    # ========================================================================
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        if st.button("💾 Save Schedule", type="primary", use_container_width=True, key="save_deep_analysis_schedule"):
+            if not job_name:
+                st.error("Please enter a job name")
+                st.stop()
+
+            parameters = {
+                'max_images': max_images,
+                'days_back': days_back,
+            }
+
+            next_run = calculate_next_run(schedule_type, cron_expression, scheduled_at)
+
+            job_data = {
+                'job_type': 'creative_deep_analysis',
+                'product_id': None,
+                'brand_id': selected_brand_id,
+                'name': job_name,
+                'schedule_type': schedule_type,
+                'cron_expression': cron_expression,
+                'scheduled_at': scheduled_at.isoformat() if scheduled_at else None,
+                'next_run_at': next_run.isoformat() if next_run else None,
+                'max_runs': None,
+                'parameters': parameters
+            }
+
+            if is_edit:
+                if update_scheduled_job(st.session_state.edit_job_id, job_data):
+                    st.success("Schedule updated!")
+                    st.session_state.scheduler_view = 'list'
+                    st.rerun()
+            else:
+                job_id = create_scheduled_job(job_data)
+                if job_id:
+                    st.success("Schedule created!")
+                    st.session_state.scheduler_view = 'list'
+                    st.rerun()
+
+    with col2:
+        if st.button("🚀 Run Now", use_container_width=True, key="run_deep_analysis_now"):
+            if not job_name:
+                st.error("Please enter a job name")
+                st.stop()
+
+            parameters = {
+                'max_images': max_images,
+                'days_back': days_back,
+            }
+
+            run_now_time = datetime.now(PST) + timedelta(minutes=1)
+
+            job_data = {
+                'job_type': 'creative_deep_analysis',
+                'product_id': None,
+                'brand_id': selected_brand_id,
+                'name': job_name,
+                'schedule_type': 'one_time',
+                'cron_expression': None,
+                'scheduled_at': run_now_time.isoformat(),
+                'next_run_at': run_now_time.isoformat(),
+                'max_runs': None,
+                'parameters': parameters
+            }
+
+            job_id = create_scheduled_job(job_data)
+            if job_id:
+                st.success("Job scheduled to run in ~1 minute!")
+                st.session_state.scheduler_view = 'list'
+                st.rerun()
+
+    with col3:
+        if st.button("Cancel", use_container_width=True, key="cancel_deep_analysis_schedule"):
+            st.session_state.scheduler_view = 'list'
+            st.rerun()
+
+
 def _render_iteration_auto_run_form(existing_job, is_edit):
     """Render the iteration auto-run job creation form."""
 
@@ -2978,7 +3291,7 @@ def render_create_schedule():
         st.subheader("Job Type")
         job_type = st.radio(
             "What type of job do you want to schedule?",
-            options=['ad_creation', 'template_scrape', 'template_approval', 'ad_classification', 'asset_download', 'iteration_auto_run', 'creative_genome_update', 'seo_status_sync', 'analytics_sync'],
+            options=['ad_creation', 'template_scrape', 'template_approval', 'ad_classification', 'asset_download', 'iteration_auto_run', 'creative_genome_update', 'creative_deep_analysis', 'seo_status_sync', 'analytics_sync'],
             index=0,
             format_func=lambda x: {
                 'ad_creation': '🎨 Ad Creation - Generate ads from templates',
@@ -2988,6 +3301,7 @@ def render_create_schedule():
                 'asset_download': '📦 Asset Download - Download ad images & videos from Meta',
                 'iteration_auto_run': '🔬 Iteration Auto-Run - Auto-detect and iterate on mixed-signal ads',
                 'creative_genome_update': '🧬 Genome Update - Score matured ads and update element performance',
+                'creative_deep_analysis': '🔍 Creative Deep Analysis - Gemini analysis of ad messaging, tone & personas',
                 'seo_status_sync': '🔄 SEO Status Sync - Sync article draft/live status from Shopify',
                 'analytics_sync': '📊 Analytics Sync - Pull GSC, GA4, and Shopify analytics data',
             }.get(x, x),
@@ -3038,6 +3352,13 @@ def render_create_schedule():
     # ========================================================================
     if job_type == 'creative_genome_update':
         _render_creative_genome_update_form(existing_job, is_edit)
+        return
+
+    # ========================================================================
+    # CREATIVE DEEP ANALYSIS JOB FORM
+    # ========================================================================
+    if job_type == 'creative_deep_analysis':
+        _render_creative_deep_analysis_form(existing_job, is_edit)
         return
 
     # ========================================================================
