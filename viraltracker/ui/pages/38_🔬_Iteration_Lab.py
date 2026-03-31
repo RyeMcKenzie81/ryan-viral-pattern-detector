@@ -2124,7 +2124,7 @@ def render_creative_intelligence_tab(brand_id: str, org_id: str, product_id: str
                 mult = best_v["ctr"] / avg_ctr_v
                 st.success(
                     f"**Top hook:** \"{best_v['hook_text'][:80]}\" — "
-                    f"**{best_v['ctr']:.2%} CTR** ({mult:.1f}x your average)"
+                    f"**{best_v['ctr']:.2f}% CTR** ({mult:.1f}x your average)"
                 )
 
             vid_rows = []
@@ -2181,7 +2181,7 @@ def render_creative_intelligence_tab(brand_id: str, org_id: str, product_id: str
                 mult = best_i["ctr"] / avg_ctr_i
                 st.success(
                     f"**Top headline:** \"{best_i['hook_text'][:80]}\" — "
-                    f"**{best_i['ctr']:.2%} CTR** ({mult:.1f}x your average)"
+                    f"**{best_i['ctr']:.2f}% CTR** ({mult:.1f}x your average)"
                 )
 
             img_rows = []
