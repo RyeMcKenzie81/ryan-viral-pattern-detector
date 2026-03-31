@@ -105,6 +105,8 @@ class FeatureKey:
     SECTION_VIDEO_TOOLS = "section_video_tools"
     INSTAGRAM_CONTENT = "instagram_content"
     VIDEO_STUDIO = "video_studio"
+    # Activity Feed
+    ACTIVITY_FEED = "activity_feed"
     # System
     AGENT_CATALOG = "agent_catalog"
     SCHEDULED_TASKS = "scheduled_tasks"

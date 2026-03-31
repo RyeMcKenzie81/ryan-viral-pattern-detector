@@ -149,24 +149,10 @@ def categorize_by_timeframe(jobs: List[Dict]) -> Dict[str, List[Dict]]:
     return categories
 
 
-def job_type_badge(job_type: str) -> str:
+def job_type_badge(job_type: str):
     """Get emoji and label for job type."""
-    badges = {
-        'ad_creation': ('🎨', 'Ad Creation'),
-        'ad_creation_v2': ('🎨', 'Ad Creation V2'),
-        'meta_sync': ('🔄', 'Meta Sync'),
-        'scorecard': ('📊', 'Scorecard'),
-        'template_scrape': ('📥', 'Template Scrape'),
-        'template_approval': ('✅', 'Template Approval'),
-        'congruence_reanalysis': ('🔗', 'Congruence Reanalysis'),
-        'ad_classification': ('🔬', 'Ad Classification'),
-        'asset_download': ('📦', 'Asset Download'),
-        'competitor_scrape': ('🕵️', 'Competitor Scrape'),
-        'reddit_scrape': ('💬', 'Reddit Scrape'),
-        'amazon_review_scrape': ('⭐', 'Amazon Reviews'),
-        'ad_intelligence_analysis': ('🧠', 'Ad Intelligence Analysis'),
-    }
-    return badges.get(job_type, ('❓', job_type))
+    from viraltracker.ui.utils import job_type_badge as _badge
+    return _badge(job_type)
 
 
 def format_time_pst(dt_str: str) -> str:

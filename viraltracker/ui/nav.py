@@ -40,6 +40,7 @@ logger = logging.getLogger(__name__)
 # Pages with custom url_path that differs from the auto-derived filename path.
 # Must stay in sync with the url_path= arguments in build_navigation_pages().
 _CUSTOM_URL_PATHS: Dict[str, str] = {
+    "00_📊_Activity_Feed.py": "activity-feed",
     "29_🔍_Template_Evaluation.py": "template-evaluation",
     "29_📦_Template_Recommendations.py": "template-recommendations",
     "61_🤖_Agent_Catalog.py": "agent-catalog",
@@ -53,7 +54,7 @@ _CUSTOM_URL_PATHS: Dict[str, str] = {
     "68_🏗️_Public_Blueprint.py": "Public_Blueprint",
 }
 
-_DEFAULT_PAGE_FILE = "00_🎯_Agent_Chat.py"
+_DEFAULT_PAGE_FILE = "00_📊_Activity_Feed.py"
 
 
 # ---------------------------------------------------------------------------
@@ -241,7 +242,8 @@ def build_navigation_pages() -> Dict[str, List[st.Page]]:
 
     # Default page (always visible)
     pages[""] = [
-        st.Page("pages/00_🎯_Agent_Chat.py", title="Agent Chat", icon="🎯", default=True),
+        st.Page("pages/00_📊_Activity_Feed.py", title="Activity Feed", icon="📊", default=True),
+        st.Page("pages/08_🎯_Agent_Chat.py", title="Agent Chat", icon="🎯"),
     ]
 
     # --- Brands ---
