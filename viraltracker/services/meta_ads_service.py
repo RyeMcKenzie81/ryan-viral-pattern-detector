@@ -677,13 +677,19 @@ class MetaAdsService:
                         if image_url:
                             logger.info(f"Ad {ad_id}: IMAGE - FALLBACK to thumbnail_url (no image_url found)")
 
-                # Extract ad copy from story_spec
+                # Extract ad copy and destination URL from story_spec
                 ad_copy = None
+                destination_url = None
                 if story_spec:
                     link_data_copy = story_spec.get("link_data", {})
                     video_data_spec = story_spec.get("video_data", {})
                     ad_copy = (link_data_copy.get("message") or video_data_spec.get("message")
                                or story_spec.get("page_welcome_message", {}).get("text"))
+                    # Extract landing page URL
+                    destination_url = (
+                        link_data_copy.get("link")
+                        or video_data_spec.get("call_to_action", {}).get("value", {}).get("link")
+                    )
 
                 # Always add entry — caller needs fetch_ok to distinguish
                 # "API succeeded but no URL" from "per-ad API error"
@@ -693,6 +699,7 @@ class MetaAdsService:
                     "is_video": is_video,
                     "object_type": object_type,
                     "ad_copy": ad_copy,
+                    "destination_url": destination_url,
                     "fetch_ok": True,
                 }
                 if not image_url:
@@ -1364,14 +1371,14 @@ class MetaAdsService:
         supabase = get_supabase_client()
         logger.info(f"[THUMBNAILS] Starting update_missing_thumbnails for brand {brand_id}")
 
-        # Find ads missing thumbnail (null OR empty string) OR missing object_type
+        # Find ads missing thumbnail (null OR empty string) OR missing object_type/destination_url
         # Single query replaces the old two-step null/empty approach and adds
-        # object_type backfill.  Deploy guard: object_type column may not exist
-        # before migration runs.
+        # object_type + destination_url backfill.  Deploy guard: columns may not
+        # exist before migration runs.
         try:
             query = supabase.table("meta_ads_performance").select(
                 "meta_ad_id"
-            ).or_("thumbnail_url.is.null,thumbnail_url.eq.,object_type.is.null,ad_copy.is.null")
+            ).or_("thumbnail_url.is.null,thumbnail_url.eq.,object_type.is.null,ad_copy.is.null,destination_url.is.null")
             if brand_id:
                 query = query.eq("brand_id", str(brand_id))
             result = query.limit(limit * 10).execute()
@@ -1430,6 +1437,8 @@ class MetaAdsService:
                     update_data["object_type"] = meta["object_type"]
                 if meta.get("ad_copy"):
                     update_data["ad_copy"] = meta["ad_copy"]
+                if meta.get("destination_url"):
+                    update_data["destination_url"] = meta["destination_url"]
 
                 if not update_data:
                     continue  # Nothing to update for this ad
