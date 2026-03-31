@@ -2,10 +2,12 @@
 Activity Feed - Operating console for ViralTracker.
 
 Shows a reverse-chronological timeline of everything the system has done:
-- Attention strip (errors, retrying jobs)
+- Browser tab unread badge
+- Brand health summary cards
+- Attention strip (errors, retrying jobs) with dismiss/acknowledge
 - In-progress jobs
 - "While you were away" summary
-- Filterable timeline of all events
+- Searchable, filterable timeline of all events
 """
 
 import streamlit as st
@@ -13,9 +15,45 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 import pytz
 
-# Page config (must be first)
+
+# ============================================================================
+# Browser Tab Badge — must run before set_page_config
+# ============================================================================
+
+def _get_unread_error_count(user_id: Optional[str]) -> int:
+    """Count error events since user's last_seen_at (for tab badge)."""
+    if not user_id:
+        return 0
+    try:
+        from viraltracker.core.database import get_supabase_client
+        db = get_supabase_client()
+        state = db.table("user_feed_state").select("last_seen_at").eq(
+            "user_id", user_id
+        ).limit(1).execute()
+        if not state.data or not state.data[0].get("last_seen_at"):
+            return 0
+        last_seen = state.data[0]["last_seen_at"]
+        result = db.table("activity_events").select(
+            "id", count="exact"
+        ).eq("severity", "error").gte("created_at", last_seen).execute()
+        return result.count or 0
+    except Exception:
+        return 0
+
+
+# Get user ID early for badge count
+try:
+    from viraltracker.ui.auth import get_current_user_id
+    _badge_user_id = get_current_user_id()
+except Exception:
+    _badge_user_id = None
+
+_unread_count = _get_unread_error_count(_badge_user_id)
+_page_title = f"({_unread_count}) Activity Feed" if _unread_count > 0 else "Activity Feed"
+
+# Page config (must be first Streamlit call)
 st.set_page_config(
-    page_title="Activity Feed",
+    page_title=_page_title,
     page_icon="📊",
     layout="wide"
 )
@@ -74,6 +112,7 @@ def get_activity_events(
     since: Optional[datetime] = None,
     limit: int = 50,
     offset: int = 0,
+    search_query: Optional[str] = None,
 ) -> List[Dict]:
     """Fetch activity events with filters."""
     try:
@@ -95,6 +134,9 @@ def get_activity_events(
         if since:
             query = query.gte("created_at", since.isoformat())
 
+        if search_query:
+            query = query.ilike("title", f"%{search_query}%")
+
         # Exclude job_started events from timeline (they're noise)
         query = query.neq("event_type", "job_started")
 
@@ -109,7 +151,7 @@ def get_activity_events(
 
 
 def get_attention_events(org_id: Optional[str], brand_id: Optional[str] = None) -> List[Dict]:
-    """Get error and retrying events from last 24h for the attention strip."""
+    """Get unacknowledged error and retrying events from last 24h for the attention strip."""
     try:
         db = get_supabase_client()
         cutoff = (datetime.now(PST) - timedelta(hours=24)).isoformat()
@@ -124,6 +166,8 @@ def get_attention_events(org_id: Optional[str], brand_id: Optional[str] = None) 
             "severity", ["error", "warning"]
         ).gte(
             "created_at", cutoff
+        ).is_(
+            "acknowledged_at", "null"
         ).order("created_at", desc=True).limit(10).execute()
 
         return result.data or []
@@ -152,7 +196,6 @@ def get_in_progress_runs(org_id: Optional[str], brand_id: Optional[str] = None) 
                 run_brand_id = job_info.get("brand_id")
                 if brand_id and run_brand_id != brand_id:
                     continue
-                # For org filtering, we'd need brand->org lookup. Skip for now.
                 filtered.append(run)
             runs = filtered
 
@@ -211,6 +254,79 @@ def get_brand_name_map(org_id: Optional[str]) -> Dict[str, str]:
         return {}
 
 
+def get_brand_health(org_id: Optional[str], brand_id: Optional[str] = None) -> List[Dict]:
+    """Get per-brand health stats for the last 24h."""
+    try:
+        db = get_supabase_client()
+        cutoff = (datetime.now(PST) - timedelta(hours=24)).isoformat()
+        query = db.table("activity_events").select("brand_id, severity")
+        if org_id and org_id != "all":
+            query = query.eq("organization_id", org_id)
+        if brand_id:
+            query = query.eq("brand_id", brand_id)
+        query = query.gte("created_at", cutoff).neq("event_type", "job_started")
+        result = query.execute()
+        events = result.data or []
+
+        # Aggregate per brand
+        brand_stats: Dict[str, Dict] = {}
+        for e in events:
+            bid = e.get("brand_id")
+            if not bid:
+                continue
+            if bid not in brand_stats:
+                brand_stats[bid] = {"successes": 0, "failures": 0, "warnings": 0, "total": 0}
+            brand_stats[bid]["total"] += 1
+            sev = e.get("severity", "info")
+            if sev == "success":
+                brand_stats[bid]["successes"] += 1
+            elif sev == "error":
+                brand_stats[bid]["failures"] += 1
+            elif sev == "warning":
+                brand_stats[bid]["warnings"] += 1
+
+        return [{"brand_id": bid, **stats} for bid, stats in brand_stats.items()]
+    except Exception:
+        return []
+
+
+def acknowledge_event(event_id: str):
+    """Mark an event as acknowledged."""
+    try:
+        db = get_supabase_client()
+        db.table("activity_events").update({
+            "acknowledged_at": datetime.now(PST).isoformat(),
+        }).eq("id", event_id).execute()
+        return True
+    except Exception:
+        return False
+
+
+def acknowledge_all_errors(org_id: Optional[str], brand_id: Optional[str] = None):
+    """Acknowledge all unacknowledged error events from last 24h."""
+    try:
+        db = get_supabase_client()
+        cutoff = (datetime.now(PST) - timedelta(hours=24)).isoformat()
+        query = db.table("activity_events").select("id").eq(
+            "severity", "error"
+        ).gte("created_at", cutoff).is_("acknowledged_at", "null")
+        if org_id and org_id != "all":
+            query = query.eq("organization_id", org_id)
+        if brand_id:
+            query = query.eq("brand_id", brand_id)
+        result = query.execute()
+
+        if result.data:
+            now = datetime.now(PST).isoformat()
+            for event in result.data:
+                db.table("activity_events").update({
+                    "acknowledged_at": now,
+                }).eq("id", event["id"]).execute()
+        return True
+    except Exception:
+        return False
+
+
 # ============================================================================
 # Retry Logic
 # ============================================================================
@@ -240,6 +356,22 @@ SEVERITY_ICONS = {
     "warning": "🟡",
     "success": "🟢",
     "info": "🔵",
+}
+
+# Map page slugs to actual page files
+PAGE_SLUG_MAP = {
+    "ad_scheduler": "pages/24_📅_Ad_Scheduler.py",
+    "scheduled_tasks": "pages/61_📅_Scheduled_Tasks.py",
+    "ad_history": "pages/22_📊_Ad_History.py",
+    "ad_performance": "pages/30_📈_Ad_Performance.py",
+    "template_queue": "pages/28_📋_Template_Queue.py",
+    "congruence_insights": "pages/34_🔗_Congruence_Insights.py",
+    "hook_analysis": "pages/35_🎣_Hook_Analysis.py",
+    "competitor_research": "pages/12_🔍_Competitor_Research.py",
+    "reddit_research": "pages/15_🔍_Reddit_Research.py",
+    "seo_dashboard": "pages/48_🔍_SEO_Dashboard.py",
+    "experiments": "pages/36_🧪_Experiments.py",
+    "iteration_lab": "pages/38_🔬_Iteration_Lab.py",
 }
 
 
@@ -294,8 +426,42 @@ def format_duration(ms: Optional[int]) -> str:
     return f"{hours:.0f}h {int(mins % 60)}m"
 
 
-def render_attention_strip(events: List[Dict], brand_names: Dict[str, str]):
-    """Render the attention strip for errors/warnings."""
+def render_brand_health_cards(health: List[Dict], brand_names: Dict[str, str]):
+    """Render per-brand health summary cards."""
+    if not health:
+        return
+
+    # Sort: brands with failures first, then by total events descending
+    health.sort(key=lambda h: (-h["failures"], -h["total"]))
+
+    # Show up to 6 brands
+    visible = health[:6]
+    cols = st.columns(min(len(visible), 3))
+
+    for i, h in enumerate(visible):
+        bid = h["brand_id"]
+        name = brand_names.get(bid, "Unknown")
+        total = h["total"]
+        failures = h["failures"]
+        successes = h["successes"]
+
+        with cols[i % 3]:
+            if failures > 0:
+                color = "🔴"
+                rate = f"{int((successes / total) * 100)}%" if total > 0 else "—"
+            elif total > 0:
+                color = "🟢"
+                rate = f"{int((successes / total) * 100)}%" if total > 0 else "—"
+            else:
+                color = "⚪"
+                rate = "—"
+
+            st.markdown(f"{color} **{name}**")
+            st.caption(f"{rate} success · {failures} failures · {total} events (24h)")
+
+
+def render_attention_strip(events: List[Dict], brand_names: Dict[str, str], org_id: Optional[str], brand_id: Optional[str]):
+    """Render the attention strip for errors/warnings with dismiss."""
     if not events:
         return
 
@@ -304,16 +470,29 @@ def render_attention_strip(events: List[Dict], brand_names: Dict[str, str]):
 
     if errors:
         with st.container():
-            st.markdown(
-                f"**🔴 {len(errors)} failure{'s' if len(errors) != 1 else ''} need attention**"
-            )
-            for event in errors[:5]:
-                brand_name = brand_names.get(event.get("brand_id", ""), "")
-                brand_prefix = f"**{brand_name}** — " if brand_name else ""
+            header_cols = st.columns([6, 1])
+            with header_cols[0]:
                 st.markdown(
-                    f"  {brand_prefix}{event.get('title', 'Unknown error')}"
-                    f"  · {format_time_ago(event.get('created_at', ''))}"
+                    f"**🔴 {len(errors)} failure{'s' if len(errors) != 1 else ''} need attention**"
                 )
+            with header_cols[1]:
+                if st.button("Dismiss all", key="dismiss_all_errors", type="secondary"):
+                    acknowledge_all_errors(org_id, brand_id)
+                    st.rerun()
+
+            for event in errors[:5]:
+                ecols = st.columns([6, 1])
+                with ecols[0]:
+                    brand_name = brand_names.get(event.get("brand_id", ""), "")
+                    brand_prefix = f"**{brand_name}** — " if brand_name else ""
+                    st.markdown(
+                        f"  {brand_prefix}{event.get('title', 'Unknown error')}"
+                        f"  · {format_time_ago(event.get('created_at', ''))}"
+                    )
+                with ecols[1]:
+                    if st.button("✕", key=f"ack_{event.get('id', '')}", help="Acknowledge"):
+                        acknowledge_event(event["id"])
+                        st.rerun()
 
     if warnings:
         with st.container():
@@ -449,20 +628,15 @@ def render_event_card(event: Dict, brand_names: Dict[str, str], key_prefix: str 
                     st.rerun()
 
     link_page = event.get("link_page")
-    if link_page and job_id:
-        with cols[1]:
-            if st.button("📋 View", key=f"{key_prefix}view_{event_id}"):
-                st.query_params["job_id"] = job_id
-                # Map page slugs to actual page files
-                page_map = {
-                    "ad_scheduler": "pages/24_📅_Ad_Scheduler.py",
-                    "scheduled_tasks": "pages/61_📅_Scheduled_Tasks.py",
-                }
-                page_file = page_map.get(link_page, f"pages/{link_page}")
-                try:
-                    st.switch_page(page_file)
-                except Exception:
-                    pass
+    if link_page:
+        page_file = PAGE_SLUG_MAP.get(link_page)
+        if page_file:
+            with cols[1]:
+                if st.button("📋 View", key=f"{key_prefix}view_{event_id}"):
+                    try:
+                        st.switch_page(page_file)
+                    except Exception:
+                        pass
 
 
 # ============================================================================
@@ -491,7 +665,7 @@ if feed_state and feed_state.get("last_seen_at"):
         last_seen_at = None
 
 # Filters
-col1, col2, col3 = st.columns([3, 2, 1])
+col1, col2, col3, col4 = st.columns([3, 2, 2, 1])
 
 with col1:
     brand_id = render_brand_selector(key="activity_feed_brand")
@@ -505,6 +679,10 @@ with col2:
     )
 
 with col3:
+    search_query = st.text_input("Search events", placeholder="Filter by title...", key="activity_search")
+
+with col4:
+    st.markdown("<br>", unsafe_allow_html=True)
     if st.button("🔄 Refresh"):
         st.rerun()
 
@@ -517,9 +695,13 @@ st.divider()
 # Get brand names for display
 brand_names = get_brand_name_map(org_id)
 
+# ---- Brand Health Cards ----
+brand_health = get_brand_health(org_id, brand_id)
+render_brand_health_cards(brand_health, brand_names)
+
 # ---- Attention Strip ----
 attention_events = get_attention_events(org_id, brand_id)
-render_attention_strip(attention_events, brand_names)
+render_attention_strip(attention_events, brand_names, org_id, brand_id)
 
 # ---- In Progress ----
 in_progress = get_in_progress_runs(org_id, brand_id)
@@ -533,14 +715,11 @@ if last_seen_at:
 # ---- Filter Tabs ----
 tab_all, tab_failures, tab_success = st.tabs(["All", "Failures", "Success"])
 
-# Pagination state
-if "feed_page" not in st.session_state:
-    st.session_state.feed_page = 0
-
 PAGE_SIZE = 50
+search_q = search_query.strip() if search_query else None
 
 with tab_all:
-    events = get_activity_events(org_id, brand_id, severity_filter=None, since=since, limit=PAGE_SIZE)
+    events = get_activity_events(org_id, brand_id, severity_filter=None, since=since, limit=PAGE_SIZE, search_query=search_q)
     if events:
         for event in events:
             render_event_card(event, brand_names, key_prefix="all_")
@@ -549,16 +728,19 @@ with tab_all:
             if st.button("Show more", key="more_all"):
                 more = get_activity_events(
                     org_id, brand_id, severity_filter=None, since=since,
-                    limit=PAGE_SIZE, offset=PAGE_SIZE,
+                    limit=PAGE_SIZE, offset=PAGE_SIZE, search_query=search_q,
                 )
                 for event in more:
                     render_event_card(event, brand_names, key_prefix="all2_")
                     st.markdown("---")
     else:
-        st.info("No activity events yet. Events will appear here as jobs run.")
+        if search_q:
+            st.info(f"No events matching \"{search_q}\".")
+        else:
+            st.info("No activity events yet. Events will appear here as jobs run.")
 
 with tab_failures:
-    events = get_activity_events(org_id, brand_id, severity_filter="errors", since=since, limit=PAGE_SIZE)
+    events = get_activity_events(org_id, brand_id, severity_filter="errors", since=since, limit=PAGE_SIZE, search_query=search_q)
     if events:
         for event in events:
             render_event_card(event, brand_names, key_prefix="fail_")
@@ -567,7 +749,7 @@ with tab_failures:
         st.success("No failures. All systems operational.")
 
 with tab_success:
-    events = get_activity_events(org_id, brand_id, severity_filter="success", since=since, limit=PAGE_SIZE)
+    events = get_activity_events(org_id, brand_id, severity_filter="success", since=since, limit=PAGE_SIZE, search_query=search_q)
     if events:
         for event in events:
             render_event_card(event, brand_names, key_prefix="ok_")
