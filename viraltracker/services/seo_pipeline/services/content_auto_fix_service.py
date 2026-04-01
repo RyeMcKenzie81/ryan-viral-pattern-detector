@@ -539,8 +539,8 @@ class ContentAutoFixService:
         paragraphs = re.split(r'\n\n+', text.strip())
         for p in paragraphs:
             stripped = p.strip()
-            # Skip headings, images, code blocks, empty
-            if stripped and not stripped.startswith('#') and not stripped.startswith('![') and not stripped.startswith('```'):
+            # Skip headings, images (markdown and HTML), code blocks, empty
+            if stripped and not stripped.startswith('#') and not stripped.startswith('![') and not stripped.startswith('```') and not stripped.startswith('<img') and not stripped.startswith('<figure'):
                 return stripped
         return None
 

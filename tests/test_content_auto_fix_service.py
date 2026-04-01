@@ -177,6 +177,16 @@ class TestExtractFirstParagraph:
         result = service._extract_first_paragraph(content)
         assert result == "Real text here."
 
+    def test_skips_html_img_tags(self, service):
+        content = '<img src="https://example.com/image.png" alt="test">\n\nReal text here.'
+        result = service._extract_first_paragraph(content)
+        assert result == "Real text here."
+
+    def test_skips_figure_tags(self, service):
+        content = '<figure><img src="url"></figure>\n\nActual paragraph.'
+        result = service._extract_first_paragraph(content)
+        assert result == "Actual paragraph."
+
     def test_strips_frontmatter(self, service):
         content = "---\ntitle: Test\n---\n\nFirst real paragraph."
         result = service._extract_first_paragraph(content)
