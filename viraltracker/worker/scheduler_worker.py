@@ -1324,6 +1324,26 @@ async def execute_ad_creation_v2_job(job: Dict) -> Dict[str, Any]:
         if brand_id:
             freshness.record_success(brand_id, "ad_creations", records_affected=ads_approved, run_id=run_id)
 
+        # Collect thumbnail tuples for media grid (best-effort, non-blocking)
+        thumbnail_tuples = []
+        if ads_approved > 0 and ad_run_ids:
+            try:
+                thumb_result = db.table("generated_ads").select("storage_path").not_.is_(
+                    "storage_path", "null"
+                ).in_(
+                    "ad_run_id", ad_run_ids[:5]
+                ).order("created_at", desc=True).limit(5).execute()
+                for r in (thumb_result.data or []):
+                    sp = r.get("storage_path")
+                    if sp:
+                        if sp.startswith("generated-ads/"):
+                            path = sp[len("generated-ads/"):]
+                        else:
+                            path = sp
+                        thumbnail_tuples.append({"bucket": "generated-ads", "path": path})
+            except Exception as e:
+                logger.debug(f"V2 thumbnail lookup failed: {e}")
+
         # Job completed successfully
         update_job_run(run_id, {
             "status": "completed",
@@ -1335,6 +1355,8 @@ async def execute_ad_creation_v2_job(job: Dict) -> Dict[str, Any]:
                 "ads_attempted": ads_attempted,
                 "ads_approved": ads_approved,
                 "template_selection_mode": template_selection_mode,
+                "thumbnail_urls": thumbnail_tuples,
+                "thumbnail_count": ads_approved,
             },
             "logs": "\n".join(logs),
         })
