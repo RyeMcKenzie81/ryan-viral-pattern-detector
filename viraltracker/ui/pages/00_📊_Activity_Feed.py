@@ -695,7 +695,7 @@ def render_event_card(event: Dict, brand_names: Dict[str, str], key_prefix: str 
     elif details.get("metadata") and isinstance(details["metadata"], dict):
         meta_parts = []
         for key, val in details["metadata"].items():
-            if val is not None and key not in ("job_id", "run_id", "job_name"):
+            if val is not None and key not in ("job_id", "run_id", "job_name", "thumbnail_urls", "thumbnail_count"):
                 meta_parts.append(f"{key.replace('_', ' ')}: {val}")
         if meta_parts:
             st.caption(" · ".join(meta_parts[:4]))

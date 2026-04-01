@@ -405,17 +405,23 @@ def update_job_run(run_id: str, updates: Dict):
                         pass
 
                 if status == "completed":
+                    metadata = updates.get('metadata') or {}
+                    event_details = {
+                        'job_id': parent_job_id,
+                        'run_id': run_id,
+                        'job_name': job_name,
+                        'metadata': metadata,
+                    }
+                    # Surface thumbnail data for rich media grid rendering
+                    if metadata.get('thumbnail_urls'):
+                        event_details['thumbnail_urls'] = metadata['thumbnail_urls']
+                        event_details['thumbnail_count'] = metadata.get('thumbnail_count', 0)
                     _emit_activity_event(
                         event_type='job_completed',
                         severity='success',
                         title=f"{_humanize_job_type(job_type)} completed",
                         brand_id=brand_id,
-                        details={
-                            'job_id': parent_job_id,
-                            'run_id': run_id,
-                            'job_name': job_name,
-                            'metadata': updates.get('metadata'),
-                        },
+                        details=event_details,
                         source_id=run_id,
                         link_page=JOB_TYPE_PAGE_SLUGS.get(job_type, 'ad_scheduler'),
                         link_params={'job_id': parent_job_id},
@@ -1725,13 +1731,39 @@ async def execute_ad_creation_job(job: Dict) -> Dict[str, Any]:
         if brand_id:
             freshness.record_success(brand_id, "ad_creations", records_affected=ads_generated, run_id=run_id)
 
+        # Collect thumbnail tuples for media grid (best-effort, non-blocking)
+        thumbnail_tuples = []
+        if ads_generated > 0 and ad_run_ids:
+            try:
+                thumb_result = db.table("generated_ads").select("storage_path").not_.is_(
+                    "storage_path", "null"
+                ).in_(
+                    "ad_run_id", ad_run_ids[:5]
+                ).order("created_at", desc=True).limit(5).execute()
+                for r in (thumb_result.data or []):
+                    sp = r.get("storage_path")
+                    if sp:
+                        # storage_path has bucket prefix: "generated-ads/run_id/file.png"
+                        if sp.startswith("generated-ads/"):
+                            path = sp[len("generated-ads/"):]
+                        else:
+                            path = sp
+                        thumbnail_tuples.append({"bucket": "generated-ads", "path": path})
+            except Exception as e:
+                logger.debug(f"Thumbnail lookup failed for ads_generated: {e}")
+
         # Job completed successfully
         job_run_data = {
             "status": "completed",
             "completed_at": datetime.now(PST).isoformat(),
             "ad_run_ids": ad_run_ids,
             "templates_used": templates_used,
-            "logs": "\n".join(logs)
+            "logs": "\n".join(logs),
+            "metadata": {
+                "ads_generated": ads_generated,
+                "thumbnail_urls": thumbnail_tuples,
+                "thumbnail_count": ads_generated,
+            }
         }
         # Include angles_used if belief-first mode was used
         if angles_used:
@@ -1768,27 +1800,6 @@ async def execute_ad_creation_job(job: Dict) -> Dict[str, Any]:
 
         # Rich activity event: ads generated
         if ads_generated > 0:
-            # Collect thumbnail tuples for media grid (best-effort, non-blocking)
-            thumbnail_tuples = []
-            if ad_run_ids:
-                try:
-                    thumb_result = db.table("generated_ads").select("storage_path").not_.is_(
-                        "storage_path", "null"
-                    ).in_(
-                        "ad_run_id", ad_run_ids[:5]
-                    ).order("created_at", desc=True).limit(5).execute()
-                    for r in (thumb_result.data or []):
-                        sp = r.get("storage_path")
-                        if sp:
-                            # storage_path has bucket prefix: "generated-ads/run_id/file.png"
-                            if sp.startswith("generated-ads/"):
-                                path = sp[len("generated-ads/"):]
-                            else:
-                                path = sp
-                            thumbnail_tuples.append({"bucket": "generated-ads", "path": path})
-                except Exception as e:
-                    logger.debug(f"Thumbnail lookup failed for ads_generated: {e}")
-
             _emit_activity_event(
                 event_type="ads_generated",
                 severity="info",
@@ -2675,11 +2686,38 @@ async def execute_template_scrape_job(job: Dict) -> Dict[str, Any]:
         if brand_id:
             freshness.record_success(brand_id, "templates_scraped", records_affected=new_count, run_id=run_id)
 
+        # Collect thumbnail tuples for media grid (best-effort, non-blocking)
+        thumbnail_tuples = []
+        if new_asset_ids:
+            try:
+                thumb_result = db.table("scraped_ad_assets").select("storage_path").in_(
+                    "id", new_asset_ids[:5]
+                ).eq("asset_type", "image").eq("status", "downloaded").not_.is_(
+                    "storage_path", "null"
+                ).limit(5).execute()
+                for r in (thumb_result.data or []):
+                    sp = r.get("storage_path")
+                    if sp:
+                        # storage_path has bucket prefix: "scraped-assets/fb_id/file.jpg"
+                        if sp.startswith("scraped-assets/"):
+                            path = sp[len("scraped-assets/"):]
+                        else:
+                            path = sp
+                        thumbnail_tuples.append({"bucket": "scraped-assets", "path": path})
+            except Exception as e:
+                logger.debug(f"Thumbnail lookup failed for templates_scraped: {e}")
+
         # Update job run as completed
         update_job_run(run_id, {
             "status": "completed",
             "completed_at": datetime.now(PST).isoformat(),
-            "logs": "\n".join(logs)
+            "logs": "\n".join(logs),
+            "metadata": {
+                "new_ads": new_count,
+                "updated_ads": updated_count,
+                "thumbnail_urls": thumbnail_tuples,
+                "thumbnail_count": new_count,
+            }
         })
 
         # Update job: increment runs_completed, calculate next_run
@@ -2689,27 +2727,6 @@ async def execute_template_scrape_job(job: Dict) -> Dict[str, Any]:
 
         # Rich activity event: templates scraped
         if new_count > 0 or updated_count > 0:
-            # Collect thumbnail tuples for media grid (best-effort, non-blocking)
-            thumbnail_tuples = []
-            if new_asset_ids:
-                try:
-                    thumb_result = db.table("scraped_ad_assets").select("storage_path").in_(
-                        "id", new_asset_ids[:5]
-                    ).eq("asset_type", "image").eq("status", "downloaded").not_.is_(
-                        "storage_path", "null"
-                    ).limit(5).execute()
-                    for r in (thumb_result.data or []):
-                        sp = r.get("storage_path")
-                        if sp:
-                            # storage_path has bucket prefix: "scraped-assets/fb_id/file.jpg"
-                            if sp.startswith("scraped-assets/"):
-                                path = sp[len("scraped-assets/"):]
-                            else:
-                                path = sp
-                            thumbnail_tuples.append({"bucket": "scraped-assets", "path": path})
-                except Exception as e:
-                    logger.debug(f"Thumbnail lookup failed for templates_scraped: {e}")
-
             _emit_activity_event(
                 event_type="templates_scraped",
                 severity="info",
