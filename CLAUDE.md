@@ -417,6 +417,7 @@ render_my_section(brand_id)
 ### Sidebar Page Organization
 
 Pages are organized by feature area with numbered prefixes:
+- `00`: Activity Feed (event timeline with rich media cards)
 - `01-05`: Brands (Manager, Products, Personas, URL Mapping, Brand Research)
 - `10-13`: Competitors (Competitors, Research, Analysis)
 - `20-29`: Ads (Library, Planning, Executor, etc.)

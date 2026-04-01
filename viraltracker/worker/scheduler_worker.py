@@ -1768,6 +1768,27 @@ async def execute_ad_creation_job(job: Dict) -> Dict[str, Any]:
 
         # Rich activity event: ads generated
         if ads_generated > 0:
+            # Collect thumbnail tuples for media grid (best-effort, non-blocking)
+            thumbnail_tuples = []
+            if ad_run_ids:
+                try:
+                    thumb_result = db.table("generated_ads").select("storage_path").not_.is_(
+                        "storage_path", "null"
+                    ).in_(
+                        "ad_run_id", ad_run_ids[:5]
+                    ).order("created_at", desc=True).limit(5).execute()
+                    for r in (thumb_result.data or []):
+                        sp = r.get("storage_path")
+                        if sp:
+                            # storage_path has bucket prefix: "generated-ads/run_id/file.png"
+                            if sp.startswith("generated-ads/"):
+                                path = sp[len("generated-ads/"):]
+                            else:
+                                path = sp
+                            thumbnail_tuples.append({"bucket": "generated-ads", "path": path})
+                except Exception as e:
+                    logger.debug(f"Thumbnail lookup failed for ads_generated: {e}")
+
             _emit_activity_event(
                 event_type="ads_generated",
                 severity="info",
@@ -1779,6 +1800,8 @@ async def execute_ad_creation_job(job: Dict) -> Dict[str, Any]:
                     "templates_used": templates_used[:10],
                     "ad_run_ids": ad_run_ids[:10],
                     "content_source": params.get("content_source", "hooks"),
+                    "thumbnail_urls": thumbnail_tuples,
+                    "thumbnail_count": ads_generated,
                 },
                 source_id=str(job_id),
                 link_page="ad_scheduler",
@@ -2484,6 +2507,7 @@ async def execute_template_scrape_job(job: Dict) -> Dict[str, Any]:
 
         # Step 3: Process each ad with longevity tracking
         new_count = 0
+        new_asset_ids = []  # Collect image asset IDs for media grid thumbnails
         updated_count = 0
         queued_count = 0
         deduped_count = 0
@@ -2593,6 +2617,12 @@ async def execute_template_scrape_job(job: Dict) -> Dict[str, Any]:
                             scrape_source="scheduled_scrape"
                         )
 
+                        # Collect image asset IDs for media grid thumbnails
+                        image_ids = asset_result.get('images', [])
+                        for img_id in image_ids[:5]:
+                            if len(new_asset_ids) < 10:  # Cap collection
+                                new_asset_ids.append(str(img_id))
+
                         # Queue for review with collation dedup (Fix 10 — Task 1.3)
                         if auto_queue:
                             asset_ids = asset_result.get('images', []) + asset_result.get('videos', [])
@@ -2659,6 +2689,27 @@ async def execute_template_scrape_job(job: Dict) -> Dict[str, Any]:
 
         # Rich activity event: templates scraped
         if new_count > 0 or updated_count > 0:
+            # Collect thumbnail tuples for media grid (best-effort, non-blocking)
+            thumbnail_tuples = []
+            if new_asset_ids:
+                try:
+                    thumb_result = db.table("scraped_ad_assets").select("storage_path").in_(
+                        "id", new_asset_ids[:5]
+                    ).eq("asset_type", "image").eq("status", "downloaded").not_.is_(
+                        "storage_path", "null"
+                    ).limit(5).execute()
+                    for r in (thumb_result.data or []):
+                        sp = r.get("storage_path")
+                        if sp:
+                            # storage_path has bucket prefix: "scraped-assets/fb_id/file.jpg"
+                            if sp.startswith("scraped-assets/"):
+                                path = sp[len("scraped-assets/"):]
+                            else:
+                                path = sp
+                            thumbnail_tuples.append({"bucket": "scraped-assets", "path": path})
+                except Exception as e:
+                    logger.debug(f"Thumbnail lookup failed for templates_scraped: {e}")
+
             _emit_activity_event(
                 event_type="templates_scraped",
                 severity="info",
@@ -2669,6 +2720,8 @@ async def execute_template_scrape_job(job: Dict) -> Dict[str, Any]:
                     "updated_ads": updated_count,
                     "queued": queued_count,
                     "max_ads": params.get("max_ads", 50),
+                    "thumbnail_urls": thumbnail_tuples,
+                    "thumbnail_count": new_count,
                 },
                 source_id=str(job_id),
                 link_page="ad_scheduler",

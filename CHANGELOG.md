@@ -1,5 +1,20 @@
 # ViralTracker Changelog
 
+## 2026-03-31 - Activity Feed Rich Media Cards
+
+### Added: Thumbnail previews in Activity Feed event cards
+
+When ad generation or template scraping completes, the event card now shows a visual preview grid instead of just a count. One hero image on the left, up to 4 thumbnails on the right, and a "+N" overflow badge when there are more. Events without images still render as text-only.
+
+**Worker** (`scheduler_worker.py`)
+- Ad generation and template scraping events now attach thumbnail URLs to their event details
+- Thumbnail lookup is best-effort and never blocks job execution
+
+**UI** (`Activity_Feed.py`)
+- New `render_media_grid()` with CSS grid (3+ images) or column layout (1-2 images)
+- Broken images hidden gracefully, lazy loading to keep page snappy
+- Existing events without thumbnails render exactly as before
+
 ## 2026-03-30 - SEO Content Autopilot
 
 ### Added: End-to-end automation for SEO article publishing

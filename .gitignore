@@ -65,3 +65,4 @@ original_masculinity_accounts.txt
 # Node.js (if needed)
 .next/
 node_modules/
+.gstack/
