@@ -307,9 +307,9 @@ class ContentEvalService:
                 "passed": len(failures) == 0,
                 "total_checks": len(checks),
                 "passed_checks": sum(1 for c in checks if c.passed),
-                "checks": checks,
-                "failures": failures,
-                "warnings": warnings,
+                "checks": [c.model_dump() if hasattr(c, 'model_dump') else c for c in checks],
+                "failures": [c.model_dump() if hasattr(c, 'model_dump') else c for c in failures],
+                "warnings": [c.model_dump() if hasattr(c, 'model_dump') else c for c in warnings],
             }
         except Exception as e:
             logger.error(f"QA checks failed for article {article_id}: {e}")
