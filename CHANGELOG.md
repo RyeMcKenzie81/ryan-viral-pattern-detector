@@ -6,17 +6,14 @@
 
 When ad generation or template scraping completes, the event card now shows a visual preview grid instead of just a count. One hero image on the left, up to 4 thumbnails on the right, and a "+N" overflow badge when there are more. Events without images still render as text-only.
 
-**Worker Changes** (`scheduler_worker.py`)
-- `ads_generated` events now include thumbnail tuples from `generated_ads.storage_path`
-- `templates_scraped` events now include thumbnail tuples from `scraped_ad_assets.storage_path`
-- Thumbnail lookup is best-effort: failures are logged at debug level and never block job execution
-- Storage paths are stored as `{bucket, path}` tuples; public URLs constructed at render time
+**Worker** (`scheduler_worker.py`)
+- Ad generation and template scraping events now attach thumbnail URLs to their event details
+- Thumbnail lookup is best-effort and never blocks job execution
 
-**UI Changes** (`Activity_Feed.py`)
-- New `render_media_grid()` function with CSS grid layout (3+ images) or `st.columns()` (1-2 images)
-- Broken images gracefully hidden via `onerror` handlers
-- Lazy loading on all thumbnails to avoid 250 simultaneous requests on page load
-- Progressive enhancement: existing events without thumbnails render unchanged
+**UI** (`Activity_Feed.py`)
+- New `render_media_grid()` with CSS grid (3+ images) or column layout (1-2 images)
+- Broken images hidden gracefully, lazy loading to keep page snappy
+- Existing events without thumbnails render exactly as before
 
 ## 2026-03-30 - SEO Content Autopilot
 
