@@ -835,7 +835,15 @@ def build_offer_variant_context(offer_variant: Dict, brand_disallowed_claims: Op
 # ============================================================================
 
 def calculate_next_run(cron_expression: str) -> Optional[datetime]:
-    """Calculate next run time from cron expression."""
+    """Calculate next run time from cron expression.
+
+    Supports:
+    - Interval minutes: */30 * * * * (every 30 minutes)
+    - Interval hours: 0 */2 * * * (every 2 hours)
+    - Daily: 0 8 * * * (daily at 8am)
+    - Weekly: 0 8 * * 1 (weekly Monday at 8am)
+    - Monthly: 0 8 1 * * (first of month at 8am)
+    """
     if not cron_expression:
         return None
 
@@ -845,32 +853,56 @@ def calculate_next_run(cron_expression: str) -> Optional[datetime]:
             return None
 
         minute, hour, day_of_month, month, day_of_week = parts
-        hour = int(hour)
-
         now = datetime.now(PST)
-        next_run = now.replace(hour=hour, minute=0, second=0, microsecond=0)
+
+        # Handle interval-style cron: */N minutes
+        if '/' in minute:
+            interval_min = int(minute.split('/')[1])
+            next_run = now + timedelta(minutes=interval_min)
+            # Align to interval boundary
+            aligned_min = (next_run.minute // interval_min) * interval_min
+            next_run = next_run.replace(minute=aligned_min, second=0, microsecond=0)
+            if next_run <= now:
+                next_run += timedelta(minutes=interval_min)
+            return next_run
+
+        # Handle interval-style cron: 0 */N hours
+        if '/' in hour:
+            interval_hr = int(hour.split('/')[1])
+            next_run = now + timedelta(hours=interval_hr)
+            aligned_hr = (next_run.hour // interval_hr) * interval_hr
+            run_minute = int(minute) if minute != '*' else 0
+            next_run = next_run.replace(hour=aligned_hr, minute=run_minute, second=0, microsecond=0)
+            if next_run <= now:
+                next_run += timedelta(hours=interval_hr)
+            return next_run
+
+        hour_int = int(hour)
+        run_minute = int(minute) if minute != '*' else 0
+        next_run = now.replace(hour=hour_int, minute=run_minute, second=0, microsecond=0)
 
         if day_of_week != '*':
             # Weekly
             target_dow = int(day_of_week)
             days_ahead = target_dow - now.weekday()
-            if days_ahead <= 0:
+            if days_ahead < 0:
                 days_ahead += 7
-            if days_ahead == 0 and now.hour >= hour:
+            if days_ahead == 0 and now >= next_run:
                 days_ahead = 7
             next_run = next_run + timedelta(days=days_ahead)
         elif day_of_month != '*':
             # Monthly
-            if now.day > 1 or (now.day == 1 and now.hour >= hour):
+            target_day = int(day_of_month)
+            if now.day > target_day or (now.day == target_day and now >= next_run):
                 if now.month == 12:
-                    next_run = next_run.replace(year=now.year + 1, month=1, day=1)
+                    next_run = next_run.replace(year=now.year + 1, month=1, day=target_day)
                 else:
-                    next_run = next_run.replace(month=now.month + 1, day=1)
+                    next_run = next_run.replace(month=now.month + 1, day=target_day)
             else:
-                next_run = next_run.replace(day=1)
+                next_run = next_run.replace(day=target_day)
         else:
             # Daily
-            if now.hour >= hour:
+            if now >= next_run:
                 next_run = next_run + timedelta(days=1)
 
         return next_run
