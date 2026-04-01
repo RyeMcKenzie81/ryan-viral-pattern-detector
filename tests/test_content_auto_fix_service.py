@@ -45,8 +45,15 @@ def _make_article(**overrides):
     return base
 
 
-def _mock_qa_checks(failing_checks):
-    """Create a list of QACheck objects with specified failures."""
+def _mock_qa_checks(failing_checks, kw_missing_from=None):
+    """Create a list of QACheck objects with specified failures.
+
+    Args:
+        failing_checks: List of check names that should fail
+        kw_missing_from: List of keyword_placement locations missing keyword
+                         (e.g. ["title/h1", "first_paragraph"]). Only used
+                         if "keyword_placement" is in failing_checks.
+    """
     all_checks = [
         "word_count", "em_dashes", "title_length", "meta_description",
         "heading_structure", "readability", "keyword_placement",
@@ -55,9 +62,13 @@ def _mock_qa_checks(failing_checks):
     results = []
     for name in all_checks:
         if name in failing_checks:
+            details = None
+            if name == "keyword_placement" and kw_missing_from:
+                details = {"missing": kw_missing_from}
             results.append(QACheck(
                 name=name, passed=False, severity="warning",
                 message=f"{name} failed",
+                details=details,
             ))
         else:
             results.append(QACheck(
@@ -104,15 +115,25 @@ class TestFixSchemaMarkup:
         assert len(schema["mainEntity"]) == 2
         assert schema["mainEntity"][0]["name"] == "What is this?"
 
-    def test_no_faq_section(self, service):
+    def test_no_faq_falls_back_to_article_schema(self, service):
         content = "## Introduction\n\nJust some text."
-        result = service._fix_schema_markup(content)
+        article = {"seo_title": "My Great Article", "meta_description": "A desc", "keyword": "test"}
+        result = service._fix_schema_markup(content, article=article)
+        assert result["success"]
+        assert result["new_value"]["@type"] == "Article"
+        assert result["new_value"]["headline"] == "My Great Article"
+
+    def test_no_faq_no_title_fails(self, service):
+        content = "## Introduction\n\nJust some text."
+        result = service._fix_schema_markup(content, article=None)
         assert not result["success"]
 
-    def test_faq_no_qa_pairs(self, service):
+    def test_faq_no_qa_pairs_falls_back_to_article(self, service):
         content = "## FAQ\n\nJust some text without questions."
-        result = service._fix_schema_markup(content)
-        assert not result["success"]
+        article = {"seo_title": "Title", "meta_description": "", "keyword": ""}
+        result = service._fix_schema_markup(content, article=article)
+        assert result["success"]
+        assert result["new_value"]["@type"] == "Article"
 
     def test_bold_pattern_faq(self, service):
         content = "## FAQ\n\n**What is this?**\nA test.\n\n**How does it work?**\nGreat."
@@ -312,6 +333,40 @@ class TestFixArticle:
         # Tier 2 fix should be in failures
         title_failures = [f for f in report["fixes_failed"] if f["check"] == "title_length"]
         assert len(title_failures) == 1
+
+    @patch("viraltracker.services.seo_pipeline.services.content_auto_fix_service.ContentAutoFixService.anthropic", new_callable=PropertyMock)
+    def test_keyword_placement_fixes_title(self, mock_anthropic_prop, service, mock_supabase):
+        """When keyword is missing from title (but title length is OK), fix title for keyword."""
+        article = _make_article(
+            seo_title="Stop Gaming Fights Between Your Kids Today",  # Good length, missing keyword
+            keyword="cooperative games for siblings",
+            meta_description="A" * 155,
+            content_markdown="## Intro\n\nCooperative games for siblings are great.",
+            schema_markup={"@type": "Article"},
+        )
+
+        mock_supabase.table.return_value.select.return_value.eq.return_value.execute.return_value = MagicMock(data=[article])
+        mock_supabase.table.return_value.update.return_value.eq.return_value.execute.return_value = MagicMock()
+
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(text=json.dumps({
+            "seo_title": "Cooperative Games for Siblings: End Gaming Fights",
+        }))]
+        mock_response.usage.input_tokens = 100
+        mock_response.usage.output_tokens = 30
+        mock_anthropic_prop.return_value.messages.create.return_value = mock_response
+
+        with patch(
+            "viraltracker.services.seo_pipeline.services.qa_validation_service.QAValidationService"
+        ) as MockQA:
+            MockQA.return_value.run_checks.return_value = _mock_qa_checks(
+                ["keyword_placement"], kw_missing_from=["title/h1"]
+            )
+            report = service.fix_article("test-id", "brand-id", "org-id")
+
+        assert report["fixed"]
+        check_names = [f["check"] for f in report["fixes_applied"]]
+        assert "title_length" in check_names  # Title rewrite attributed to title_length
 
     @patch("viraltracker.services.seo_pipeline.services.content_auto_fix_service.ContentAutoFixService.anthropic", new_callable=PropertyMock)
     def test_ai_returns_invalid_title(self, mock_anthropic_prop, service, mock_supabase):

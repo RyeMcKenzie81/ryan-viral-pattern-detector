@@ -150,7 +150,7 @@ class ContentAutoFixService:
                 report["fixes_failed"].append(result["error"])
 
         if "schema_markup" in failing_fixable:
-            result = self._fix_schema_markup(content_md)
+            result = self._fix_schema_markup(content_md, article=article)
             if result["success"]:
                 report["fixes_applied"].append(result["fix"])
                 schema_markup = result["new_value"]
@@ -160,19 +160,40 @@ class ContentAutoFixService:
 
         # ---- Tier 2: AI rewrites (single Claude call) ----
         tier2_needed = {}
+        tier2_reasons = {}  # Track why each field needs fixing
+
         if "title_length" in failing_fixable:
             tier2_needed["seo_title"] = seo_title
+            tier2_reasons["seo_title"] = "length"
         if "meta_description" in failing_fixable:
             tier2_needed["meta_description"] = meta_description
+            tier2_reasons["meta_description"] = "length"
         if "keyword_placement" in failing_fixable:
-            # Extract first paragraph for keyword placement fix
-            first_para = self._extract_first_paragraph(content_md)
-            if first_para:
-                tier2_needed["first_paragraph"] = first_para
+            kw_check = failing_fixable["keyword_placement"]
+            missing_from = kw_check.details.get("missing", []) if kw_check.details else []
+
+            # Fix title for keyword placement if not already queued for length fix
+            if "title/h1" in missing_from and "seo_title" not in tier2_needed:
+                tier2_needed["seo_title"] = seo_title
+                tier2_reasons["seo_title"] = "keyword"
+            # If title already queued for length, it already asks for keyword inclusion
+
+            # Fix meta_description for keyword placement if not already queued
+            if "meta_description" in missing_from and "meta_description" not in tier2_needed:
+                tier2_needed["meta_description"] = meta_description
+                tier2_reasons["meta_description"] = "keyword"
+
+            # Fix first paragraph for keyword placement
+            if "first_paragraph" in missing_from:
+                first_para = self._extract_first_paragraph(content_md)
+                if first_para:
+                    tier2_needed["first_paragraph"] = first_para
+                    tier2_reasons["first_paragraph"] = "keyword"
 
         if tier2_needed:
             ai_result = self._fix_with_ai(
-                tier2_needed, keyword, article_id, organization_id
+                tier2_needed, keyword, article_id, organization_id,
+                reasons=tier2_reasons,
             )
 
             if ai_result.get("error"):
@@ -250,6 +271,24 @@ class ContentAutoFixService:
                             "reason": f"AI rewrite did not include keyword '{keyword}'",
                         })
 
+                # Validate keyword presence in title/meta fixes when reason was "keyword"
+                if tier2_reasons.get("seo_title") == "keyword" and "seo_title" in ai_result.get("fixes", {}):
+                    new_title = ai_result["fixes"]["seo_title"]
+                    if keyword.lower() not in new_title.lower():
+                        report["fixes_failed"].append({
+                            "check": "keyword_placement",
+                            "method": "ai_rewrite",
+                            "reason": f"AI title rewrite did not include keyword '{keyword}'",
+                        })
+                if tier2_reasons.get("meta_description") == "keyword" and "meta_description" in ai_result.get("fixes", {}):
+                    new_meta = ai_result["fixes"]["meta_description"]
+                    if keyword.lower() not in new_meta.lower():
+                        report["fixes_failed"].append({
+                            "check": "keyword_placement",
+                            "method": "ai_rewrite",
+                            "reason": f"AI meta description rewrite did not include keyword '{keyword}'",
+                        })
+
         # ---- Save fixes to DB ----
         if db_updates:
             try:
@@ -300,8 +339,11 @@ class ContentAutoFixService:
             "new_value": new_content,
         }
 
-    def _fix_schema_markup(self, content: str) -> Dict[str, Any]:
-        """Generate FAQPage schema from article FAQ section."""
+    def _fix_schema_markup(self, content: str, article: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Generate schema markup from article content.
+
+        Tries FAQPage schema first (from FAQ section), falls back to Article schema.
+        """
         # Strip code fence wrapper
         clean = content.strip()
         clean = re.sub(r'^```\w*\n', '', clean)
@@ -312,14 +354,9 @@ class ContentAutoFixService:
             r'##\s+(?:FAQ|Frequently Asked Questions?|Common Questions)\s*\n([\s\S]*?)(?=\n## [^#]|\Z)',
             clean, re.IGNORECASE,
         )
-        if not faq_match:
-            return {"success": False, "error": {
-                "check": "schema_markup", "method": "deterministic",
-                "reason": "No FAQ section found in article",
-            }}
 
-        faq_text = faq_match.group(1)
         qa_pairs = []
+        faq_text = faq_match.group(1) if faq_match else ""
 
         # Pattern 1: ### Question\nAnswer
         for m in re.finditer(r'###\s+(.+?)\n([\s\S]*?)(?=\n###|\Z)', faq_text):
@@ -340,27 +377,56 @@ class ContentAutoFixService:
                     a = re.sub(r'\[(.+?)\]\(.+?\)', r'\1', a)
                     qa_pairs.append({"q": q, "a": a})
 
-        if not qa_pairs:
+        if qa_pairs:
+            schema = {
+                "@context": "https://schema.org",
+                "@type": "FAQPage",
+                "mainEntity": [
+                    {
+                        "@type": "Question",
+                        "name": pair["q"],
+                        "acceptedAnswer": {
+                            "@type": "Answer",
+                            "text": pair["a"],
+                        },
+                    }
+                    for pair in qa_pairs
+                ],
+            }
+            return {
+                "success": True,
+                "fix": {
+                    "check": "schema_markup",
+                    "method": "deterministic",
+                    "before": "No schema markup",
+                    "after": f"FAQPage schema with {len(qa_pairs)} Q&A pairs",
+                },
+                "new_value": schema,
+            }
+
+        # Fallback: generate Article schema
+        seo_title = ""
+        meta_desc = ""
+        keyword = ""
+        if article:
+            seo_title = article.get("seo_title") or article.get("title") or ""
+            meta_desc = article.get("meta_description") or ""
+            keyword = article.get("keyword") or ""
+
+        if not seo_title:
             return {"success": False, "error": {
                 "check": "schema_markup", "method": "deterministic",
-                "reason": "FAQ section found but no Q&A pairs extracted",
+                "reason": "No FAQ section and no title for Article schema",
             }}
 
         schema = {
             "@context": "https://schema.org",
-            "@type": "FAQPage",
-            "mainEntity": [
-                {
-                    "@type": "Question",
-                    "name": pair["q"],
-                    "acceptedAnswer": {
-                        "@type": "Answer",
-                        "text": pair["a"],
-                    },
-                }
-                for pair in qa_pairs
-            ],
+            "@type": "Article",
+            "headline": seo_title,
+            "description": meta_desc or seo_title,
         }
+        if keyword:
+            schema["keywords"] = keyword
 
         return {
             "success": True,
@@ -368,7 +434,7 @@ class ContentAutoFixService:
                 "check": "schema_markup",
                 "method": "deterministic",
                 "before": "No schema markup",
-                "after": f"FAQPage schema with {len(qa_pairs)} Q&A pairs",
+                "after": "Article schema generated",
             },
             "new_value": schema,
         }
@@ -383,6 +449,7 @@ class ContentAutoFixService:
         keyword: str,
         article_id: str,
         organization_id: str,
+        reasons: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         """
         Batch all Tier 2 fixes into a single Claude call.
@@ -392,32 +459,54 @@ class ContentAutoFixService:
             keyword: Target SEO keyword
             article_id: For logging
             organization_id: For usage tracking
+            reasons: Dict of field_name -> reason ("length" or "keyword") for context
 
         Returns:
             {"fixes": {"seo_title": "...", ...}, "total_tokens": N}
             or {"error": "..."} on failure
         """
+        reasons = reasons or {}
         prompt_parts = [
             f"You are an SEO optimization expert. Fix the following fields for an article targeting the keyword \"{keyword}\".",
+            f"CRITICAL: The keyword \"{keyword}\" MUST appear in every field you return. This is the #1 priority.",
             "",
         ]
 
         if "seo_title" in fields_to_fix:
-            prompt_parts.append(
-                f"SEO TITLE (current: \"{fields_to_fix['seo_title']}\"): "
-                f"Rewrite to be 50-60 characters. Include the keyword \"{keyword}\" near the front. "
-                f"Preserve the meaning. Make it compelling for search results."
-            )
+            reason = reasons.get("seo_title", "length")
+            if reason == "keyword":
+                # Title length is fine, just missing the keyword
+                prompt_parts.append(
+                    f"SEO TITLE (current: \"{fields_to_fix['seo_title']}\"): "
+                    f"The keyword \"{keyword}\" is missing from the title. "
+                    f"Rewrite to naturally include the keyword while keeping a similar length (50-60 chars). "
+                    f"The keyword should appear near the front."
+                )
+            else:
+                prompt_parts.append(
+                    f"SEO TITLE (current: \"{fields_to_fix['seo_title']}\"): "
+                    f"Rewrite to be 50-60 characters. Include the keyword \"{keyword}\" near the front. "
+                    f"Preserve the meaning. Make it compelling for search results."
+                )
             prompt_parts.append("")
 
         if "meta_description" in fields_to_fix:
             current = fields_to_fix["meta_description"]
+            reason = reasons.get("meta_description", "length")
             if current:
-                prompt_parts.append(
-                    f"META DESCRIPTION (current: \"{current}\"): "
-                    f"Rewrite to be 150-160 characters. Include the keyword \"{keyword}\". "
-                    f"Use action-oriented, natural language."
-                )
+                if reason == "keyword":
+                    prompt_parts.append(
+                        f"META DESCRIPTION (current: \"{current}\"): "
+                        f"The keyword \"{keyword}\" is missing. "
+                        f"Rewrite to naturally include the keyword while keeping 150-160 characters. "
+                        f"Use action-oriented, natural language."
+                    )
+                else:
+                    prompt_parts.append(
+                        f"META DESCRIPTION (current: \"{current}\"): "
+                        f"Rewrite to be 150-160 characters. Include the keyword \"{keyword}\". "
+                        f"Use action-oriented, natural language."
+                    )
             else:
                 prompt_parts.append(
                     f"META DESCRIPTION (missing): "
