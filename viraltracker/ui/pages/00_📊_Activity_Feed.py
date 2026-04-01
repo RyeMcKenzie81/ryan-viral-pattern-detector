@@ -550,6 +550,94 @@ def render_while_you_were_away(summary: Dict, last_seen_at: datetime):
         st.divider()
 
 
+def _get_thumbnail_public_url(bucket: str, path: str) -> str:
+    """Construct a public URL for a Supabase Storage thumbnail."""
+    try:
+        db = get_supabase_client()
+        return db.storage.from_(bucket).get_public_url(path)
+    except Exception:
+        return ""
+
+
+def render_media_grid(thumbnail_urls: list, total_count: int):
+    """Render a media grid for event cards with thumbnail previews.
+
+    Args:
+        thumbnail_urls: List of {"bucket": str, "path": str} tuples
+        total_count: Total number of items (for +N overflow badge)
+    """
+    if not thumbnail_urls:
+        return
+
+    # Resolve tuples to public URLs
+    urls = []
+    for t in thumbnail_urls[:5]:
+        if isinstance(t, dict) and t.get("bucket") and t.get("path"):
+            url = _get_thumbnail_public_url(t["bucket"], t["path"])
+            if url:
+                urls.append(url)
+        elif isinstance(t, str) and t:
+            # Legacy support: plain URL string
+            urls.append(t)
+
+    if not urls:
+        return
+
+    overflow = max(0, total_count - len(urls))
+
+    if len(urls) <= 2:
+        # Simple row layout for 1-2 images
+        cols = st.columns(len(urls))
+        for i, url in enumerate(urls):
+            with cols[i]:
+                st.image(url, use_container_width=True)
+        if overflow > 0:
+            st.caption(f"+{overflow} more")
+    else:
+        # CSS grid: hero (left, 2 rows) + thumbnails (right column)
+        hero_url = urls[0]
+        thumb_urls = urls[1:]
+        grid_id = f"media-grid-{hash(hero_url) % 100000}"
+
+        # Build thumbnail HTML
+        thumb_html_parts = []
+        for i, url in enumerate(thumb_urls):
+            is_last = (i == len(thumb_urls) - 1) and overflow > 0
+            if is_last:
+                thumb_html_parts.append(
+                    f'<div style="position:relative;overflow:hidden;border-radius:4px;">'
+                    f'<img src="{url}" loading="lazy" alt="Thumbnail {i+2}" '
+                    f'style="width:100%;height:100%;object-fit:cover;display:block;" '
+                    f'onerror="this.parentElement.style.display=\'none\'" />'
+                    f'<div style="position:absolute;inset:0;background:rgba(0,0,0,0.55);'
+                    f'display:flex;align-items:center;justify-content:center;'
+                    f'color:white;font-size:16px;font-weight:600;">+{overflow}</div>'
+                    f'</div>'
+                )
+            else:
+                thumb_html_parts.append(
+                    f'<div style="overflow:hidden;border-radius:4px;">'
+                    f'<img src="{url}" loading="lazy" alt="Thumbnail {i+2}" '
+                    f'style="width:100%;height:100%;object-fit:cover;display:block;" '
+                    f'onerror="this.parentElement.style.display=\'none\'" />'
+                    f'</div>'
+                )
+
+        thumbs_html = "\n".join(thumb_html_parts)
+        num_thumb_rows = len(thumb_urls)
+
+        grid_html = f'''<div id="{grid_id}" style="display:grid;grid-template-columns:1fr 1fr;grid-template-rows:repeat({num_thumb_rows}, 80px);gap:4px;margin:8px 0;">
+  <div style="grid-row:1 / span {num_thumb_rows};overflow:hidden;border-radius:4px;">
+    <img src="{hero_url}" loading="lazy" alt="Hero thumbnail"
+         style="width:100%;height:100%;object-fit:cover;display:block;"
+         onerror="this.parentElement.style.display='none'" />
+  </div>
+  {thumbs_html}
+</div>'''
+
+        st.markdown(grid_html, unsafe_allow_html=True)
+
+
 def render_event_card(event: Dict, brand_names: Dict[str, str], key_prefix: str = ""):
     """Render a single event in the timeline."""
     severity = event.get("severity", "info")
@@ -611,6 +699,12 @@ def render_event_card(event: Dict, brand_names: Dict[str, str], key_prefix: str 
                 meta_parts.append(f"{key.replace('_', ' ')}: {val}")
         if meta_parts:
             st.caption(" · ".join(meta_parts[:4]))
+
+    # Rich media grid (Phase 3) — thumbnail previews for visual events
+    thumbnail_urls = details.get("thumbnail_urls", [])
+    thumbnail_count = details.get("thumbnail_count", 0)
+    if thumbnail_urls:
+        render_media_grid(thumbnail_urls, thumbnail_count)
 
     # Action buttons
     job_id = details.get("job_id")
