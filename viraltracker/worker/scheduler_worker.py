@@ -5332,9 +5332,11 @@ async def execute_seo_content_eval_job(job: Dict) -> Dict[str, Any]:
     try:
         from viraltracker.services.seo_pipeline.services.content_eval_service import ContentEvalService
         from viraltracker.services.seo_pipeline.services.publish_queue_service import PublishQueueService
+        from viraltracker.services.seo_pipeline.services.content_auto_fix_service import ContentAutoFixService
 
         eval_service = ContentEvalService()
         queue_service = PublishQueueService()
+        auto_fix_service = ContentAutoFixService()
 
         # Find pending articles
         pending = eval_service.get_pending_articles(brand_id=brand_id)
@@ -5354,19 +5356,70 @@ async def execute_seo_content_eval_job(job: Dict) -> Dict[str, Any]:
         evaluated = 0
         passed = 0
         failed = 0
+        articles_fixed = 0
+        fix_failures = 0
 
         for article in articles_to_eval:
             article_id = article["id"]
             art_brand_id = article.get("brand_id", brand_id)
             art_org_id = article.get("organization_id", "")
+            keyword = article.get("keyword", article_id)
 
+            # Phase 1: Auto-fix
+            try:
+                fix_report = auto_fix_service.fix_article(article_id, art_brand_id, art_org_id)
+
+                if fix_report["fixes_applied"]:
+                    articles_fixed += 1
+                    logs.append(f"AUTO-FIX: {keyword}")
+                    for fix in fix_report["fixes_applied"]:
+                        logs.append(f"  - {fix['check']}: {fix.get('before', '')} → {fix.get('after', '')}")
+
+                if fix_report["fixes_failed"]:
+                    for ff in fix_report["fixes_failed"]:
+                        logs.append(f"  FIX-FAILED: {ff['check']} - {ff.get('reason', '')}")
+
+                    # Check if any critical fixes failed (Tier 2 AI rewrites)
+                    critical_failures = [
+                        f for f in fix_report["fixes_failed"]
+                        if f.get("check") in ("load_article", "save_to_db")
+                    ]
+                    if critical_failures:
+                        # Can't proceed with eval — mark failed and emit activity event
+                        try:
+                            eval_service.supabase.table("seo_articles").update(
+                                {"status": "eval_failed"}
+                            ).eq("id", article_id).execute()
+                        except Exception:
+                            pass
+                        _emit_activity_event(
+                            event_type="seo_auto_fix_failed",
+                            severity="warning",
+                            title=f"Auto-fix failed: {keyword}",
+                            brand_id=art_brand_id,
+                            organization_id=art_org_id,
+                            details={
+                                "article_id": article_id,
+                                "failures": fix_report["fixes_failed"],
+                            },
+                            link_page="Exceptions",
+                        )
+                        fix_failures += 1
+                        failed += 1
+                        continue
+
+            except Exception as e:
+                logger.error(f"Auto-fix error for {article_id}: {e}")
+                logs.append(f"AUTO-FIX ERROR: {keyword} - {e}")
+
+            # Phase 2: Evaluate (now against potentially fixed content)
             try:
                 result = eval_service.evaluate_article(article_id, art_brand_id, art_org_id)
                 evaluated += 1
 
                 if result["verdict"] == "passed":
                     passed += 1
-                    logs.append(f"PASS: {article.get('keyword', article_id)}")
+                    logs.append(f"PASS: {keyword}")
 
                     # Enqueue for publishing
                     full_article = eval_service._get_article(article_id)
@@ -5384,16 +5437,23 @@ async def execute_seo_content_eval_job(job: Dict) -> Dict[str, Any]:
                 else:
                     failed += 1
                     logs.append(
-                        f"FAIL: {article.get('keyword', article_id)} "
+                        f"FAIL: {keyword} "
                         f"({result['failed_checks']} errors, {result['warning_count']} warnings)"
                     )
 
             except Exception as e:
-                logs.append(f"ERROR evaluating {article.get('keyword', article_id)}: {e}")
+                logs.append(f"ERROR evaluating {keyword}: {e}")
                 logger.error(f"Error evaluating article {article_id}: {e}")
 
-        metadata = {"evaluated": evaluated, "passed": passed, "failed": failed}
+        metadata = {
+            "evaluated": evaluated, "passed": passed, "failed": failed,
+            "articles_fixed": articles_fixed, "fix_failures": fix_failures,
+        }
+        if evaluated > 0:
+            metadata["eval_pass_rate_after_fix"] = round(passed / evaluated * 100, 1)
         logs.append(f"\nSummary: {evaluated} evaluated, {passed} passed, {failed} failed")
+        if articles_fixed:
+            logs.append(f"Auto-fix: {articles_fixed} articles fixed, {fix_failures} fix failures")
 
         update_job_run(run_id, {
             "status": "completed",
