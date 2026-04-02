@@ -1,5 +1,17 @@
 # ViralTracker Changelog
 
+## [0.19.4.0] - 2026-04-02
+
+### Added
+- Demographic backfill job type: processes historical age/gender/placement data one day at a time, with progress logging every 5 days
+- Backfill UI form in Ad Scheduler with days slider (7-180) and "Run Backfill" button
+
+### Fixed
+- Capped demographic sync to 7 days in scheduled meta_sync jobs to prevent API timeouts (30 days was hanging for 2+ hours)
+
+### Changed
+- `get_ad_insights_with_breakdowns()` now accepts optional `start_date`/`end_date` params for single-day fetches
+
 ## 2026-04-02 - Creative Intelligence: Demographic Breakdowns
 
 ### Added: Age, gender, and placement performance analysis in Creative Intelligence
