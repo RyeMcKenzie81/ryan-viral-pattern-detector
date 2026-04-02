@@ -373,6 +373,8 @@ def build_navigation_pages() -> Dict[str, List[st.Page]]:
         seo.append(st.Page("pages/52_🗂️_SEO_Clusters.py", title="SEO Clusters", icon="🗂️"))
     if visible(SK_SEO, "seo_workflow"):
         seo.append(st.Page("pages/53_🚀_SEO_Workflow.py", title="SEO Workflow", icon="🚀"))
+    if visible(SK_SEO, "seo_pipeline_status"):
+        seo.append(st.Page("pages/53_📊_Pipeline_Status.py", title="Pipeline Status", icon="📊"))
     if visible(SK_SEO, "seo_content_policies"):
         seo.append(st.Page(
             "pages/54_📋_Content_Policies.py",

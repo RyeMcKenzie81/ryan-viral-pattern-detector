@@ -96,6 +96,7 @@ class FeatureKey:
     SEO_ARTICLE_PUBLISHER = "seo_article_publisher"
     SEO_CLUSTER_MANAGER = "seo_cluster_manager"
     SEO_WORKFLOW = "seo_workflow"
+    SEO_PIPELINE_STATUS = "seo_pipeline_status"
     SEO_CONTENT_POLICIES = "seo_content_policies"
     SEO_EXCEPTIONS = "seo_exceptions"
     SECTION_SEO = "section_seo"
