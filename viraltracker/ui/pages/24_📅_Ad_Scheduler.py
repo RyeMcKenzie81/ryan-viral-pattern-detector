@@ -2936,6 +2936,129 @@ def _render_creative_genome_update_form(existing_job, is_edit):
             st.rerun()
 
 
+def _render_demographic_backfill_form(existing_job, is_edit):
+    """Render the demographic backfill job creation form (one-time only)."""
+
+    # ========================================================================
+    # Section 1: Brand Selection
+    # ========================================================================
+
+    st.subheader("1. Select Brand")
+
+    brands = get_brands()
+    if not brands:
+        st.error("No brands found")
+        return
+
+    brand_options = {b['name']: b['id'] for b in brands}
+    brand_names = list(brand_options.keys())
+
+    default_index = 0
+    if existing_job:
+        for i, b in enumerate(brands):
+            if b['id'] == existing_job.get('brand_id'):
+                default_index = i
+                break
+    else:
+        cookie_brand = _get_brand_from_cookie()
+        if cookie_brand:
+            for i, name in enumerate(brand_names):
+                if brand_options[name] == cookie_brand:
+                    default_index = i
+                    break
+
+    selected_brand_name = st.selectbox(
+        "Brand",
+        options=brand_names,
+        index=default_index,
+        help="Select the brand to backfill demographic data for",
+        key="backfill_brand_selector"
+    )
+    selected_brand_id = brand_options[selected_brand_name]
+    _save_brand_to_cookie(selected_brand_id)
+
+    st.divider()
+
+    # ========================================================================
+    # Section 2: Job Name
+    # ========================================================================
+
+    st.subheader("2. Job Name")
+
+    job_name = st.text_input(
+        "Job name",
+        value=existing_job['name'] if existing_job else f"Demographic Backfill - {selected_brand_name}",
+        key="backfill_job_name"
+    )
+
+    st.divider()
+
+    # ========================================================================
+    # Section 3: Backfill Settings
+    # ========================================================================
+
+    st.subheader("3. Backfill Settings")
+
+    existing_params = (existing_job or {}).get('parameters') or {}
+
+    target_days_back = st.slider(
+        "Days to backfill",
+        min_value=7,
+        max_value=180,
+        value=existing_params.get('target_days_back', 90),
+        step=1,
+        help="How many days of historical demographic data to fetch. Processes one day at a time to avoid timeouts.",
+        key="backfill_days"
+    )
+
+    st.info(f"Will fetch age/gender and placement breakdowns for each of the last **{target_days_back} days**, one day at a time. "
+            f"Expect ~2 API calls per day. Already-fetched days will be overwritten (upsert).")
+
+    st.divider()
+
+    # ========================================================================
+    # Submit Buttons (Run Now only — backfill is always one-time)
+    # ========================================================================
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        if st.button("🚀 Run Backfill", type="primary", use_container_width=True, key="run_backfill_now"):
+            if not job_name:
+                st.error("Please enter a job name")
+                st.stop()
+
+            parameters = {
+                'target_days_back': target_days_back,
+            }
+
+            run_now_time = datetime.now(PST) + timedelta(minutes=1)
+
+            job_data = {
+                'job_type': 'demographic_backfill',
+                'product_id': None,
+                'brand_id': selected_brand_id,
+                'name': job_name,
+                'schedule_type': 'one_time',
+                'cron_expression': None,
+                'scheduled_at': run_now_time.isoformat(),
+                'next_run_at': run_now_time.isoformat(),
+                'max_runs': None,
+                'parameters': parameters
+            }
+
+            job_id = create_scheduled_job(job_data)
+            if job_id:
+                st.success(f"Backfill job scheduled to run in ~1 minute! Will process {target_days_back} days one at a time.")
+                st.session_state.scheduler_view = 'list'
+                st.rerun()
+
+    with col2:
+        if st.button("Cancel", use_container_width=True, key="cancel_backfill"):
+            st.session_state.scheduler_view = 'list'
+            st.rerun()
+
+
 def _render_creative_deep_analysis_form(existing_job, is_edit):
     """Render the creative deep analysis job creation form."""
 
@@ -3827,7 +3950,7 @@ def render_create_schedule():
         st.subheader("Job Type")
         job_type = st.radio(
             "What type of job do you want to schedule?",
-            options=['ad_creation', 'template_scrape', 'template_approval', 'ad_classification', 'asset_download', 'iteration_auto_run', 'creative_genome_update', 'creative_deep_analysis', 'seo_status_sync', 'seo_content_eval', 'seo_publish', 'analytics_sync'],
+            options=['ad_creation', 'template_scrape', 'template_approval', 'ad_classification', 'asset_download', 'iteration_auto_run', 'creative_genome_update', 'creative_deep_analysis', 'demographic_backfill', 'seo_status_sync', 'seo_content_eval', 'seo_publish', 'analytics_sync'],
             index=0,
             format_func=lambda x: {
                 'ad_creation': '🎨 Ad Creation - Generate ads from templates',
@@ -3838,6 +3961,7 @@ def render_create_schedule():
                 'iteration_auto_run': '🔬 Iteration Auto-Run - Auto-detect and iterate on mixed-signal ads',
                 'creative_genome_update': '🧬 Genome Update - Score matured ads and update element performance',
                 'creative_deep_analysis': '🔍 Creative Deep Analysis - Gemini analysis of ad messaging, tone & personas',
+                'demographic_backfill': '👥 Demographic Backfill - Backfill age/gender/placement data day-by-day',
                 'seo_status_sync': '🔄 SEO Status Sync - Sync article draft/live status from Shopify',
                 'seo_content_eval': '🔍 SEO Content Eval - Evaluate QA-passed articles and enqueue for publishing',
                 'seo_publish': '📤 SEO Publish - Publish due articles from queue to Shopify',
@@ -3897,6 +4021,13 @@ def render_create_schedule():
     # ========================================================================
     if job_type == 'creative_deep_analysis':
         _render_creative_deep_analysis_form(existing_job, is_edit)
+        return
+
+    # ========================================================================
+    # DEMOGRAPHIC BACKFILL JOB FORM
+    # ========================================================================
+    if job_type == 'demographic_backfill':
+        _render_demographic_backfill_form(existing_job, is_edit)
         return
 
     # ========================================================================
@@ -5323,6 +5454,10 @@ def render_schedule_detail():
             st.markdown("### Sync Settings")
             params = job.get('parameters', {}) or {}
             st.markdown(f"**Days Back:** {params.get('days_back', 7)}")
+        elif job_type == 'demographic_backfill':
+            st.markdown("### Backfill Settings")
+            params = job.get('parameters', {}) or {}
+            st.markdown(f"**Target Days Back:** {params.get('target_days_back', 90)}")
         elif job_type == 'scorecard':
             st.markdown("### Scorecard Settings")
             params = job.get('parameters', {}) or {}
