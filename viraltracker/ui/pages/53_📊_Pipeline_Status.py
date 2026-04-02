@@ -198,7 +198,7 @@ def render_pipeline_overview(counts: dict):
     # Show other statuses not in the main flow
     other_counts = {
         k: v for k, v in counts.items()
-        if k not in dict(active_stages) and k not in dict(error_stages) and v > 0
+        if k not in {s for s, *_ in active_stages} and k not in dict(error_stages) and v > 0
     }
     if other_counts:
         with st.expander("Other statuses"):
