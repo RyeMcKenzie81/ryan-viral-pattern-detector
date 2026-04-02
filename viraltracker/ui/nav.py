@@ -169,6 +169,7 @@ def _get_org_features_cached(org_id: str) -> Dict[str, bool]:
             FeatureKey.SEO_ARTICLE_PUBLISHER: True,
             FeatureKey.SEO_CLUSTER_MANAGER: True,
             FeatureKey.SEO_WORKFLOW: True,
+            FeatureKey.SEO_PIPELINE_STATUS: True,
             FeatureKey.SEO_CONTENT_POLICIES: True,
             FeatureKey.SEO_EXCEPTIONS: True,
             # Email Marketing pages
