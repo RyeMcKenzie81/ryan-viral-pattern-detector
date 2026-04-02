@@ -2544,6 +2544,289 @@ def render_creative_intelligence_tab(brand_id: str, org_id: str, product_id: str
     else:
         st.info("Not enough data for combination analysis. Need at least 3 ads sharing element pairs.")
 
+    # ── Demographic Performance ──
+    st.divider()
+    st.subheader("👥 Demographic Performance")
+    st.caption("How do different age groups, genders, and placements perform for your ads?")
+
+    try:
+        from viraltracker.services.demographic_analysis_service import DemographicAnalysisService
+        from uuid import UUID as _UUID_demo
+
+        demo_service = DemographicAnalysisService()
+
+        # Cache demographic data (30-min TTL)
+        demo_cache_key = f"ci_demo_{brand_id}_{product_id}"
+        demo_ts_key = f"ci_demo_ts_{brand_id}_{product_id}"
+        demo_data = st.session_state.get(demo_cache_key)
+        demo_ts = st.session_state.get(demo_ts_key, 0)
+
+        from datetime import datetime as _dt_demo
+        if demo_data is None or (_dt_demo.now().timestamp() - demo_ts > 1800):
+            age_gender_data = demo_service.get_demographic_performance(
+                _UUID_demo(brand_id), "age_gender", days_back=60, product_id=product_id,
+            )
+            placement_data = demo_service.get_demographic_performance(
+                _UUID_demo(brand_id), "placement", days_back=60, product_id=product_id,
+            )
+            top_segments = demo_service.get_top_segments(
+                _UUID_demo(brand_id), days_back=60, metric="roas", limit=5, product_id=product_id,
+            )
+            demo_data = {
+                "age_gender": age_gender_data,
+                "placement": placement_data,
+                "top_segments": top_segments,
+            }
+            st.session_state[demo_cache_key] = demo_data
+            st.session_state[demo_ts_key] = _dt_demo.now().timestamp()
+
+        age_gender_data = demo_data["age_gender"]
+        placement_data = demo_data["placement"]
+        top_segments = demo_data["top_segments"]
+
+        if not age_gender_data and not placement_data:
+            st.info(
+                "No demographic data available yet. Demographic breakdowns are fetched "
+                "automatically during Meta sync. Run a Meta Sync job to populate this data."
+            )
+        else:
+            # Headline insights
+            if top_segments:
+                for seg in top_segments[:3]:
+                    metric_label = f"ROAS {seg['metric_value']:.2f}x" if seg['metric_value'] else ""
+                    st.success(
+                        f"**{seg['label']}** performs at **{seg['vs_avg']:.1f}x** your account average "
+                        f"({metric_label}, {seg['ad_count']} ads, ${seg['spend']:,.0f} spend)"
+                    )
+
+            # Age × Gender Heatmap
+            if age_gender_data:
+                st.markdown("##### Age × Gender Performance")
+
+                demo_metric = st.radio(
+                    "Metric",
+                    ["ROAS", "CTR", "Spend"],
+                    horizontal=True,
+                    key="ci_demo_metric",
+                )
+
+                try:
+                    import plotly.graph_objects as go
+
+                    # Build heatmap matrix
+                    from viraltracker.services.demographic_analysis_service import AGE_RANGES, GENDERS
+
+                    # Index data by (age_range, gender)
+                    data_index = {}
+                    for seg in age_gender_data:
+                        key = (seg["age_range"], seg["gender"])
+                        data_index[key] = seg
+
+                    # Only include age ranges and genders that have data
+                    active_ages = [a for a in AGE_RANGES if any((a, g) in data_index for g in GENDERS)]
+                    active_genders = [g for g in GENDERS if any((a, g) in data_index for a in AGE_RANGES)]
+
+                    if active_ages and active_genders:
+                        z_vals = []
+                        text_vals = []
+                        hover_vals = []
+
+                        for age in active_ages:
+                            z_row = []
+                            text_row = []
+                            hover_row = []
+                            for gender in active_genders:
+                                seg = data_index.get((age, gender))
+                                if seg:
+                                    if demo_metric == "ROAS":
+                                        z_val = seg["vs_account_avg_roas"]
+                                        display = f"{seg['roas']:.2f}x"
+                                    elif demo_metric == "CTR":
+                                        z_val = seg["vs_account_avg_ctr"]
+                                        display = f"{seg['ctr']:.2f}%"
+                                    else:  # Spend
+                                        total_spend = sum(s["spend"] for s in age_gender_data)
+                                        z_val = (seg["spend"] / total_spend * 2) if total_spend > 0 else 1.0
+                                        display = f"${seg['spend']:,.0f}"
+
+                                    z_row.append(z_val)
+                                    text_row.append(f"{display}\n({seg['ad_count']})")
+                                    hover_row.append(
+                                        f"{age} {gender.title()}<br>"
+                                        f"ROAS: {seg['roas']:.2f}x (vs avg: {seg['vs_account_avg_roas']:.1f}x)<br>"
+                                        f"CTR: {seg['ctr']:.2f}% (vs avg: {seg['vs_account_avg_ctr']:.1f}x)<br>"
+                                        f"Spend: ${seg['spend']:,.0f}<br>"
+                                        f"{seg['ad_count']} ads, {seg['impressions']:,} impressions"
+                                    )
+                                else:
+                                    z_row.append(None)
+                                    text_row.append("")
+                                    hover_row.append("")
+                            z_vals.append(z_row)
+                            text_vals.append(text_row)
+                            hover_vals.append(hover_row)
+
+                        fig_demo = go.Figure(data=go.Heatmap(
+                            z=z_vals,
+                            x=[g.title() for g in active_genders],
+                            y=active_ages,
+                            colorscale=[
+                                [0, "#ef4444"],
+                                [0.5, "#fafafa"],
+                                [1, "#22c55e"],
+                            ],
+                            zmid=1.0,
+                            text=text_vals,
+                            texttemplate="%{text}",
+                            textfont={"size": 11},
+                            hovertext=hover_vals,
+                            hovertemplate="%{hovertext}<extra></extra>",
+                            colorbar=dict(title="vs Avg", ticksuffix="x"),
+                            xgap=3,
+                            ygap=3,
+                        ))
+                        fig_demo.update_layout(
+                            height=max(250, len(active_ages) * 55 + 60),
+                            margin=dict(l=20, r=20, t=10, b=10),
+                            yaxis=dict(autorange="reversed"),
+                        )
+                        st.plotly_chart(fig_demo, use_container_width=True)
+
+                except ImportError:
+                    st.warning("Install plotly for demographic heatmap: `pip install plotly`")
+
+            # Placement Performance Bar Chart
+            if placement_data:
+                st.markdown("##### Placement Performance")
+
+                try:
+                    import plotly.graph_objects as go
+
+                    # Sort by vs_account_avg_roas descending
+                    sorted_placements = sorted(
+                        placement_data,
+                        key=lambda x: x.get("vs_account_avg_roas", 1.0),
+                        reverse=True,
+                    )[:15]  # Top 15 placements
+
+                    labels = [p["label"] for p in sorted_placements]
+                    vals = [p.get("vs_account_avg_roas", 1.0) for p in sorted_placements]
+                    spends = [p["spend"] for p in sorted_placements]
+
+                    fig_place = go.Figure(data=go.Bar(
+                        y=labels,
+                        x=vals,
+                        text=[
+                            f"{v:.2f}x (${s:,.0f})"
+                            for v, s in zip(vals, spends)
+                        ],
+                        textposition="auto",
+                        orientation="h",
+                        marker_color=[
+                            "#22c55e" if v >= 1.5 else "#eab308" if v >= 1.0 else "#ef4444"
+                            for v in vals
+                        ],
+                    ))
+                    fig_place.update_layout(
+                        height=max(250, len(sorted_placements) * 35 + 60),
+                        margin=dict(l=20, r=20, t=10, b=10),
+                        xaxis=dict(title="ROAS vs Account Avg"),
+                        showlegend=False,
+                    )
+                    fig_place.add_vline(x=1.0, line_dash="dash", line_color="gray", opacity=0.5)
+                    st.plotly_chart(fig_place, use_container_width=True)
+
+                except ImportError:
+                    st.warning("Install plotly for placement chart: `pip install plotly`")
+
+            # Creative × Demographic Cross-Analysis (Advanced)
+            with st.expander("🔬 Advanced: Creative × Demographic Cross-Analysis"):
+                st.caption(
+                    "Discover how creative elements perform across different demographics. "
+                    "E.g., 'Fear-based ads work 2x better with 25-34 females.'"
+                )
+
+                cross_col1, cross_col2 = st.columns(2)
+                with cross_col1:
+                    field_options = [
+                        "emotional_tone", "hook_pattern", "cta_style",
+                        "messaging_theme", "awareness_level",
+                        "hook_type", "format_type", "production_quality",
+                    ]
+                    field_labels = {
+                        "emotional_tone": "Emotional Tone",
+                        "hook_pattern": "Hook Pattern",
+                        "cta_style": "CTA Style",
+                        "messaging_theme": "Messaging Theme",
+                        "awareness_level": "Awareness Level",
+                        "hook_type": "Video Hook Type",
+                        "format_type": "Video Format",
+                        "production_quality": "Production Quality",
+                    }
+                    cross_field = st.selectbox(
+                        "Creative Dimension",
+                        field_options,
+                        format_func=lambda x: field_labels.get(x, x),
+                        key="ci_cross_field",
+                    )
+                with cross_col2:
+                    cross_bt = st.selectbox(
+                        "Demographic Dimension",
+                        ["age_gender", "placement"],
+                        format_func=lambda x: "Age × Gender" if x == "age_gender" else "Placement",
+                        key="ci_cross_bt",
+                    )
+
+                if st.button("Generate Cross-Analysis", key="ci_cross_btn"):
+                    with st.spinner("Computing cross-analysis..."):
+                        cross_data = demo_service.get_creative_demographic_cross(
+                            _UUID_demo(brand_id), cross_field, cross_bt,
+                            days_back=60, product_id=product_id,
+                        )
+
+                        if cross_data["rows"] and cross_data["cols"]:
+                            try:
+                                import plotly.graph_objects as go
+
+                                fig_cross = go.Figure(data=go.Heatmap(
+                                    z=cross_data["z"],
+                                    x=cross_data["cols"],
+                                    y=cross_data["rows"],
+                                    colorscale=[
+                                        [0, "#ef4444"],
+                                        [0.5, "#fafafa"],
+                                        [1, "#22c55e"],
+                                    ],
+                                    zmid=1.0,
+                                    text=cross_data["text"],
+                                    texttemplate="%{text}",
+                                    textfont={"size": 10},
+                                    hovertext=cross_data["hover"],
+                                    hovertemplate="%{hovertext}<extra></extra>",
+                                    colorbar=dict(title="vs Avg", ticksuffix="x"),
+                                    xgap=2,
+                                    ygap=2,
+                                ))
+                                fig_cross.update_layout(
+                                    height=max(250, len(cross_data["rows"]) * 50 + 60),
+                                    margin=dict(l=20, r=20, t=10, b=10),
+                                    yaxis=dict(autorange="reversed"),
+                                    xaxis=dict(tickangle=-45),
+                                )
+                                st.plotly_chart(fig_cross, use_container_width=True)
+
+                            except ImportError:
+                                st.warning("Install plotly for cross-analysis heatmap")
+                        else:
+                            st.info(
+                                "Not enough data for this cross-analysis. Need ads with both "
+                                "creative analysis and demographic performance data."
+                            )
+
+    except Exception as e:
+        logger.error(f"Demographic performance section error: {e}")
+        st.warning(f"Could not load demographic data: {e}")
+
     # Refresh button
     st.divider()
     if st.button("🔄 Recompute Correlations", key="ci_recompute_btn"):

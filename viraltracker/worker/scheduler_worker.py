@@ -2124,6 +2124,30 @@ async def execute_meta_sync_job(job: Dict) -> Dict[str, Any]:
             logs.append(f"Destination URL fetch error (non-fatal): {dest_err}")
             logger.warning(f"Destination URL fetch failed for {brand_name}: {dest_err}")
 
+        # Step 4.7: Fetch demographic breakdowns (NON-FATAL)
+        if not params.get('skip_demographics', False):
+            freshness.record_start(brand_id, "demographic_performance", run_id=run_id)
+            try:
+                from uuid import UUID as _UUID_demo
+                breakdown_data = await service.get_ad_insights_with_breakdowns(
+                    brand_id=_UUID_demo(brand_id),
+                    days_back=days_back,
+                )
+                demo_counts = await service.sync_demographic_performance_to_db(
+                    breakdown_data=breakdown_data,
+                    brand_id=_UUID_demo(brand_id),
+                )
+                total_demo = sum(demo_counts.values())
+                logs.append(
+                    f"Demographics: {demo_counts.get('age_gender', 0)} age/gender + "
+                    f"{demo_counts.get('placement', 0)} placement rows"
+                )
+                freshness.record_success(brand_id, "demographic_performance", records_affected=total_demo, run_id=run_id)
+            except Exception as demo_err:
+                freshness.record_failure(brand_id, "demographic_performance", str(demo_err), run_id=run_id)
+                logs.append(f"Demographic sync error (non-fatal): {demo_err}")
+                logger.warning(f"Demographic sync failed for {brand_name}: {demo_err}")
+
         # Step 5: Auto-classify ads if enabled (NON-FATAL)
         if params.get('auto_classify', False):
             freshness.record_start(brand_id, "ad_classifications", run_id=run_id)

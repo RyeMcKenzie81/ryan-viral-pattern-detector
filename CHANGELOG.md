@@ -1,5 +1,41 @@
 # ViralTracker Changelog
 
+## 2026-04-02 - Creative Intelligence: Demographic Breakdowns
+
+### Added: Age, gender, and placement performance analysis in Creative Intelligence
+
+You can now see which demographics convert best for your ads. The Iteration Lab's Creative Intelligence tab shows age x gender heatmaps, placement performance bars, and top-segment callouts like "25-34 Female converts at 2.1x your average ROAS."
+
+**Meta API Integration** (`meta_ads_service.py`)
+- Two new breakdown API calls per sync: age x gender and publisher_platform x platform_position
+- Rate-limited with retry/backoff, non-fatal if demographics API fails
+- Breakdown data stored in new `meta_ads_demographic_performance` table
+
+**Demographic Analysis Service** (`demographic_analysis_service.py`)
+- Impression-weighted CTR and ROAS aggregation per segment
+- vs_account_avg ratios for relative performance comparison
+- Creative x demographic cross-analysis (e.g., "fear-based ads perform 2x better with 25-34 females")
+- Product filtering support via URL-based ad matching
+
+**Iteration Lab UI** (`Iteration_Lab.py`)
+- Top-performing segment callouts with spend and ad count
+- Age x Gender heatmap with ROAS/CTR/Spend metric toggle
+- Placement bar chart sorted by performance vs average
+- Creative x Demographic cross-analysis expander with field and dimension selectors
+
+**Scheduler** (`scheduler_worker.py`)
+- Step 4.7 added to meta_sync job, fetches demographic breakdowns automatically
+- Non-fatal: logs warning on failure, job continues normally
+
+### Also included (from earlier Phase 2 work on this branch)
+
+- Split video/image hook leaderboards with format-appropriate metrics
+- Performance heatmap with 2D grid layout and per-dimension bar charts
+- Combination analysis and winning recipes for creative element pairs
+- Strategic leverage moves with clear actionable messaging
+- CTR format fix (was multiplying percentage values by 100)
+- Sales/revenue columns and filters in hook leaderboard
+
 ## 2026-03-31 - Activity Feed Rich Media Cards
 
 ### Added: Thumbnail previews in Activity Feed event cards

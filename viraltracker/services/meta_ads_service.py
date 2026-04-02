@@ -51,6 +51,22 @@ class MetaAdsService:
     - Time-series performance storage
     """
 
+    # Subset of fields for breakdown queries (no video detail metrics)
+    BREAKDOWN_INSIGHT_FIELDS = [
+        "ad_id",
+        "ad_name",
+        "spend",
+        "impressions",
+        "reach",
+        "clicks",
+        "outbound_clicks",
+        "outbound_clicks_ctr",
+        "actions",
+        "action_values",
+        "purchase_roas",
+        "video_play_actions",
+    ]
+
     # Meta API fields to request
     INSIGHT_FIELDS = [
         "ad_id",
@@ -499,6 +515,198 @@ class MetaAdsService:
 
         # Convert to list of dicts
         return [dict(i) for i in insights]
+
+    def _fetch_breakdown_insights_sync(
+        self,
+        ad_account_id: str,
+        params: Dict[str, Any],
+        breakdowns: List[str],
+    ) -> List[Dict[str, Any]]:
+        """Synchronous API call with breakdown dimensions (run in thread pool)."""
+        ad_account = self._get_ad_account_object(ad_account_id)
+        params_with_breakdowns = {**params, "breakdowns": breakdowns}
+
+        insights = ad_account.get_insights(
+            fields=self.BREAKDOWN_INSIGHT_FIELDS,
+            params=params_with_breakdowns,
+        )
+
+        return [dict(i) for i in insights]
+
+    async def get_ad_insights_with_breakdowns(
+        self,
+        brand_id: UUID,
+        days_back: int = 7,
+        max_retries: int = 3,
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """
+        Fetch demographic breakdown insights from Meta API.
+
+        Makes 2 API calls:
+        1. age + gender breakdowns (cross-product)
+        2. publisher_platform + platform_position breakdowns
+
+        Args:
+            brand_id: Brand UUID to look up ad account.
+            days_back: Days to look back.
+            max_retries: Maximum retries on rate limit errors.
+
+        Returns:
+            Dict with keys 'age_gender' and 'placement', each containing
+            a list of normalized insight dicts with breakdown columns.
+        """
+        self._ensure_sdk()
+
+        ad_account_id = await self.get_ad_account_for_brand(brand_id)
+        if not ad_account_id:
+            raise ValueError(f"No ad account linked to brand {brand_id}")
+
+        resolved_account_id = self._get_ad_account_id(ad_account_id=ad_account_id)
+
+        date_end = datetime.now().strftime("%Y-%m-%d")
+        start_dt = datetime.now() - timedelta(days=days_back)
+        date_start = start_dt.strftime("%Y-%m-%d")
+
+        params = {
+            "time_range": {"since": date_start, "until": date_end},
+            "level": "ad",
+            "time_increment": 1,
+        }
+
+        breakdown_configs = [
+            ("age_gender", ["age", "gender"]),
+            ("placement", ["publisher_platform", "platform_position"]),
+        ]
+
+        results: Dict[str, List[Dict[str, Any]]] = {}
+
+        for breakdown_type, breakdown_fields in breakdown_configs:
+            await self._rate_limit()
+            retry_count = 0
+            last_error = None
+
+            while retry_count <= max_retries:
+                try:
+                    logger.info(
+                        f"Fetching {breakdown_type} breakdowns for {date_start} to "
+                        f"{date_end} from {resolved_account_id}"
+                    )
+
+                    raw_insights = await asyncio.to_thread(
+                        self._fetch_breakdown_insights_sync,
+                        resolved_account_id,
+                        params,
+                        breakdown_fields,
+                    )
+
+                    normalized = []
+                    for row in raw_insights:
+                        norm = self.normalize_metrics(row)
+                        norm["meta_ad_account_id"] = resolved_account_id
+                        # Add breakdown dimension values from the raw row
+                        for field in breakdown_fields:
+                            norm[f"_breakdown_{field}"] = row.get(field, "")
+                        normalized.append(norm)
+
+                    logger.info(f"Fetched {len(normalized)} {breakdown_type} breakdown rows")
+                    results[breakdown_type] = normalized
+                    break
+
+                except Exception as e:
+                    error_str = str(e).lower()
+                    last_error = e
+
+                    if "rate" in error_str or "limit" in error_str or "429" in str(e):
+                        retry_count += 1
+                        if retry_count <= max_retries:
+                            retry_delay = 15 * (2 ** (retry_count - 1))
+                            logger.warning(
+                                f"Rate limit hit on {breakdown_type} breakdowns. "
+                                f"Retry {retry_count}/{max_retries} after {retry_delay}s"
+                            )
+                            await asyncio.sleep(retry_delay)
+                            continue
+                        else:
+                            raise Exception(
+                                f"Rate limit exceeded for {breakdown_type} after "
+                                f"{max_retries} retries: {e}"
+                            )
+                    else:
+                        logger.error(f"API error fetching {breakdown_type} breakdowns: {e}")
+                        raise
+
+            if breakdown_type not in results:
+                raise Exception(f"Failed to fetch {breakdown_type} breakdowns: {last_error}")
+
+        return results
+
+    async def sync_demographic_performance_to_db(
+        self,
+        breakdown_data: Dict[str, List[Dict[str, Any]]],
+        brand_id: UUID,
+    ) -> Dict[str, int]:
+        """
+        Save demographic breakdown data to meta_ads_demographic_performance.
+
+        Args:
+            breakdown_data: Output from get_ad_insights_with_breakdowns().
+            brand_id: Brand UUID.
+
+        Returns:
+            Dict with counts per breakdown type: {'age_gender': N, 'placement': M}
+        """
+        from ..core.database import get_supabase_client
+
+        supabase = get_supabase_client()
+        counts: Dict[str, int] = {}
+
+        for breakdown_type, rows in breakdown_data.items():
+            saved = 0
+            for row in rows:
+                try:
+                    ad_id = row.get("meta_ad_id")
+                    date_val = row.get("date")
+                    if not ad_id or not date_val:
+                        continue
+
+                    record = {
+                        "brand_id": str(brand_id),
+                        "meta_ad_account_id": row.get("meta_ad_account_id", ""),
+                        "meta_ad_id": ad_id,
+                        "date": date_val,
+                        "breakdown_type": breakdown_type,
+                        "age_range": row.get("_breakdown_age", ""),
+                        "gender": row.get("_breakdown_gender", ""),
+                        "publisher_platform": row.get("_breakdown_publisher_platform", ""),
+                        "platform_position": row.get("_breakdown_platform_position", ""),
+                        "spend": row.get("spend"),
+                        "impressions": row.get("impressions"),
+                        "reach": row.get("reach"),
+                        "link_clicks": row.get("link_clicks"),
+                        "link_ctr": row.get("link_ctr"),
+                        "purchases": row.get("purchases"),
+                        "purchase_value": row.get("purchase_value"),
+                        "roas": row.get("roas"),
+                        "add_to_carts": row.get("add_to_carts"),
+                        "video_views": row.get("video_views"),
+                    }
+
+                    supabase.table("meta_ads_demographic_performance").upsert(
+                        record,
+                        on_conflict="meta_ad_id,date,breakdown_type,age_range,gender,publisher_platform,platform_position",
+                    ).execute()
+
+                    saved += 1
+                except Exception as e:
+                    logger.error(
+                        f"Failed to save {breakdown_type} breakdown for "
+                        f"{row.get('meta_ad_id')}: {e}"
+                    )
+
+            counts[breakdown_type] = saved
+            logger.info(f"Saved {saved}/{len(rows)} {breakdown_type} breakdown records")
+
+        return counts
 
     def _fetch_video_source_url_sync(self, video_id: str) -> Optional[str]:
         """Synchronous call to get a downloadable video source URL from Meta.
