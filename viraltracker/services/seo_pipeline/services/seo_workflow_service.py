@@ -388,66 +388,32 @@ class SEOWorkflowService:
                 self._pause_job(job_id, "pre_publish_checklist", {"checklist": checklist_result})
                 return
 
-            # 10. Publish to Shopify as draft
-            self._advance_step(job_id, "publish")
-            if self._is_cancelled(job_id):
-                return
-
-            publish_result = None
-            try:
-                from viraltracker.services.seo_pipeline.services.cms_publisher_service import CMSPublisherService
-                cms_svc = CMSPublisherService(supabase_client=sb)
-                publish_result = await asyncio.to_thread(
-                    cms_svc.publish_article, article_id, brand_id, org_id, draft=True
-                )
-            except Exception as e:
-                logger.error(f"Shopify publish failed: {e}")
-                self._update_job(job_id, status="failed", error=f"Shopify publish failed: {e}",
-                                 progress_update={"failed_at_step": "publish"})
-                return
-
-            # 10b. Build schema markup programmatically
+            # 10. Build schema markup (no Shopify publish — autopilot handles it)
             self._advance_step(job_id, "build_schema")
             if self._is_cancelled(job_id):
                 return
 
-            published_url = ""
-            admin_url = ""
-            if publish_result:
-                published_url = publish_result.get("published_url", "")
-                admin_url = publish_result.get("admin_url", "")
-
             schema = self._build_schema_markup(
                 article_id=article_id,
-                published_url=published_url,
+                published_url="",
                 author_ctx=author_ctx,
                 brand_config=brand_config,
                 brand_ctx=brand_ctx,
                 sb=sb,
             )
-            # Always update — None clears old Article schema from DB
-            sb.table("seo_articles").update({"schema_markup": schema}).eq("id", article_id).execute()
+            if schema:
+                sb.table("seo_articles").update({"schema_markup": schema}).eq("id", article_id).execute()
 
-            # Update status to publishing
-            await asyncio.to_thread(tracking_svc.update_status, article_id, "publishing", True)
-
-            # 11. Interlinking
-            self._advance_step(job_id, "interlinking")
-            if self._is_cancelled(job_id):
-                return
-
+            # 10b. Sync content_html so it's ready for future publishing
             try:
-                from viraltracker.services.seo_pipeline.services.interlinking_service import InterlinkingService
-                link_svc = InterlinkingService(supabase_client=sb)
-                await asyncio.to_thread(
-                    link_svc.auto_link_article,
-                    article_id,
-                    push_to_cms=True,
-                    brand_id=brand_id,
-                    organization_id=org_id,
-                )
+                from viraltracker.services.seo_pipeline.services.cms_publisher_service import CMSPublisherService
+                cms_svc = CMSPublisherService(supabase_client=sb)
+                cms_svc.sync_content_html(article_id)
             except Exception as e:
-                logger.warning(f"Interlinking failed (non-fatal): {e}")
+                logger.warning(f"content_html sync failed (non-fatal): {e}")
+
+            # 11. Set status to qa_passed so the autopilot pipeline picks it up
+            await asyncio.to_thread(tracking_svc.update_status, article_id, "qa_passed", True)
 
             # 12. Complete
             self._advance_step(job_id, "complete")
@@ -457,11 +423,10 @@ class SEOWorkflowService:
                 result={
                     "article_id": article_id,
                     "keyword": keyword,
-                    "published_url": admin_url or published_url,
                     "checklist": checklist_result,
                 },
             )
-            logger.info(f"Job {job_id} completed: article={article_id}, url={published_url}")
+            logger.info(f"Job {job_id} completed: article={article_id}, status=qa_passed")
 
             # Fire-and-forget: spawn background image generation (non-fatal)
             try:
@@ -2234,23 +2199,13 @@ class SEOWorkflowService:
                 finally:
                     loop.close()
 
-                # Re-publish to Shopify with images
+                # Sync content_html with images (autopilot will publish later)
                 try:
                     from viraltracker.services.seo_pipeline.services.cms_publisher_service import CMSPublisherService
                     cms_svc = CMSPublisherService(supabase_client=sb)
-                    cms_svc.publish_article(
-                        article_id=article_id,
-                        brand_id=brand_id,
-                        organization_id=organization_id,
-                        draft=True,
-                    )
+                    cms_svc.sync_content_html(article_id)
                 except Exception as e:
-                    logger.warning(f"Re-publish after images failed (non-fatal): {e}")
-                    # Defensive: sync content_html even if CMS push fails
-                    try:
-                        cms_svc.sync_content_html(article_id)
-                    except Exception:
-                        pass
+                    logger.warning(f"content_html sync after images failed (non-fatal): {e}")
 
                 sb.table("seo_articles").update(
                     {"image_status": "complete"}
