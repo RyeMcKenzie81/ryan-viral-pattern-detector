@@ -5594,7 +5594,7 @@ async def execute_seo_publish_job(job: Dict) -> Dict[str, Any]:
 
                 # Build article payload
                 article_payload = {
-                    "title": full_article.get("title", ""),
+                    "title": full_article.get("title") or full_article.get("seo_title") or full_article.get("keyword", ""),
                     "body_html": full_article.get("content_html", ""),
                     "author": full_article.get("author_name", ""),
                     "seo_title": full_article.get("seo_title", ""),
