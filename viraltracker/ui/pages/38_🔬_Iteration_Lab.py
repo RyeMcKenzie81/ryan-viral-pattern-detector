@@ -2333,7 +2333,7 @@ def render_creative_intelligence_tab(brand_id: str, org_id: str, product_id: str
     if correlations:
         st.divider()
         st.subheader("🗺️ Performance Heatmap")
-        st.caption("Visual overview of how each creative element performs vs account average.")
+        st.caption("How each creative element performs vs your account average. Green = outperformer, red = underperformer.")
 
         try:
             import plotly.graph_objects as go
@@ -2346,54 +2346,87 @@ def render_creative_intelligence_tab(brand_id: str, org_id: str, product_id: str
                     dimensions[dim] = []
                 dimensions[dim].append(c)
 
-            # Build heatmap data — one row per field value, columns = CTR vs avg, ROAS vs avg
-            heatmap_values = []
-            heatmap_labels = []
-            heatmap_dimensions = []
-            acct_ctr = None
-            acct_roas = None
+            # Build a proper 2D heatmap: rows = dimensions, cells = field values
+            # Each row is one dimension, padded to same length
+            dim_names = sorted(dimensions.keys())
+            if dim_names:
+                # Sort values within each dimension by vs_account_avg descending
+                dim_sorted = {}
+                max_cols = 0
+                for dim_name in dim_names:
+                    sorted_corrs = sorted(
+                        dimensions[dim_name],
+                        key=lambda x: x.get("vs_account_avg", 1),
+                        reverse=True,
+                    )
+                    dim_sorted[dim_name] = sorted_corrs
+                    max_cols = max(max_cols, len(sorted_corrs))
 
-            # Compute account averages from correlation data for reference
-            for dim_name, dim_corrs in sorted(dimensions.items()):
-                for c in sorted(dim_corrs, key=lambda x: x.get("vs_account_avg", 1), reverse=True):
-                    label = c["field_value"].replace("_", " ").title()
-                    vs = c.get("vs_account_avg", 1.0)
-                    n = c.get("ad_count", 0)
-                    heatmap_labels.append(f"{label} ({n})")
-                    heatmap_dimensions.append(dim_name)
-                    heatmap_values.append(vs)
+                # Build z-values, text, and hover matrices
+                z_matrix = []
+                text_matrix = []
+                hover_matrix = []
+                for dim_name in dim_names:
+                    row_z = []
+                    row_text = []
+                    row_hover = []
+                    for c in dim_sorted[dim_name]:
+                        vs = c.get("vs_account_avg", 1.0)
+                        label = c["field_value"].replace("_", " ").title()
+                        n = c.get("ad_count", 0)
+                        row_z.append(vs)
+                        row_text.append(f"{label}\n{vs:.2f}x ({n})")
+                        row_hover.append(f"{label}<br>{vs:.2f}x vs avg<br>{n} ads")
+                    # Pad shorter rows with None
+                    while len(row_z) < max_cols:
+                        row_z.append(None)
+                        row_text.append("")
+                        row_hover.append("")
+                    z_matrix.append(row_z)
+                    text_matrix.append(row_text)
+                    hover_matrix.append(row_hover)
 
-            if heatmap_labels:
-                # Color scale: red (underperform) → white (average) → green (outperform)
                 fig = go.Figure(data=go.Heatmap(
-                    z=[heatmap_values],
-                    x=heatmap_labels,
-                    y=["vs Account Avg"],
+                    z=z_matrix,
+                    x=[f"#{i+1}" for i in range(max_cols)],
+                    y=dim_names,
                     colorscale=[
                         [0, "#ef4444"],
                         [0.5, "#fafafa"],
                         [1, "#22c55e"],
                     ],
                     zmid=1.0,
-                    text=[[f"{v:.2f}x" for v in heatmap_values]],
+                    text=text_matrix,
                     texttemplate="%{text}",
-                    textfont={"size": 11},
-                    hovertemplate="%{x}<br>%{z:.2f}x vs avg<extra></extra>",
+                    textfont={"size": 10},
+                    hovertext=hover_matrix,
+                    hovertemplate="%{hovertext}<extra></extra>",
                     colorbar=dict(title="vs Avg", ticksuffix="x"),
+                    xgap=2,
+                    ygap=2,
                 ))
                 fig.update_layout(
-                    height=150,
-                    margin=dict(l=20, r=20, t=10, b=80),
-                    xaxis=dict(tickangle=-45, tickfont=dict(size=10)),
+                    height=max(200, len(dim_names) * 60 + 60),
+                    margin=dict(l=20, r=20, t=10, b=10),
+                    xaxis=dict(
+                        title="Ranked best → worst",
+                        showticklabels=False,
+                    ),
+                    yaxis=dict(tickfont=dict(size=12), autorange="reversed"),
                 )
                 st.plotly_chart(fig, use_container_width=True)
 
-                # Dimension-grouped detail heatmap
-                if len(dimensions) > 1:
-                    for dim_name, dim_corrs in sorted(dimensions.items()):
-                        if len(dim_corrs) < 2:
-                            continue
-                        sorted_corrs = sorted(dim_corrs, key=lambda x: x.get("vs_account_avg", 1), reverse=True)
+                # Show per-dimension bar charts in a 2-column grid
+                chart_dims = [
+                    (dn, dim_sorted[dn]) for dn in dim_names if len(dim_sorted[dn]) >= 2
+                ]
+                for i in range(0, len(chart_dims), 2):
+                    cols = st.columns(2)
+                    for j, col in enumerate(cols):
+                        idx = i + j
+                        if idx >= len(chart_dims):
+                            break
+                        dim_name, sorted_corrs = chart_dims[idx]
                         labels = [c["field_value"].replace("_", " ").title() for c in sorted_corrs]
                         vals = [c.get("vs_account_avg", 1.0) for c in sorted_corrs]
                         counts = [c.get("ad_count", 0) for c in sorted_corrs]
@@ -2409,15 +2442,15 @@ def render_creative_intelligence_tab(brand_id: str, org_id: str, product_id: str
                             ],
                         ))
                         fig2.update_layout(
-                            title=dict(text=dim_name, font=dict(size=14)),
+                            title=dict(text=dim_name, font=dict(size=13)),
                             height=250,
-                            margin=dict(l=20, r=20, t=40, b=40),
-                            yaxis=dict(title="vs Account Avg"),
+                            margin=dict(l=20, r=20, t=35, b=40),
+                            yaxis=dict(title="vs Avg"),
                             showlegend=False,
                         )
-                        # Add baseline at 1.0x
                         fig2.add_hline(y=1.0, line_dash="dash", line_color="gray", opacity=0.5)
-                        st.plotly_chart(fig2, use_container_width=True)
+                        with col:
+                            st.plotly_chart(fig2, use_container_width=True)
 
         except ImportError:
             st.warning("Install plotly for heatmap visualization: `pip install plotly`")
