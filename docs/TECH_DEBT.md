@@ -940,3 +940,30 @@ This inconsistency requires every display site to know which service provided th
 ### 14. ~~Creative Genome Update Not in Scheduler UI~~ ✅ DONE (2026-03-30)
 
 Added `creative_genome_update` job type to Ad Scheduler UI with brand selector + schedule config. Items 3-4 (genome_validation UI, auto-create during onboarding) remain as low-priority future work.
+
+---
+
+### 15. Strategic Messaging Layer for Creative Correlation
+
+**Priority**: Medium-High (unlocks "what to say" insights, not just "how to say it")
+**Complexity**: Medium (extend existing Gemini analysis prompts + correlation engine)
+**Added**: 2026-04-02
+
+**Context**: The creative correlation engine currently tracks surface-level creative elements (hook_pattern, CTA style, tone, production quality) but not the strategic messaging layer — what pain point is being hit, what JTBD is being addressed, what objection is being overcome, what benefit is highlighted.
+
+**What to extract per ad** (via Gemini image/video analysis):
+- **Pain point** addressed (e.g., "joint pain", "low energy")
+- **JTBD** (e.g., "feel confident at the gym", "sleep through the night")
+- **Objection handled** (e.g., "too expensive", "doesn't work")
+- **Benefit highlighted** (e.g., "fast-acting", "clinically proven")
+- **Belief targeted** (e.g., "cortisol is the real cause")
+
+**Why it matters**: The correlation engine would surface insights like "Ads addressing 'joint pain' + curiosity hook → 2.8x ROAS" or "The JTBD 'sleep through the night' outperforms 'have more energy' by 1.6x". This tells you **what to say**, not just **how to say it**.
+
+**Implementation**:
+1. Add fields to `ad_image_analysis` and `ad_video_analysis` tables (pain_points TEXT[], jtbd TEXT[], objections_handled TEXT[], benefits_highlighted TEXT[], beliefs_targeted TEXT[])
+2. Update Gemini analysis prompts in ImageAnalysisService and VideoAnalysisService to extract these
+3. Add new fields to CreativeCorrelationService correlation loop
+4. Re-analyze existing ads (or analyze incrementally as new ads come in)
+
+**Connects to**: Angle pipeline (`belief_angles`, `angle_candidates`) — could auto-link ads to existing angles based on matching pain points/JTBDs.
