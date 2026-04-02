@@ -162,11 +162,10 @@ def render_pipeline_overview(counts: dict):
         ("draft_complete", "Written", "Article fully written and ready for QA validation."),
         ("qa_passed", "QA Passed", "Passed automated QA checks. Waiting for content evaluation."),
         ("eval_passed", "Eval Passed", "Passed content eval (auto-fix + quality checks). Ready to queue for publishing."),
-        ("_queued_combined", "Queued", "In the publish queue waiting for scheduled time slot or currently publishing."),
+        ("publish_queued", "Queued", "In the publish queue waiting for a scheduled time slot."),
+        ("publishing", "Publishing", "Sent to Shopify as draft. Awaiting confirmation or manual go-live."),
         ("published", "Published", "Live on Shopify."),
     ]
-    # Combine publish_queued + publishing into a single "Queued" count
-    counts["_queued_combined"] = counts.get("publish_queued", 0) + counts.get("publishing", 0)
     error_stages = [
         ("qa_failed", "QA Failed"),
         ("eval_failed", "Eval Failed"),
