@@ -345,11 +345,11 @@ class QAValidationService:
             "first_paragraph": False,
         }
 
-        # Check first paragraph
+        # Check first paragraph (skip headings, images in markdown and HTML)
         paragraphs = re.split(r'\n\n+', content_md.strip())
         for p in paragraphs:
             stripped = p.strip()
-            if stripped and not stripped.startswith("#"):
+            if stripped and not stripped.startswith("#") and not stripped.startswith("![") and not stripped.startswith("<img") and not stripped.startswith("<figure"):
                 placements["first_paragraph"] = kw_lower in stripped.lower()
                 break
 

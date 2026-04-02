@@ -269,8 +269,10 @@ class PublishQueueService:
         window_start_str = policy.get("publish_window_start", "09:00")
         window_end_str = policy.get("publish_window_end", "17:00")
 
-        h_start, m_start = map(int, window_start_str.split(":"))
-        h_end, m_end = map(int, window_end_str.split(":"))
+        start_parts = str(window_start_str).split(":")
+        h_start, m_start = int(start_parts[0]), int(start_parts[1])
+        end_parts = str(window_end_str).split(":")
+        h_end, m_end = int(end_parts[0]), int(end_parts[1])
 
         window_start = time(h_start, m_start)
         window_end = time(h_end, m_end)

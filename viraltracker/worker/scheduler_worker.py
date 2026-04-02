@@ -102,6 +102,8 @@ JOB_TYPE_LABELS = {
     'iteration_auto_run': 'Iteration Auto Run',
     'size_variant': 'Size Variant',
     'smart_edit': 'Smart Edit',
+    'seo_content_eval': 'SEO Content Eval',
+    'seo_publish': 'SEO Publish',
 }
 
 # Map job_type to page slug for deep linking (points to result pages, not scheduler)
@@ -129,6 +131,8 @@ JOB_TYPE_PAGE_SLUGS = {
     'iteration_auto_run': 'iteration_lab',
     'size_variant': 'ad_scheduler',
     'smart_edit': 'ad_scheduler',
+    'seo_content_eval': 'content_policies',
+    'seo_publish': 'content_policies',
 }
 
 
@@ -405,17 +409,23 @@ def update_job_run(run_id: str, updates: Dict):
                         pass
 
                 if status == "completed":
+                    metadata = updates.get('metadata') or {}
+                    event_details = {
+                        'job_id': parent_job_id,
+                        'run_id': run_id,
+                        'job_name': job_name,
+                        'metadata': metadata,
+                    }
+                    # Surface thumbnail data for rich media grid rendering
+                    if metadata.get('thumbnail_urls'):
+                        event_details['thumbnail_urls'] = metadata['thumbnail_urls']
+                        event_details['thumbnail_count'] = metadata.get('thumbnail_count', 0)
                     _emit_activity_event(
                         event_type='job_completed',
                         severity='success',
                         title=f"{_humanize_job_type(job_type)} completed",
                         brand_id=brand_id,
-                        details={
-                            'job_id': parent_job_id,
-                            'run_id': run_id,
-                            'job_name': job_name,
-                            'metadata': updates.get('metadata'),
-                        },
+                        details=event_details,
                         source_id=run_id,
                         link_page=JOB_TYPE_PAGE_SLUGS.get(job_type, 'ad_scheduler'),
                         link_params={'job_id': parent_job_id},
@@ -829,7 +839,15 @@ def build_offer_variant_context(offer_variant: Dict, brand_disallowed_claims: Op
 # ============================================================================
 
 def calculate_next_run(cron_expression: str) -> Optional[datetime]:
-    """Calculate next run time from cron expression."""
+    """Calculate next run time from cron expression.
+
+    Supports:
+    - Interval minutes: */30 * * * * (every 30 minutes)
+    - Interval hours: 0 */2 * * * (every 2 hours)
+    - Daily: 0 8 * * * (daily at 8am)
+    - Weekly: 0 8 * * 1 (weekly Monday at 8am)
+    - Monthly: 0 8 1 * * (first of month at 8am)
+    """
     if not cron_expression:
         return None
 
@@ -839,32 +857,56 @@ def calculate_next_run(cron_expression: str) -> Optional[datetime]:
             return None
 
         minute, hour, day_of_month, month, day_of_week = parts
-        hour = int(hour)
-
         now = datetime.now(PST)
-        next_run = now.replace(hour=hour, minute=0, second=0, microsecond=0)
+
+        # Handle interval-style cron: */N minutes
+        if '/' in minute:
+            interval_min = int(minute.split('/')[1])
+            next_run = now + timedelta(minutes=interval_min)
+            # Align to interval boundary
+            aligned_min = (next_run.minute // interval_min) * interval_min
+            next_run = next_run.replace(minute=aligned_min, second=0, microsecond=0)
+            if next_run <= now:
+                next_run += timedelta(minutes=interval_min)
+            return next_run
+
+        # Handle interval-style cron: 0 */N hours
+        if '/' in hour:
+            interval_hr = int(hour.split('/')[1])
+            next_run = now + timedelta(hours=interval_hr)
+            aligned_hr = (next_run.hour // interval_hr) * interval_hr
+            run_minute = int(minute) if minute != '*' else 0
+            next_run = next_run.replace(hour=aligned_hr, minute=run_minute, second=0, microsecond=0)
+            if next_run <= now:
+                next_run += timedelta(hours=interval_hr)
+            return next_run
+
+        hour_int = int(hour)
+        run_minute = int(minute) if minute != '*' else 0
+        next_run = now.replace(hour=hour_int, minute=run_minute, second=0, microsecond=0)
 
         if day_of_week != '*':
             # Weekly
             target_dow = int(day_of_week)
             days_ahead = target_dow - now.weekday()
-            if days_ahead <= 0:
+            if days_ahead < 0:
                 days_ahead += 7
-            if days_ahead == 0 and now.hour >= hour:
+            if days_ahead == 0 and now >= next_run:
                 days_ahead = 7
             next_run = next_run + timedelta(days=days_ahead)
         elif day_of_month != '*':
             # Monthly
-            if now.day > 1 or (now.day == 1 and now.hour >= hour):
+            target_day = int(day_of_month)
+            if now.day > target_day or (now.day == target_day and now >= next_run):
                 if now.month == 12:
-                    next_run = next_run.replace(year=now.year + 1, month=1, day=1)
+                    next_run = next_run.replace(year=now.year + 1, month=1, day=target_day)
                 else:
-                    next_run = next_run.replace(month=now.month + 1, day=1)
+                    next_run = next_run.replace(month=now.month + 1, day=target_day)
             else:
-                next_run = next_run.replace(day=1)
+                next_run = next_run.replace(day=target_day)
         else:
             # Daily
-            if now.hour >= hour:
+            if now >= next_run:
                 next_run = next_run + timedelta(days=1)
 
         return next_run
@@ -1318,6 +1360,26 @@ async def execute_ad_creation_v2_job(job: Dict) -> Dict[str, Any]:
         if brand_id:
             freshness.record_success(brand_id, "ad_creations", records_affected=ads_approved, run_id=run_id)
 
+        # Collect thumbnail tuples for media grid (best-effort, non-blocking)
+        thumbnail_tuples = []
+        if ads_approved > 0 and ad_run_ids:
+            try:
+                thumb_result = db.table("generated_ads").select("storage_path").not_.is_(
+                    "storage_path", "null"
+                ).in_(
+                    "ad_run_id", ad_run_ids[:5]
+                ).order("created_at", desc=True).limit(5).execute()
+                for r in (thumb_result.data or []):
+                    sp = r.get("storage_path")
+                    if sp:
+                        if sp.startswith("generated-ads/"):
+                            path = sp[len("generated-ads/"):]
+                        else:
+                            path = sp
+                        thumbnail_tuples.append({"bucket": "generated-ads", "path": path})
+            except Exception as e:
+                logger.debug(f"V2 thumbnail lookup failed: {e}")
+
         # Job completed successfully
         update_job_run(run_id, {
             "status": "completed",
@@ -1329,6 +1391,8 @@ async def execute_ad_creation_v2_job(job: Dict) -> Dict[str, Any]:
                 "ads_attempted": ads_attempted,
                 "ads_approved": ads_approved,
                 "template_selection_mode": template_selection_mode,
+                "thumbnail_urls": thumbnail_tuples,
+                "thumbnail_count": ads_approved,
             },
             "logs": "\n".join(logs),
         })
@@ -1725,13 +1789,39 @@ async def execute_ad_creation_job(job: Dict) -> Dict[str, Any]:
         if brand_id:
             freshness.record_success(brand_id, "ad_creations", records_affected=ads_generated, run_id=run_id)
 
+        # Collect thumbnail tuples for media grid (best-effort, non-blocking)
+        thumbnail_tuples = []
+        if ads_generated > 0 and ad_run_ids:
+            try:
+                thumb_result = db.table("generated_ads").select("storage_path").not_.is_(
+                    "storage_path", "null"
+                ).in_(
+                    "ad_run_id", ad_run_ids[:5]
+                ).order("created_at", desc=True).limit(5).execute()
+                for r in (thumb_result.data or []):
+                    sp = r.get("storage_path")
+                    if sp:
+                        # storage_path has bucket prefix: "generated-ads/run_id/file.png"
+                        if sp.startswith("generated-ads/"):
+                            path = sp[len("generated-ads/"):]
+                        else:
+                            path = sp
+                        thumbnail_tuples.append({"bucket": "generated-ads", "path": path})
+            except Exception as e:
+                logger.debug(f"Thumbnail lookup failed for ads_generated: {e}")
+
         # Job completed successfully
         job_run_data = {
             "status": "completed",
             "completed_at": datetime.now(PST).isoformat(),
             "ad_run_ids": ad_run_ids,
             "templates_used": templates_used,
-            "logs": "\n".join(logs)
+            "logs": "\n".join(logs),
+            "metadata": {
+                "ads_generated": ads_generated,
+                "thumbnail_urls": thumbnail_tuples,
+                "thumbnail_count": ads_generated,
+            }
         }
         # Include angles_used if belief-first mode was used
         if angles_used:
@@ -1779,6 +1869,8 @@ async def execute_ad_creation_job(job: Dict) -> Dict[str, Any]:
                     "templates_used": templates_used[:10],
                     "ad_run_ids": ad_run_ids[:10],
                     "content_source": params.get("content_source", "hooks"),
+                    "thumbnail_urls": thumbnail_tuples,
+                    "thumbnail_count": ads_generated,
                 },
                 source_id=str(job_id),
                 link_page="ad_scheduler",
@@ -2508,6 +2600,7 @@ async def execute_template_scrape_job(job: Dict) -> Dict[str, Any]:
 
         # Step 3: Process each ad with longevity tracking
         new_count = 0
+        new_asset_ids = []  # Collect image asset IDs for media grid thumbnails
         updated_count = 0
         queued_count = 0
         deduped_count = 0
@@ -2617,6 +2710,12 @@ async def execute_template_scrape_job(job: Dict) -> Dict[str, Any]:
                             scrape_source="scheduled_scrape"
                         )
 
+                        # Collect image asset IDs for media grid thumbnails
+                        image_ids = asset_result.get('images', [])
+                        for img_id in image_ids[:5]:
+                            if len(new_asset_ids) < 10:  # Cap collection
+                                new_asset_ids.append(str(img_id))
+
                         # Queue for review with collation dedup (Fix 10 — Task 1.3)
                         if auto_queue:
                             asset_ids = asset_result.get('images', []) + asset_result.get('videos', [])
@@ -2669,11 +2768,38 @@ async def execute_template_scrape_job(job: Dict) -> Dict[str, Any]:
         if brand_id:
             freshness.record_success(brand_id, "templates_scraped", records_affected=new_count, run_id=run_id)
 
+        # Collect thumbnail tuples for media grid (best-effort, non-blocking)
+        thumbnail_tuples = []
+        if new_asset_ids:
+            try:
+                thumb_result = db.table("scraped_ad_assets").select("storage_path").in_(
+                    "id", new_asset_ids[:5]
+                ).eq("asset_type", "image").eq("status", "downloaded").not_.is_(
+                    "storage_path", "null"
+                ).limit(5).execute()
+                for r in (thumb_result.data or []):
+                    sp = r.get("storage_path")
+                    if sp:
+                        # storage_path has bucket prefix: "scraped-assets/fb_id/file.jpg"
+                        if sp.startswith("scraped-assets/"):
+                            path = sp[len("scraped-assets/"):]
+                        else:
+                            path = sp
+                        thumbnail_tuples.append({"bucket": "scraped-assets", "path": path})
+            except Exception as e:
+                logger.debug(f"Thumbnail lookup failed for templates_scraped: {e}")
+
         # Update job run as completed
         update_job_run(run_id, {
             "status": "completed",
             "completed_at": datetime.now(PST).isoformat(),
-            "logs": "\n".join(logs)
+            "logs": "\n".join(logs),
+            "metadata": {
+                "new_ads": new_count,
+                "updated_ads": updated_count,
+                "thumbnail_urls": thumbnail_tuples,
+                "thumbnail_count": new_count,
+            }
         })
 
         # Update job: increment runs_completed, calculate next_run
@@ -2693,6 +2819,8 @@ async def execute_template_scrape_job(job: Dict) -> Dict[str, Any]:
                     "updated_ads": updated_count,
                     "queued": queued_count,
                     "max_ads": params.get("max_ads", 50),
+                    "thumbnail_urls": thumbnail_tuples,
+                    "thumbnail_count": new_count,
                 },
                 source_id=str(job_id),
                 link_page="ad_scheduler",
@@ -5264,9 +5392,11 @@ async def execute_seo_content_eval_job(job: Dict) -> Dict[str, Any]:
     try:
         from viraltracker.services.seo_pipeline.services.content_eval_service import ContentEvalService
         from viraltracker.services.seo_pipeline.services.publish_queue_service import PublishQueueService
+        from viraltracker.services.seo_pipeline.services.content_auto_fix_service import ContentAutoFixService
 
         eval_service = ContentEvalService()
         queue_service = PublishQueueService()
+        auto_fix_service = ContentAutoFixService()
 
         # Find pending articles
         pending = eval_service.get_pending_articles(brand_id=brand_id)
@@ -5286,19 +5416,70 @@ async def execute_seo_content_eval_job(job: Dict) -> Dict[str, Any]:
         evaluated = 0
         passed = 0
         failed = 0
+        articles_fixed = 0
+        fix_failures = 0
 
         for article in articles_to_eval:
             article_id = article["id"]
             art_brand_id = article.get("brand_id", brand_id)
             art_org_id = article.get("organization_id", "")
+            keyword = article.get("keyword", article_id)
 
+            # Phase 1: Auto-fix
+            try:
+                fix_report = auto_fix_service.fix_article(article_id, art_brand_id, art_org_id)
+
+                if fix_report["fixes_applied"]:
+                    articles_fixed += 1
+                    logs.append(f"AUTO-FIX: {keyword}")
+                    for fix in fix_report["fixes_applied"]:
+                        logs.append(f"  - {fix['check']}: {fix.get('before', '')} → {fix.get('after', '')}")
+
+                if fix_report["fixes_failed"]:
+                    for ff in fix_report["fixes_failed"]:
+                        logs.append(f"  FIX-FAILED: {ff['check']} - {ff.get('reason', '')}")
+
+                    # Check if any critical fixes failed (Tier 2 AI rewrites)
+                    critical_failures = [
+                        f for f in fix_report["fixes_failed"]
+                        if f.get("check") in ("load_article", "save_to_db")
+                    ]
+                    if critical_failures:
+                        # Can't proceed with eval — mark failed and emit activity event
+                        try:
+                            eval_service.supabase.table("seo_articles").update(
+                                {"status": "eval_failed"}
+                            ).eq("id", article_id).execute()
+                        except Exception:
+                            pass
+                        _emit_activity_event(
+                            event_type="seo_auto_fix_failed",
+                            severity="warning",
+                            title=f"Auto-fix failed: {keyword}",
+                            brand_id=art_brand_id,
+                            organization_id=art_org_id,
+                            details={
+                                "article_id": article_id,
+                                "failures": fix_report["fixes_failed"],
+                            },
+                            link_page="Exceptions",
+                        )
+                        fix_failures += 1
+                        failed += 1
+                        continue
+
+            except Exception as e:
+                logger.error(f"Auto-fix error for {article_id}: {e}")
+                logs.append(f"AUTO-FIX ERROR: {keyword} - {e}")
+
+            # Phase 2: Evaluate (now against potentially fixed content)
             try:
                 result = eval_service.evaluate_article(article_id, art_brand_id, art_org_id)
                 evaluated += 1
 
                 if result["verdict"] == "passed":
                     passed += 1
-                    logs.append(f"PASS: {article.get('keyword', article_id)}")
+                    logs.append(f"PASS: {keyword}")
 
                     # Enqueue for publishing
                     full_article = eval_service._get_article(article_id)
@@ -5316,16 +5497,23 @@ async def execute_seo_content_eval_job(job: Dict) -> Dict[str, Any]:
                 else:
                     failed += 1
                     logs.append(
-                        f"FAIL: {article.get('keyword', article_id)} "
+                        f"FAIL: {keyword} "
                         f"({result['failed_checks']} errors, {result['warning_count']} warnings)"
                     )
 
             except Exception as e:
-                logs.append(f"ERROR evaluating {article.get('keyword', article_id)}: {e}")
+                logs.append(f"ERROR evaluating {keyword}: {e}")
                 logger.error(f"Error evaluating article {article_id}: {e}")
 
-        metadata = {"evaluated": evaluated, "passed": passed, "failed": failed}
+        metadata = {
+            "evaluated": evaluated, "passed": passed, "failed": failed,
+            "articles_fixed": articles_fixed, "fix_failures": fix_failures,
+        }
+        if evaluated > 0:
+            metadata["eval_pass_rate_after_fix"] = round(passed / evaluated * 100, 1)
         logs.append(f"\nSummary: {evaluated} evaluated, {passed} passed, {failed} failed")
+        if articles_fixed:
+            logs.append(f"Auto-fix: {articles_fixed} articles fixed, {fix_failures} fix failures")
 
         update_job_run(run_id, {
             "status": "completed",
@@ -5430,7 +5618,7 @@ async def execute_seo_publish_job(job: Dict) -> Dict[str, Any]:
 
                 # Build article payload
                 article_payload = {
-                    "title": full_article.get("title", ""),
+                    "title": full_article.get("title") or full_article.get("seo_title") or full_article.get("keyword", ""),
                     "body_html": full_article.get("content_html", ""),
                     "author": full_article.get("author_name", ""),
                     "seo_title": full_article.get("seo_title", ""),

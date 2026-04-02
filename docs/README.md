@@ -87,11 +87,16 @@ Full 7-phase content workflow: keyword discovery, competitor analysis, AI conten
 
 **Architecture**: See [architecture.md](architecture.md#seo-content-pipeline) for full details.
 
+### Activity Feed
+Real-time event timeline showing system activity across all brands and job types, with rich media thumbnail previews for visual events.
+
+- [Phase 3 Plan: Rich Media Cards](plans/activity-feed-phase3/PLAN.md) — Thumbnail preview grids in event cards for `ads_generated` and `templates_scraped` events
+
 ### Historical/Archive
 - [Pydantic AI Refactor](archive/pydantic-ai-refactor/) - Migration history
 - [Legacy Docs](archive/) - Session summaries and old checkpoints
 
 ---
 
-**Version**: 5.0.0 (SEO Content Pipeline)
-**Last Updated**: 2026-03-03
+**Version**: 0.19.2.0 (Activity Feed Rich Media Cards)
+**Last Updated**: 2026-03-31
