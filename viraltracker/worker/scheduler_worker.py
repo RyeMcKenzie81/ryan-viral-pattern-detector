@@ -982,6 +982,8 @@ async def execute_job(job: Dict) -> Dict[str, Any]:
         return await execute_seo_publish_job(job)
     elif job_type == 'seo_auto_interlink':
         return await execute_seo_auto_interlink_job(job)
+    elif job_type == 'demographic_backfill':
+        return await execute_demographic_backfill_job(job)
     else:
         # Hard-fail on unknown job types — never silently fall through to V1
         logger.error(f"Unknown job_type '{job_type}' for job {job_id} ({job_name}). "
@@ -2125,13 +2127,16 @@ async def execute_meta_sync_job(job: Dict) -> Dict[str, Any]:
             logger.warning(f"Destination URL fetch failed for {brand_name}: {dest_err}")
 
         # Step 4.7: Fetch demographic breakdowns (NON-FATAL)
+        # Cap at 7 days — breakdowns return ~18x more rows per ad, 30 days causes timeouts
         if not params.get('skip_demographics', False):
+            demo_days_back = min(days_back, 7)
             freshness.record_start(brand_id, "demographic_performance", run_id=run_id)
             try:
                 from uuid import UUID as _UUID_demo
+                logs.append(f"Fetching demographic breakdowns for last {demo_days_back} days...")
                 breakdown_data = await service.get_ad_insights_with_breakdowns(
                     brand_id=_UUID_demo(brand_id),
-                    days_back=days_back,
+                    days_back=demo_days_back,
                 )
                 demo_counts = await service.sync_demographic_performance_to_db(
                     breakdown_data=breakdown_data,
@@ -2244,6 +2249,116 @@ async def execute_meta_sync_job(job: Dict) -> Dict[str, Any]:
         # Reschedule recurring jobs so they run again next cycle
         _reschedule_after_failure(job, job_id, get_run_attempt_number(run_id))
 
+        return {"success": False, "error": error_msg}
+
+
+# ============================================================================
+# Demographic Backfill Job Handler
+# ============================================================================
+
+async def execute_demographic_backfill_job(job: Dict) -> Dict[str, Any]:
+    """
+    Backfill demographic breakdown data one day at a time.
+
+    Parameters (from job['parameters']):
+        target_days_back: int - How far back to backfill (default: 90)
+    """
+    job_id = job['id']
+    job_name = job['name']
+    brand_id = job.get('brand_id')
+    brand_info = job.get('brands') or {}
+    brand_name = brand_info.get('name', 'Unknown')
+    params = job.get('parameters') or {}
+
+    logger.info(f"Starting demographic backfill job: {job_name} for brand {brand_name}")
+
+    update_job(job_id, {"next_run_at": None})
+
+    run_id = create_job_run(job_id, job)
+    if not run_id:
+        logger.error(f"Failed to create run record for job {job_id}")
+        return {"success": False, "error": "Failed to create run record"}
+
+    logs = []
+    target_days_back = params.get('target_days_back', 90)
+
+    try:
+        from viraltracker.services.meta_ads_service import MetaAdsService
+        from uuid import UUID
+        service = MetaAdsService()
+
+        logs.append(f"Demographic backfill for brand: {brand_name}")
+        logs.append(f"Backfilling {target_days_back} days, one day at a time")
+        logs.append("")
+
+        total_age_gender = 0
+        total_placement = 0
+        failed_days = []
+
+        for day_offset in range(target_days_back, 0, -1):
+            target_date = (datetime.now() - timedelta(days=day_offset)).strftime("%Y-%m-%d")
+
+            try:
+                breakdown_data = await service.get_ad_insights_with_breakdowns(
+                    brand_id=UUID(brand_id),
+                    start_date=target_date,
+                    end_date=target_date,
+                )
+                demo_counts = await service.sync_demographic_performance_to_db(
+                    breakdown_data=breakdown_data,
+                    brand_id=UUID(brand_id),
+                )
+                ag = demo_counts.get('age_gender', 0)
+                pl = demo_counts.get('placement', 0)
+                total_age_gender += ag
+                total_placement += pl
+
+                day_num = target_days_back - day_offset + 1
+                logs.append(f"Day {day_num}/{target_days_back} ({target_date}): {ag} age/gender + {pl} placement")
+                logger.info(f"Backfill {brand_name} day {day_num}/{target_days_back} ({target_date}): {ag}+{pl} rows")
+
+            except Exception as day_err:
+                failed_days.append(target_date)
+                logs.append(f"Day {target_days_back - day_offset + 1}/{target_days_back} ({target_date}): FAILED - {day_err}")
+                logger.warning(f"Backfill failed for {brand_name} on {target_date}: {day_err}")
+
+            # Update logs every 5 days so progress is visible
+            if (target_days_back - day_offset + 1) % 5 == 0:
+                update_job_run(run_id, {"logs": "\n".join(logs)})
+
+        logs.append("")
+        logs.append(f"Backfill complete: {total_age_gender} age/gender + {total_placement} placement rows total")
+        if failed_days:
+            logs.append(f"Failed days ({len(failed_days)}): {', '.join(failed_days)}")
+
+        update_job_run(run_id, {
+            "status": "completed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "logs": "\n".join(logs)
+        })
+
+        job_updates = {"runs_completed": job.get('runs_completed', 0) + 1}
+        if job.get('schedule_type') == 'one_time':
+            job_updates["status"] = "completed"
+            job_updates["next_run_at"] = None
+        update_job(job_id, job_updates)
+
+        logger.info(f"Completed demographic backfill: {brand_name} - {total_age_gender + total_placement} total rows")
+        return {"success": True, "total_rows": total_age_gender + total_placement, "failed_days": len(failed_days)}
+
+    except Exception as e:
+        error_msg = str(e)
+        logs.append(f"Job failed: {error_msg}")
+        logger.error(f"Demographic backfill job {job_name} failed: {error_msg}")
+
+        update_job_run(run_id, {
+            "status": "failed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "error_message": error_msg,
+            "logs": "\n".join(logs)
+        })
+
+        _reschedule_after_failure(job, job_id, get_run_attempt_number(run_id))
         return {"success": False, "error": error_msg}
 
 

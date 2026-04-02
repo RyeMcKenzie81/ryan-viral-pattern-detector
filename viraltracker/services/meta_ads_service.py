@@ -537,6 +537,8 @@ class MetaAdsService:
         self,
         brand_id: UUID,
         days_back: int = 7,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None,
         max_retries: int = 3,
     ) -> Dict[str, List[Dict[str, Any]]]:
         """
@@ -548,7 +550,9 @@ class MetaAdsService:
 
         Args:
             brand_id: Brand UUID to look up ad account.
-            days_back: Days to look back.
+            days_back: Days to look back (ignored if start_date/end_date provided).
+            start_date: Explicit start date "YYYY-MM-DD" (for backfill).
+            end_date: Explicit end date "YYYY-MM-DD" (for backfill).
             max_retries: Maximum retries on rate limit errors.
 
         Returns:
@@ -563,9 +567,13 @@ class MetaAdsService:
 
         resolved_account_id = self._get_ad_account_id(ad_account_id=ad_account_id)
 
-        date_end = datetime.now().strftime("%Y-%m-%d")
-        start_dt = datetime.now() - timedelta(days=days_back)
-        date_start = start_dt.strftime("%Y-%m-%d")
+        if start_date and end_date:
+            date_start = start_date
+            date_end = end_date
+        else:
+            date_end = datetime.now().strftime("%Y-%m-%d")
+            start_dt = datetime.now() - timedelta(days=days_back)
+            date_start = start_dt.strftime("%Y-%m-%d")
 
         params = {
             "time_range": {"since": date_start, "until": date_end},
