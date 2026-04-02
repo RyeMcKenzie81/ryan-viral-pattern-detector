@@ -95,7 +95,7 @@ def load_articles_by_status(brand_id: str, status: str) -> list:
     db = get_db()
     resp = (
         db.table("seo_articles")
-        .select("id, keyword, title, seo_title, status, phase, word_count, updated_at, cms_article_id, published_url")
+        .select("id, keyword, title, seo_title, status, phase, word_count, content_markdown, updated_at, cms_article_id, published_url")
         .eq("brand_id", brand_id)
         .eq("status", status)
         .order("updated_at", desc=True)
@@ -157,13 +157,13 @@ def render_pipeline_overview(counts: dict):
 
     # Split into active pipeline stages and terminal/error states
     active_stages = [
-        ("discovered", "Discovered"),
-        ("draft", "Draft"),
-        ("draft_complete", "Written"),
-        ("qa_passed", "QA Passed"),
-        ("eval_passed", "Eval Passed"),
-        ("publish_queued", "Queued"),
-        ("published", "Published"),
+        ("discovered", "Discovered", "Keywords found via GSC or research. Not yet written."),
+        ("draft", "Draft", "Article writing in progress (outline, free-write, or optimization phase)."),
+        ("draft_complete", "Written", "Article fully written and ready for QA validation."),
+        ("qa_passed", "QA Passed", "Passed automated QA checks. Waiting for content evaluation."),
+        ("eval_passed", "Eval Passed", "Passed content eval (auto-fix + quality checks). Ready to queue for publishing."),
+        ("publish_queued", "Queued", "In the publish queue with a scheduled time slot."),
+        ("published", "Published", "Live on Shopify."),
     ]
     error_stages = [
         ("qa_failed", "QA Failed"),
@@ -172,13 +172,13 @@ def render_pipeline_overview(counts: dict):
 
     # Main pipeline flow
     cols = st.columns(len(active_stages))
-    for i, (status, label) in enumerate(active_stages):
+    for i, (status, label, tooltip) in enumerate(active_stages):
         count = counts.get(status, 0)
         with cols[i]:
             color = STAGE_COLORS.get(status, "#6c757d")
             st.markdown(
-                f"<div style='text-align:center; padding:12px; border-radius:8px; "
-                f"border: 2px solid {color}; background: {color}15;'>"
+                f"<div title='{tooltip}' style='text-align:center; padding:12px; border-radius:8px; "
+                f"cursor:help; border: 2px solid {color}; background: {color}15;'>"
                 f"<div style='font-size:24px; font-weight:bold; color:{color};'>{count}</div>"
                 f"<div style='font-size:12px; color:#666;'>{label}</div>"
                 f"</div>",
@@ -247,10 +247,13 @@ def render_stage_detail(brand_id: str, counts: dict):
                 updated = dt.strftime("%b %d, %H:%M")
             except (ValueError, TypeError):
                 pass
+        words = a.get("word_count")
+        if not words and a.get("content_markdown"):
+            words = len(a["content_markdown"].split())
         row = {
             "Article": name,
             "Keyword": a.get("keyword", "—"),
-            "Words": a.get("word_count") or "—",
+            "Words": words or "—",
             "Updated": updated,
         }
         if selected_status == "published":
