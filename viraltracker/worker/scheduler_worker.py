@@ -102,6 +102,8 @@ JOB_TYPE_LABELS = {
     'iteration_auto_run': 'Iteration Auto Run',
     'size_variant': 'Size Variant',
     'smart_edit': 'Smart Edit',
+    'seo_content_eval': 'SEO Content Eval',
+    'seo_publish': 'SEO Publish',
 }
 
 # Map job_type to page slug for deep linking (points to result pages, not scheduler)
@@ -129,6 +131,8 @@ JOB_TYPE_PAGE_SLUGS = {
     'iteration_auto_run': 'iteration_lab',
     'size_variant': 'ad_scheduler',
     'smart_edit': 'ad_scheduler',
+    'seo_content_eval': 'content_policies',
+    'seo_publish': 'content_policies',
 }
 
 
