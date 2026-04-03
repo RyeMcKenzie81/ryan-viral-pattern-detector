@@ -1,9 +1,13 @@
 """
 OpportunityMinerService — detect near-ranking SEO opportunities and generate reports.
 
-Scans GSC ranking data for keywords at positions 11-20, scores them by multiple
+Scans GSC ranking data for keywords at positions 4-20, scores them by multiple
 signals, classifies recommended actions, and generates weekly digest reports
 for the Activity Feed.
+
+Two opportunity types:
+- page1_improvement (positions 4-10): already on page 1, push into top 3
+- striking_distance (positions 11-20): near page 1, push onto it
 
 Phase 1 = intelligence + reporting. Phase 2 = automated execution.
 """
@@ -61,13 +65,19 @@ class OpportunityMinerService:
     def _score_position_proximity(self, position: float) -> float:
         """Score position proximity (30% weight).
 
-        Linear scale: position 11 = 100, position 20 = 10.
+        Positions 4-6 = 100 (easiest wins, already top half of page 1).
+        Position 7-10 = 80-60 (bottom of page 1, still very reachable).
+        Position 11 = 50, position 20 = 10 (striking distance, harder push).
         """
-        if position <= 11:
+        if position <= 6:
             return 100.0
+        if position <= 10:
+            # 7→80, 8→73, 9→67, 10→60
+            return 80.0 - (position - 7) * (20.0 / 3)
         if position >= 20:
             return 10.0
-        return 100.0 - (position - 11) * 10.0
+        # 11→50, 20→10
+        return 50.0 - (position - 11) * (40.0 / 9)
 
     def _score_keyword_volume(
         self,
@@ -119,7 +129,7 @@ class OpportunityMinerService:
         brand_id: str,
         organization_id: str,
     ) -> List[Dict[str, Any]]:
-        """Scan for near-ranking keywords (positions 11-20) and score opportunities.
+        """Scan for opportunity keywords (positions 4-20) and score opportunities.
 
         Args:
             brand_id: Brand UUID
@@ -177,14 +187,14 @@ class OpportunityMinerService:
             key = (r["article_id"], r["keyword"])
             grouped.setdefault(key, []).append(r)
 
-        # Filter for average position 11-20
+        # Filter for average position 4-20
         candidates = []
         for (article_id, keyword), rows in grouped.items():
             positions = [float(r["position"]) for r in rows if r.get("position") is not None]
             if not positions:
                 continue
             avg_position = sum(positions) / len(positions)
-            if avg_position < 11 or avg_position > 20:
+            if avg_position < 4 or avg_position > 20:
                 continue
 
             # Split impressions into recent 14d vs previous 14d
@@ -209,7 +219,7 @@ class OpportunityMinerService:
             })
 
         if not candidates:
-            logger.info(f"No keywords in position 11-20 for brand {brand_id}")
+            logger.info(f"No keywords in position 4-20 for brand {brand_id}")
             return []
 
         # Batch cluster queries — single IN() query for all candidate article_ids
@@ -250,6 +260,9 @@ class OpportunityMinerService:
                 "cluster_map": cluster_map,
             })
 
+            # Classify opportunity type
+            opp_type = "page1_improvement" if c["avg_position"] <= 10 else "striking_distance"
+
             opportunities.append({
                 "organization_id": real_org_id,
                 "brand_id": brand_id,
@@ -257,6 +270,7 @@ class OpportunityMinerService:
                 "keyword": c["keyword"],
                 "current_position": round(c["avg_position"], 2),
                 "position_at_identification": round(c["avg_position"], 2),
+                "opportunity_type": opp_type,
                 "impression_trend": trend,
                 "impressions_14d": c["total_impressions_14d"],
                 "impressions_28d": c["total_impressions_28d"],

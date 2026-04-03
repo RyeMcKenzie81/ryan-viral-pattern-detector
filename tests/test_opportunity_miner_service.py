@@ -80,21 +80,36 @@ class TestScoreImpressionTrend:
 # =============================================================================
 
 class TestScorePositionProximity:
+    def test_position_4_to_6(self, service):
+        """Positions 4-6 = 100 (top half of page 1, easiest wins)."""
+        assert service._score_position_proximity(4) == 100.0
+        assert service._score_position_proximity(5) == 100.0
+        assert service._score_position_proximity(6) == 100.0
+
+    def test_position_7(self, service):
+        """Position 7 = 80 (bottom of page 1)."""
+        assert service._score_position_proximity(7) == 80.0
+
+    def test_position_10(self, service):
+        """Position 10 = 60 (bottom of page 1)."""
+        assert round(service._score_position_proximity(10), 1) == 60.0
+
     def test_position_11(self, service):
-        """Position 11 = 100 (best possible in range)."""
-        assert service._score_position_proximity(11) == 100.0
+        """Position 11 = 50 (top of page 2, striking distance)."""
+        assert round(service._score_position_proximity(11), 1) == 50.0
 
     def test_position_20(self, service):
         """Position 20 = 10 (worst in range)."""
         assert service._score_position_proximity(20) == 10.0
 
     def test_position_15(self, service):
-        """Position 15 = 60 (midpoint)."""
-        assert service._score_position_proximity(15) == 60.0
+        """Position 15 = mid striking distance."""
+        score = service._score_position_proximity(15)
+        assert 25 < score < 35  # ~32.2
 
-    def test_position_below_11(self, service):
-        """Position < 11 caps at 100."""
-        assert service._score_position_proximity(8) == 100.0
+    def test_position_below_4(self, service):
+        """Position < 4 (top 3) not in scope, but caps at 100 if passed."""
+        assert service._score_position_proximity(2) == 100.0
 
     def test_position_above_20(self, service):
         """Position > 20 caps at 10."""
@@ -102,8 +117,8 @@ class TestScorePositionProximity:
 
     def test_fractional_position(self, service):
         """Fractional positions are handled correctly."""
-        score = service._score_position_proximity(12.5)
-        assert 80 < score < 90  # 100 - 1.5 * 10 = 85
+        score = service._score_position_proximity(8.5)
+        assert 65 < score < 80  # between pos 8 and 9 scores
 
 
 # =============================================================================
@@ -322,15 +337,15 @@ class TestScanOpportunities:
         assert result == []
 
     def test_no_rankings_in_range(self, service, mock_supabase):
-        """Articles exist but none at positions 11-20."""
+        """Articles exist but none at positions 4-20."""
         # Set up article IDs
         articles_mock = MagicMock()
         articles_mock.data = [{"id": "art-1"}]
 
-        # Set up rankings (all at position 5 — outside target range)
+        # Set up rankings (all at position 2 — outside target range, top 3)
         rankings_mock = MagicMock()
         rankings_mock.data = [
-            {"article_id": "art-1", "keyword": "test", "position": 5, "impressions": 100, "clicks": 10,
+            {"article_id": "art-1", "keyword": "test", "position": 2, "impressions": 100, "clicks": 10,
              "checked_at": datetime.now(timezone.utc).isoformat()},
         ]
 

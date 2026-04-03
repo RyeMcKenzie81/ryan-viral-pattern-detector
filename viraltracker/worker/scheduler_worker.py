@@ -6106,16 +6106,19 @@ async def execute_seo_opportunity_scan_job(job: Dict) -> Dict[str, Any]:
                 # High-score opportunity events (score > 80)
                 for opp in opportunities:
                     if opp.get("opportunity_score", 0) > 80:
+                        opp_type = opp.get("opportunity_type", "striking_distance")
+                        type_label = "Page 1 Push" if opp_type == "page1_improvement" else "Striking Distance"
                         _emit_activity_event(
                             event_type="seo_opportunity_identified",
                             severity="info",
-                            title=f"SEO Opportunity: \"{opp['keyword']}\" at position {opp['current_position']}",
+                            title=f"SEO {type_label}: \"{opp['keyword']}\" at position {opp['current_position']}",
                             brand_id=brand_id,
                             organization_id=org_id,
                             details={
                                 "keyword": opp["keyword"],
                                 "position": opp["current_position"],
                                 "score": opp["opportunity_score"],
+                                "opportunity_type": opp_type,
                                 "recommended_action": opp["recommended_action"],
                                 "action_reason": opp["action_reason"],
                             },
