@@ -174,6 +174,12 @@ STRATEGY_OPTIONS = {
         "variable_override": None,
         "description": "Same psychology, completely fresh visual execution",
     },
+    "custom_changes": {
+        "label": "Custom Changes",
+        "evolution_mode": "custom_edit",
+        "variable_override": None,
+        "description": "Describe what you want changed in a free-text prompt",
+    },
 }
 
 # Auto-recommend strategy per pattern type
@@ -188,17 +194,8 @@ PATTERN_DEFAULT_STRATEGY = {
     "efficient_but_starved": None,  # budget recommendation, no evolution
 }
 
-# Default variation count per strategy (Auto-Improve and New Sizes always 1)
-STRATEGY_DEFAULT_VARIATIONS = {
-    "improve_hook": 3,
-    "new_layout": 3,
-    "auto_improve": 1,
-    "new_sizes": 1,
-    "fresh_creative": 3,
-}
-
 # Strategies that support user-chosen variation counts
-VARIABLE_VARIATION_STRATEGIES = {"improve_hook", "new_layout", "fresh_creative"}
+VARIABLE_VARIATION_STRATEGIES = {"improve_hook", "new_layout", "fresh_creative", "auto_improve", "custom_changes"}
 
 METRIC_LABELS = {
     "roas": "ROAS",
@@ -613,6 +610,7 @@ def _render_opportunity_card(opp: dict, idx: int, brand_id: str, product_id: Opt
 
 def _render_iterate_confirmation(opp: dict, brand_id: str, product_id: Optional[str], org_id: str, idx: int):
     """Render pre-filled iteration confirmation card."""
+    opp_id = _get_field(opp, "id")
     evolution_mode = _get_field(opp, "evolution_mode")
     strategy_desc = _get_field(opp, "strategy_description")
     strategy_actions = _get_field(opp, "strategy_actions")
@@ -622,9 +620,16 @@ def _render_iterate_confirmation(opp: dict, brand_id: str, product_id: Optional[
         except (json.JSONDecodeError, TypeError):
             strategy_actions = []
 
+    # Check if user selected custom_changes for this opp
+    selected_strategy = st.session_state.get(f"iter_strategy_{opp_id}", "auto_improve")
+    is_custom = selected_strategy == "custom_changes"
+
     st.markdown("**Confirm Iteration**")
 
-    st.markdown(f"**Mode**: {evolution_mode.replace('_', ' ').title()}")
+    if is_custom:
+        st.markdown("**Mode**: Custom Changes")
+    else:
+        st.markdown(f"**Mode**: {evolution_mode.replace('_', ' ').title()}")
 
     # Product selector (if not already set)
     if not product_id:
@@ -640,26 +645,62 @@ def _render_iterate_confirmation(opp: dict, brand_id: str, product_id: Optional[
             st.warning("No products found for this brand.")
             return
 
-    # Pre-filled instructions (editable)
-    default_instructions = f"Strategy: {strategy_desc}. "
-    if strategy_actions:
-        default_instructions += " ".join(f"({i+1}) {a}" for i, a in enumerate(strategy_actions[:4]))
+    if is_custom:
+        # Custom Changes: free-text prompt + temperature
+        custom_prompt = st.text_area(
+            "What do you want to change?",
+            placeholder="e.g., Recreate for 25-34 male demographic, use bolder colors...",
+            max_chars=500,
+            height=100,
+            key=f"iter_custom_prompt_{idx}",
+        )
+        custom_temp = st.slider(
+            "Temperature (creativity)",
+            min_value=0.1,
+            max_value=1.0,
+            value=0.5,
+            step=0.1,
+            key=f"iter_custom_temp_{idx}",
+            help="Lower = more faithful to original, Higher = more creative",
+        )
 
-    instructions = st.text_area(
-        "Additional instructions (pre-filled, editable)",
-        value=default_instructions,
-        height=100,
-        key=f"iter_instructions_{idx}"
-    )
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button(
+                "Confirm & Launch",
+                key=f"iter_launch_{idx}",
+                type="primary",
+                disabled=not custom_prompt.strip(),
+            ):
+                _execute_custom_iteration(
+                    opp, brand_id, product_id, org_id,
+                    custom_prompt.strip(), custom_temp,
+                )
+        with col2:
+            if st.button("Cancel", key=f"iter_cancel_{idx}"):
+                st.session_state.iter_action_confirm = None
+                st.rerun()
+    else:
+        # Standard: pre-filled instructions
+        default_instructions = f"Strategy: {strategy_desc}. "
+        if strategy_actions:
+            default_instructions += " ".join(f"({i+1}) {a}" for i, a in enumerate(strategy_actions[:4]))
 
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("Confirm & Launch", key=f"iter_launch_{idx}", type="primary"):
-            _execute_iteration(opp, brand_id, product_id, org_id)
-    with col2:
-        if st.button("Cancel", key=f"iter_cancel_{idx}"):
-            st.session_state.iter_action_confirm = None
-            st.rerun()
+        instructions = st.text_area(
+            "Additional instructions (pre-filled, editable)",
+            value=default_instructions,
+            height=100,
+            key=f"iter_instructions_{idx}"
+        )
+
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("Confirm & Launch", key=f"iter_launch_{idx}", type="primary"):
+                _execute_iteration(opp, brand_id, product_id, org_id)
+        with col2:
+            if st.button("Cancel", key=f"iter_cancel_{idx}"):
+                st.session_state.iter_action_confirm = None
+                st.rerun()
 
 
 def _execute_iteration(opp: dict, brand_id: str, product_id: str, org_id: str):
@@ -681,6 +722,45 @@ def _execute_iteration(opp: dict, brand_id: str, product_id: str, org_id: str):
                 st.error(f"Iteration failed: {result.get('error', 'Unknown error')}")
         except Exception as e:
             st.error(f"Iteration failed: {e}")
+
+
+def _execute_custom_iteration(
+    opp: dict, brand_id: str, product_id: str, org_id: str,
+    custom_prompt: str, temperature: float,
+):
+    """Execute a custom edit iteration by routing through batch_queue_iterations (single-item)."""
+    opp_id = _get_field(opp, "id")
+
+    with st.spinner("Launching custom iteration..."):
+        try:
+            detector = get_detector()
+            overrides = {
+                opp_id: {
+                    "evolution_mode": "custom_edit",
+                    "variable_override": None,
+                    "custom_prompt": custom_prompt,
+                    "temperature": temperature,
+                }
+            }
+            result = asyncio.run(
+                detector.batch_queue_iterations(
+                    opportunity_ids=[opp_id],
+                    brand_id=brand_id,
+                    product_id=product_id,
+                    org_id=org_id,
+                    strategy_overrides=overrides,
+                    num_variations=1,
+                )
+            )
+            if result.get("queued", 0) > 0:
+                st.success("Custom iteration queued! Will run within ~1 minute.")
+                st.session_state.iter_action_confirm = None
+                st.rerun()
+            else:
+                errors = result.get("errors", [])
+                st.error(f"Custom iteration failed: {', '.join(errors) if errors else 'Unknown error'}")
+        except Exception as e:
+            st.error(f"Custom iteration failed: {e}")
 
 
 def _render_batch_queue_bar(
@@ -724,20 +804,59 @@ def _render_batch_queue_bar(
         else:
             num_variations = 1
             st.markdown("**1** variation")
+    # Detect if any selected opp uses custom_changes (computed once, used twice)
+    is_custom = (
+        bulk_strategy == "custom_changes"
+        or (bulk_strategy == "keep_individual" and any(
+            st.session_state.get(f"iter_strategy_{_get_field(opp, 'id')}") == "custom_changes"
+            for opp in selected_opps
+        ))
+    )
+
     with cols[3]:
         if not product_id:
             st.warning("Select a product first")
-        elif st.button(
-            f"Queue {len(selected_opps)} Iterations",
-            type="primary",
-            key="iter_batch_queue_btn",
-        ):
-            _batch_queue(selected_opps, brand_id, product_id, org_id, bulk_strategy, num_variations)
+        else:
+            queue_disabled = False
+            if is_custom and not st.session_state.get("iter_batch_custom_prompt", "").strip():
+                queue_disabled = True
+
+            if st.button(
+                f"Queue {len(selected_opps)} Iterations",
+                type="primary",
+                key="iter_batch_queue_btn",
+                disabled=queue_disabled,
+            ):
+                batch_custom_prompt = st.session_state.get("iter_batch_custom_prompt", "").strip() if is_custom else None
+                batch_temperature = st.session_state.get("iter_batch_temperature", 0.5) if is_custom else None
+                _batch_queue(
+                    selected_opps, brand_id, product_id, org_id, bulk_strategy,
+                    num_variations, batch_custom_prompt, batch_temperature,
+                )
+
+    # Custom Changes prompt area (below the batch bar columns)
+    if is_custom:
+        st.text_area(
+            "What do you want to change?",
+            placeholder="e.g., Recreate for 25-34 male demographic, use bolder colors and more direct CTA...",
+            max_chars=500,
+            key="iter_batch_custom_prompt",
+            height=100,
+        )
+        st.slider(
+            "Temperature (creativity)",
+            min_value=0.1,
+            max_value=1.0,
+            value=0.5,
+            step=0.1,
+            key="iter_batch_temperature",
+            help="Lower = more faithful to original, Higher = more creative",
+        )
 
 
 def _batch_queue(
     opps: list, brand_id: str, product_id: str, org_id: str, bulk_strategy: str,
-    num_variations: int = 3,
+    num_variations: int = 3, custom_prompt: Optional[str] = None, temperature: Optional[float] = None,
 ):
     """Import needed ads and create scheduled_jobs for batch iteration."""
     detector = get_detector()
@@ -750,10 +869,16 @@ def _batch_queue(
         if bulk_strategy != "keep_individual":
             strategy_key = bulk_strategy
         strategy = STRATEGY_OPTIONS[strategy_key]
-        overrides[opp_id] = {
+        override = {
             "evolution_mode": strategy["evolution_mode"],
             "variable_override": strategy.get("variable_override"),
         }
+        # Attach custom prompt/temperature for custom_changes strategy
+        if strategy_key == "custom_changes" and custom_prompt:
+            override["custom_prompt"] = custom_prompt
+            if temperature is not None:
+                override["temperature"] = temperature
+        overrides[opp_id] = override
 
     with st.spinner(f"Queueing {len(opps)} iterations..."):
         result = asyncio.run(

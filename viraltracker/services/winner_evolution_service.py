@@ -43,7 +43,7 @@ MAX_ITERATIONS_PER_WINNER = 5
 MAX_ROUNDS_ON_ANCESTOR = 3
 
 # Evolution modes
-EVOLUTION_MODES = ["winner_iteration", "anti_fatigue_refresh", "cross_size_expansion"]
+EVOLUTION_MODES = ["winner_iteration", "anti_fatigue_refresh", "cross_size_expansion", "custom_edit"]
 
 # All valid canvas sizes for cross-size expansion
 ALL_CANVAS_SIZES = ["1080x1080px", "1080x1350px", "1080x1920px"]
@@ -1124,18 +1124,22 @@ class WinnerEvolutionService:
         job_id: Optional[UUID] = None,
         skip_winner_check: bool = False,
         num_variations: Optional[int] = None,
+        custom_prompt: Optional[str] = None,
+        temperature: Optional[float] = None,
     ) -> Dict[str, Any]:
         """Execute winner evolution: validate, build V2 params, run pipeline, record lineage.
 
         Args:
             parent_ad_id: The winning ad to evolve from.
-            mode: Evolution mode (winner_iteration, anti_fatigue_refresh, cross_size_expansion).
+            mode: Evolution mode (winner_iteration, anti_fatigue_refresh, cross_size_expansion, custom_edit).
             variable_override: Optional override for which variable to change (winner_iteration only).
             job_id: Optional scheduled_job ID for tracking.
             skip_winner_check: If True, skip winner criteria validation (used by batch iterate
                 where the opportunity detector has already enforced quality thresholds).
             num_variations: Override for number of ad variations to generate.
                 Defaults: winner_iteration=1, anti_fatigue_refresh=3, cross_size=1 per size.
+            custom_prompt: Free-text change instructions (custom_edit mode only).
+            temperature: Generation temperature override (custom_edit mode only, 0.1-1.0).
 
         Returns:
             Dict with ad_run_id, child_ad_ids, lineage_entries, mode, variable_changed.
@@ -1225,13 +1229,46 @@ class WinnerEvolutionService:
                 product_id=product_id,
                 num_variations=num_variations,
             )
+        elif mode == "custom_edit":
+            if not custom_prompt:
+                raise ValueError("custom_edit mode requires a custom_prompt")
+            result = await self._evolve_custom_edit(
+                parent=parent,
+                element_tags=element_tags,
+                parent_image_b64=parent_image_b64,
+                product_id=product_id,
+                brand_id=brand_id,
+                custom_prompt=custom_prompt,
+                temperature=temperature or 0.5,
+                num_variations=num_variations,
+            )
         else:
             raise ValueError(f"Unhandled mode: {mode}")
 
         # 6. Record lineage
         child_ad_ids = result.get("child_ad_ids", [])
         lineage_count = 0
-        if child_ad_ids:
+        per_child = result.get("per_child_lineage")
+        if child_ad_ids and per_child:
+            # Multi-variable: record per-child lineage with specific variable info
+            for entry in per_child:
+                try:
+                    count = await self.record_lineage(
+                        parent_ad_id=parent_ad_id,
+                        child_ad_ids=[UUID(entry["child_ad_id"])],
+                        ancestor_ad_id=ancestor_id,
+                        mode=mode,
+                        variable_changed=entry["variable_changed"],
+                        old_value=entry["old_value"],
+                        new_value=entry["new_value"],
+                        iteration_round=iteration_round,
+                        parent_reward=winner.get("reward_score"),
+                        job_id=job_id,
+                    )
+                    lineage_count += count
+                except Exception as e:
+                    logger.error(f"Per-child lineage failed for {entry}: {e}")
+        elif child_ad_ids:
             lineage_count = await self.record_lineage(
                 parent_ad_id=parent_ad_id,
                 child_ad_ids=[UUID(c) for c in child_ad_ids],
@@ -1313,6 +1350,20 @@ class WinnerEvolutionService:
             # Path B: Auto-Improve — system picks variable AND value
             # Tier 1: Thompson Sampling variable selection
             selection = await self.select_evolution_variable(brand_id, element_tags)
+
+            # Multi-variable Auto-Improve: when num_variations > 1, pick top N elements
+            # and run one pipeline per element (each changing a different variable).
+            if (num_variations or 1) > 1 and selection.get("all_candidates"):
+                return await self._evolve_multi_variable(
+                    parent=parent,
+                    element_tags=element_tags,
+                    parent_image_b64=parent_image_b64,
+                    product_id=product_id,
+                    brand_id=brand_id,
+                    selection=selection,
+                    num_variations=num_variations,
+                )
+
             if selection.get("new_value"):
                 variable = selection["variable"]
                 new_value = selection["new_value"]
@@ -1328,7 +1379,7 @@ class WinnerEvolutionService:
                 parent_value = selection.get("parent_value", "")
                 logger.info(
                     f"Catalog fallback (auto-improve) for {variable}: "
-                    f"'{parent_value}' → '{new_value}'"
+                    f"'{parent_value}' -> '{new_value}'"
                 )
 
         if not new_value:
@@ -1367,7 +1418,7 @@ class WinnerEvolutionService:
         if visual_conflict:
             pipeline_params["skip_template_reference"] = True
             logger.info(
-                f"Visual conflict: {parent_value} → {new_value}. "
+                f"Visual conflict: {parent_value} -> {new_value}. "
                 f"Skipping template reference image."
             )
 
@@ -1379,7 +1430,7 @@ class WinnerEvolutionService:
             "text": parent_hook_text,
             "benefit": "evolution_iteration",
             "persuasion_type": new_value if variable == "hook_type" else element_tags.get("hook_type"),
-            "framework": f"Evolution ({variable}: {parent_value} → {new_value})",
+            "framework": f"Evolution ({variable}: {parent_value} -> {new_value})",
         }
         pipeline_params["pre_selected_hooks"] = [evolution_hook]
         pipeline_params["generation_temperature"] = 0.7
@@ -1404,6 +1455,213 @@ class WinnerEvolutionService:
             "variable_changed": variable,
             "old_value": parent_value,
             "new_value": new_value,
+        }
+
+    async def _evolve_multi_variable(
+        self,
+        parent: Dict,
+        element_tags: Dict,
+        parent_image_b64: str,
+        product_id: str,
+        brand_id: UUID,
+        selection: Dict[str, Any],
+        num_variations: int,
+    ) -> Dict[str, Any]:
+        """Auto-Improve with multiple variables: pick top N elements, one pipeline each.
+
+        Each variation changes a DIFFERENT element (the top N by information gain).
+        This gives broader exploration than changing the same element N times.
+
+        Args:
+            parent: Parent ad dict from generated_ads.
+            element_tags: Parent's element_tags.
+            parent_image_b64: Base64-encoded parent image.
+            product_id: Product UUID string.
+            brand_id: Brand UUID.
+            selection: Result from select_evolution_variable() with all_candidates.
+            num_variations: Number of variations (= number of elements to try).
+
+        Returns:
+            Dict with aggregated ad_run_ids, child_ad_ids, and variables_changed list.
+        """
+        from viraltracker.services.creative_genome_service import CreativeGenomeService
+        genome = CreativeGenomeService()
+
+        candidates = selection.get("all_candidates", [])
+        # Cap at available candidates
+        n = min(num_variations, len(candidates))
+
+        all_child_ids: List[str] = []
+        all_run_ids: List[str] = []
+        variables_changed: List[str] = []
+        per_child_lineage: List[Dict[str, str]] = []
+
+        # Analyze parent narrative once (cached)
+        narrative = await self._analyze_parent_narrative(
+            UUID(parent["id"]),
+            parent_image_b64,
+            element_tags,
+            hook_text=parent.get("hook_text"),
+        )
+
+        parent_hook_text = parent.get("hook_text") or ""
+
+        for i, candidate in enumerate(candidates[:n]):
+            variable = candidate["variable"]
+            parent_value = candidate.get("parent_value", "")
+
+            # Pick a new value via Thompson Sampling
+            sampled = genome.sample_element_scores(brand_id, variable)
+            new_value = None
+            for s in sampled:
+                if s["value"] != parent_value:
+                    new_value = s["value"]
+                    break
+
+            # Fallback to catalog if no Thompson Sampling alternative
+            if not new_value:
+                new_value = self._select_catalog_alternative(variable, parent_value)
+
+            if not new_value:
+                logger.warning(
+                    f"Multi-variable: skipping {variable}, no alternative found"
+                )
+                continue
+
+            # Build pipeline params for this variable
+            pipeline_params = self._build_base_pipeline_params(
+                parent, element_tags, parent_image_b64, product_id
+            )
+            pipeline_params["content_source"] = "recreate_template"
+            pipeline_params["num_variations"] = 1
+
+            visual_conflict = self._has_visual_conflict(variable, new_value, parent_value)
+            pipeline_params["additional_instructions"] = self._build_evolution_instructions(
+                variable=variable,
+                new_value=new_value,
+                parent_value=parent_value,
+                narrative=narrative,
+                visual_conflict=visual_conflict,
+            )
+
+            if visual_conflict:
+                pipeline_params["skip_template_reference"] = True
+
+            evolution_hook = {
+                "adapted_text": parent_hook_text,
+                "text": parent_hook_text,
+                "benefit": "evolution_iteration",
+                "persuasion_type": new_value if variable == "hook_type" else element_tags.get("hook_type"),
+                "framework": f"Evolution ({variable}: {parent_value} -> {new_value})",
+            }
+            pipeline_params["pre_selected_hooks"] = [evolution_hook]
+            pipeline_params["generation_temperature"] = 0.7
+
+            if variable == "color_mode":
+                pipeline_params["color_modes"] = [new_value]
+
+            logger.info(
+                f"Multi-variable iteration {i+1}/{n}: "
+                f"{variable} '{parent_value}' -> '{new_value}'"
+            )
+
+            try:
+                child_ad_ids, ad_run_ids = await self._run_v2_pipeline(pipeline_params)
+                all_child_ids.extend(child_ad_ids)
+                all_run_ids.extend(ad_run_ids)
+                variables_changed.append(variable)
+                # Track per-child lineage metadata
+                for cid in child_ad_ids:
+                    per_child_lineage.append({
+                        "child_ad_id": cid,
+                        "variable_changed": variable,
+                        "old_value": parent_value,
+                        "new_value": new_value,
+                    })
+            except Exception as e:
+                logger.error(
+                    f"Multi-variable: pipeline failed for {variable}: {e}"
+                )
+                continue
+
+        if not all_child_ids:
+            raise ValueError(
+                f"Multi-variable Auto-Improve: all {n} pipelines failed. "
+                f"Variables attempted: {[c['variable'] for c in candidates[:n]]}"
+            )
+
+        return {
+            "ad_run_ids": all_run_ids,
+            "child_ad_ids": all_child_ids,
+            "variable_changed": ", ".join(variables_changed),
+            "old_value": "multi-variable",
+            "new_value": f"{len(variables_changed)} elements changed",
+            "per_child_lineage": per_child_lineage,
+        }
+
+    async def _evolve_custom_edit(
+        self,
+        parent: Dict,
+        element_tags: Dict,
+        parent_image_b64: str,
+        product_id: str,
+        brand_id: UUID,
+        custom_prompt: str,
+        temperature: float = 0.5,
+        num_variations: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Execute custom edit: apply user's free-text changes to the parent ad.
+
+        Args:
+            parent: Parent ad dict from generated_ads.
+            element_tags: Parent's element_tags.
+            parent_image_b64: Base64-encoded parent image.
+            product_id: Product UUID string.
+            brand_id: Brand UUID.
+            custom_prompt: User's free-text change instructions.
+            temperature: Generation temperature (0.1-1.0).
+            num_variations: Number of variations to generate.
+
+        Returns:
+            Dict with ad_run_ids, child_ad_ids, variable_changed, custom_prompt.
+        """
+        temperature = max(0.1, min(1.0, temperature))
+
+        pipeline_params = self._build_base_pipeline_params(
+            parent, element_tags, parent_image_b64, product_id
+        )
+        pipeline_params["content_source"] = "recreate_template"
+        pipeline_params["additional_instructions"] = custom_prompt
+        pipeline_params["generation_temperature"] = temperature
+        pipeline_params["num_variations"] = num_variations or 1
+
+        # Preserve parent's hook so only the user's requested changes apply
+        parent_hook_text = parent.get("hook_text") or ""
+        pipeline_params["pre_selected_hooks"] = [{
+            "adapted_text": parent_hook_text,
+            "text": parent_hook_text,
+            "benefit": "custom_edit",
+            "persuasion_type": element_tags.get("hook_type"),
+            "framework": f"Custom edit: {custom_prompt[:80]}",
+        }]
+
+        logger.info(
+            f"Custom edit evolution: temp={temperature}, "
+            f"prompt='{custom_prompt[:100]}...'"
+        )
+
+        child_ad_ids, ad_run_ids = await self._run_v2_pipeline(pipeline_params)
+
+        if not child_ad_ids:
+            raise ValueError("Custom edit pipeline produced no ads")
+
+        return {
+            "ad_run_ids": ad_run_ids,
+            "child_ad_ids": child_ad_ids,
+            "variable_changed": "custom_edit",
+            "old_value": "original",
+            "new_value": custom_prompt[:100],
+            "custom_prompt": custom_prompt,
         }
 
     async def _evolve_anti_fatigue(

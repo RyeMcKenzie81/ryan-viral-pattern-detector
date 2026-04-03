@@ -4813,15 +4813,19 @@ async def execute_genome_validation_job(job: Dict) -> Dict[str, Any]:
 async def execute_winner_evolution_job(job: Dict) -> Dict[str, Any]:
     """Execute a Winner Evolution job — evolve winning ads into improved variants.
 
-    Phase 7A: Supports three evolution modes:
+    Phase 7A: Supports four evolution modes:
     - winner_iteration: Change ONE element, regenerate
     - anti_fatigue_refresh: Same psychology, fresh visual
     - cross_size_expansion: Generate winner in untested sizes
+    - custom_edit: Free-text prompt changes (user-specified)
 
     Job parameters (in job['parameters'] JSONB):
         parent_ad_id: UUID of the winning ad to evolve (REQUIRED)
-        evolution_mode: winner_iteration | anti_fatigue_refresh | cross_size_expansion (REQUIRED)
+        evolution_mode: winner_iteration | anti_fatigue_refresh | cross_size_expansion | custom_edit (REQUIRED)
         variable_override: Optional element name to force-change (winner_iteration only)
+        custom_prompt: Free-text change instructions (custom_edit only)
+        temperature: Generation temperature 0.1-1.0 (custom_edit only)
+        num_variations: Number of ad variations to generate
     """
     job_id = job['id']
     job_name = job['name']
@@ -4848,6 +4852,8 @@ async def execute_winner_evolution_job(job: Dict) -> Dict[str, Any]:
         variable_override = params.get("variable_override")
         skip_winner_check = params.get("skip_winner_check", False)
         num_variations = params.get("num_variations")
+        custom_prompt = params.get("custom_prompt")
+        temperature = params.get("temperature")
 
         if not parent_ad_id:
             raise ValueError("parent_ad_id is required for winner_evolution")
@@ -4859,6 +4865,10 @@ async def execute_winner_evolution_job(job: Dict) -> Dict[str, Any]:
             logs.append(f"Variable override: {variable_override}")
         if skip_winner_check:
             logs.append("Winner check skipped (batch iterate)")
+        if custom_prompt:
+            logs.append(f"Custom prompt: {custom_prompt[:100]}")
+        if temperature is not None:
+            logs.append(f"Temperature: {temperature}")
 
         evolution_service = WinnerEvolutionService()
 
@@ -4869,6 +4879,8 @@ async def execute_winner_evolution_job(job: Dict) -> Dict[str, Any]:
             job_id=UUID(job_id),
             skip_winner_check=skip_winner_check,
             num_variations=num_variations,
+            custom_prompt=custom_prompt,
+            temperature=temperature,
         )
 
         child_count = len(result.get("child_ad_ids", []))

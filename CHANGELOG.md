@@ -1,5 +1,18 @@
 # ViralTracker Changelog
 
+## [0.19.5.0] - 2026-04-03
+
+### Added
+- Custom Changes option in Iteration Lab: free-text prompt + temperature slider for ad iterations that don't fit structured strategies
+- `custom_edit` evolution mode in winner_evolution_service, routed through the full V2 ad creation pipeline with parent-child lineage tracking
+- Multi-Variable Auto-Improve: pick top N elements by information gain and run one pipeline per element, each changing a different variable
+- Per-child lineage recording for multi-variable iterations (tracks which specific variable was changed for each child ad)
+- 13 unit tests covering custom edit, multi-variable, and routing logic
+
+### Changed
+- Auto-Improve and Custom Changes now support user-chosen variation counts via the Iteration Lab dropdown
+- Iteration opportunity detector guards `num_variations` against `cross_size_expansion` to prevent unintended compute multiplication
+
 ## [0.19.4.0] - 2026-04-02
 
 ### Added
