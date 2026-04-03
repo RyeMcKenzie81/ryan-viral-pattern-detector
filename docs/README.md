@@ -98,5 +98,5 @@ Real-time event timeline showing system activity across all brands and job types
 
 ---
 
-**Version**: 0.19.2.0 (Activity Feed Rich Media Cards)
-**Last Updated**: 2026-03-31
+**Version**: 0.19.5.0 (Iteration Lab: Custom Changes & Multi-Variable)
+**Last Updated**: 2026-04-03
