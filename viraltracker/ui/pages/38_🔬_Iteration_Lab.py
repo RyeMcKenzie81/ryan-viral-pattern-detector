@@ -557,6 +557,15 @@ def _render_opportunity_card(opp: dict, idx: int, brand_id: str, product_id: Opt
                     key=f"iter_strategy_{opp_id}",
                     label_visibility="collapsed",
                 )
+                # Per-card custom prompt when Custom Changes is selected
+                if st.session_state.get(f"iter_strategy_{opp_id}") == "custom_changes":
+                    st.text_area(
+                        "What do you want to change?",
+                        placeholder="e.g., Recreate for 25-34 male demographic...",
+                        max_chars=500,
+                        height=68,
+                        key=f"iter_custom_prompt_{opp_id}",
+                    )
             elif category == "budget":
                 st.caption("Budget recommendation")
 
@@ -804,13 +813,11 @@ def _render_batch_queue_bar(
         else:
             num_variations = 1
             st.markdown("**1** variation")
-    # Detect if any selected opp uses custom_changes (computed once, used twice)
-    is_custom = (
-        bulk_strategy == "custom_changes"
-        or (bulk_strategy == "keep_individual" and any(
-            st.session_state.get(f"iter_strategy_{_get_field(opp, 'id')}") == "custom_changes"
-            for opp in selected_opps
-        ))
+    # Detect custom_changes usage
+    is_bulk_custom = bulk_strategy == "custom_changes"
+    has_individual_custom = bulk_strategy == "keep_individual" and any(
+        st.session_state.get(f"iter_strategy_{_get_field(opp, 'id')}") == "custom_changes"
+        for opp in selected_opps
     )
 
     with cols[3]:
@@ -818,8 +825,17 @@ def _render_batch_queue_bar(
             st.warning("Select a product first")
         else:
             queue_disabled = False
-            if is_custom and not st.session_state.get("iter_batch_custom_prompt", "").strip():
+            if is_bulk_custom and not st.session_state.get("iter_batch_custom_prompt", "").strip():
+                # Bulk custom: require shared prompt
                 queue_disabled = True
+            elif has_individual_custom:
+                # Individual custom: require each custom opp has a per-card prompt
+                for opp in selected_opps:
+                    oid = _get_field(opp, "id")
+                    if st.session_state.get(f"iter_strategy_{oid}") == "custom_changes":
+                        if not st.session_state.get(f"iter_custom_prompt_{oid}", "").strip():
+                            queue_disabled = True
+                            break
 
             if st.button(
                 f"Queue {len(selected_opps)} Iterations",
@@ -827,15 +843,15 @@ def _render_batch_queue_bar(
                 key="iter_batch_queue_btn",
                 disabled=queue_disabled,
             ):
-                batch_custom_prompt = st.session_state.get("iter_batch_custom_prompt", "").strip() if is_custom else None
-                batch_temperature = st.session_state.get("iter_batch_temperature", 0.5) if is_custom else None
+                batch_custom_prompt = st.session_state.get("iter_batch_custom_prompt", "").strip() if is_bulk_custom else None
+                batch_temperature = st.session_state.get("iter_batch_temperature", 0.5) if is_bulk_custom else None
                 _batch_queue(
                     selected_opps, brand_id, product_id, org_id, bulk_strategy,
                     num_variations, batch_custom_prompt, batch_temperature,
                 )
 
-    # Custom Changes prompt area (below the batch bar columns)
-    if is_custom:
+    # Shared prompt area — only for bulk "Custom Changes" (individual custom uses per-card prompts)
+    if is_bulk_custom:
         st.text_area(
             "What do you want to change?",
             placeholder="e.g., Recreate for 25-34 male demographic, use bolder colors and more direct CTA...",
@@ -874,10 +890,14 @@ def _batch_queue(
             "variable_override": strategy.get("variable_override"),
         }
         # Attach custom prompt/temperature for custom_changes strategy
-        if strategy_key == "custom_changes" and custom_prompt:
-            override["custom_prompt"] = custom_prompt
-            if temperature is not None:
-                override["temperature"] = temperature
+        if strategy_key == "custom_changes":
+            # Per-card prompt takes priority, fall back to shared batch prompt
+            per_card_prompt = st.session_state.get(f"iter_custom_prompt_{opp_id}", "").strip()
+            effective_prompt = per_card_prompt or custom_prompt
+            if effective_prompt:
+                override["custom_prompt"] = effective_prompt
+                effective_temp = temperature if temperature is not None else st.session_state.get(f"iter_batch_temperature", 0.5)
+                override["temperature"] = effective_temp
         overrides[opp_id] = override
 
     with st.spinner(f"Queueing {len(opps)} iterations..."):
