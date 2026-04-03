@@ -615,7 +615,7 @@ class GSCService(BaseAnalyticsService):
             page_url, query, date_str = keys[0], keys[1], keys[2]
             ranking_pairs.append((page_url, {
                 "keyword": query,
-                "position": round(row.get("position", 0.0)),
+                "position": row.get("position", 0.0),
                 "checked_at": f"{date_str}T00:00:00Z",
                 "impressions": row.get("impressions", 0),
                 "clicks": row.get("clicks", 0),
