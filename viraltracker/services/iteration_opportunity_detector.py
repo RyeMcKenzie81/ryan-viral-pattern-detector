@@ -645,17 +645,27 @@ class IterationOpportunityDetector:
                 override = strategy_overrides.get(opp_id, {})
                 mode = override.get("evolution_mode", evolution_mode)
                 variable_override = override.get("variable_override")
+                custom_prompt = override.get("custom_prompt")
+                job_temperature = override.get("temperature")
 
-                # Only pass num_variations for strategies that support it
-                # Auto-Improve (no variable_override) and cross_size always use 1
+                # Pass num_variations for modes that support it.
+                # cross_size_expansion generates per-size internally; extra variations
+                # would multiply compute unexpectedly, so we never forward for it.
                 job_variations = None
-                if num_variations and num_variations > 1:
-                    if mode == "anti_fatigue_refresh" or variable_override:
-                        job_variations = num_variations
+                if num_variations and num_variations > 1 and mode != "cross_size_expansion":
+                    job_variations = num_variations
 
                 # Create scheduled_job
                 now = datetime.utcnow()
                 ad_name = opp.get("ad_name") or opp.get("meta_ad_id", "")
+                extra_params = {}
+                if job_variations:
+                    extra_params["num_variations"] = job_variations
+                if custom_prompt:
+                    extra_params["custom_prompt"] = custom_prompt
+                if job_temperature is not None:
+                    extra_params["temperature"] = job_temperature
+
                 job_row = {
                     "job_type": "winner_evolution",
                     "brand_id": str(brand_id),
@@ -670,7 +680,7 @@ class IterationOpportunityDetector:
                         "evolution_mode": mode,
                         "variable_override": variable_override,
                         "skip_winner_check": True,
-                        **({"num_variations": job_variations} if job_variations else {}),
+                        **extra_params,
                     },
                 }
                 self.supabase.table("scheduled_jobs").insert(job_row).execute()
