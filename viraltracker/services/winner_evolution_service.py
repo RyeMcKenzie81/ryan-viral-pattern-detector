@@ -1635,15 +1635,13 @@ class WinnerEvolutionService:
         pipeline_params["generation_temperature"] = temperature
         pipeline_params["num_variations"] = num_variations or 1
 
-        # Preserve parent's hook so only the user's requested changes apply
-        parent_hook_text = parent.get("hook_text") or ""
-        pipeline_params["pre_selected_hooks"] = [{
-            "adapted_text": parent_hook_text,
-            "text": parent_hook_text,
-            "benefit": "custom_edit",
-            "persuasion_type": element_tags.get("hook_type"),
-            "framework": f"Custom edit: {custom_prompt[:80]}",
-        }]
+        # NOTE: We intentionally do NOT set pre_selected_hooks here.
+        # pre_selected_hooks bypasses SelectContentNode entirely, locking
+        # the parent's exact hook text. Combined with recreate_template +
+        # reference image, this overpowers the custom prompt. By letting
+        # the pipeline generate fresh content, the custom prompt in
+        # additional_instructions (→ SpecialInstructions priority=HIGHEST)
+        # can actually influence the output.
 
         logger.info(
             f"Custom edit evolution: temp={temperature}, "
