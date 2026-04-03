@@ -829,6 +829,15 @@ class AdCreationService:
         "16:9": {"dimensions": "1920x1080", "name": "Landscape", "use_case": "Video, links"},
     }
 
+    # Gemini API supported aspect ratios: 1:1, 3:4, 4:3, 9:16, 16:9, 2:3, 3:2, 21:9
+    # Map our ad sizes to the closest Gemini-supported aspect_ratio for API enforcement
+    GEMINI_ASPECT_RATIO_MAP = {
+        "1:1": "1:1",
+        "4:5": "3:4",   # closest supported ratio (1080x1440 vs 1080x1350)
+        "9:16": "9:16",
+        "16:9": "16:9",
+    }
+
     async def create_size_variant(
         self,
         source_ad_id: UUID,
@@ -874,6 +883,12 @@ class AdCreationService:
         original_spec = source_ad.get("prompt_spec", {})
         hook_text = source_ad.get("hook_text", "")
         hook_id = source_ad.get("hook_id")
+
+        logger.info(
+            f"Size variant source: ad_id={source_ad_id}, "
+            f"storage_path={source_ad.get('storage_path')}, "
+            f"ad_run_id={ad_run_id}, hook_text={hook_text[:80] if hook_text else 'EMPTY'}"
+        )
 
         # Get source image if not provided
         if not source_image_base64:
@@ -929,11 +944,18 @@ This is a SIZE VARIANT - the content should be IDENTICAL, only the canvas dimens
         # This uses models/gemini-3-pro-image-preview with proper reference image handling
         gemini_service = GeminiService()
 
+        # Map target size to Gemini API aspect_ratio to enforce output dimensions.
+        # Without this, Gemini defaults to the reference image's aspect ratio,
+        # ignoring text-based dimension instructions in the prompt.
+        gemini_aspect_ratio = self.GEMINI_ASPECT_RATIO_MAP.get(target_size)
+        logger.info(f"Size variant generation: target={target_size}, gemini_aspect_ratio={gemini_aspect_ratio}")
+
         # generate_image expects reference_images as a list
         generation_result = await gemini_service.generate_image(
             prompt=prompt_text,
             reference_images=[source_image_base64],
-            return_metadata=True
+            return_metadata=True,
+            aspect_ratio=gemini_aspect_ratio,
         )
 
         generated_image_base64 = generation_result["image_base64"]
