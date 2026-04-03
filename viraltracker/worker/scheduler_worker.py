@@ -104,6 +104,7 @@ JOB_TYPE_LABELS = {
     'smart_edit': 'Smart Edit',
     'seo_content_eval': 'SEO Content Eval',
     'seo_publish': 'SEO Publish',
+    'seo_opportunity_scan': 'SEO Opportunity Scan',
 }
 
 # Map job_type to page slug for deep linking (points to result pages, not scheduler)
@@ -133,6 +134,7 @@ JOB_TYPE_PAGE_SLUGS = {
     'smart_edit': 'ad_scheduler',
     'seo_content_eval': 'content_policies',
     'seo_publish': 'content_policies',
+    'seo_opportunity_scan': 'seo_dashboard',
 }
 
 
@@ -466,7 +468,7 @@ def update_job(job_id: str, updates: Dict):
 
     # Job types that legitimately run longer than 30 minutes (e.g., full
     # 4-layer analysis for large ad accounts). Use 120-minute threshold instead.
-LONG_RUNNING_JOB_TYPES = {"ad_intelligence_analysis"}
+LONG_RUNNING_JOB_TYPES = {"ad_intelligence_analysis", "seo_opportunity_scan"}
 
 
 def recover_stuck_runs(stuck_threshold_minutes: int = 30):
@@ -984,6 +986,8 @@ async def execute_job(job: Dict) -> Dict[str, Any]:
         return await execute_seo_auto_interlink_job(job)
     elif job_type == 'demographic_backfill':
         return await execute_demographic_backfill_job(job)
+    elif job_type == 'seo_opportunity_scan':
+        return await execute_seo_opportunity_scan_job(job)
     else:
         # Hard-fail on unknown job types — never silently fall through to V1
         logger.error(f"Unknown job_type '{job_type}' for job {job_id} ({job_name}). "
@@ -5983,6 +5987,190 @@ async def execute_seo_auto_interlink_job(job: Dict) -> Dict[str, Any]:
         error_msg = str(e)
         logs.append(f"Job failed: {error_msg}")
         logger.error(f"seo_auto_interlink job failed: {error_msg}")
+        update_job_run(run_id, {
+            "status": "failed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "error_message": error_msg,
+            "logs": "\n".join(logs),
+        })
+        _reschedule_after_failure(job, job_id, get_run_attempt_number(run_id))
+        return {"success": False, "error": error_msg}
+
+
+async def execute_seo_opportunity_scan_job(job: Dict) -> Dict[str, Any]:
+    """Execute a global SEO opportunity scan across all brands with GSC connected.
+
+    This is a global job (no brand_id) that iterates all brands with GSC integrations,
+    runs OpportunityMinerService for each, and emits Activity Feed events.
+
+    Steps per brand:
+    1. Run scan_opportunities() to find keywords at positions 11-20
+    2. UPSERT opportunities into seo_opportunities table
+    3. Update rank deltas for previously actioned opportunities
+    4. Generate weekly report
+    5. Emit Activity Feed events (weekly report + high-score opportunities + milestones)
+    """
+    import time as _time
+
+    job_id = job["id"]
+    job_name = job.get("name", "SEO Opportunity Scan")
+    run_id = create_job_run(job_id, job.get("job_type", "seo_opportunity_scan"))
+    if not run_id:
+        return {"success": False, "error": "Failed to create job run"}
+
+    logs = [f"Starting {job_name}"]
+    start_time = _time.time()
+
+    try:
+        from viraltracker.services.seo_pipeline.services.opportunity_miner_service import OpportunityMinerService
+
+        miner = OpportunityMinerService()
+        db = get_supabase_client()
+
+        # Find all brands with GSC connected
+        try:
+            gsc_res = (
+                db.table("brand_integrations")
+                .select("brand_id, organization_id")
+                .eq("platform", "gsc")
+                .execute()
+            )
+            brands = gsc_res.data or []
+        except Exception as e:
+            raise RuntimeError(f"Failed to query GSC integrations: {e}")
+
+        if not brands:
+            logs.append("No brands with GSC connected — nothing to scan")
+            update_job_run(run_id, {
+                "status": "completed",
+                "completed_at": datetime.now(PST).isoformat(),
+                "logs": "\n".join(logs),
+            })
+            _update_job_next_run(job, job_id)
+            return {"success": True, "brands_scanned": 0}
+
+        total_opportunities = 0
+        total_brands = 0
+        brand_results = []
+
+        for brand_row in brands:
+            brand_id = brand_row["brand_id"]
+            org_id = brand_row.get("organization_id", "")
+
+            # Resolve org_id if missing (brand_integrations may not have it)
+            if not org_id:
+                try:
+                    brand_res = db.table("brands").select("organization_id").eq("id", brand_id).limit(1).execute()
+                    org_id = brand_res.data[0]["organization_id"] if brand_res.data else ""
+                except Exception:
+                    pass
+
+            if not org_id:
+                logs.append(f"Brand {brand_id}: skipped — no organization_id")
+                continue
+
+            try:
+                # 1. Scan opportunities
+                opportunities = miner.scan_opportunities(brand_id, org_id)
+                logs.append(f"Brand {brand_id}: found {len(opportunities)} opportunities")
+
+                # 2. UPSERT opportunities
+                if opportunities:
+                    upserted = miner.upsert_opportunities(opportunities)
+                    logs.append(f"Brand {brand_id}: upserted {upserted} opportunities")
+                    total_opportunities += upserted
+
+                # 3. Update rank deltas for previously actioned opportunities
+                deltas_updated = miner.update_rank_deltas(brand_id)
+                if deltas_updated:
+                    logs.append(f"Brand {brand_id}: updated {deltas_updated} rank deltas")
+
+                # 4. Generate weekly report
+                report = miner.generate_weekly_report(brand_id, org_id)
+
+                # 5. Emit Activity Feed events
+                duration_ms = int((_time.time() - start_time) * 1000)
+
+                # Weekly report event
+                _emit_activity_event(
+                    event_type="seo_weekly_report",
+                    severity="info",
+                    title=f"SEO Weekly Report: {report['articles_published']} published, {report['total_impressions_delta']} impressions",
+                    brand_id=brand_id,
+                    organization_id=org_id,
+                    details=report,
+                    source_id=run_id,
+                    link_page="seo_dashboard",
+                )
+
+                # High-score opportunity events (score > 80)
+                for opp in opportunities:
+                    if opp.get("opportunity_score", 0) > 80:
+                        _emit_activity_event(
+                            event_type="seo_opportunity_identified",
+                            severity="info",
+                            title=f"SEO Opportunity: \"{opp['keyword']}\" at position {opp['current_position']}",
+                            brand_id=brand_id,
+                            organization_id=org_id,
+                            details={
+                                "keyword": opp["keyword"],
+                                "position": opp["current_position"],
+                                "score": opp["opportunity_score"],
+                                "recommended_action": opp["recommended_action"],
+                                "action_reason": opp["action_reason"],
+                            },
+                            source_id=run_id,
+                            link_page="seo_dashboard",
+                        )
+
+                # Rank milestones
+                for milestone in report.get("rank_milestones", []):
+                    _emit_activity_event(
+                        event_type="seo_rank_milestone",
+                        severity="success",
+                        title=f"Page 1! \"{milestone['keyword']}\" moved from #{milestone['from']:.0f} to #{milestone['to']:.0f}",
+                        brand_id=brand_id,
+                        organization_id=org_id,
+                        details=milestone,
+                        source_id=run_id,
+                        link_page="seo_dashboard",
+                    )
+
+                total_brands += 1
+                brand_results.append({
+                    "brand_id": brand_id,
+                    "opportunities": len(opportunities),
+                    "deltas_updated": deltas_updated,
+                })
+
+            except Exception as e:
+                logs.append(f"Brand {brand_id}: ERROR — {e}")
+                logger.error(f"SEO opportunity scan failed for brand {brand_id}: {e}")
+
+        # Complete
+        duration_ms = int((_time.time() - start_time) * 1000)
+        metadata = {
+            "brands_scanned": total_brands,
+            "total_opportunities": total_opportunities,
+            "duration_ms": duration_ms,
+        }
+        logs.append(f"Completed: {total_brands} brands, {total_opportunities} opportunities")
+
+        update_job_run(run_id, {
+            "status": "completed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "logs": "\n".join(logs),
+            "metadata": json.dumps(metadata),
+        })
+        _update_job_next_run(job, job_id)
+
+        logger.info(f"SEO opportunity scan complete: {total_brands} brands, {total_opportunities} opportunities")
+        return {"success": True, **metadata}
+
+    except Exception as e:
+        error_msg = str(e)
+        logs.append(f"Job failed: {error_msg}")
+        logger.error(f"SEO opportunity scan job failed: {error_msg}")
         update_job_run(run_id, {
             "status": "failed",
             "completed_at": datetime.now(PST).isoformat(),

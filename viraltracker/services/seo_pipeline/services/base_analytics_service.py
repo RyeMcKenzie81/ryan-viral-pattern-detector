@@ -196,10 +196,13 @@ class BaseAnalyticsService:
                 row["source"] = source
 
             try:
-                self.supabase.table("seo_article_rankings").insert(batch).execute()
+                self.supabase.table("seo_article_rankings").upsert(
+                    batch,
+                    on_conflict="article_id,keyword,checked_at,source",
+                ).execute()
                 total += len(batch)
             except Exception as e:
-                logger.error(f"Failed to insert rankings batch: {e}")
+                logger.error(f"Failed to upsert rankings batch: {e}")
 
-        logger.info(f"Inserted {total} ranking rows (source={source})")
+        logger.info(f"Upserted {total} ranking rows (source={source})")
         return total

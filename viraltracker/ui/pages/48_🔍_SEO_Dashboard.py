@@ -367,6 +367,36 @@ def _render_sync_status(brand_id: str):
         idx_age = _format_age(_last_index_check)
         st.caption(f"**Indexing:** {idx_age or '—'}")
 
+    # Opportunity scan status — global job, show on all brand dashboards
+    _opp_scan_age = None
+    try:
+        opp_res = (
+            db.table("scheduled_job_runs")
+            .select("completed_at, scheduled_job_id")
+            .eq("status", "completed")
+            .order("completed_at", desc=True)
+            .limit(20)
+            .execute()
+        )
+        for run in (opp_res.data or []):
+            job_res = (
+                db.table("scheduled_jobs")
+                .select("job_type")
+                .eq("id", run["scheduled_job_id"])
+                .eq("job_type", "seo_opportunity_scan")
+                .limit(1)
+                .execute()
+            )
+            if job_res.data:
+                _opp_scan_age = run["completed_at"]
+                break
+    except Exception:
+        pass
+
+    if _opp_scan_age:
+        opp_age_str = _format_age(_opp_scan_age)
+        st.caption(f"**Opportunity Scan:** {opp_age_str or '—'}")
+
     # Warning if no scheduled syncs
     if not _has_status_sync and not _has_analytics_sync:
         st.info(

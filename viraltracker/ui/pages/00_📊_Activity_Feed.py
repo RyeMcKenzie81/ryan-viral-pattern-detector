@@ -638,6 +638,33 @@ def render_media_grid(thumbnail_urls: list, total_count: int):
         st.markdown(grid_html, unsafe_allow_html=True)
 
 
+def _render_seo_weekly_report_card(details: Dict, key_prefix: str, event_id: str):
+    """Render the SEO weekly report card with collapsible opportunity details."""
+    period = details.get("period", "")
+    published = details.get("articles_published", 0)
+    imp_delta = details.get("total_impressions_delta", "+0")
+    click_delta = details.get("total_clicks_delta", "+0")
+
+    st.caption(f"{period} · {published} published · impressions {imp_delta} · clicks {click_delta}")
+
+    top_opps = details.get("top_opportunities", [])
+    milestones = details.get("rank_milestones", [])
+
+    if top_opps or milestones:
+        with st.expander("Opportunity details", expanded=False):
+            if milestones:
+                for m in milestones:
+                    st.success(f"**{m.get('keyword', '')}** — position {m.get('from', '?')} → **{m.get('to', '?')}**")
+            if top_opps:
+                for opp in top_opps:
+                    action = (opp.get("action") or "").replace("_", " ")
+                    st.markdown(
+                        f"- **{opp.get('keyword', '')}** — "
+                        f"position {opp.get('position', '?')} · "
+                        f"{action} · score {opp.get('score', 0)}"
+                    )
+
+
 def render_event_card(event: Dict, brand_names: Dict[str, str], key_prefix: str = ""):
     """Render a single event in the timeline."""
     severity = event.get("severity", "info")
@@ -690,6 +717,22 @@ def render_event_card(event: Dict, brand_names: Dict[str, str], key_prefix: str 
         days = details.get("days_back")
         if days:
             st.caption(f"synced last {days} days")
+
+    elif event_type == "seo_weekly_report":
+        _render_seo_weekly_report_card(details, key_prefix, event_id)
+
+    elif event_type == "seo_opportunity_identified":
+        keyword = details.get("keyword", "")
+        position = details.get("position", "?")
+        action = (details.get("recommended_action") or "").replace("_", " ")
+        score = details.get("score", 0)
+        st.caption(f"**{keyword}** · position {position} · {action} · score {score}")
+
+    elif event_type == "seo_rank_milestone":
+        keyword = details.get("keyword", "")
+        from_pos = details.get("from", "?")
+        to_pos = details.get("to", "?")
+        st.success(f"**{keyword}** moved from position {from_pos} to **{to_pos}**")
 
     # Metadata for completed jobs
     elif details.get("metadata") and isinstance(details["metadata"], dict):
