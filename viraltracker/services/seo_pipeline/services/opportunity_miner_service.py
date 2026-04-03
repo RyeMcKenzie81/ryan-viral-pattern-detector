@@ -258,6 +258,7 @@ class OpportunityMinerService:
                 "article_id": c["article_id"],
                 "keyword": c["keyword"],
                 "cluster_map": cluster_map,
+                "avg_position": c["avg_position"],
             })
 
             # Classify opportunity type
@@ -391,16 +392,17 @@ class OpportunityMinerService:
         """Classify the recommended action for an opportunity.
 
         Decision tree:
-        1. Discovered article → skip REFRESH (only suggest new/links)
+        1. Discovered article → skip REFRESH (only suggest new/links/backlinks)
         2. Content age >1 year → REFRESH
         3. time_sensitive metadata flag → REFRESH
         4. No cluster association → NEW_SUPPORTING_CONTENT
         5. Cluster <3 supporting articles → NEW_SUPPORTING_CONTENT
-        6. Cluster 5+ supporting articles → OPTIMIZE_LINKS
-        7. Default → NEW_SUPPORTING_CONTENT
+        6. Cluster 3-4 with position 11-20 → BUILD_BACKLINKS (has content depth, needs authority)
+        7. Cluster 5+ supporting articles → BUILD_BACKLINKS if striking distance, else OPTIMIZE_LINKS
+        8. Default → NEW_SUPPORTING_CONTENT
 
         Args:
-            opportunity: Dict with article_id, keyword, and optionally cluster_map
+            opportunity: Dict with article_id, keyword, cluster_map, and optionally avg_position
 
         Returns:
             Dict with 'action' and 'reason' keys
@@ -455,30 +457,44 @@ class OpportunityMinerService:
 
         # 4. No cluster association
         supporting_count = cluster_map.get(article_id, -1)
+        avg_position = opportunity.get("avg_position", 15)
+
         if supporting_count < 0:
             return {
                 "action": "new_supporting_content",
                 "reason": "Article has no cluster — create new cluster around this keyword",
             }
 
-        # 5. Cluster <3 supporting articles
+        # 5. Cluster <3 supporting articles — need more content first
         if supporting_count < 3:
             return {
                 "action": "new_supporting_content",
                 "reason": f"Cluster has only {supporting_count} supporting articles (need 3+)",
             }
 
-        # 6. Cluster 5+ supporting articles
-        if supporting_count >= 5:
+        # 6. Cluster 3-4, striking distance — content depth exists, needs authority
+        if supporting_count < 5 and avg_position > 10:
             return {
-                "action": "optimize_links",
-                "reason": f"Cluster has {supporting_count} articles — optimize interlinking",
+                "action": "build_backlinks",
+                "reason": f"Cluster has {supporting_count} articles but stuck on page 2 — external backlinks would push to page 1",
             }
 
-        # 7. Default
+        # 7. Cluster 5+ supporting articles
+        if supporting_count >= 5:
+            if avg_position > 10:
+                return {
+                    "action": "build_backlinks",
+                    "reason": f"Cluster has {supporting_count} articles with strong internal coverage — external authority is the missing piece",
+                }
+            return {
+                "action": "optimize_links",
+                "reason": f"Cluster has {supporting_count} articles on page 1 — optimize interlinking for top-3 push",
+            }
+
+        # 8. Default — page 1 with moderate cluster
         return {
-            "action": "new_supporting_content",
-            "reason": f"Cluster has {supporting_count} supporting articles — add more",
+            "action": "optimize_links",
+            "reason": f"Cluster has {supporting_count} supporting articles — optimize interlinking",
         }
 
     # =========================================================================

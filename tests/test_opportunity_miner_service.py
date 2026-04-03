@@ -289,8 +289,8 @@ class TestClassifyAction:
         })
         assert result["action"] == "new_supporting_content"
 
-    def test_large_cluster_gets_optimize_links(self, service, mock_supabase):
-        """Cluster 5+ → OPTIMIZE_LINKS."""
+    def test_large_cluster_page1_gets_optimize_links(self, service, mock_supabase):
+        """Cluster 5+ on page 1 → OPTIMIZE_LINKS."""
         mock_supabase.table.return_value.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = [
             {
                 "published_at": datetime.now(timezone.utc).isoformat(),
@@ -303,11 +303,30 @@ class TestClassifyAction:
             "article_id": "art-1",
             "keyword": "test",
             "cluster_map": {"art-1": 6},
+            "avg_position": 7,  # page 1
         })
         assert result["action"] == "optimize_links"
 
-    def test_medium_cluster_default_new_content(self, service, mock_supabase):
-        """Cluster 3-4 → default NEW_SUPPORTING_CONTENT."""
+    def test_large_cluster_striking_distance_gets_backlinks(self, service, mock_supabase):
+        """Cluster 5+ but still on page 2 → BUILD_BACKLINKS."""
+        mock_supabase.table.return_value.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = [
+            {
+                "published_at": datetime.now(timezone.utc).isoformat(),
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "source": "generated",
+                "metadata": {},
+            }
+        ]
+        result = service.classify_action({
+            "article_id": "art-1",
+            "keyword": "test",
+            "cluster_map": {"art-1": 6},
+            "avg_position": 14,  # page 2
+        })
+        assert result["action"] == "build_backlinks"
+
+    def test_medium_cluster_striking_distance_gets_backlinks(self, service, mock_supabase):
+        """Cluster 3-4 at striking distance → BUILD_BACKLINKS."""
         mock_supabase.table.return_value.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = [
             {
                 "published_at": datetime.now(timezone.utc).isoformat(),
@@ -320,8 +339,27 @@ class TestClassifyAction:
             "article_id": "art-1",
             "keyword": "test",
             "cluster_map": {"art-1": 4},
+            "avg_position": 13,  # page 2
         })
-        assert result["action"] == "new_supporting_content"
+        assert result["action"] == "build_backlinks"
+
+    def test_medium_cluster_page1_gets_optimize_links(self, service, mock_supabase):
+        """Cluster 3-4 on page 1 → OPTIMIZE_LINKS (not backlinks)."""
+        mock_supabase.table.return_value.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = [
+            {
+                "published_at": datetime.now(timezone.utc).isoformat(),
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "source": "generated",
+                "metadata": {},
+            }
+        ]
+        result = service.classify_action({
+            "article_id": "art-1",
+            "keyword": "test",
+            "cluster_map": {"art-1": 4},
+            "avg_position": 8,  # page 1
+        })
+        assert result["action"] == "optimize_links"
 
 
 # =============================================================================
