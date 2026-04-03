@@ -2555,9 +2555,9 @@ def render_creative_intelligence_tab(brand_id: str, org_id: str, product_id: str
 
         demo_service = DemographicAnalysisService()
 
-        # Cache demographic data (30-min TTL)
-        demo_cache_key = f"ci_demo_{brand_id}_{product_id}"
-        demo_ts_key = f"ci_demo_ts_{brand_id}_{product_id}"
+        # Cache demographic data (30-min TTL, keyed by brand+product+format)
+        demo_cache_key = f"ci_demo_{brand_id}_{product_id}_{source_filter}"
+        demo_ts_key = f"ci_demo_ts_{brand_id}_{product_id}_{source_filter}"
         demo_data = st.session_state.get(demo_cache_key)
         demo_ts = st.session_state.get(demo_ts_key, 0)
 
@@ -2565,12 +2565,15 @@ def render_creative_intelligence_tab(brand_id: str, org_id: str, product_id: str
         if demo_data is None or (_dt_demo.now().timestamp() - demo_ts > 1800):
             age_gender_data = demo_service.get_demographic_performance(
                 _UUID_demo(brand_id), "age_gender", days_back=60, product_id=product_id,
+                source_filter=source_filter,
             )
             placement_data = demo_service.get_demographic_performance(
                 _UUID_demo(brand_id), "placement", days_back=60, product_id=product_id,
+                source_filter=source_filter,
             )
             top_segments = demo_service.get_top_segments(
                 _UUID_demo(brand_id), days_back=60, metric="roas", limit=5, product_id=product_id,
+                source_filter=source_filter,
             )
             demo_data = {
                 "age_gender": age_gender_data,
@@ -2782,6 +2785,7 @@ def render_creative_intelligence_tab(brand_id: str, org_id: str, product_id: str
                         cross_data = demo_service.get_creative_demographic_cross(
                             _UUID_demo(brand_id), cross_field, cross_bt,
                             days_back=60, product_id=product_id,
+                            source_filter=source_filter,
                         )
 
                         if cross_data["rows"] and cross_data["cols"]:
