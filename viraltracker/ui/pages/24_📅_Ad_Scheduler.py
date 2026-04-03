@@ -5399,6 +5399,23 @@ def render_schedule_detail():
         if st.button("🗑️ Delete", use_container_width=True):
             st.session_state.confirm_delete = True
 
+    with col4:
+        if st.button("🚀 Run Now", use_container_width=True):
+            run_now_time = datetime.now(PST) + timedelta(minutes=1)
+            updates = {
+                'next_run_at': run_now_time.isoformat(),
+                'status': 'active',
+            }
+            # For completed one-time jobs, bump max_runs so the worker
+            # doesn't immediately re-complete it
+            max_runs = job.get('max_runs')
+            runs_completed = job.get('runs_completed', 0)
+            if max_runs and runs_completed >= max_runs:
+                updates['max_runs'] = runs_completed + 1
+            update_scheduled_job(job_id, updates)
+            st.success(f"Job will run at {run_now_time.strftime('%I:%M %p %Z')}")
+            st.rerun()
+
     if st.session_state.get('confirm_delete'):
         st.warning("Are you sure you want to delete this schedule?")
         col1, col2 = st.columns(2)
