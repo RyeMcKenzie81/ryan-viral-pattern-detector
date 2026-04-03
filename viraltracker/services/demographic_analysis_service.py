@@ -36,12 +36,36 @@ class DemographicAnalysisService:
             from viraltracker.core.database import get_supabase_client
             self.supabase = get_supabase_client()
 
+    def _get_format_ad_ids(self, brand_id: UUID, source_filter: str) -> Optional[set]:
+        """Get ad IDs matching a format filter ('image' or 'video')."""
+        if not source_filter:
+            return None
+
+        ad_ids = set()
+        try:
+            if source_filter != "video":
+                result = self.supabase.table("ad_image_analysis").select(
+                    "meta_ad_id"
+                ).eq("brand_id", str(brand_id)).eq("status", "ok").execute()
+                ad_ids.update(r["meta_ad_id"] for r in (result.data or []))
+            if source_filter != "image":
+                result = self.supabase.table("ad_video_analysis").select(
+                    "meta_ad_id"
+                ).eq("brand_id", str(brand_id)).eq("status", "ok").execute()
+                ad_ids.update(r["meta_ad_id"] for r in (result.data or []))
+        except Exception as e:
+            logger.warning(f"Failed to load format ad IDs: {e}")
+            return None
+
+        return ad_ids if ad_ids else set()
+
     def get_demographic_performance(
         self,
         brand_id: UUID,
         breakdown_type: str,
         days_back: int = 60,
         product_id: str = None,
+        source_filter: str = None,
     ) -> List[Dict[str, Any]]:
         """
         Aggregate demographic performance across all ads for a brand.
@@ -51,6 +75,7 @@ class DemographicAnalysisService:
             breakdown_type: 'age_gender' or 'placement'.
             days_back: How far back to look.
             product_id: Optional product filter (uses URL-based matching).
+            source_filter: Optional 'image' or 'video' format filter.
 
         Returns:
             List of segment dicts with aggregated metrics and vs_account_avg.
@@ -65,6 +90,16 @@ class DemographicAnalysisService:
             product_ad_ids = corr_service.get_product_ad_ids(brand_id, product_id)
             if not product_ad_ids:
                 return []
+
+        # Get format-filtered ad IDs if needed
+        format_ad_ids = self._get_format_ad_ids(brand_id, source_filter)
+        if format_ad_ids is not None:
+            if not format_ad_ids:
+                return []
+            if product_ad_ids is not None:
+                product_ad_ids = product_ad_ids & format_ad_ids
+            else:
+                product_ad_ids = format_ad_ids
 
         # Load raw breakdown rows
         rows = self._load_breakdown_rows(brand_id, breakdown_type, cutoff, product_ad_ids)
@@ -172,6 +207,7 @@ class DemographicAnalysisService:
         metric: str = "roas",
         limit: int = 5,
         product_id: str = None,
+        source_filter: str = None,
     ) -> List[Dict[str, Any]]:
         """
         Get the top-performing demographic segments across all breakdown types.
@@ -182,6 +218,7 @@ class DemographicAnalysisService:
             metric: 'roas' or 'ctr' — which metric to rank by.
             limit: Max segments to return.
             product_id: Optional product filter.
+            source_filter: Optional 'image' or 'video' format filter.
 
         Returns:
             List of top segments with labels and vs_account_avg.
@@ -190,7 +227,7 @@ class DemographicAnalysisService:
 
         for bt in ["age_gender", "placement"]:
             segments = self.get_demographic_performance(
-                brand_id, bt, days_back, product_id,
+                brand_id, bt, days_back, product_id, source_filter,
             )
             for seg in segments:
                 vs_key = f"vs_account_avg_{metric}"
@@ -216,6 +253,7 @@ class DemographicAnalysisService:
         breakdown_type: str,
         days_back: int = 60,
         product_id: str = None,
+        source_filter: str = None,
     ) -> Dict[str, Any]:
         """
         Cross-analyze creative elements with demographic segments.
@@ -228,6 +266,7 @@ class DemographicAnalysisService:
             breakdown_type: 'age_gender' or 'placement'.
             days_back: How far back to look.
             product_id: Optional product filter.
+            source_filter: Optional 'image' or 'video' format filter.
 
         Returns:
             Dict with 'rows' (field values), 'cols' (segments), 'z' (matrix),
@@ -238,9 +277,9 @@ class DemographicAnalysisService:
         corr_service = CreativeCorrelationService(supabase_client=self.supabase)
         cutoff = (datetime.now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
 
-        # Load creative analyses
-        image_analyses = corr_service._load_image_analyses(brand_id)
-        video_analyses = corr_service._load_video_analyses(brand_id)
+        # Load creative analyses (filtered by format)
+        image_analyses = {} if source_filter == "video" else corr_service._load_image_analyses(brand_id)
+        video_analyses = {} if source_filter == "image" else corr_service._load_video_analyses(brand_id)
 
         # Merge all analyses keyed by meta_ad_id
         ad_field_values: Dict[str, str] = {}
