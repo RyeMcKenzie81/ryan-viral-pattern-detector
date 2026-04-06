@@ -1816,12 +1816,17 @@ class BrandAdAccount(BaseModel):
     Links a brand to a Meta ad account.
 
     Supports multiple accounts per brand for future expansion.
+    OAuth fields store per-brand tokens for self-service Facebook connection.
     """
     id: Optional[UUID] = Field(None, description="Internal UUID")
     brand_id: UUID = Field(..., description="Brand ID")
     meta_ad_account_id: str = Field(..., description="Meta ad account ID (e.g., act_123456789)")
     account_name: Optional[str] = Field(None, description="Display name for the account")
     is_primary: bool = Field(default=True, description="Primary account for this brand")
+    auth_method: Optional[str] = Field(default="system_user", description="'system_user' or 'oauth'")
+    access_token: Optional[str] = Field(None, description="OAuth long-lived access token")
+    token_expires_at: Optional[datetime] = Field(None, description="When the OAuth token expires")
+    connected_user_name: Optional[str] = Field(None, description="Facebook user who connected via OAuth")
     created_at: Optional[datetime] = Field(None, description="When this link was created")
 
 

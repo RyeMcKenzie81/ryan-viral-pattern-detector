@@ -48,6 +48,8 @@ class Config:
     # Meta Ads API (Facebook/Instagram)
     META_GRAPH_API_TOKEN: str = os.getenv('META_GRAPH_API_TOKEN', '')
     META_AD_ACCOUNT_ID: str = os.getenv('META_AD_ACCOUNT_ID', '')  # e.g., "act_123456789"
+    META_APP_ID: str = os.getenv('META_APP_ID', '')
+    META_APP_SECRET: str = os.getenv('META_APP_SECRET', '')
 
     # Klaviyo (Email Marketing)
     KLAVIYO_CLIENT_ID: str = os.getenv('KLAVIYO_CLIENT_ID', '')
