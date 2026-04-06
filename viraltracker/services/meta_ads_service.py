@@ -11,7 +11,7 @@ import asyncio
 import time
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict, Any
 from uuid import UUID
 
@@ -136,6 +136,13 @@ class MetaAdsService:
         """
         Get the Meta ad account ID for a brand from brand_ad_accounts table.
 
+        If the brand has an OAuth token (auth_method='oauth') that hasn't expired,
+        the SDK is re-initialized with that per-brand token. Otherwise falls back
+        to the system-level META_GRAPH_API_TOKEN.
+
+        Always restores the system token first to avoid leaking a prior brand's
+        token into this brand's operations.
+
         Args:
             brand_id: Brand UUID
 
@@ -144,10 +151,13 @@ class MetaAdsService:
         """
         from ..core.database import get_supabase_client
 
+        # Restore system token first to prevent cross-brand leakage
+        self._restore_system_token()
+
         supabase = get_supabase_client()
 
         result = supabase.table("brand_ad_accounts").select(
-            "meta_ad_account_id"
+            "meta_ad_account_id, auth_method, access_token, token_expires_at"
         ).eq(
             "brand_id", str(brand_id)
         ).eq(
@@ -155,9 +165,55 @@ class MetaAdsService:
         ).limit(1).execute()
 
         if result.data and len(result.data) > 0:
-            return result.data[0]["meta_ad_account_id"]
+            row = result.data[0]
+
+            # Use per-brand OAuth token if available and not expired
+            if row.get("auth_method") == "oauth" and row.get("access_token"):
+                expires_str = row.get("token_expires_at")
+                token_valid = False
+                if expires_str:
+                    try:
+                        expires = datetime.fromisoformat(expires_str)
+                        if expires.tzinfo is None:
+                            expires = expires.replace(tzinfo=timezone.utc)
+                        token_valid = expires > datetime.now(timezone.utc)
+                    except (ValueError, TypeError):
+                        pass
+
+                if token_valid:
+                    self._use_brand_token(row["access_token"])
+                    logger.info(f"Using per-brand OAuth token for brand {brand_id}")
+                else:
+                    logger.warning(
+                        f"OAuth token for brand {brand_id} is expired, "
+                        f"falling back to system token"
+                    )
+
+            return row["meta_ad_account_id"]
 
         return None
+
+    def _use_brand_token(self, token: str) -> None:
+        """Switch SDK to use a per-brand token for the current operation.
+
+        Saves the original system token so it can be restored after the
+        per-brand operation completes. Call _restore_system_token() when done.
+        """
+        from facebook_business.api import FacebookAdsApi
+
+        if not hasattr(self, '_system_token'):
+            self._system_token = self.access_token
+        self._api = FacebookAdsApi.init(access_token=token)
+        self._ad_accounts_cache.clear()
+        self.access_token = token
+
+    def _restore_system_token(self) -> None:
+        """Restore the system-level token after a per-brand operation."""
+        if hasattr(self, '_system_token') and self._system_token:
+            from facebook_business.api import FacebookAdsApi
+            self._api = FacebookAdsApi.init(access_token=self._system_token)
+            self._ad_accounts_cache.clear()
+            self.access_token = self._system_token
 
     async def link_brand_to_ad_account(
         self,

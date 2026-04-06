@@ -9,11 +9,15 @@ This page allows users to:
 - Quick access to hooks and ad history
 """
 
+import logging
+import os
 import streamlit as st
 import asyncio
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from uuid import UUID
+
+logger = logging.getLogger(__name__)
 
 # Page config
 st.set_page_config(
@@ -25,6 +29,103 @@ st.set_page_config(
 # Authentication
 from viraltracker.ui.auth import require_auth
 require_auth()
+
+# =============================================================================
+# META OAUTH CALLBACK HANDLING (must be before UI renders)
+# =============================================================================
+if "code" in st.query_params and "state" in st.query_params:
+    try:
+        from viraltracker.services.meta_oauth_utils import (
+            decode_oauth_state, exchange_meta_code,
+            exchange_for_long_lived_token, get_token_user_info,
+            get_user_ad_accounts,
+        )
+
+        state_data = decode_oauth_state(st.query_params["state"])
+        brand_id_cb = state_data["brand_id"]
+
+        app_base_url = os.environ.get("APP_BASE_URL", "http://localhost:8501")
+        redirect_uri_cb = f"{app_base_url.rstrip('/')}/Brand_Manager"
+
+        # Exchange code for short-lived, then long-lived token
+        short_lived = exchange_meta_code(st.query_params["code"], redirect_uri_cb)
+        long_lived = exchange_for_long_lived_token(short_lived["access_token"])
+
+        # Get user info and their ad accounts for selection
+        user_info = get_token_user_info(long_lived["access_token"])
+        ad_accounts = get_user_ad_accounts(long_lived["access_token"])
+
+        st.session_state["_meta_pending_token"] = long_lived
+        st.session_state["_meta_pending_user"] = user_info.get("name", "Unknown")
+        st.session_state["_meta_ad_accounts"] = ad_accounts
+        st.session_state["_meta_brand_id"] = brand_id_cb
+
+        st.query_params.clear()
+        st.rerun()
+
+    except Exception as e:
+        logger.error(f"Meta OAuth callback failed: {e}")
+        st.error(f"Meta OAuth failed: {e}")
+        st.query_params.clear()
+
+# Handle ad account selection after OAuth callback
+if "_meta_ad_accounts" in st.session_state:
+    st.subheader("Select Meta Ad Account")
+    accounts = st.session_state["_meta_ad_accounts"]
+    pending_brand_id = st.session_state.get("_meta_brand_id", "")
+    pending_token = st.session_state.get("_meta_pending_token", {})
+    pending_user = st.session_state.get("_meta_pending_user", "Unknown")
+
+    if not accounts:
+        st.warning("No ad accounts found for this Facebook user. Make sure the user has access to ad accounts.")
+        if st.button("Dismiss", key="meta_dismiss_no_accounts"):
+            for k in ["_meta_ad_accounts", "_meta_brand_id", "_meta_pending_token", "_meta_pending_user"]:
+                st.session_state.pop(k, None)
+            st.rerun()
+    else:
+        account_options = {f"{a.get('name', 'Unnamed')} ({a['id']})": a for a in accounts}
+        selected_label = st.selectbox(
+            "Which ad account to connect?",
+            options=list(account_options.keys()),
+            key="meta_account_select",
+        )
+        selected_account = account_options[selected_label]
+
+        col_connect, col_cancel = st.columns(2)
+        with col_connect:
+            if st.button("Connect This Account", key="meta_connect_account", type="primary"):
+                try:
+                    from viraltracker.core.database import get_supabase_client as _get_db
+                    from datetime import timezone as tz
+
+                    db_cb = _get_db()
+                    expires_at = (datetime.now(tz.utc) + timedelta(seconds=pending_token.get("expires_in", 5184000))).isoformat()
+
+                    db_cb.table("brand_ad_accounts").upsert({
+                        "brand_id": pending_brand_id,
+                        "meta_ad_account_id": selected_account["id"],
+                        "account_name": selected_account.get("name", ""),
+                        "auth_method": "oauth",
+                        "access_token": pending_token["access_token"],
+                        "token_expires_at": expires_at,
+                        "connected_user_name": pending_user,
+                        "is_primary": True,
+                    }, on_conflict="brand_id,meta_ad_account_id").execute()
+
+                    st.success(f"Connected **{selected_account['name']}** ({selected_account['id']})")
+                    for k in ["_meta_ad_accounts", "_meta_brand_id", "_meta_pending_token", "_meta_pending_user"]:
+                        st.session_state.pop(k, None)
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Failed to save connection: {e}")
+
+        with col_cancel:
+            if st.button("Cancel", key="meta_cancel_connect"):
+                for k in ["_meta_ad_accounts", "_meta_brand_id", "_meta_pending_token", "_meta_pending_user"]:
+                    st.session_state.pop(k, None)
+                st.rerun()
+
+    st.divider()
 
 # Initialize session state
 if 'expanded_product_id' not in st.session_state:
@@ -1861,6 +1962,68 @@ with st.container():
 
     if current_ad_library_url:
         st.caption(f"[Open in Facebook Ad Library ↗]({current_ad_library_url})")
+
+    # ---- Meta OAuth Connection ----
+    st.markdown("")
+    st.markdown("**Meta Ad Account Connection**")
+
+    try:
+        db_meta = get_supabase_client()
+        meta_connection = db_meta.table("brand_ad_accounts").select(
+            "id, meta_ad_account_id, account_name, auth_method, access_token, token_expires_at, connected_user_name"
+        ).eq("brand_id", selected_brand_id).eq("is_primary", True).limit(1).execute()
+
+        if meta_connection.data and meta_connection.data[0].get("auth_method") == "oauth":
+            conn = meta_connection.data[0]
+            expires_str = conn.get("token_expires_at")
+            account_label = conn.get("account_name") or conn.get("meta_ad_account_id") or "Unknown"
+            user_label = conn.get("connected_user_name") or "Unknown user"
+
+            if expires_str:
+                from datetime import timezone as tz
+                try:
+                    expires_dt = datetime.fromisoformat(expires_str.replace("Z", "+00:00"))
+                    days_left = (expires_dt - datetime.now(tz.utc)).days
+                    if days_left > 7:
+                        st.success(f"Connected: **{account_label}** (by {user_label}) — token expires in {days_left} days. Auto-renewal is active.")
+                    elif days_left > 0:
+                        st.warning(f"Connected: **{account_label}** — token expires in {days_left} days. Auto-renewal will attempt soon.")
+                    else:
+                        st.error(f"Token expired for **{account_label}**. Please reconnect below.")
+                except (ValueError, TypeError):
+                    st.info(f"Connected: **{account_label}** (by {user_label})")
+            else:
+                st.info(f"Connected: **{account_label}** (by {user_label}) — no expiry tracked")
+        elif meta_connection.data:
+            st.info(f"Using system token for **{meta_connection.data[0].get('account_name') or meta_connection.data[0].get('meta_ad_account_id', 'Unknown')}**")
+        else:
+            st.caption("No Meta ad account connected. Use the button below to connect via Facebook OAuth.")
+
+    except Exception as e:
+        logger.warning(f"Failed to load Meta connection status: {e}")
+
+    # Connect / Reconnect button
+    meta_app_id = os.environ.get("META_APP_ID", "")
+    if meta_app_id:
+        if st.button("Connect Facebook Ad Account", key="connect_meta_oauth", type="secondary"):
+            try:
+                from viraltracker.services.meta_oauth_utils import get_meta_authorization_url, encode_oauth_state
+                from viraltracker.ui.utils import get_current_organization_id
+                import secrets as _secrets
+
+                org_id = get_current_organization_id() or "all"
+                nonce = _secrets.token_urlsafe(16)
+                state = encode_oauth_state(selected_brand_id, org_id, nonce)
+
+                app_base_url = os.environ.get("APP_BASE_URL", "http://localhost:8501")
+                redirect_uri = f"{app_base_url.rstrip('/')}/Brand_Manager"
+
+                auth_url = get_meta_authorization_url(redirect_uri=redirect_uri, state=state)
+                st.markdown(f"[Click here to authorize with Facebook]({auth_url})")
+            except Exception as e:
+                st.error(f"Failed to generate auth URL: {e}")
+    else:
+        st.caption("Meta OAuth not configured (META_APP_ID not set)")
 
 st.divider()
 

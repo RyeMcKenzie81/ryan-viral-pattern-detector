@@ -1,5 +1,21 @@
 # ViralTracker Changelog
 
+## [0.19.6.0] - 2026-04-06
+
+### Added
+- Meta OAuth per-brand ad account connection: brands can now connect their own Facebook ad account via OAuth instead of sharing a single system token
+- "Connect Facebook Ad Account" button in Brand Manager with ad account selection UI
+- OAuth callback handler in Brand Manager page (code exchange, long-lived token, ad account picker)
+- Per-brand token resolution in MetaAdsService: brands with OAuth tokens use their own token, others fall back to system token
+- Daily token_refresh scheduler job: auto-extends Meta OAuth tokens 7 days before expiry
+- `meta_oauth_utils.py` service with full Meta OAuth lifecycle (auth URL, code exchange, token extension, user info, ad account listing)
+- `connected_user_name` column on brand_ad_accounts to track who connected via OAuth
+- Token expiry status display in Brand Manager (green/warning/error states)
+
+### Fixed
+- Cross-brand token leakage: MetaAdsService now restores system token between per-brand operations
+- Token refresh job no longer picks up already-expired tokens (prevents perpetual error noise)
+
 ## [0.19.5.0] - 2026-04-03
 
 ### Added

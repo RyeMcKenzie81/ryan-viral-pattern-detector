@@ -105,6 +105,7 @@ JOB_TYPE_LABELS = {
     'seo_content_eval': 'SEO Content Eval',
     'seo_publish': 'SEO Publish',
     'seo_opportunity_scan': 'SEO Opportunity Scan',
+    'token_refresh': 'Token Refresh',
 }
 
 # Map job_type to page slug for deep linking (points to result pages, not scheduler)
@@ -135,6 +136,7 @@ JOB_TYPE_PAGE_SLUGS = {
     'seo_content_eval': 'content_policies',
     'seo_publish': 'content_policies',
     'seo_opportunity_scan': 'seo_dashboard',
+    'token_refresh': 'ad_scheduler',
 }
 
 
@@ -988,6 +990,8 @@ async def execute_job(job: Dict) -> Dict[str, Any]:
         return await execute_demographic_backfill_job(job)
     elif job_type == 'seo_opportunity_scan':
         return await execute_seo_opportunity_scan_job(job)
+    elif job_type == 'token_refresh':
+        return await execute_token_refresh_job(job)
     else:
         # Hard-fail on unknown job types — never silently fall through to V1
         logger.error(f"Unknown job_type '{job_type}' for job {job_id} ({job_name}). "
@@ -6174,6 +6178,96 @@ async def execute_seo_opportunity_scan_job(job: Dict) -> Dict[str, Any]:
         error_msg = str(e)
         logs.append(f"Job failed: {error_msg}")
         logger.error(f"SEO opportunity scan job failed: {error_msg}")
+        update_job_run(run_id, {
+            "status": "failed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "error_message": error_msg,
+            "logs": "\n".join(logs),
+        })
+        _reschedule_after_failure(job, job_id, get_run_attempt_number(run_id))
+        return {"success": False, "error": error_msg}
+
+
+async def execute_token_refresh_job(job: Dict) -> Dict[str, Any]:
+    """Check all OAuth tokens and extend those expiring within 7 days.
+
+    Queries brand_ad_accounts for OAuth tokens nearing expiry, then calls
+    Meta's token exchange endpoint to get a fresh 60-day token.
+    """
+    from viraltracker.services.meta_oauth_utils import extend_token
+
+    job_id = job['id']
+    job_name = job.get('name', 'Token Refresh')
+    params = job.get('parameters', {}) or {}
+    supabase = get_supabase_client()
+    logs = []
+
+    # Create job run record
+    run_id = create_job_run(job_id, job_name)
+
+    try:
+        # Find OAuth tokens expiring within 7 days (but not already expired)
+        now_iso = datetime.now(pytz.utc).isoformat()
+        threshold = (datetime.now(pytz.utc) + timedelta(days=7)).isoformat()
+
+        expiring = supabase.table("brand_ad_accounts").select(
+            "id, brand_id, meta_ad_account_id, access_token, token_expires_at"
+        ).eq("auth_method", "oauth").gte("token_expires_at", now_iso).lte("token_expires_at", threshold).execute()
+
+        if not expiring.data:
+            logs.append("No tokens expiring within 7 days")
+            update_job_run(run_id, {
+                "status": "completed",
+                "completed_at": datetime.now(PST).isoformat(),
+                "logs": "\n".join(logs),
+                "metadata": json.dumps({"refreshed": 0, "failed": 0, "checked": 0}),
+            })
+            return {"success": True, "refreshed": 0, "failed": 0}
+
+        logs.append(f"Found {len(expiring.data)} token(s) expiring within 7 days")
+        refreshed = 0
+        failed = 0
+
+        for row in expiring.data:
+            account_id = row["id"]
+            brand_id = row.get("brand_id", "unknown")
+            ad_account_id = row.get("meta_ad_account_id", "unknown")
+
+            try:
+                result = extend_token(row["access_token"])
+                if result and result.get("access_token"):
+                    new_expires = (datetime.now(pytz.utc) + timedelta(seconds=result["expires_in"])).isoformat()
+                    supabase.table("brand_ad_accounts").update({
+                        "access_token": result["access_token"],
+                        "token_expires_at": new_expires,
+                    }).eq("id", account_id).execute()
+                    refreshed += 1
+                    logs.append(f"Refreshed token for brand {brand_id} account {ad_account_id}")
+                else:
+                    failed += 1
+                    logs.append(f"Token extension returned empty for brand {brand_id} account {ad_account_id}")
+                    logger.warning(f"Token extension failed for brand {brand_id}, account {ad_account_id}")
+            except Exception as ext_err:
+                failed += 1
+                logs.append(f"Error extending token for brand {brand_id} account {ad_account_id}: {ext_err}")
+                logger.warning(f"Token extension error for brand {brand_id}, account {ad_account_id}: {ext_err}")
+
+        metadata = {"refreshed": refreshed, "failed": failed, "checked": len(expiring.data)}
+        logs.append(f"Done: {refreshed} refreshed, {failed} failed out of {len(expiring.data)} checked")
+
+        status = "completed" if failed == 0 else "completed_with_errors"
+        update_job_run(run_id, {
+            "status": status,
+            "completed_at": datetime.now(PST).isoformat(),
+            "logs": "\n".join(logs),
+            "metadata": json.dumps(metadata),
+        })
+        return {"success": True, **metadata}
+
+    except Exception as e:
+        error_msg = str(e)
+        logs.append(f"Job failed: {error_msg}")
+        logger.error(f"Token refresh job failed: {error_msg}")
         update_job_run(run_id, {
             "status": "failed",
             "completed_at": datetime.now(PST).isoformat(),
