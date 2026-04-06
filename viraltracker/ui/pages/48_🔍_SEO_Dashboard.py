@@ -1690,6 +1690,26 @@ st.divider()
 st.subheader("Articles")
 
 if articles:
+    # Publish history summary
+    _published_articles = [a for a in articles if a.get("published_at")]
+    if _published_articles:
+        _published_articles.sort(key=lambda x: x.get("published_at", ""), reverse=True)
+        with st.expander(f"Publish History ({len(_published_articles)} published)", expanded=False):
+            for _pa in _published_articles[:20]:
+                _pub_dt = _pa.get("published_at", "")
+                try:
+                    from datetime import datetime as _dt
+                    _parsed = _dt.fromisoformat(_pub_dt.replace("Z", "+00:00"))
+                    _date_str = _parsed.strftime("%b %d, %Y")
+                except (ValueError, TypeError, AttributeError):
+                    _date_str = _pub_dt[:10] if _pub_dt else "—"
+                _kw = _pa.get("keyword", "Untitled")
+                _url = _pa.get("published_url", "")
+                if _url:
+                    st.markdown(f"**{_date_str}** — [{_kw}]({_url})")
+                else:
+                    st.markdown(f"**{_date_str}** — {_kw}")
+
     table_data = []
     _CMS_STATUS_MAP = {
         "published": "Live",
@@ -1698,11 +1718,20 @@ if articles:
     for a in articles:
         status = a.get("status", "")
         cms_status = _CMS_STATUS_MAP.get(status, "—") if a.get("cms_article_id") else "—"
+        # Format published date
+        _pub_raw = a.get("published_at", "")
+        try:
+            from datetime import datetime as _dt2
+            _pub_parsed = _dt2.fromisoformat(_pub_raw.replace("Z", "+00:00"))
+            _pub_display = _pub_parsed.strftime("%Y-%m-%d")
+        except (ValueError, TypeError, AttributeError):
+            _pub_display = "—"
         table_data.append({
             "Keyword": a.get("keyword", "—"),
             "Status": a.get("status", "—"),
             "Shopify": cms_status,
             "Phase": (a.get("phase") or "—").upper(),
+            "Published": _pub_display,
             "CMS ID": (a.get("cms_article_id") or "—")[:12],
             "Published URL": a.get("published_url") or "—",
         })
