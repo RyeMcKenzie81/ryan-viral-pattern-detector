@@ -470,7 +470,7 @@ def update_job(job_id: str, updates: Dict):
 
     # Job types that legitimately run longer than 30 minutes (e.g., full
     # 4-layer analysis for large ad accounts). Use 120-minute threshold instead.
-LONG_RUNNING_JOB_TYPES = {"ad_intelligence_analysis", "seo_opportunity_scan"}
+LONG_RUNNING_JOB_TYPES = {"ad_intelligence_analysis", "seo_opportunity_scan", "competitor_intel_analysis"}
 
 
 def recover_stuck_runs(stuck_threshold_minutes: int = 30):
@@ -992,6 +992,8 @@ async def execute_job(job: Dict) -> Dict[str, Any]:
         return await execute_seo_opportunity_scan_job(job)
     elif job_type == 'token_refresh':
         return await execute_token_refresh_job(job)
+    elif job_type == 'competitor_intel_analysis':
+        return await execute_competitor_intel_analysis_job(job)
     else:
         # Hard-fail on unknown job types — never silently fall through to V1
         logger.error(f"Unknown job_type '{job_type}' for job {job_id} ({job_name}). "
@@ -6268,6 +6270,177 @@ async def execute_token_refresh_job(job: Dict) -> Dict[str, Any]:
         error_msg = str(e)
         logs.append(f"Job failed: {error_msg}")
         logger.error(f"Token refresh job failed: {error_msg}")
+        update_job_run(run_id, {
+            "status": "failed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "error_message": error_msg,
+            "logs": "\n".join(logs),
+        })
+        _reschedule_after_failure(job, job_id, get_run_attempt_number(run_id))
+        return {"success": False, "error": error_msg}
+
+
+async def execute_competitor_intel_analysis_job(job: Dict) -> Dict[str, Any]:
+    """Execute a competitor intel pack generation job.
+
+    Scores competitor ads, downloads videos from Supabase storage,
+    analyzes each via Gemini with ingredient extraction prompt,
+    then aggregates into an ingredient pack.
+
+    Parameters (from job['parameters']):
+        competitor_id: str - Competitor UUID
+        organization_id: str - Organization UUID
+        n_videos: int - Number of top videos to analyze (default: 10)
+        product_id: str - Optional product UUID for later pipeline save
+    """
+    job_id = job['id']
+    job_name = job['name']
+    params = job.get('parameters') or {}
+
+    logger.info(f"Starting competitor intel analysis job: {job_name}")
+
+    # Immediately clear next_run_at to prevent duplicate execution
+    update_job(job_id, {"next_run_at": None})
+
+    # Create job run record
+    run_id = create_job_run(job_id, job)
+    if not run_id:
+        logger.error(f"Failed to create run record for job {job_id}")
+        return {"success": False, "error": "Failed to create run record"}
+
+    logs = []
+
+    try:
+        from viraltracker.services.competitor_intel_service import CompetitorIntelService
+
+        service = CompetitorIntelService()
+
+        competitor_id = params.get('competitor_id')
+        organization_id = params.get('organization_id')
+        n_videos = params.get('n_videos', 10)
+        product_id = params.get('product_id')
+
+        if not competitor_id or not organization_id:
+            raise ValueError("competitor_id and organization_id are required parameters")
+
+        logs.append(f"Analyzing top {n_videos} video ads for competitor {competitor_id}")
+
+        # Step 1: Score and rank ads
+        scored_ads = service.score_competitor_ads(competitor_id, limit=n_videos)
+        logs.append(f"Found {len(scored_ads)} video ads with scores")
+
+        if not scored_ads:
+            logs.append("No video ads found. Completing with empty pack.")
+            update_job_run(run_id, {
+                "status": "completed",
+                "completed_at": datetime.now(PST).isoformat(),
+                "logs": "\n".join(logs),
+                "metadata": {"pack_id": None, "message": "No video ads found"},
+            })
+            return {"success": True, "message": "No video ads to analyze"}
+
+        # Step 2: Check which ads have downloaded video assets
+        ad_ids = [s["ad_id"] for s in scored_ads]
+        assets = service.get_video_assets_for_ads(ad_ids)
+        logs.append(f"{len(assets)}/{len(scored_ads)} ads have downloaded video assets")
+
+        # Filter to ads with assets
+        analyzable = [(s, assets[s["ad_id"]]) for s in scored_ads if s["ad_id"] in assets]
+        if not analyzable:
+            logs.append("No video assets available. Download assets first.")
+            update_job_run(run_id, {
+                "status": "completed",
+                "completed_at": datetime.now(PST).isoformat(),
+                "logs": "\n".join(logs),
+                "metadata": {"message": "No downloaded video assets"},
+            })
+            return {"success": True, "message": "No video assets available"}
+
+        # Step 3: Create pack record
+        pack_id = service.create_pack_record(
+            competitor_id=competitor_id,
+            organization_id=organization_id,
+            video_count=len(analyzable),
+            product_id=product_id,
+            scoring_metadata=[s for s, _ in analyzable],
+        )
+        logs.append(f"Created pack {pack_id} for {len(analyzable)} videos")
+
+        # Step 4: Analyze each video sequentially
+        extractions = []
+        video_scores = []
+        failed_count = 0
+
+        for i, (scored_ad, asset_info) in enumerate(analyzable):
+            video_num = i + 1
+            ad_id = scored_ad["ad_id"]
+            logs.append(f"Analyzing video {video_num}/{len(analyzable)} (ad: {ad_id})")
+
+            try:
+                result = await service.analyze_single_video(
+                    asset_id=asset_info["asset_id"],
+                    storage_path=asset_info["storage_path"],
+                )
+                extractions.append(result)
+                video_scores.append(scored_ad["composite"])
+
+                # Update progress
+                service.update_pack_progress(
+                    pack_id=pack_id,
+                    videos_completed=video_num - failed_count,
+                    video_analysis={
+                        "ad_id": ad_id,
+                        "composite_score": scored_ad["composite"],
+                        "extraction": result,
+                    },
+                )
+                logs.append(f"  Video {video_num} analyzed successfully")
+
+            except Exception as e:
+                failed_count += 1
+                logs.append(f"  Video {video_num} failed: {str(e)[:200]}")
+                logger.warning(f"Video analysis failed for ad {ad_id}: {e}")
+
+            # Update run metadata with progress
+            update_job_run(run_id, {
+                "metadata": {
+                    "pack_id": pack_id,
+                    "progress": f"{video_num}/{len(analyzable)}",
+                    "completed": len(extractions),
+                    "failed": failed_count,
+                },
+            })
+
+        # Step 5: Finalize pack
+        result = service.finalize_pack(
+            pack_id=pack_id,
+            extractions=extractions,
+            video_scores=video_scores,
+            failed_count=failed_count,
+            total_count=len(analyzable),
+        )
+        logs.append(f"Pack finalized with status: {result['status']}")
+        logs.append(f"  {len(extractions)} videos analyzed, {failed_count} failed")
+
+        update_job_run(run_id, {
+            "status": "completed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "logs": "\n".join(logs),
+            "metadata": {
+                "pack_id": pack_id,
+                "status": result["status"],
+                "videos_analyzed": len(extractions),
+                "videos_failed": failed_count,
+            },
+        })
+
+        _update_job_next_run(job, job_id)
+        return {"success": True, "pack_id": pack_id, "status": result["status"]}
+
+    except Exception as e:
+        error_msg = str(e)[:500]
+        logs.append(f"Job failed: {error_msg}")
+        logger.error(f"Competitor intel analysis job failed: {error_msg}")
         update_job_run(run_id, {
             "status": "failed",
             "completed_at": datetime.now(PST).isoformat(),

@@ -94,6 +94,7 @@ SOURCE_LABELS = {
     "ad_performance": "Ad Performance",
     "competitor_research": "Competitor",
     "brand_research": "Brand",
+    "competitor_intel": "Competitor Intel",
 }
 
 SOURCE_ICONS = {
@@ -102,6 +103,7 @@ SOURCE_ICONS = {
     "ad_performance": "📈",
     "competitor_research": "🎯",
     "brand_research": "🔬",
+    "competitor_intel": "🔎",
 }
 
 CONFIDENCE_BADGES = {

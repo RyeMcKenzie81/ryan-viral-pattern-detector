@@ -102,6 +102,10 @@ class ExtractFromSourceNode(BaseNode[ExtractionState]):
                 # Extract from ad performance analysis
                 extracted = self._extract_from_ad_performance(source_data)
 
+            elif source_type == "competitor_intel":
+                # Extract from competitor intel ingredient packs
+                extracted = self._extract_from_competitor_intel(source_data)
+
             else:
                 logger.warning(f"Unknown source type: {source_type}")
                 extracted = []
@@ -268,6 +272,78 @@ class ExtractFromSourceNode(BaseNode[ExtractionState]):
                 "candidate_type": "ad_hypothesis",
                 "explanation": hyp.get("evidence", "")
             })
+
+        return candidates
+
+    def _extract_from_competitor_intel(self, data: Dict) -> List[Dict]:
+        """Extract candidates from competitor intel ingredient packs."""
+        candidates = []
+
+        # Extract hooks as ad hypotheses
+        for hook in data.get("hooks", []):
+            text = hook.get("text", "") if isinstance(hook, dict) else str(hook)
+            if text:
+                candidates.append({
+                    "name": text[:50],
+                    "belief_statement": text,
+                    "candidate_type": "ad_hypothesis",
+                    "explanation": f"Hook from competitor intel (type: {hook.get('type', 'unknown')})" if isinstance(hook, dict) else "Hook from competitor intel"
+                })
+
+        # Extract angles with belief statements
+        for angle in data.get("angles", []):
+            belief = angle.get("belief_statement", "") if isinstance(angle, dict) else str(angle)
+            if belief:
+                candidates.append({
+                    "name": belief[:50],
+                    "belief_statement": belief,
+                    "candidate_type": "ad_hypothesis",
+                    "explanation": angle.get("evidence", "From competitor intel") if isinstance(angle, dict) else "From competitor intel"
+                })
+
+        # Extract pain points
+        for pain in data.get("pain_points", []):
+            text = pain if isinstance(pain, str) else pain.get("text", "")
+            if text:
+                candidates.append({
+                    "name": text[:50],
+                    "belief_statement": text,
+                    "candidate_type": "pain_signal",
+                    "explanation": "Pain point from competitor intel"
+                })
+
+        # Extract JTBDs
+        for jtbd in data.get("jtbds", []):
+            text = jtbd if isinstance(jtbd, str) else jtbd.get("text", "")
+            if text:
+                candidates.append({
+                    "name": text[:50],
+                    "belief_statement": text,
+                    "candidate_type": "jtbd",
+                    "explanation": "JTBD from competitor intel"
+                })
+
+        # Extract UMPs
+        for mech in data.get("unique_problem_mechanisms", []):
+            text = mech.get("mechanism_text", "") if isinstance(mech, dict) else str(mech)
+            if text:
+                candidates.append({
+                    "name": text[:50],
+                    "belief_statement": text,
+                    "candidate_type": "ump",
+                    "explanation": "UMP from competitor intel"
+                })
+
+        # Extract UMSs
+        for mech in data.get("unique_solution_mechanisms", []):
+            text = mech.get("mechanism_text", "") if isinstance(mech, dict) else str(mech)
+            if text:
+                candidates.append({
+                    "name": text[:50],
+                    "belief_statement": text,
+                    "candidate_type": "ums",
+                    "explanation": "UMS from competitor intel"
+                })
 
         return candidates
 
