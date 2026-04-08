@@ -132,6 +132,7 @@ def _get_org_features_cached(org_id: str) -> Dict[str, bool]:
             FeatureKey.COMPETITIVE_ANALYSIS: True,
             FeatureKey.COMPETITOR_RESEARCH: True,
             FeatureKey.REDDIT_RESEARCH: True,
+            FeatureKey.COMPETITOR_INTEL: True,
             # Ads pages
             FeatureKey.AD_CREATOR: True,
             FeatureKey.AD_HISTORY: True,
