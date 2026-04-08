@@ -57,6 +57,7 @@ class FeatureKey:
     COMPETITORS = "competitors"
     COMPETITIVE_ANALYSIS = "competitive_analysis"
     COMPETITOR_RESEARCH = "competitor_research"
+    COMPETITOR_INTEL = "competitor_intel"
     REDDIT_RESEARCH = "reddit_research"
     # Ads
     AD_CREATOR = "ad_creator"

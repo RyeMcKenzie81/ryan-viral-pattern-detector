@@ -278,6 +278,8 @@ def build_navigation_pages() -> Dict[str, List[st.Page]]:
         competitors.append(st.Page("pages/12_🔍_Competitor_Research.py", title="Competitor Research", icon="🔍"))
     if visible(SK_COMP, "reddit_research"):
         competitors.append(st.Page("pages/15_🔍_Reddit_Research.py", title="Reddit Research", icon="🔍"))
+    if visible(SK_COMP, "competitor_intel"):
+        competitors.append(st.Page("pages/14_🔎_Competitor_Intel.py", title="Competitor Intel", icon="🔎"))
     if competitors:
         pages["Competitors"] = competitors
 

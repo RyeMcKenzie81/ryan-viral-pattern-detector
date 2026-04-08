@@ -734,7 +734,8 @@ class BrandResearchService:
         storage_path: str,
         brand_id: Optional[UUID] = None,
         facebook_ad_id: Optional[UUID] = None,
-        skip_save: bool = False
+        skip_save: bool = False,
+        prompt: Optional[str] = None
     ) -> Dict:
         """
         Analyze video with Gemini.
@@ -801,10 +802,11 @@ class BrandResearchService:
 
             logger.info("Video processed, generating analysis...")
 
-            # Generate analysis
+            # Generate analysis (use custom prompt if provided, e.g. competitor intel extraction)
+            analysis_prompt = prompt or VIDEO_ANALYSIS_PROMPT
             response = client.models.generate_content(
                 model=model_name,
-                contents=[video_file, VIDEO_ANALYSIS_PROMPT]
+                contents=[video_file, analysis_prompt]
             )
 
             # Parse response
