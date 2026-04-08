@@ -72,7 +72,7 @@ def get_products_for_brand(brand_id: str) -> List[Dict]:
 
 
 def get_organization_id() -> str:
-    from viraltracker.ui.auth import get_current_organization_id
+    from viraltracker.ui.utils import get_current_organization_id
     return get_current_organization_id()
 
 
