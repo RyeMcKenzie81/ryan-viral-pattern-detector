@@ -383,8 +383,20 @@ def render_single_extraction(video_analysis: Dict):
     score = video_analysis.get("composite_score")
     ad_id = video_analysis.get("ad_id", "")
 
-    if score:
-        st.metric("Composite Score", f"{score:.3f}")
+    # Scoring breakdown
+    col_score, col_pos, col_dur, col_vel = st.columns(4)
+    with col_score:
+        st.metric("Composite Score", f"{score:.3f}" if score else "N/A")
+    with col_pos:
+        position = video_analysis.get("position")
+        total = video_analysis.get("total")
+        st.metric("Position", f"{position}/{total}" if position and total else "N/A")
+    with col_dur:
+        days = video_analysis.get("days_active")
+        st.metric("Days Active", str(days) if days is not None else "N/A")
+    with col_vel:
+        velocity = video_analysis.get("velocity")
+        st.metric("Velocity", f"{velocity:.3f}" if velocity else "N/A")
     if ad_id:
         st.caption(f"Ad ID: {ad_id}")
 

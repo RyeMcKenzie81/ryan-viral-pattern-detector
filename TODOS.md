@@ -19,3 +19,10 @@
 **Context:** Best patterns exist across competitor pages (11-13), Research Insights (32), and Brand Manager (02). Codify the patterns from these well-designed pages. Run /design-consultation to generate.
 **Depends on:** Nothing. Can be done independently at any time.
 **Added:** 2026-04-08 from /plan-design-review of Competitor Ad Intelligence feature.
+
+## Competitor Intel Phase 2 — Belief Cluster Analysis
+**What:** After pack generation, run one LLM call over the extracted angles, pain points, and personas to identify 3-5 core positioning strategies the competitor uses. Each cluster defined by the intersection of angle/belief + pain point + persona + awareness level. Display as a "Positioning Map" section in the pack.
+**Why:** The raw aggregated data (hooks, angles, benefits) is useful but doesn't answer the strategic question: "What are the 3-5 bets this competitor is making?" Clustering by belief/pain/persona reveals their actual creative strategy.
+**Context:** All per-video extraction data already exists in `video_analyses` JSONB. No new video analysis needed — just one Claude call over the existing extractions. Could also power cross-competitor comparison ("Competitor A bets on mechanism, Competitor B bets on social proof").
+**Depends on:** Phase 1 tested and stable.
+**Added:** 2026-04-08 from Phase 1 testing discussion.

@@ -6399,6 +6399,12 @@ async def execute_competitor_intel_analysis_job(job: Dict) -> Dict[str, Any]:
                     video_analysis={
                         "ad_id": ad_id,
                         "composite_score": scored_ad["composite"],
+                        "position": scored_ad.get("position"),
+                        "total": scored_ad.get("total"),
+                        "days_active": scored_ad.get("days_active"),
+                        "velocity": scored_ad.get("velocity"),
+                        "rank": scored_ad.get("rank"),
+                        "durability": scored_ad.get("durability"),
                         "extraction": result,
                     },
                 )
