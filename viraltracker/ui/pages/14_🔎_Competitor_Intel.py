@@ -782,6 +782,65 @@ def render_remix_tab(brand_id: str, competitor_id: str):
                 if result.get("production_notes"):
                     st.caption(f"Production notes: {result['production_notes']}")
 
+            # ---- Hook Generator ----
+            st.markdown("---")
+            st.markdown("### Generate Alternative Hooks")
+            st.caption("Generate new hooks for this video concept using your brand context and the competitor's proven structure.")
+
+            hook_col1, hook_col2 = st.columns([1, 2])
+            with hook_col1:
+                num_hooks = st.number_input("Number of hooks", min_value=1, max_value=20, value=5, key="ci_num_hooks")
+            with hook_col2:
+                hook_style = st.selectbox(
+                    "Hook style emphasis",
+                    options=[
+                        "Mixed (variety of styles)",
+                        "Curiosity / fascination",
+                        "Pain point / problem call-out",
+                        "Visual demonstration / metaphor",
+                        "Story / case study",
+                        "Contrarian / pattern interrupt",
+                        "Authority / credibility",
+                        "Question-based",
+                        "Social proof / results",
+                    ],
+                    key="ci_hook_style",
+                )
+
+            if st.button("Generate Hooks", type="primary", key="ci_generate_hooks_btn"):
+                with st.spinner("Generating hooks via Claude..."):
+                    try:
+                        hooks = asyncio.run(service.generate_hooks(
+                            video_extraction=extraction,
+                            brand_context=brand_context,
+                            product_description=product_desc or None,
+                            target_audience=target_audience or None,
+                            brand_name=brand_name or None,
+                            product_name=product_name or None,
+                            num_hooks=num_hooks,
+                            hook_style=hook_style if hook_style != "Mixed (variety of styles)" else None,
+                        ))
+                        st.session_state.ci_generated_hooks = hooks
+                    except Exception as e:
+                        st.error(f"Hook generation failed: {e}")
+
+            if "ci_generated_hooks" in st.session_state and st.session_state.ci_generated_hooks:
+                hooks_data = st.session_state.ci_generated_hooks
+                for i, h in enumerate(hooks_data, 1):
+                    if isinstance(h, dict):
+                        st.markdown(f"**Hook {i}:** {h.get('text', '')}")
+                        details = []
+                        if h.get("type"):
+                            details.append(f"Type: {h['type']}")
+                        if h.get("technique"):
+                            details.append(f"Technique: {h['technique']}")
+                        if h.get("rationale"):
+                            details.append(h["rationale"])
+                        if details:
+                            st.caption(" | ".join(details))
+                    elif isinstance(h, str):
+                        st.markdown(f"**Hook {i}:** {h}")
+
     with col_save:
         st.markdown("### Save to Pipeline")
 

@@ -1028,3 +1028,184 @@ Output as JSON:
             return json.loads(text)
         except json.JSONDecodeError:
             return {"script_text": text, "stages": [], "estimated_duration": "unknown", "production_notes": ""}
+
+    # --- Hook Generation ---
+
+    HOOK_KNOWLEDGE_BASE = """
+HOOK WRITING PRINCIPLES:
+- The hook should be no more than 4 seconds / ~15 words. It can be shorter.
+- We don't use the hook to sell the product, just to grab attention. The hook serves as targeting.
+- People are not on their feeds to watch ads, so say something that speaks DIRECTLY to the target audience.
+- Hooks can be 1st person, 2nd person, 3rd person, questions, or statements.
+- The best hooks are often formulated as fascinations / curiosity bullets: they take a generic fact and turn it into a powerful benefit-based or pain-based statement that stimulates curiosity and intrigue.
+
+38 HOOK TECHNIQUES:
+1. Measure the size of the claim ("I am 61 pounds lighter")
+2. Measure the speed of the claim ("In two seconds Bayer aspirin begins to dissolve")
+3. Compare the claim ("Six times whiter washes")
+4. Metaphorize the claim ("Melts away ugly fat")
+5. Sensitize — make the prospect feel/smell/touch/see/hear it ("The skin you love to touch")
+6. Demonstrate with a prime example ("At 60 mph the loudest noise in this Rolls Royce is the electric clock")
+7. Dramatize the claim or results ("They laughed when I sat down at the piano")
+8. State as a paradox ("How a bald-headed barber saves my hair")
+9. Remove limitations ("Shrinks hemorrhoids without surgery")
+10. Associate with aspirational values/people ("Mickey Mantle says: Camels never bother my throat")
+11. Show detailed work the claim does ("Relief from all 5 acid-caused stomach troubles")
+12. State as a question ("Who else wants a whiter wash with no hard work?")
+13. Offer information about accomplishing the claim ("How to win friends and influence people")
+14. Tie authority into the claim ("Boss mechanic shows how to avoid engine repair bills")
+15. Before and after the claim
+16. Stress newness ("Announcing! Guided missile spark plugs")
+17. Stress exclusivity ("Only glee has GL-70")
+18. Turn into a challenge ("Which twin has the Toni?")
+19. Case-history quotation ("Look, mom - no cavities!")
+20. Condensing — interchange product and what it replaces ("Pour yourself a new engine")
+21. Symbolize with a parallel reality
+22. Connect the mechanism to the claim ("Floats fat right out of your body")
+23. Startle by contradicting expected mechanism
+24. Connect the need and the claim
+25. Offer information in the ad itself ("Why men crack")
+26. Turn into a case history ("Again she orders - a chicken salad, please")
+27. Name the problem ("When you're weary with day-time fatigue")
+28. Warn about pitfalls without the product
+29. Emphasize by phraseology/repetition ("Nobody but nobody undersells Gimbels")
+30. Show ease by imposing an overcome limitation ("If you can count to 11...")
+31. State the difference
+32. Surprise — former limitations overcome ("See what happens when you crush a Hartman? Nothing!")
+33. Address people who CAN'T buy ("If you've already taken your vacation, don't read this")
+34. Address the prospect directly ("To the man who will settle for nothing less than the presidency")
+35. Dramatize how hard it was to produce
+36. Accuse the claim of being too good ("Is it immoral to make money this easily?")
+37. Challenge limiting beliefs ("You are twice as smart as you think")
+38. Turn into question and answer
+
+HOOK ANGLE CATEGORIES:
+- Educational/Discovery: teaching a quick insight, simple demonstrations
+- Curiosity-Based: intriguing questions, knowledge gaps, "what if" scenarios
+- Contrarian/Pattern Interrupt: challenge common wisdom, counterintuitive info
+- Visual Demonstration/Test: simple tests, interactive moments, physical demos
+- Pain Point/Problem Identification: directly address struggles, name symptoms
+- Metaphor/Analogy: familiar concepts explaining complex ideas
+- Time-Based/Urgency: quick solutions, speed of results
+- Authority/Credibility: expertise, scientific studies
+- Story/Case Study: compelling personal stories, transformations
+- Question-Based: direct questions, rhetorical questions
+- Accidental Discovery: unexpected findings, lucky mistakes
+- Qualification/Identity: address specific audience segments
+- Hidden Truth/Conspiracy: reveal unknown info, expose secrets
+- Simple Solution: easy fixes to complex problems
+- Social Proof/Results: impressive statistics, success stories
+- Before/After Scenario: paint transformation, contrast problems/solutions
+- Risk-Based: highlight potential dangers
+
+ADVANCED TECHNIQUES:
+- Focus on the first 16 seconds — the micro-lead
+- You don't need entirely new leads, just new hooks for existing leads
+- Visualization: transform abstract concepts into visual metaphors (e.g. WD-40 → rusty hinge → smooth motion)
+- Hook variation through different dimensions: keep core promise, change presentation angle
+- Look for physical objects or tools that can anchor the concept
+- Use the "what if" and association method — draw parallels between familiar concepts
+- Strip away vague/broad statements, focus on specific concrete elements
+"""
+
+    async def generate_hooks(
+        self,
+        video_extraction: Dict,
+        brand_context: str,
+        product_description: Optional[str] = None,
+        target_audience: Optional[str] = None,
+        brand_name: Optional[str] = None,
+        product_name: Optional[str] = None,
+        num_hooks: int = 5,
+        hook_style: Optional[str] = None,
+    ) -> List[Dict[str, str]]:
+        """Generate alternative hooks for a competitor video concept.
+
+        Uses hook-writing knowledge base to produce hooks tailored to
+        the video's structure and the user's brand.
+
+        Returns:
+            List of dicts with text, type, technique, and rationale.
+        """
+        import anthropic
+
+        client = anthropic.Anthropic()
+
+        # Extract context from the video
+        hook = video_extraction.get("hook", {})
+        original_hook = hook.get("text", "") if isinstance(hook, dict) else ""
+        hook_type = hook.get("type", "") if isinstance(hook, dict) else ""
+        pain_points = video_extraction.get("pain_points", [])
+        benefits = video_extraction.get("benefits", [])
+        triggers = video_extraction.get("emotional_triggers", [])
+        awareness = video_extraction.get("awareness_level", "unknown")
+        angles = video_extraction.get("angles", [])
+        persona = video_extraction.get("persona_4d", {})
+        jtbds = video_extraction.get("jtbds", [])
+        unique_mechanism = video_extraction.get("unique_mechanism", "")
+
+        angle_texts = []
+        for a in angles:
+            if isinstance(a, dict) and a.get("belief_statement"):
+                angle_texts.append(a["belief_statement"])
+
+        style_instruction = ""
+        if hook_style:
+            style_instruction = f"\nSTYLE EMPHASIS: Focus on {hook_style} hooks. At least 70% should use this style, with the rest providing variety."
+
+        prompt = f"""{self.HOOK_KNOWLEDGE_BASE}
+
+COMPETITOR VIDEO CONTEXT:
+Original hook: "{original_hook}" (type: {hook_type})
+Pain points: {', '.join(pain_points) if pain_points else 'Not specified'}
+Benefits: {', '.join(benefits) if benefits else 'Not specified'}
+Emotional triggers: {', '.join(triggers) if triggers else 'Not specified'}
+Awareness level: {awareness}
+Belief angles: {', '.join(angle_texts) if angle_texts else 'Not specified'}
+JTBDs: {', '.join(jtbds) if jtbds else 'Not specified'}
+Unique mechanism: {unique_mechanism or 'Not specified'}
+Target persona: {json.dumps(persona) if persona else 'Not specified'}
+
+BRAND CONTEXT:
+Brand: {brand_name or 'Not specified'}
+Product: {product_name or 'Not specified'}
+Product description: {product_description or 'Not specified'}
+Target audience: {target_audience or 'Not specified'}
+Additional context: {brand_context}
+{style_instruction}
+
+TASK:
+Generate exactly {num_hooks} alternative hooks for a video ad promoting **{product_name or brand_name or 'this product'}**.
+
+Each hook must:
+- Be 4 seconds or less when spoken (~15 words max)
+- Grab attention and speak DIRECTLY to the target audience
+- NOT sell the product — just stop the scroll
+- Be adapted for {brand_name or 'this brand'}'s product and audience
+- Use a DIFFERENT technique from the 38 techniques above for each hook
+- Draw on the competitor video's proven pain points, angles, and emotional triggers
+
+Provide variety — mix curiosity, pain, story, question, demonstration, and contrarian hooks.
+
+Output as a JSON array:
+[{{"text": "The hook text (15 words max)", "type": "hook angle category", "technique": "which of the 38 techniques used", "rationale": "why this hook works for this audience"}}]"""
+
+        response = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=4096,
+            messages=[{"role": "user", "content": prompt}],
+        )
+
+        text = response.content[0].text.strip()
+        if text.startswith("```"):
+            text = text.split("\n", 1)[1] if "\n" in text else text[3:]
+        if text.endswith("```"):
+            text = text[:-3]
+        if text.startswith("json"):
+            text = text[4:]
+
+        try:
+            result = json.loads(text)
+            return result if isinstance(result, list) else []
+        except json.JSONDecodeError:
+            return [{"text": text, "type": "unknown", "technique": "unknown", "rationale": ""}]
