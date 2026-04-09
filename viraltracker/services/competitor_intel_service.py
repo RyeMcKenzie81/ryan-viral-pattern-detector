@@ -423,7 +423,7 @@ class CompetitorIntelService:
         # Fetch ad metadata for those ads
         resp = (
             self.supabase.table("competitor_ads")
-            .select("id, competitor_id, page_name, snapshot_data, start_date, link_url, ad_archive_id")
+            .select("id, competitor_id, page_name, snapshot_data, link_url, ad_archive_id")
             .eq("competitor_id", competitor_id)
             .in_("id", list(ad_ids_with_video))
             .execute()
@@ -447,8 +447,8 @@ class CompetitorIntelService:
             position = snapshot.get("position") or ad.get("position")
             total = snapshot.get("total") or ad.get("total")
 
-            # Compute days active
-            start_str = ad.get("start_date")
+            # Compute days active (start_date lives in snapshot_data from Apify)
+            start_str = snapshot.get("start_date") or snapshot.get("started_running")
             if start_str:
                 try:
                     if isinstance(start_str, str):
