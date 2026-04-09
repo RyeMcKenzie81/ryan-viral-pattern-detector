@@ -1238,3 +1238,171 @@ Output as a JSON array:
             return result if isinstance(result, list) else []
         except json.JSONDecodeError:
             return [{"text": text, "type": "unknown", "technique": "unknown", "rationale": ""}]
+
+    # --- Production Doc ---
+
+    async def generate_production_doc(
+        self,
+        script_text: str,
+        stages: List[Dict],
+        hooks: List[Dict],
+        video_url: Optional[str] = None,
+        scene_setting: Optional[str] = None,
+        actor_notes: Optional[str] = None,
+        brand_name: Optional[str] = None,
+        product_name: Optional[str] = None,
+        ad_format: str = "unknown",
+        estimated_duration: Optional[str] = None,
+        production_notes: Optional[str] = None,
+    ) -> str:
+        """Generate a complete production document with actor script and editor storyboard.
+
+        Returns:
+            Plain text production document ready for export.
+        """
+        import anthropic
+
+        client = anthropic.Anthropic()
+
+        prompt = f"""You are a video ad production coordinator creating a production document.
+
+AD SCRIPT:
+{script_text}
+
+AD FORMAT: {ad_format}
+ESTIMATED DURATION: {estimated_duration or 'Not specified'}
+PRODUCTION NOTES: {production_notes or 'None'}
+
+TASK:
+Create a detailed scene-by-scene STORYBOARD for the editor. Break the script into individual beats/scenes. For EACH beat, provide:
+
+1. **Beat number and name** (e.g., "Beat 1: The Hook", "Beat 2: The Encounter")
+2. **Timestamp** — approximate time range (e.g., 0:00-0:04)
+3. **Script line** — the exact dialogue/voiceover for this beat
+4. **Camera** — shot type (close-up, medium, wide, POV, etc.), movement (static, pan, handheld)
+5. **Visual description** — what the viewer sees, setting details, actor blocking
+6. **B-roll / cutaway suggestions** — supplementary footage the editor can cut to
+7. **Text overlays** — any on-screen text, graphics, or lower thirds
+8. **Audio/music notes** — background music mood, sound effects, pacing cues
+9. **Edit notes** — cut style (hard cut, crossfade), pacing (fast/slow), emphasis
+
+Break the script into 8-15 beats depending on length. Be specific enough that an editor who has never seen the original video can assemble this.
+
+Output ONLY the storyboard as plain text with clear formatting. No JSON. Use this format:
+
+---
+BEAT 1: [Name] (0:00-0:04)
+Script: "[exact dialogue]"
+Camera: [shot description]
+Visual: [what we see]
+B-roll: [suggestions]
+Text overlay: [if any]
+Audio: [music/SFX notes]
+Edit notes: [cut style, pacing]
+---"""
+
+        response = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=4096,
+            messages=[{"role": "user", "content": prompt}],
+        )
+
+        storyboard = response.content[0].text.strip()
+
+        # Assemble the full production document
+        lines = []
+        lines.append("=" * 60)
+        lines.append("PRODUCTION DOCUMENT")
+        title = f"{brand_name} — {product_name}" if brand_name and product_name else brand_name or product_name or "Ad Remix"
+        lines.append(title)
+        lines.append("=" * 60)
+        lines.append("")
+
+        # Reference video
+        if video_url:
+            lines.append("REFERENCE VIDEO")
+            lines.append(video_url)
+            lines.append("")
+
+        # ── PART 1: ACTOR PACKAGE ──
+        lines.append("=" * 60)
+        lines.append("PART 1: ACTOR PACKAGE")
+        lines.append("=" * 60)
+        lines.append("")
+
+        if scene_setting:
+            lines.append("SCENE")
+            lines.append(scene_setting)
+            lines.append("")
+
+        if actor_notes:
+            lines.append("NOTES")
+            lines.append(actor_notes)
+            lines.append("")
+
+        lines.append("SCRIPT")
+        lines.append("-" * 40)
+        lines.append(script_text)
+        lines.append("")
+
+        # Hooks for actor (text + transition only)
+        if hooks:
+            lines.append("")
+            lines.append("HOOKS (to record)")
+            lines.append("-" * 40)
+            for i, h in enumerate(hooks, 1):
+                if isinstance(h, dict):
+                    lines.append(f"Hook {i}.")
+                    lines.append(h.get("text", ""))
+                    if h.get("transition"):
+                        lines.append(h["transition"])
+                elif isinstance(h, str):
+                    lines.append(f"Hook {i}.")
+                    lines.append(h)
+                lines.append("")
+
+        # ── PART 2: EDITOR PACKAGE ──
+        lines.append("")
+        lines.append("=" * 60)
+        lines.append("PART 2: EDITOR PACKAGE")
+        lines.append("=" * 60)
+        lines.append("")
+
+        lines.append(f"Ad Format: {ad_format}")
+        if estimated_duration:
+            lines.append(f"Estimated Duration: {estimated_duration}")
+        if production_notes:
+            lines.append(f"Production Notes: {production_notes}")
+        lines.append("")
+
+        lines.append("STORYBOARD — Scene-by-Scene Breakdown")
+        lines.append("-" * 40)
+        lines.append(storyboard)
+        lines.append("")
+
+        # Hook visual breakdown for editor
+        if hooks:
+            lines.append("")
+            lines.append("HOOK VISUAL BREAKDOWN (for editor)")
+            lines.append("-" * 40)
+            for i, h in enumerate(hooks, 1):
+                if isinstance(h, dict):
+                    lines.append(f"Hook {i}: {h.get('text', '')}")
+                    if h.get("visual"):
+                        lines.append(f"  🎬 Visual: {h['visual']}")
+                    if h.get("transition"):
+                        lines.append(f"  → Transition: {h['transition']}")
+                    hook_meta = []
+                    if h.get("type"):
+                        hook_meta.append(f"Type: {h['type']}")
+                    if h.get("technique"):
+                        hook_meta.append(f"Technique: {h['technique']}")
+                    if hook_meta:
+                        lines.append(f"  {' | '.join(hook_meta)}")
+                    lines.append("")
+
+        lines.append("=" * 60)
+        lines.append("END OF PRODUCTION DOCUMENT")
+        lines.append("=" * 60)
+
+        return "\n".join(lines)

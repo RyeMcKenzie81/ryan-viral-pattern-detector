@@ -867,6 +867,64 @@ def render_remix_tab(brand_id: str, competitor_id: str):
                     elif isinstance(h, str):
                         st.markdown(f"**Hook {i}:** {h}")
 
+            # ---- Export Production Doc ----
+            remix_result = st.session_state.get("ci_remix_result")
+            hooks_data = st.session_state.get("ci_generated_hooks")
+            if remix_result and remix_result.get("script_text"):
+                st.markdown("---")
+                st.markdown("### Export Production Document")
+                st.caption("Generate a complete production doc with actor script, editor storyboard, and hooks — ready to hand off.")
+
+                scene_setting = st.text_input(
+                    "Scene / setting",
+                    value="",
+                    placeholder="e.g. Podcast studio - wearing fitted shirt that shows good shape",
+                    key="ci_export_scene",
+                )
+                actor_notes = st.text_area(
+                    "Actor notes",
+                    value="",
+                    placeholder="e.g. You are telling the story from your perspective. Do his voice and your voice.",
+                    key="ci_export_notes",
+                    height=60,
+                )
+
+                if st.button("Generate Production Doc", type="primary", key="ci_export_btn"):
+                    with st.spinner("Generating storyboard and assembling production doc..."):
+                        try:
+                            # Get video URL for the doc
+                            storage_path = analyses[selected_idx].get("storage_path") if selected_idx is not None else None
+                            video_url = _get_video_url(storage_path) if storage_path else None
+
+                            doc = asyncio.run(service.generate_production_doc(
+                                script_text=remix_result.get("script_text", ""),
+                                stages=remix_result.get("stages", []),
+                                hooks=hooks_data or [],
+                                video_url=video_url,
+                                scene_setting=scene_setting or None,
+                                actor_notes=actor_notes or None,
+                                brand_name=brand_name or None,
+                                product_name=product_name or None,
+                                ad_format=extraction.get("ad_format", "unknown"),
+                                estimated_duration=remix_result.get("estimated_duration"),
+                                production_notes=remix_result.get("production_notes"),
+                            ))
+                            st.session_state.ci_production_doc = doc
+                        except Exception as e:
+                            st.error(f"Failed to generate production doc: {e}")
+
+                if "ci_production_doc" in st.session_state and st.session_state.ci_production_doc:
+                    doc = st.session_state.ci_production_doc
+                    with st.expander("Preview Production Doc", expanded=True):
+                        st.markdown(doc)
+                    st.download_button(
+                        label="Download Production Doc",
+                        data=doc,
+                        file_name=f"production_doc_{product_name or brand_name or 'remix'}.txt".replace(" ", "_").lower(),
+                        mime="text/plain",
+                        key="ci_download_doc",
+                    )
+
     with col_save:
         st.markdown("### Save to Pipeline")
 
