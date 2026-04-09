@@ -757,6 +757,14 @@ def render_remix_tab(brand_id: str, competitor_id: str):
             if "ci_remix_result" in st.session_state and st.session_state.ci_remix_result:
                 result = st.session_state.ci_remix_result
                 st.markdown("---")
+
+                # Original script for comparison
+                transcription = extraction.get("transcription", {})
+                original_text = transcription.get("full_text", "") if isinstance(transcription, dict) else str(transcription)
+                if original_text:
+                    with st.expander("Original Script (competitor video)", expanded=False):
+                        st.text(original_text)
+
                 st.markdown("### Generated Script")
                 st.text_area("Script", value=result.get("script_text", ""), height=300, key="ci_script_output")
 
