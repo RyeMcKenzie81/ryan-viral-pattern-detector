@@ -411,16 +411,21 @@ class CompetitorIntelService:
     ) -> List[Dict[str, Any]]:
         """Score and rank competitor ads by composite formula.
 
-        Fetches ads from competitor_ads table, computes composite scores,
-        returns top N sorted by composite score descending.
+        Only includes ads that have downloaded video assets in competitor_ad_assets.
         """
-        # Fetch ads with snapshot data
+        # First, find which ads have downloaded video assets (source of truth)
+        ads_with_videos = self._get_ads_with_video_assets(competitor_id)
+        if not ads_with_videos:
+            return []
+
+        ad_ids_with_video = set(ads_with_videos.keys())
+
+        # Fetch ad metadata for those ads
         resp = (
             self.supabase.table("competitor_ads")
             .select("id, competitor_id, page_name, snapshot_data, started_running, link_url, ad_archive_id")
             .eq("competitor_id", competitor_id)
-            .order("started_running", desc=True)
-            .limit(200)
+            .in_("id", list(ad_ids_with_video))
             .execute()
         )
         if not resp.data:
@@ -428,6 +433,7 @@ class CompetitorIntelService:
 
         now = datetime.now(timezone.utc)
         scored = []
+        total_ads = len(resp.data)
 
         for ad in resp.data:
             # Determine position and total from snapshot
@@ -440,11 +446,6 @@ class CompetitorIntelService:
 
             position = snapshot.get("position") or ad.get("position")
             total = snapshot.get("total") or ad.get("total")
-
-            # Check for video content
-            has_video = self._ad_has_video(snapshot)
-            if not has_video:
-                continue
 
             # Compute days active
             start_str = ad.get("started_running")
@@ -464,7 +465,7 @@ class CompetitorIntelService:
             if position is None:
                 position = len(scored) + 1
             if total is None:
-                total = len(resp.data)
+                total = total_ads
 
             scores = compute_composite_score(int(position), int(total), days_active)
 
@@ -484,20 +485,41 @@ class CompetitorIntelService:
         scored.sort(key=lambda x: x["composite"], reverse=True)
         return scored[:limit]
 
-    def _ad_has_video(self, snapshot: Dict) -> bool:
-        """Check if ad snapshot contains video content."""
-        # Check cards
-        for card in (snapshot.get("cards") or []):
-            if card.get("video_hd_url") or card.get("video_sd_url"):
-                return True
-        # Check top-level
-        if snapshot.get("video_hd_url") or snapshot.get("video_sd_url"):
-            return True
-        # Check videos array
-        videos = snapshot.get("videos")
-        if isinstance(videos, list) and len(videos) > 0:
-            return True
-        return False
+    def _get_ads_with_video_assets(self, competitor_id: str) -> Dict[str, Dict]:
+        """Get all competitor ads that have downloaded video assets.
+
+        Returns dict mapping ad_id -> asset info.
+        """
+        # Get ad IDs for this competitor
+        ads_resp = (
+            self.supabase.table("competitor_ads")
+            .select("id")
+            .eq("competitor_id", competitor_id)
+            .execute()
+        )
+        if not ads_resp.data:
+            return {}
+
+        ad_ids = [a["id"] for a in ads_resp.data]
+
+        # Find which ones have video assets downloaded
+        assets_resp = (
+            self.supabase.table("competitor_ad_assets")
+            .select("id, competitor_ad_id, storage_path, mime_type")
+            .eq("asset_type", "video")
+            .in_("competitor_ad_id", ad_ids)
+            .execute()
+        )
+
+        result = {}
+        for a in (assets_resp.data or []):
+            if a.get("storage_path"):
+                result[a["competitor_ad_id"]] = {
+                    "asset_id": a["id"],
+                    "storage_path": a["storage_path"],
+                    "mime_type": a.get("mime_type"),
+                }
+        return result
 
     # --- Video asset lookup ---
 
@@ -529,19 +551,18 @@ class CompetitorIntelService:
 
     def check_video_readiness(self, competitor_id: str) -> Dict[str, Any]:
         """Pre-flight check: how many video ads have downloaded assets."""
-        scored = self.score_competitor_ads(competitor_id, limit=20)
-        if not scored:
+        assets = self._get_ads_with_video_assets(competitor_id)
+        count = len(assets)
+
+        if count == 0:
             return {"total_video_ads": 0, "downloaded": 0, "ready": False, "message": "No video ads found for this competitor."}
 
-        ad_ids = [s["ad_id"] for s in scored]
-        assets = self.get_video_assets_for_ads(ad_ids)
-
         return {
-            "total_video_ads": len(scored),
-            "downloaded": len(assets),
-            "ready": len(assets) >= 3,
-            "message": f"{len(assets)}/{len(scored)} video ads have downloaded assets."
-                       + (" Ready to generate pack." if len(assets) >= 3 else " Download more assets first."),
+            "total_video_ads": count,
+            "downloaded": count,
+            "ready": count >= 3,
+            "message": f"{count} video ads with downloaded assets."
+                       + (" Ready to generate pack." if count >= 3 else " Need at least 3. Download more assets first."),
         }
 
     # --- Pack generation ---
