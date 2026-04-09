@@ -6296,6 +6296,9 @@ async def execute_competitor_intel_analysis_job(job: Dict) -> Dict[str, Any]:
     job_id = job['id']
     job_name = job['name']
     params = job.get('parameters') or {}
+    if isinstance(params, str):
+        import json as _json
+        params = _json.loads(params)
 
     logger.info(f"Starting competitor intel analysis job: {job_name}")
 
