@@ -839,21 +839,31 @@ class CompetitorIntelService:
         product_description: Optional[str] = None,
         target_audience: Optional[str] = None,
         brand_guidelines: Optional[str] = None,
+        brand_name: Optional[str] = None,
+        product_name: Optional[str] = None,
+        locked_ingredients: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """Remix a competitor video's structure into an ad script for the user's brand.
 
         Takes the competitor's messaging structure, hooks, and emotional arc,
         then generates an adapted script via Claude.
+
+        Args:
+            locked_ingredients: List of ingredient keys to keep from the original video.
+                Options: hook, messaging_sequence, ad_format, emotional_triggers,
+                awareness_level, persona_4d, pain_points, benefits
         """
         import anthropic
 
         client = anthropic.Anthropic()
+        locked = set(locked_ingredients or [])
 
         # Build competitor structure summary
         transcription = video_extraction.get("transcription", {})
         full_text = transcription.get("full_text", "") if isinstance(transcription, dict) else ""
         hook = video_extraction.get("hook", {})
         hook_text = hook.get("text", "") if isinstance(hook, dict) else ""
+        hook_type = hook.get("type", "") if isinstance(hook, dict) else ""
         messaging = video_extraction.get("messaging_sequence", [])
         messaging_text = "\n".join(
             f"- {m.get('stage', '?')}: {m.get('content', '')}" for m in messaging if isinstance(m, dict)
@@ -861,28 +871,91 @@ class CompetitorIntelService:
         triggers = ", ".join(video_extraction.get("emotional_triggers", [])) or "Not specified"
         awareness = video_extraction.get("awareness_level", "unknown")
         ad_format = video_extraction.get("ad_format", "unknown")
+        pain_points = video_extraction.get("pain_points", [])
+        benefits = video_extraction.get("benefits", [])
+        persona = video_extraction.get("persona_4d", {})
+
+        # Build locked-ingredients instruction
+        locked_lines = []
+        if "hook" in locked:
+            locked_lines.append(f"- HOOK: Keep the same hook type ({hook_type}) and style. Mirror the hook closely: \"{hook_text}\"")
+        if "messaging_sequence" in locked:
+            locked_lines.append(f"- MESSAGING SEQUENCE: Keep the exact same stage order and structure:\n{messaging_text}")
+        if "ad_format" in locked:
+            locked_lines.append(f"- AD FORMAT: Keep the same format ({ad_format})")
+        if "emotional_triggers" in locked:
+            locked_lines.append(f"- EMOTIONAL TRIGGERS: Use the same emotional triggers: {triggers}")
+        if "awareness_level" in locked:
+            locked_lines.append(f"- AWARENESS LEVEL: Target the same awareness level ({awareness})")
+        if "persona_4d" in locked:
+            persona_str = json.dumps(persona, indent=2) if persona else "Not available"
+            locked_lines.append(f"- TARGET PERSONA: Keep the same target persona:\n{persona_str}")
+        if "pain_points" in locked:
+            pains_str = ", ".join(pain_points) if pain_points else "Not specified"
+            locked_lines.append(f"- PAIN POINTS: Address the same pain points: {pains_str}")
+        if "benefits" in locked:
+            bens_str = ", ".join(benefits) if benefits else "Not specified"
+            locked_lines.append(f"- BENEFITS: Highlight the same benefits: {bens_str}")
+
+        locked_section = ""
+        if locked_lines:
+            locked_section = "\n\nINGREDIENTS TO KEEP FROM ORIGINAL (use these exactly):\n" + "\n".join(locked_lines)
+
+        adapt_items = []
+        if "hook" not in locked:
+            adapt_items.append("hook")
+        if "messaging_sequence" not in locked:
+            adapt_items.append("messaging sequence")
+        if "emotional_triggers" not in locked:
+            adapt_items.append("emotional triggers")
+        if "pain_points" not in locked:
+            adapt_items.append("pain points")
+        if "benefits" not in locked:
+            adapt_items.append("benefits")
+
+        adapt_section = ""
+        if adapt_items:
+            adapt_section = f"\n\nINGREDIENTS TO ADAPT for {brand_name or 'the brand'}: " + ", ".join(adapt_items)
+
+        # Brand identification
+        brand_line = ""
+        if brand_name and product_name:
+            brand_line = f"Brand: {brand_name}\nProduct name: {product_name}"
+        elif brand_name:
+            brand_line = f"Brand: {brand_name}"
+        elif product_name:
+            brand_line = f"Product name: {product_name}"
 
         prompt = f"""You are an expert ad copywriter and creative director.
 
 COMPETITOR VIDEO STRUCTURE:
 Transcript: {full_text[:2000]}
 Hook: {hook_text}
+Hook type: {hook_type}
 Messaging sequence:
 {messaging_text}
 Emotional triggers: {triggers}
 Awareness level: {awareness}
 Ad format: {ad_format}
+Pain points: {', '.join(pain_points) if pain_points else 'Not specified'}
+Benefits: {', '.join(benefits) if benefits else 'Not specified'}{locked_section}{adapt_section}
 
-YOUR BRAND CONTEXT:
-Product: {product_description or 'Not specified'}
+YOUR BRAND:
+{brand_line}
+Product description: {product_description or 'Not specified'}
 Target audience: {target_audience or 'Not specified'}
 Brand guidelines: {brand_guidelines or 'Not specified'}
 Additional context: {brand_context}
 
 TASK:
-Create an ad script that mirrors the competitor's messaging structure and emotional arc but adapted to this brand, product, and target audience. Include:
-1. Scene/stage breakdown (matching the competitor's structure)
-2. Dialogue/voiceover copy
+Create an ad script for **{brand_name or 'this brand'}**{f" promoting **{product_name}**" if product_name else ""} that uses the competitor video as a template. The script MUST explicitly mention and sell {product_name or brand_name or 'the product'} — do not write a generic script.
+
+For locked ingredients, keep them as close to the original as possible while naturally incorporating {brand_name or 'the brand'}.
+For adapted ingredients, reimagine them specifically for {brand_name or 'the brand'}'s product and audience.
+
+Include:
+1. Scene/stage breakdown
+2. Dialogue/voiceover copy that names the product
 3. Visual directions
 4. Production notes (duration, required assets)
 
