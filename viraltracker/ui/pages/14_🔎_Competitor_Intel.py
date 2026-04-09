@@ -807,6 +807,10 @@ def render_remix_tab(brand_id: str, competitor_id: str):
                     key="ci_hook_style",
                 )
 
+            # Get the generated script to make hooks congruent
+            remix_result = st.session_state.get("ci_remix_result")
+            generated_script = remix_result.get("script_text", "") if remix_result else ""
+
             if st.button("Generate Hooks", type="primary", key="ci_generate_hooks_btn"):
                 with st.spinner("Generating hooks via Claude..."):
                     try:
@@ -819,6 +823,7 @@ def render_remix_tab(brand_id: str, competitor_id: str):
                             product_name=product_name or None,
                             num_hooks=num_hooks,
                             hook_style=hook_style if hook_style != "Mixed (variety of styles)" else None,
+                            generated_script=generated_script or None,
                         ))
                         st.session_state.ci_generated_hooks = hooks
                     except Exception as e:
@@ -829,6 +834,8 @@ def render_remix_tab(brand_id: str, competitor_id: str):
                 for i, h in enumerate(hooks_data, 1):
                     if isinstance(h, dict):
                         st.markdown(f"**Hook {i}:** {h.get('text', '')}")
+                        if h.get("visual"):
+                            st.markdown(f"*🎬 Visual: {h['visual']}*")
                         details = []
                         if h.get("type"):
                             details.append(f"Type: {h['type']}")
