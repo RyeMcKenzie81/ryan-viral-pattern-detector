@@ -643,14 +643,15 @@ class CompetitorIntelService:
 
     def get_packs_for_competitor(self, competitor_id: str, organization_id: str) -> List[Dict]:
         """Get all ingredient packs for a competitor, newest first."""
-        resp = (
+        query = (
             self.supabase.table("competitor_intel_packs")
             .select("*")
             .eq("competitor_id", competitor_id)
-            .eq("organization_id", organization_id)
-            .order("created_at", desc=True)
-            .execute()
         )
+        # Superuser "all" is not a valid UUID — skip org filter
+        if organization_id != "all":
+            query = query.eq("organization_id", organization_id)
+        resp = query.order("created_at", desc=True).execute()
         return resp.data or []
 
     def get_pack(self, pack_id: str) -> Optional[Dict]:
