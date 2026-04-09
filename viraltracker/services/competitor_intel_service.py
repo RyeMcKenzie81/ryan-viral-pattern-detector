@@ -1010,7 +1010,7 @@ Output as JSON:
 }}"""
 
         response = client.messages.create(
-            model="claude-sonnet-4-20250514",
+            model="claude-opus-4-20250514",
             max_tokens=4096,
             messages=[{"role": "user", "content": prompt}],
         )
@@ -1220,7 +1220,7 @@ Output as a JSON array:
 [{{"text": "The hook text spoken/shown (15 words max)", "visual": "What the viewer sees: camera angle, setting, action, text overlays (1-2 sentences)", "transition": "1-2 sentences bridging from hook into the script body. How does the ad get from this hook to the first scene?", "type": "hook angle category", "technique": "which of the 38 techniques used", "rationale": "why this hook works for this audience"}}]"""
 
         response = client.messages.create(
-            model="claude-sonnet-4-20250514",
+            model="claude-opus-4-20250514",
             max_tokens=4096,
             messages=[{"role": "user", "content": prompt}],
         )
@@ -1302,7 +1302,7 @@ Edit notes: [cut style, pacing]
 ---"""
 
         response = client.messages.create(
-            model="claude-sonnet-4-20250514",
+            model="claude-opus-4-20250514",
             max_tokens=4096,
             messages=[{"role": "user", "content": prompt}],
         )
