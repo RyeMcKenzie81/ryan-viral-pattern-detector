@@ -456,6 +456,9 @@ class CompetitorIntelService:
                         start_dt = datetime.fromisoformat(start_str.replace("Z", "+00:00"))
                     else:
                         start_dt = start_str
+                    # Ensure timezone-aware for subtraction with now (UTC)
+                    if start_dt.tzinfo is None:
+                        start_dt = start_dt.replace(tzinfo=timezone.utc)
                     days_active = max((now - start_dt).days, 0)
                 except (ValueError, TypeError):
                     days_active = 0
