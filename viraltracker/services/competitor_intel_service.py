@@ -933,41 +933,63 @@ class CompetitorIntelService:
         creativity_instructions = {
             1: (
                 "CARBON COPY mode. Recreate this ad almost word-for-word, only swapping "
-                "the competitor's product/brand for the user's product. Keep the same "
+                "the competitor's product/brand for the user's product. Keep the EXACT same "
                 "characters, setting, scenario, dialogue structure, and pacing. "
-                "Change only product names, claims, and CTAs."
+                "Change ONLY product names, brand-specific claims, and CTAs. "
+                "If the original is in a bathroom, yours is in a bathroom. "
+                "If there are two characters, yours has two characters. Mimic the script closely."
             ),
             2: (
-                "FAITHFUL REMIX mode. Keep the same scene structure, setting, and character "
-                "types. Dialogue should follow the same beats and rhythm but can be "
-                "reworded naturally for the new product. Minor adjustments to make "
-                "claims authentic to the brand are fine."
+                "FAITHFUL REMIX mode. Keep the same CONCEPT and character dynamic (e.g. "
+                "a stranger sharing advice) but you MUST change the specific setting "
+                "to a different believable location where this interaction could naturally happen. "
+                "Dialogue follows the same beats and rhythm but is reworded naturally. "
+                "The story arc is the same, the specifics are different."
             ),
             3: (
-                "BALANCED REMIX mode. Keep the same core concept and messaging arc, but "
-                "feel free to change the specific scenario, characters, and dialogue. "
-                "The ad should feel like it was inspired by the original but is clearly "
-                "its own piece of creative."
+                "BALANCED REMIX mode. Keep the same core messaging arc (problem → encounter → "
+                "solution → proof → CTA) but CHANGE the scenario, characters, and setting. "
+                "DO NOT reuse the original's setting or character descriptions. "
+                "Create a new scene that delivers the same message through a different story. "
+                "The ad should feel inspired by the original but clearly its own piece."
             ),
             4: (
                 "INSPIRED mode. Use the same underlying angle and emotional strategy, "
-                "but create a fresh scenario with different characters, settings, and "
-                "dialogue. The viewer should not be able to tell this was based on "
-                "another ad."
+                "but create a COMPLETELY fresh scenario with different characters, settings, "
+                "story structure, and dialogue. The viewer should NOT be able to tell this "
+                "was based on another ad. Only the strategic insight carries over — everything "
+                "else (setting, characters, story, dialogue style) must be original."
             ),
             5: (
-                "REIMAGINED mode. Extract only the core insight — the belief, pain point, "
+                "REIMAGINED mode. Extract ONLY the core insight — the belief, pain point, "
                 "or emotional trigger that makes the original ad effective — and build "
                 "an entirely new ad around it. Different format, different story, "
-                "different creative approach. Only the strategic DNA carries over."
+                "different creative approach, different ad structure. "
+                "IGNORE the original transcript and scene entirely. Only the strategic DNA carries over."
             ),
         }
         creativity_text = creativity_instructions.get(creativity, creativity_instructions[3])
 
+        # At level 1, include full transcript for verbatim copying.
+        # At level 2, include transcript but label it as reference only.
+        # At levels 3-5, omit transcript entirely to prevent copying — use only the structural breakdown.
+        if creativity <= 1:
+            transcript_section = f"Transcript (COPY THIS CLOSELY — swap product only):\n{full_text[:2000]}"
+        elif creativity == 2:
+            transcript_section = (
+                f"Transcript (REFERENCE ONLY — use for tone and rhythm, but change the setting and details):\n"
+                f"{full_text[:2000]}"
+            )
+        else:
+            transcript_section = (
+                "Transcript: OMITTED — do NOT reuse the original script's dialogue, setting, or characters. "
+                "Use only the structural breakdown below to understand the ad's strategy."
+            )
+
         prompt = f"""You are an expert ad copywriter and creative director.
 
 COMPETITOR VIDEO STRUCTURE:
-Transcript: {full_text[:2000]}
+{transcript_section}
 Hook: {hook_text}
 Hook type: {hook_type}
 Messaging sequence:

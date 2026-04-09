@@ -780,10 +780,10 @@ def render_remix_tab(brand_id: str, competitor_id: str):
                 original_text = transcription.get("full_text", "") if isinstance(transcription, dict) else str(transcription)
                 if original_text:
                     with st.expander("Original Script (competitor video)", expanded=False):
-                        st.text(original_text)
+                        st.code(original_text, language=None)
 
                 st.markdown("### Generated Script")
-                st.text_area("Script", value=result.get("script_text", ""), height=300, key="ci_script_output")
+                st.code(result.get("script_text", ""), language=None)
 
                 stages = result.get("stages", [])
                 if stages:
@@ -848,24 +848,41 @@ def render_remix_tab(brand_id: str, competitor_id: str):
 
             if "ci_generated_hooks" in st.session_state and st.session_state.ci_generated_hooks:
                 hooks_data = st.session_state.ci_generated_hooks
+
+                # Build copyable text for all hooks
+                hooks_copy_lines = []
                 for i, h in enumerate(hooks_data, 1):
                     if isinstance(h, dict):
-                        st.markdown(f"**Hook {i}:** {h.get('text', '')}")
-                        if h.get("visual"):
-                            st.markdown(f"*🎬 Visual: {h['visual']}*")
+                        hooks_copy_lines.append(f"Hook {i}.")
+                        hooks_copy_lines.append(h.get("text", ""))
                         if h.get("transition"):
-                            st.markdown(f"*→ Transition: {h['transition']}*")
-                        details = []
-                        if h.get("type"):
-                            details.append(f"Type: {h['type']}")
-                        if h.get("technique"):
-                            details.append(f"Technique: {h['technique']}")
-                        if h.get("rationale"):
-                            details.append(h["rationale"])
-                        if details:
-                            st.caption(" | ".join(details))
+                            hooks_copy_lines.append(h["transition"])
+                        hooks_copy_lines.append("")
                     elif isinstance(h, str):
-                        st.markdown(f"**Hook {i}:** {h}")
+                        hooks_copy_lines.append(f"Hook {i}.")
+                        hooks_copy_lines.append(h)
+                        hooks_copy_lines.append("")
+
+                # Copy all hooks button
+                st.code("\n".join(hooks_copy_lines), language=None)
+
+                with st.expander("Hook Details (visuals, techniques, rationale)", expanded=False):
+                    for i, h in enumerate(hooks_data, 1):
+                        if isinstance(h, dict):
+                            st.markdown(f"**Hook {i}:** {h.get('text', '')}")
+                            if h.get("visual"):
+                                st.markdown(f"*🎬 Visual: {h['visual']}*")
+                            if h.get("transition"):
+                                st.markdown(f"*→ Transition: {h['transition']}*")
+                            details = []
+                            if h.get("type"):
+                                details.append(f"Type: {h['type']}")
+                            if h.get("technique"):
+                                details.append(f"Technique: {h['technique']}")
+                            if h.get("rationale"):
+                                details.append(h["rationale"])
+                            if details:
+                                st.caption(" | ".join(details))
 
             # ---- Export Production Doc ----
             remix_result = st.session_state.get("ci_remix_result")
@@ -916,7 +933,7 @@ def render_remix_tab(brand_id: str, competitor_id: str):
                 if "ci_production_doc" in st.session_state and st.session_state.ci_production_doc:
                     doc = st.session_state.ci_production_doc
                     with st.expander("Preview Production Doc", expanded=True):
-                        st.markdown(doc)
+                        st.code(doc, language=None)
                     st.download_button(
                         label="Download Production Doc",
                         data=doc,
