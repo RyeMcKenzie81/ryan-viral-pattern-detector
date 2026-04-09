@@ -65,10 +65,24 @@ def get_competitors_for_brand(brand_id: str) -> List[Dict]:
 def get_products_for_brand(brand_id: str) -> List[Dict]:
     try:
         db = get_supabase_client()
-        result = db.table("products").select("id, name").eq("brand_id", brand_id).order("name").execute()
+        result = db.table("products").select(
+            "id, name, description, target_audience, benefits, unique_selling_points, brand_voice_notes"
+        ).eq("brand_id", brand_id).order("name").execute()
         return result.data or []
     except Exception:
         return []
+
+
+def get_brand_data(brand_id: str) -> Dict:
+    """Fetch brand name, voice tone, and ad creation notes."""
+    try:
+        db = get_supabase_client()
+        result = db.table("brands").select(
+            "id, name, brand_voice_tone, ad_creation_notes"
+        ).eq("id", brand_id).limit(1).execute()
+        return result.data[0] if result.data else {}
+    except Exception:
+        return {}
 
 
 def get_organization_id() -> str:
@@ -571,6 +585,10 @@ def render_remix_tab(brand_id: str, competitor_id: str):
         st.error("Pack not found.")
         return
 
+    # Load brand and product data for auto-population
+    brand_data = get_brand_data(brand_id)
+    products = get_products_for_brand(brand_id)
+
     col_remix, col_save = st.columns([2, 1])
 
     with col_remix:
@@ -604,12 +622,100 @@ def render_remix_tab(brand_id: str, competitor_id: str):
                     if isinstance(s, dict):
                         st.caption(f"{s.get('stage', '?')}: {s.get('content', '')}")
 
-            # Brand context inputs
+            # ---- Ingredient Lock Controls ----
+            st.markdown("#### Keep from Original Video")
+            st.caption("Select which ingredients to keep the same as the competitor video. Unchecked items will be adapted for your brand.")
+
+            lock_cols = st.columns(3)
+            # Determine available ingredients from extraction
+            has_hook = bool(extraction.get("hook", {}).get("text") if isinstance(extraction.get("hook"), dict) else False)
+            has_sequence = bool(extraction.get("messaging_sequence"))
+            has_triggers = bool(extraction.get("emotional_triggers"))
+            has_format = bool(extraction.get("ad_format"))
+            has_persona = bool(extraction.get("persona_4d"))
+            has_awareness = bool(extraction.get("awareness_level"))
+            has_pains = bool(extraction.get("pain_points"))
+            has_benefits = bool(extraction.get("benefits"))
+
+            locked_ingredients = []
+            with lock_cols[0]:
+                if has_hook and st.checkbox("Hook type & style", value=True, key="ci_lock_hook"):
+                    locked_ingredients.append("hook")
+                if has_sequence and st.checkbox("Messaging sequence", value=True, key="ci_lock_sequence"):
+                    locked_ingredients.append("messaging_sequence")
+                if has_format and st.checkbox("Ad format (UGC, etc.)", value=True, key="ci_lock_format"):
+                    locked_ingredients.append("ad_format")
+            with lock_cols[1]:
+                if has_triggers and st.checkbox("Emotional triggers", value=False, key="ci_lock_triggers"):
+                    locked_ingredients.append("emotional_triggers")
+                if has_awareness and st.checkbox("Awareness level", value=False, key="ci_lock_awareness"):
+                    locked_ingredients.append("awareness_level")
+                if has_persona and st.checkbox("Target persona", value=False, key="ci_lock_persona"):
+                    locked_ingredients.append("persona_4d")
+            with lock_cols[2]:
+                if has_pains and st.checkbox("Pain points", value=False, key="ci_lock_pains"):
+                    locked_ingredients.append("pain_points")
+                if has_benefits and st.checkbox("Benefits", value=False, key="ci_lock_benefits"):
+                    locked_ingredients.append("benefits")
+
+            st.markdown("---")
+
+            # ---- Brand Context (auto-populated) ----
             st.markdown("#### Your Brand Context")
-            brand_context = st.text_area("Additional context about your brand/product", key="ci_remix_context", height=80)
-            product_desc = st.text_input("Product description", key="ci_remix_product")
-            target_audience = st.text_input("Target audience", key="ci_remix_audience")
-            brand_guidelines = st.text_input("Brand guidelines / tone", key="ci_remix_guidelines")
+
+            # Product selector to auto-fill fields
+            if products:
+                product_names = ["(none - enter manually)"] + [p["name"] for p in products]
+                remix_product_name = st.selectbox("Load from product", options=product_names, key="ci_remix_product_select")
+                selected_product = next((p for p in products if p["name"] == remix_product_name), None)
+            else:
+                selected_product = None
+
+            # Build default values from product + brand data
+            default_product_desc = ""
+            default_audience = ""
+            default_guidelines = ""
+            default_context = ""
+
+            if selected_product:
+                desc_parts = []
+                if selected_product.get("description"):
+                    desc_parts.append(selected_product["description"])
+                usps = selected_product.get("unique_selling_points")
+                if usps:
+                    usp_list = usps if isinstance(usps, list) else [usps]
+                    desc_parts.append("USPs: " + ", ".join(usp_list))
+                benefits = selected_product.get("benefits")
+                if benefits:
+                    ben_list = benefits if isinstance(benefits, list) else [benefits]
+                    desc_parts.append("Benefits: " + ", ".join(ben_list))
+                default_product_desc = "\n".join(desc_parts)
+                default_audience = selected_product.get("target_audience") or ""
+                default_guidelines = selected_product.get("brand_voice_notes") or ""
+
+            # Fall back to brand-level data
+            if not default_guidelines and brand_data.get("brand_voice_tone"):
+                default_guidelines = brand_data["brand_voice_tone"]
+            if brand_data.get("ad_creation_notes"):
+                default_context = brand_data["ad_creation_notes"]
+
+            brand_context = st.text_area(
+                "Additional context about your brand/product",
+                value=default_context,
+                key="ci_remix_context",
+                height=80,
+            )
+            product_desc = st.text_area(
+                "Product description",
+                value=default_product_desc,
+                key="ci_remix_product",
+                height=80,
+            )
+            target_audience = st.text_input("Target audience", value=default_audience, key="ci_remix_audience")
+            brand_guidelines = st.text_input("Brand guidelines / tone", value=default_guidelines, key="ci_remix_guidelines")
+
+            brand_name = brand_data.get("name", "")
+            product_name = selected_product["name"] if selected_product else ""
 
             if st.button("Generate Ad Script", type="primary", key="ci_remix_btn"):
                 with st.spinner("Generating script via Claude..."):
@@ -620,6 +726,9 @@ def render_remix_tab(brand_id: str, competitor_id: str):
                             product_description=product_desc or None,
                             target_audience=target_audience or None,
                             brand_guidelines=brand_guidelines or None,
+                            brand_name=brand_name or None,
+                            product_name=product_name or None,
+                            locked_ingredients=locked_ingredients or None,
                         ))
                         st.session_state.ci_remix_result = result
                     except Exception as e:
@@ -649,7 +758,6 @@ def render_remix_tab(brand_id: str, competitor_id: str):
     with col_save:
         st.markdown("### Save to Pipeline")
 
-        products = get_products_for_brand(brand_id)
         if not products:
             st.warning("No products found. Add products to save to the angle pipeline.")
             return
