@@ -1118,14 +1118,20 @@ ADVANCED TECHNIQUES:
         product_name: Optional[str] = None,
         num_hooks: int = 5,
         hook_style: Optional[str] = None,
+        generated_script: Optional[str] = None,
     ) -> List[Dict[str, str]]:
         """Generate alternative hooks for a competitor video concept.
 
         Uses hook-writing knowledge base to produce hooks tailored to
         the video's structure and the user's brand.
 
+        Args:
+            generated_script: The remix script these hooks should lead into.
+                When provided, hooks are designed to flow naturally into the
+                script's opening scene.
+
         Returns:
-            List of dicts with text, type, technique, and rationale.
+            List of dicts with text, type, technique, visual, and rationale.
         """
         import anthropic
 
@@ -1143,6 +1149,7 @@ ADVANCED TECHNIQUES:
         persona = video_extraction.get("persona_4d", {})
         jtbds = video_extraction.get("jtbds", [])
         unique_mechanism = video_extraction.get("unique_mechanism", "")
+        ad_format = video_extraction.get("ad_format", "unknown")
 
         angle_texts = []
         for a in angles:
@@ -1153,10 +1160,21 @@ ADVANCED TECHNIQUES:
         if hook_style:
             style_instruction = f"\nSTYLE EMPHASIS: Focus on {hook_style} hooks. At least 70% should use this style, with the rest providing variety."
 
+        # Script congruence section
+        script_section = ""
+        if generated_script:
+            script_section = f"""
+
+GENERATED AD SCRIPT (hooks MUST lead into this):
+{generated_script[:3000]}
+
+CRITICAL: Each hook must flow naturally into the opening of this script. The hook is the first 3-4 seconds, then the script takes over. The viewer should feel a seamless transition from hook → script. Do NOT create hooks that contradict or feel disconnected from the script's tone, setting, or narrative."""
+
         prompt = f"""{self.HOOK_KNOWLEDGE_BASE}
 
 COMPETITOR VIDEO CONTEXT:
 Original hook: "{original_hook}" (type: {hook_type})
+Ad format: {ad_format}
 Pain points: {', '.join(pain_points) if pain_points else 'Not specified'}
 Benefits: {', '.join(benefits) if benefits else 'Not specified'}
 Emotional triggers: {', '.join(triggers) if triggers else 'Not specified'}
@@ -1172,7 +1190,7 @@ Product: {product_name or 'Not specified'}
 Product description: {product_description or 'Not specified'}
 Target audience: {target_audience or 'Not specified'}
 Additional context: {brand_context}
-{style_instruction}
+{style_instruction}{script_section}
 
 TASK:
 Generate exactly {num_hooks} alternative hooks for a video ad promoting **{product_name or brand_name or 'this product'}**.
@@ -1184,11 +1202,13 @@ Each hook must:
 - Be adapted for {brand_name or 'this brand'}'s product and audience
 - Use a DIFFERENT technique from the 38 techniques above for each hook
 - Draw on the competitor video's proven pain points, angles, and emotional triggers
+- Include a VISUAL DIRECTION describing what the viewer sees on screen during the hook (camera angle, setting, action, text overlays)
+- Match the ad format ({ad_format}) — if UGC, visuals should feel authentic/handheld; if professional, visuals should be polished
 
 Provide variety — mix curiosity, pain, story, question, demonstration, and contrarian hooks.
 
 Output as a JSON array:
-[{{"text": "The hook text (15 words max)", "type": "hook angle category", "technique": "which of the 38 techniques used", "rationale": "why this hook works for this audience"}}]"""
+[{{"text": "The hook text spoken/shown (15 words max)", "visual": "What the viewer sees: camera angle, setting, action, text overlays (1-2 sentences)", "type": "hook angle category", "technique": "which of the 38 techniques used", "rationale": "why this hook works for this audience"}}]"""
 
         response = client.messages.create(
             model="claude-sonnet-4-20250514",
