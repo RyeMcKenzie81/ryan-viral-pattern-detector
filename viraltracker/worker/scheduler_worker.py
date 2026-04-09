@@ -6326,6 +6326,11 @@ async def execute_competitor_intel_analysis_job(job: Dict) -> Dict[str, Any]:
         if not competitor_id or not organization_id:
             raise ValueError("competitor_id and organization_id are required parameters")
 
+        # Resolve superuser "all" to real org UUID (required for DB insert)
+        if organization_id == "all":
+            brand_id = job.get('brand_id')
+            organization_id = service._resolve_org_id(organization_id, brand_id)
+
         logs.append(f"Analyzing top {n_videos} video ads for competitor {competitor_id}")
 
         # Step 1: Score and rank ads
