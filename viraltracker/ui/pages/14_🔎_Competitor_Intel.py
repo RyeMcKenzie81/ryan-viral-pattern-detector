@@ -377,6 +377,24 @@ def render_video_details_tab(competitor_id: str):
         render_single_extraction(analyses[selected_idx])
 
 
+def _get_video_url(storage_path: str) -> Optional[str]:
+    """Generate a signed URL for a video in Supabase storage."""
+    if not storage_path:
+        return None
+    try:
+        db = get_supabase_client()
+        parts = storage_path.split("/", 1)
+        if len(parts) != 2:
+            return None
+        bucket, path = parts
+        result = db.storage.from_(bucket).create_signed_url(path, 3600)
+        if isinstance(result, dict):
+            return result.get("signedURL") or result.get("signedUrl")
+        return None
+    except Exception:
+        return None
+
+
 def render_single_extraction(video_analysis: Dict):
     """Render a single video's extraction data."""
     extraction = video_analysis.get("extraction", video_analysis)
@@ -399,6 +417,15 @@ def render_single_extraction(video_analysis: Dict):
         st.metric("Velocity", f"{velocity:.3f}" if velocity else "N/A")
     if ad_id:
         st.caption(f"Ad ID: {ad_id}")
+
+    # Video player
+    storage_path = video_analysis.get("storage_path")
+    if storage_path:
+        video_url = _get_video_url(storage_path)
+        if video_url:
+            col_vid, _ = st.columns([2, 1])
+            with col_vid:
+                st.video(video_url)
 
     # Transcription
     transcription = extraction.get("transcription", {})
