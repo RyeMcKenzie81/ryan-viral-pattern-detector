@@ -842,6 +842,7 @@ class CompetitorIntelService:
         brand_name: Optional[str] = None,
         product_name: Optional[str] = None,
         locked_ingredients: Optional[List[str]] = None,
+        creativity: int = 2,
     ) -> Dict[str, Any]:
         """Remix a competitor video's structure into an ad script for the user's brand.
 
@@ -852,6 +853,8 @@ class CompetitorIntelService:
             locked_ingredients: List of ingredient keys to keep from the original video.
                 Options: hook, messaging_sequence, ad_format, emotional_triggers,
                 awareness_level, persona_4d, pain_points, benefits
+            creativity: 1-5 scale controlling how different the remix is from the original.
+                1=carbon copy (swap product only), 5=reimagined (same insight, new ad)
         """
         import anthropic
 
@@ -926,6 +929,41 @@ class CompetitorIntelService:
         elif product_name:
             brand_line = f"Product name: {product_name}"
 
+        # Creativity level instructions
+        creativity_instructions = {
+            1: (
+                "CARBON COPY mode. Recreate this ad almost word-for-word, only swapping "
+                "the competitor's product/brand for the user's product. Keep the same "
+                "characters, setting, scenario, dialogue structure, and pacing. "
+                "Change only product names, claims, and CTAs."
+            ),
+            2: (
+                "FAITHFUL REMIX mode. Keep the same scene structure, setting, and character "
+                "types. Dialogue should follow the same beats and rhythm but can be "
+                "reworded naturally for the new product. Minor adjustments to make "
+                "claims authentic to the brand are fine."
+            ),
+            3: (
+                "BALANCED REMIX mode. Keep the same core concept and messaging arc, but "
+                "feel free to change the specific scenario, characters, and dialogue. "
+                "The ad should feel like it was inspired by the original but is clearly "
+                "its own piece of creative."
+            ),
+            4: (
+                "INSPIRED mode. Use the same underlying angle and emotional strategy, "
+                "but create a fresh scenario with different characters, settings, and "
+                "dialogue. The viewer should not be able to tell this was based on "
+                "another ad."
+            ),
+            5: (
+                "REIMAGINED mode. Extract only the core insight — the belief, pain point, "
+                "or emotional trigger that makes the original ad effective — and build "
+                "an entirely new ad around it. Different format, different story, "
+                "different creative approach. Only the strategic DNA carries over."
+            ),
+        }
+        creativity_text = creativity_instructions.get(creativity, creativity_instructions[3])
+
         prompt = f"""You are an expert ad copywriter and creative director.
 
 COMPETITOR VIDEO STRUCTURE:
@@ -947,11 +985,15 @@ Target audience: {target_audience or 'Not specified'}
 Brand guidelines: {brand_guidelines or 'Not specified'}
 Additional context: {brand_context}
 
+CREATIVITY LEVEL: {creativity}/5
+{creativity_text}
+
 TASK:
 Create an ad script for **{brand_name or 'this brand'}**{f" promoting **{product_name}**" if product_name else ""} that uses the competitor video as a template. The script MUST explicitly mention and sell {product_name or brand_name or 'the product'} — do not write a generic script.
 
 For locked ingredients, keep them as close to the original as possible while naturally incorporating {brand_name or 'the brand'}.
 For adapted ingredients, reimagine them specifically for {brand_name or 'the brand'}'s product and audience.
+Follow the CREATIVITY LEVEL instructions above to determine how closely to mirror the original.
 
 Include:
 1. Scene/stage breakdown
