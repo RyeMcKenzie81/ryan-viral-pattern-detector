@@ -546,6 +546,36 @@ class CompetitorIntelService:
 
     # --- Pack generation ---
 
+    def _get_cached_extraction(self, asset_id: str) -> Optional[Dict]:
+        """Check if we already have a cached extraction for this asset + prompt version."""
+        try:
+            resp = (
+                self.supabase.table("competitor_intel_video_cache")
+                .select("extraction")
+                .eq("asset_id", asset_id)
+                .eq("prompt_version", PROMPT_VERSION)
+                .limit(1)
+                .execute()
+            )
+            if resp.data:
+                logger.info(f"Cache hit for asset {asset_id} (prompt {PROMPT_VERSION})")
+                return resp.data[0]["extraction"]
+        except Exception as e:
+            logger.warning(f"Cache lookup failed for {asset_id}: {e}")
+        return None
+
+    def _save_to_cache(self, asset_id: str, extraction: Dict):
+        """Save extraction to cache for future reuse."""
+        try:
+            self.supabase.table("competitor_intel_video_cache").upsert({
+                "asset_id": asset_id,
+                "prompt_version": PROMPT_VERSION,
+                "model_version": MODEL_VERSION,
+                "extraction": extraction,
+            }, on_conflict="asset_id,prompt_version").execute()
+        except Exception as e:
+            logger.warning(f"Failed to cache extraction for {asset_id}: {e}")
+
     async def analyze_single_video(
         self,
         asset_id: str,
@@ -553,8 +583,15 @@ class CompetitorIntelService:
     ) -> Dict[str, Any]:
         """Analyze a single video using the ingredient extraction prompt.
 
-        Delegates to BrandResearchService.analyze_video() with custom prompt.
+        Checks cache first — only calls Gemini if no cached result exists
+        for this asset_id + prompt_version.
         """
+        # Check cache first
+        cached = self._get_cached_extraction(asset_id)
+        if cached:
+            return cached
+
+        # Cache miss — run Gemini analysis
         from viraltracker.services.brand_research_service import BrandResearchService
 
         service = BrandResearchService()
@@ -564,6 +601,10 @@ class CompetitorIntelService:
             skip_save=True,
             prompt=INGREDIENT_EXTRACTION_PROMPT,
         )
+
+        # Save to cache
+        self._save_to_cache(asset_id, result)
+
         return result
 
     def create_pack_record(
