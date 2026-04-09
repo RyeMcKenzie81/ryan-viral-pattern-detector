@@ -9,7 +9,7 @@ Article Writer gives manual control over each phase. Quick Write automates the f
 
 import datetime
 import logging
-import time
+from datetime import timedelta
 
 import streamlit as st
 
@@ -38,6 +38,35 @@ def _get_brand_config_service():
 def _get_tracking_service():
     from viraltracker.services.seo_pipeline.services.article_tracking_service import ArticleTrackingService
     return ArticleTrackingService()
+
+
+# =============================================================================
+# AUTO-REFRESH HELPERS (fragment-based, no server-thread blocking)
+# =============================================================================
+
+def _auto_refresh(seconds: int, key: str):
+    """Schedule periodic page refresh using st.fragment(run_every).
+
+    Unlike time.sleep(N) + st.rerun(), this does NOT block the server thread.
+    The fragment's run_every timer fires client-side, then triggers a full app
+    rerun so the surrounding status UI updates. A timestamp guard prevents
+    infinite reruns on the initial render.
+    """
+    import time as _time
+
+    @st.fragment(run_every=timedelta(seconds=seconds))
+    def _poll():
+        ts_key = f"_ar_{key}"
+        now = _time.time()
+        last = st.session_state.get(ts_key, 0)
+        # Only trigger full rerun on timer-initiated fragment reruns,
+        # not on the initial render (where last==0 or now-last < threshold).
+        if last > 0 and (now - last) >= (seconds * 0.8):
+            st.session_state[ts_key] = now
+            st.rerun(scope="app")
+        st.session_state[ts_key] = now
+
+    _poll()
 
 
 # =============================================================================
@@ -271,8 +300,7 @@ with tab_qw:
                                 st.rerun()
 
                         # Auto-refresh only when not stalled
-                        time.sleep(5)
-                        st.rerun()
+                        _auto_refresh(5, "qw_running")
 
                 elif status == "paused":
                     paused_data = progress.get("paused_data", {})
@@ -684,8 +712,7 @@ with tab_qw:
 
                     # Auto-poll while images generating
                     if _img_status in ("pending", "processing"):
-                        time.sleep(10)
-                        st.rerun()
+                        _auto_refresh(10, "qw_images")
 
                     # Bottom action row
                     st.divider()
@@ -1161,8 +1188,7 @@ with tab_cluster:
                             workflow_svc.cancel_job(batch_job_id)
                             st.info("Cancelling...")
                             st.rerun()
-                    time.sleep(5)
-                    st.rerun()
+                    _auto_refresh(5, "batch_running")
 
                 elif b_status == "completed":
                     b_result = batch_job.get("result", {})
@@ -1292,8 +1318,7 @@ with tab_cluster:
 
                     # Auto-poll while any batch article images are still generating
                     if any(s in ("pending", "processing") for s in _batch_img_statuses):
-                        time.sleep(10)
-                        st.rerun()
+                        _auto_refresh(10, "batch_images")
 
                     st.divider()
                     if st.button("Clear batch", key="seo_wf_batch_clear"):

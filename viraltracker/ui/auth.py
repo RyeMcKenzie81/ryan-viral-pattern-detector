@@ -420,6 +420,15 @@ def require_auth(public: bool = False) -> bool:
         _add_logout_button()
         return True
 
+    # Wait for cookie iframe to load before checking cookies.
+    # Without this guard, rapid st.rerun() cycles (e.g. job polling) after a
+    # server restart can race the CookieController iframe, read empty cookies,
+    # and flash the login form instead of restoring the session.
+    if not are_cookies_ready():
+        st.spinner("Restoring session...")
+        st.stop()
+        return False
+
     # Try to restore session from cookie
     if _restore_session():
         _add_logout_button()
