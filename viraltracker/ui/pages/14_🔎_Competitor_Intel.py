@@ -437,14 +437,12 @@ def render_single_extraction(video_analysis: Dict):
     if storage_path:
         video_url = _get_video_url(storage_path)
         if video_url:
-            # Use a unique key in the element id so the browser re-renders on video change
-            import hashlib
-            vid_key = hashlib.md5(storage_path.encode()).hexdigest()[:8]
-            st.markdown(
-                f'<video id="vid-{vid_key}" controls autoplay muted style="max-width:400px;max-height:500px;border-radius:8px;">'
+            import streamlit.components.v1 as components
+            components.html(
+                f'<video controls style="max-width:400px;max-height:500px;border-radius:8px;">'
                 f'<source src="{video_url}" type="video/mp4">'
                 f'</video>',
-                unsafe_allow_html=True,
+                height=520,
             )
 
     # Transcription
