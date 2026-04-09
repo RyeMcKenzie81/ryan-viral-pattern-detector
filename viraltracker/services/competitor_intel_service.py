@@ -1165,10 +1165,18 @@ ADVANCED TECHNIQUES:
         if generated_script:
             script_section = f"""
 
-GENERATED AD SCRIPT (hooks MUST lead into this):
+GENERATED AD SCRIPT (hooks REPLACE the script's opening and must bridge into the body):
 {generated_script[:3000]}
 
-CRITICAL: Each hook must flow naturally into the opening of this script. The hook is the first 3-4 seconds, then the script takes over. The viewer should feel a seamless transition from hook → script. Do NOT create hooks that contradict or feel disconnected from the script's tone, setting, or narrative."""
+HOW HOOKS WORK WITH THE SCRIPT:
+The script above already has an opening hook/lead. Each hook you generate is an ALTERNATIVE REPLACEMENT for that opening. The structure is:
+  [YOUR HOOK - 3-4 seconds] → [TRANSITION - 1-2 sentences bridging into the script body] → [REST OF SCRIPT continues from the first scene]
+
+For each hook, write a "transition" — 1-2 sentences that bridge from the hook into the script's first real scene. The transition should feel seamless so a viewer experiences: attention-grabbing hook → natural bridge → script body.
+
+Example: If the script body starts with a gym scene and the hook is "My testosterone jumped from 295 to 625 in 9 weeks", the transition might be: "It all started with a random conversation in a locker room. I was barely making it through my workout when this jacked older guy noticed me struggling..."
+
+Do NOT create hooks that contradict the script's tone, setting, characters, or narrative. The hook and transition together should make the viewer want to keep watching the rest of the script."""
 
         prompt = f"""{self.HOOK_KNOWLEDGE_BASE}
 
@@ -1203,12 +1211,13 @@ Each hook must:
 - Use a DIFFERENT technique from the 38 techniques above for each hook
 - Draw on the competitor video's proven pain points, angles, and emotional triggers
 - Include a VISUAL DIRECTION describing what the viewer sees on screen during the hook (camera angle, setting, action, text overlays)
+- Include a TRANSITION — 1-2 sentences that bridge from the hook into the script's first real scene (only if a generated script was provided)
 - Match the ad format ({ad_format}) — if UGC, visuals should feel authentic/handheld; if professional, visuals should be polished
 
 Provide variety — mix curiosity, pain, story, question, demonstration, and contrarian hooks.
 
 Output as a JSON array:
-[{{"text": "The hook text spoken/shown (15 words max)", "visual": "What the viewer sees: camera angle, setting, action, text overlays (1-2 sentences)", "type": "hook angle category", "technique": "which of the 38 techniques used", "rationale": "why this hook works for this audience"}}]"""
+[{{"text": "The hook text spoken/shown (15 words max)", "visual": "What the viewer sees: camera angle, setting, action, text overlays (1-2 sentences)", "transition": "1-2 sentences bridging from hook into the script body. How does the ad get from this hook to the first scene?", "type": "hook angle category", "technique": "which of the 38 techniques used", "rationale": "why this hook works for this audience"}}]"""
 
         response = client.messages.create(
             model="claude-sonnet-4-20250514",

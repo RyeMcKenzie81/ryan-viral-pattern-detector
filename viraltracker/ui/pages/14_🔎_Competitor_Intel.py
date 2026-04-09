@@ -627,6 +627,23 @@ def render_remix_tab(brand_id: str, competitor_id: str):
             st.markdown("#### Keep from Original Video")
             st.caption("Select which ingredients to keep the same as the competitor video. Unchecked items will be adapted for your brand.")
 
+            # Select all / Deselect all
+            sa_col1, sa_col2, _ = st.columns([1, 1, 4])
+            with sa_col1:
+                if st.button("Select All", key="ci_lock_select_all", use_container_width=True):
+                    for k in ["ci_lock_hook", "ci_lock_sequence", "ci_lock_format",
+                              "ci_lock_triggers", "ci_lock_awareness", "ci_lock_persona",
+                              "ci_lock_pains", "ci_lock_benefits"]:
+                        st.session_state[k] = True
+                    st.rerun()
+            with sa_col2:
+                if st.button("Deselect All", key="ci_lock_deselect_all", use_container_width=True):
+                    for k in ["ci_lock_hook", "ci_lock_sequence", "ci_lock_format",
+                              "ci_lock_triggers", "ci_lock_awareness", "ci_lock_persona",
+                              "ci_lock_pains", "ci_lock_benefits"]:
+                        st.session_state[k] = False
+                    st.rerun()
+
             lock_cols = st.columns(3)
             # Determine available ingredients from extraction
             has_hook = bool(extraction.get("hook", {}).get("text") if isinstance(extraction.get("hook"), dict) else False)
@@ -836,6 +853,8 @@ def render_remix_tab(brand_id: str, competitor_id: str):
                         st.markdown(f"**Hook {i}:** {h.get('text', '')}")
                         if h.get("visual"):
                             st.markdown(f"*🎬 Visual: {h['visual']}*")
+                        if h.get("transition"):
+                            st.markdown(f"*→ Transition: {h['transition']}*")
                         details = []
                         if h.get("type"):
                             details.append(f"Type: {h['type']}")
