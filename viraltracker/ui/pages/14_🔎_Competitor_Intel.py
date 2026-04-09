@@ -92,8 +92,8 @@ def create_analysis_job(
             "job_type": "competitor_intel_analysis",
             "brand_id": brand_id,
             "schedule_type": "one_time",
+            "status": "active",
             "next_run_at": (datetime.utcnow() + timedelta(minutes=1)).isoformat(),
-            "is_active": True,
             "parameters": json.dumps({
                 "competitor_id": competitor_id,
                 "organization_id": organization_id,
