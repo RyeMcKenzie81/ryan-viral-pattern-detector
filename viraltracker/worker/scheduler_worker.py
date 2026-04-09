@@ -6398,6 +6398,8 @@ async def execute_competitor_intel_analysis_job(job: Dict) -> Dict[str, Any]:
                     videos_completed=video_num - failed_count,
                     video_analysis={
                         "ad_id": ad_id,
+                        "asset_id": asset_info["asset_id"],
+                        "storage_path": asset_info["storage_path"],
                         "composite_score": scored_ad["composite"],
                         "position": scored_ad.get("position"),
                         "total": scored_ad.get("total"),
