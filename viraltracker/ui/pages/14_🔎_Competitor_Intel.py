@@ -418,14 +418,17 @@ def render_single_extraction(video_analysis: Dict):
     if ad_id:
         st.caption(f"Ad ID: {ad_id}")
 
-    # Video player
+    # Video player (Facebook desktop feed size ~400px wide)
     storage_path = video_analysis.get("storage_path")
     if storage_path:
         video_url = _get_video_url(storage_path)
         if video_url:
-            col_vid, _ = st.columns([2, 1])
-            with col_vid:
-                st.video(video_url)
+            st.markdown(
+                f'<video controls style="max-width:400px;max-height:500px;border-radius:8px;">'
+                f'<source src="{video_url}" type="video/mp4">'
+                f'</video>',
+                unsafe_allow_html=True,
+            )
 
     # Transcription
     transcription = extraction.get("transcription", {})
