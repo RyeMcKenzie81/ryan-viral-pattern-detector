@@ -659,6 +659,23 @@ def render_remix_tab(brand_id: str, competitor_id: str):
                 if has_benefits and st.checkbox("Benefits", value=False, key="ci_lock_benefits"):
                     locked_ingredients.append("benefits")
 
+            # ---- Creativity Slider ----
+            st.markdown("#### Remix Creativity")
+            creativity_labels = {
+                1: "1 — Carbon Copy (swap product only)",
+                2: "2 — Faithful (same scene structure, minor tweaks)",
+                3: "3 — Balanced (same concept, new scenes/dialogue)",
+                4: "4 — Inspired (same angle, fresh creative)",
+                5: "5 — Reimagined (same core insight, completely new ad)",
+            }
+            creativity = st.select_slider(
+                "How different from the original?",
+                options=[1, 2, 3, 4, 5],
+                value=2,
+                format_func=lambda v: creativity_labels[v],
+                key="ci_remix_creativity",
+            )
+
             st.markdown("---")
 
             # ---- Brand Context (auto-populated) ----
@@ -730,6 +747,7 @@ def render_remix_tab(brand_id: str, competitor_id: str):
                             brand_name=brand_name or None,
                             product_name=product_name or None,
                             locked_ingredients=locked_ingredients or None,
+                            creativity=creativity,
                         ))
                         st.session_state.ci_remix_result = result
                     except Exception as e:
