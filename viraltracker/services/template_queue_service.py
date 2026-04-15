@@ -1071,3 +1071,39 @@ class TemplateQueueService:
 
         logger.info(f"Manual template uploaded: asset={asset_id}, queue={queue_id}, status={result['status']}")
         return result
+
+    def download_template_image(self, template_id: str) -> Optional[str]:
+        """Download a template image from Supabase storage and return as base64.
+
+        Args:
+            template_id: UUID of the scraped_templates record.
+
+        Returns:
+            Base64-encoded image string, or None if not found or download fails.
+        """
+        try:
+            result = (
+                self.supabase.table("scraped_templates")
+                .select("id, storage_path, bucket")
+                .eq("id", template_id)
+                .limit(1)
+                .execute()
+            )
+            if not result.data:
+                logger.warning(f"Template {template_id} not found")
+                return None
+
+            row = result.data[0]
+            storage_path = row.get("storage_path", "")
+            bucket = row.get("bucket", "scraped-assets")
+
+            if "/" in storage_path and not bucket:
+                parts = storage_path.split("/", 1)
+                bucket = parts[0]
+                storage_path = parts[1]
+
+            data = self.supabase.storage.from_(bucket).download(storage_path)
+            return base64.b64encode(data).decode("utf-8")
+        except Exception as e:
+            logger.error(f"Failed to download template image {template_id}: {e}")
+            return None

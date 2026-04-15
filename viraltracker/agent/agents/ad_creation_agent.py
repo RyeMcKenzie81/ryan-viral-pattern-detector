@@ -378,155 +378,365 @@ async def analyze_product_image(
 
 
 
+# ============================================================================
+# AD CREATION V2 TOOLS
+# ============================================================================
+
+
 @ad_creation_agent.tool(
     metadata={
         'category': 'Generation',
         'platform': 'Facebook',
         'rate_limit': '1/minute',
         'use_cases': [
-            'Execute complete ad creation workflow end-to-end',
-            'Orchestrate all 13 tools in sequence',
-            'Generate ad variations with dual AI review'
+            'Create ads using the V2 pipeline with template auto-selection',
+            'Generate ad variations with headline congruence and defect scanning',
+            'Run full ad creation from a template'
         ],
         'examples': [
-            'Create complete ad campaign for Wonder Paws',
-            'Generate 10 Facebook ads with full workflow'
+            'Create 5 ads for this product',
+            'Generate ads using template X',
+            'Create ads in 1080x1350 and 1080x1920 sizes'
         ]
     }
 )
-async def complete_ad_workflow(
+async def create_ads_v2(
     ctx: RunContext[AgentDependencies],
     product_id: str,
-    reference_ad_base64: str,
-    reference_ad_filename: str = "reference.png",
-    project_id: Optional[str] = None,
+    template_id: Optional[str] = None,
     num_variations: int = 5,
     content_source: str = "hooks",
-    color_mode: str = "original",
-    brand_colors: Optional[Dict] = None,
-    image_selection_mode: str = "auto",
-    selected_image_paths: Optional[List[str]] = None,
+    canvas_sizes: Optional[List[str]] = None,
+    color_modes: Optional[List[str]] = None,
     persona_id: Optional[str] = None,
-    variant_id: Optional[str] = None,
-    additional_instructions: Optional[str] = None,
-    angle_data: Optional[Dict] = None,
-    match_template_structure: bool = False,
-    offer_variant_id: Optional[str] = None,
-    image_resolution: str = "2K"
+    creative_direction: Optional[str] = None,
+    image_resolution: str = "2K",
 ) -> Dict:
     """
-    Execute complete ad creation workflow from start to finish.
+    Create ads using the V2 pipeline with automatic template selection.
 
-    This orchestration tool:
-    1. Creates ad run in database
-    2. Uploads reference ad to storage
-    3. Fetches product data (and hooks if content_source="hooks")
-    4. Fetches persona data if persona_id provided
-    5. Analyzes reference ad (Vision AI)
-    6. Gets content variations:
-       - If content_source="hooks": Selects N diverse hooks from database
-       - If content_source="recreate_template": Extracts template angle and
-         generates variations from product benefits/USPs
-       - If content_source="belief_first": Uses provided angle's belief statement
-       - All modes use persona data to inform copy when available
-    7. Generates N ad variations (ONE AT A TIME)
-    8. Dual AI review (Claude + Gemini) for each ad
-    9. Applies OR logic: either reviewer approving = approved
-    10. Returns complete AdCreationResult
-
-    **CRITICAL: Dual Review Logic (OR Logic)**
-    - If Claude OR Gemini approves → APPROVED
-    - If both reject → REJECTED
-    - If reviewers disagree on non-approval → FLAGGED for human review
+    This is the primary ad creation tool. It:
+    1. Selects a template automatically (smart_select) or uses a specified template
+    2. Downloads the template image
+    3. Runs the V2 ad creation pipeline (headline congruence, defect scan, auto-retry)
+    4. Returns results with approved/rejected/flagged counts
 
     Args:
         ctx: Run context with AgentDependencies
-        product_id: UUID of product as string
-        reference_ad_base64: Base64-encoded reference ad image
-        reference_ad_filename: Filename for storage (default: reference.png)
-        project_id: Optional UUID of project as string
-        num_variations: Number of ad variations to generate (default: 5, max: 15)
-        content_source: Source for ad content variations:
-            - "hooks": Use hooks from database (default)
-            - "recreate_template": Extract template angle and use product benefits
-            - "belief_first": Use provided angle's belief statement
-        color_mode: Color scheme to use ("original", "complementary", "brand")
-        brand_colors: Brand color data when color_mode is "brand"
-        image_selection_mode: How to select product images:
-            - "auto": AI selects best matching 1-2 images (default)
-            - "manual": Use user-selected images
-        selected_image_paths: List of storage paths when image_selection_mode is "manual" (1-2 images)
-        persona_id: Optional UUID of 4D persona to target. When provided, persona's
-            pain points, desires, and language inform hook selection and copy generation.
-        variant_id: Optional UUID of product variant (flavor, size, color). When provided,
-            variant name and description are used to customize ad copy for that specific variant.
-        additional_instructions: Optional run-specific instructions for ad generation. Combined
-            with brand's ad_creation_notes to guide the AI in creating ads.
-        angle_data: Dict with angle info for belief_first mode. Required when
-            content_source="belief_first". Structure: {id, name, belief_statement, explanation}
-        match_template_structure: If True with belief_first mode, extract the reference ad's
-            template structure and adapt the belief statement to match it. Creates headlines
-            that follow the template's style while communicating the belief.
-        offer_variant_id: Optional UUID of offer variant (landing page angle). When provided,
-            the offer variant's pain points, benefits, and target audience are used to ensure
-            ad copy is congruent with the destination landing page messaging.
+        product_id: UUID of the product to create ads for
+        template_id: Optional template UUID. If not provided, auto-selects the best
+            template using smart_select scoring.
+        num_variations: Number of ad variations to generate (1-15, default: 5)
+        content_source: Source for ad copy ("hooks", "recreate_template", "belief_first")
+        canvas_sizes: List of canvas sizes (e.g. ["1080x1080px", "1080x1350px"]).
+            If not provided, uses the template's default size.
+        color_modes: List of color modes (e.g. ["original", "complementary"]).
+            Defaults to ["original"].
+        persona_id: Optional persona UUID for targeted copy generation
+        creative_direction: Optional free-text creative guidance for the AI
+        image_resolution: Image quality ("1K", "2K", "4K", default: "2K")
 
     Returns:
-        Dictionary with AdCreationResult structure:
-        {
-            "ad_run_id": "uuid",
-            "product": {...},
-            "reference_ad_path": "storage path",
-            "ad_analysis": {...},
-            "content_source": "hooks" or "recreate_template",
-            "template_angle": {...} (only if recreate_template),
-            "selected_hooks": [...],
-            "generated_ads": [
-                {
-                    "prompt_index": 1,
-                    "prompt": {...},
-                    "storage_path": "...",
-                    "claude_review": {...},
-                    "gemini_review": {...},
-                    "reviewers_agree": true/false,
-                    "final_status": "approved"/"rejected"/"flagged"
-                },
-                ...
-            ],
-            "approved_count": 3,
-            "rejected_count": 1,
-            "flagged_count": 1,
-            "summary": "Human-readable summary",
-            "created_at": "ISO timestamp"
-        }
-
-    Raises:
-        Exception: If workflow fails at any stage
-        ValueError: If num_variations is out of range (1-15) or invalid content_source
+        Dictionary with ad creation results including approved/rejected/flagged
+        counts and ad IDs for follow-up actions (edit, export, resize).
     """
-    from viraltracker.pipelines.ad_creation.orchestrator import run_ad_creation
+    from uuid import UUID as _UUID
+    from viraltracker.pipelines.ad_creation_v2.orchestrator import run_ad_creation_v2
 
-    return await run_ad_creation(
+    # --- Template selection ---
+    selected_template = None
+
+    if template_id:
+        # User specified a template — just download its image
+        template_base64 = ctx.deps.template_queue.download_template_image(template_id)
+        if not template_base64:
+            return {"error": f"Could not download template {template_id}. Check it exists and has an image."}
+        # Fetch template metadata for canvas_size default
+        from viraltracker.core.database import get_supabase_client
+        db = get_supabase_client()
+        tmpl_result = db.table("scraped_templates").select("id, name, canvas_size").eq("id", template_id).limit(1).execute()
+        selected_template = tmpl_result.data[0] if tmpl_result.data else {}
+    else:
+        # Auto-select via smart_select
+        from viraltracker.services.template_scoring_service import (
+            fetch_template_candidates,
+            select_templates_with_fallback,
+            prefetch_product_asset_tags,
+            SelectionContext,
+            SMART_SELECT_WEIGHTS,
+            PHASE_8_SCORERS,
+        )
+
+        candidates = await fetch_template_candidates(product_id)
+        if not candidates:
+            return {"error": "No active templates found. Upload or approve templates first."}
+
+        # Build selection context
+        asset_tags = await prefetch_product_asset_tags(product_id)
+
+        # Get brand_id from product
+        from viraltracker.core.database import get_supabase_client
+        db = get_supabase_client()
+        prod_result = db.table("products").select("brand_id").eq("id", product_id).limit(1).execute()
+        brand_id = prod_result.data[0]["brand_id"] if prod_result.data else product_id
+
+        context = SelectionContext(
+            product_id=_UUID(product_id),
+            brand_id=_UUID(brand_id),
+            product_asset_tags=asset_tags,
+        )
+
+        selection = select_templates_with_fallback(
+            candidates=candidates,
+            context=context,
+            weights=SMART_SELECT_WEIGHTS,
+            count=1,
+            scorers=PHASE_8_SCORERS,
+        )
+
+        if not selection.selected:
+            return {"error": "Template scoring returned no viable templates."}
+
+        selected_template = selection.selected[0]
+        template_id = str(selected_template["id"])
+
+        # Download selected template image
+        template_base64 = ctx.deps.template_queue.download_template_image(template_id)
+        if not template_base64:
+            return {"error": f"Could not download auto-selected template {template_id}."}
+
+    # --- Canvas size default: use template's size ---
+    if not canvas_sizes:
+        tmpl_size = (selected_template or {}).get("canvas_size")
+        canvas_sizes = [tmpl_size] if tmpl_size else ["1080x1080px"]
+
+    # --- Run V2 pipeline ---
+    result = await run_ad_creation_v2(
         product_id=product_id,
-        reference_ad_base64=reference_ad_base64,
-        reference_ad_filename=reference_ad_filename,
-        project_id=project_id,
+        reference_ad_base64=template_base64,
+        reference_ad_filename=f"template_{template_id}.png",
+        template_id=template_id,
+        canvas_sizes=canvas_sizes,
+        color_modes=color_modes or ["original"],
         num_variations=num_variations,
         content_source=content_source,
-        color_mode=color_mode,
-        brand_colors=brand_colors,
-        image_selection_mode=image_selection_mode,
-        selected_image_paths=selected_image_paths,
         persona_id=persona_id,
-        variant_id=variant_id,
-        offer_variant_id=offer_variant_id,
-        additional_instructions=additional_instructions,
-        angle_data=angle_data,
-        match_template_structure=match_template_structure,
+        creative_direction=creative_direction,
         image_resolution=image_resolution,
+        auto_retry_rejected=True,
+        max_retry_attempts=1,
         deps=ctx.deps,
     )
 
+    # --- Format response ---
+    approved = result.get("approved_count", 0)
+    rejected = result.get("rejected_count", 0)
+    flagged = result.get("flagged_count", 0)
+
+    approved_ids = [
+        ad["id"] for ad in (result.get("generated_ads") or [])
+        if ad.get("final_status") == "approved" and ad.get("id")
+    ]
+
+    return {
+        "ad_run_id": result.get("ad_run_id"),
+        "template_id": template_id,
+        "template_name": (selected_template or {}).get("name", ""),
+        "canvas_sizes": canvas_sizes,
+        "color_modes": color_modes or ["original"],
+        "num_variations": num_variations,
+        "approved_count": approved,
+        "rejected_count": rejected,
+        "flagged_count": flagged,
+        "approved_ad_ids": approved_ids,
+        "summary": result.get("summary", f"{approved} approved, {rejected} rejected, {flagged} flagged"),
+    }
+
+
+@ad_creation_agent.tool(
+    metadata={
+        'category': 'Discovery',
+        'platform': 'Facebook',
+        'use_cases': [
+            'Browse available ad templates',
+            'Find templates by category or awareness level',
+            'Search for templates from a specific brand'
+        ],
+        'examples': [
+            'Show me direct response templates',
+            'What templates are available?',
+            'Find templates for awareness level 3'
+        ]
+    }
+)
+async def search_templates(
+    ctx: RunContext[AgentDependencies],
+    category: Optional[str] = None,
+    awareness_level: Optional[int] = None,
+    source_brand: Optional[str] = None,
+    limit: int = 10,
+) -> str:
+    """
+    Search approved ad templates that can be used for ad creation.
+
+    Use this to help users discover and choose templates before creating ads.
+
+    Args:
+        ctx: Run context with AgentDependencies
+        category: Filter by template category (e.g. "direct_response", "social_proof",
+            "testimonial", "ugc", "lifestyle", "comparison")
+        awareness_level: Filter by awareness level (1-5, where 1=unaware, 5=most_aware)
+        source_brand: Filter by brand name that the template was scraped from
+        limit: Max results (default: 10, max: 25)
+
+    Returns:
+        Formatted markdown table of matching templates with IDs, names, categories,
+        and canvas sizes for use with create_ads_v2.
+    """
+    limit = min(limit, 25)
+
+    templates = ctx.deps.template_queue.get_templates(
+        category=category,
+        awareness_level=awareness_level,
+        source_brand=source_brand,
+        limit=limit,
+    )
+
+    if not templates:
+        return "No templates found matching your criteria."
+
+    lines = [f"**Templates Found** ({len(templates)} results)\n"]
+    lines.append("| ID | Name | Category | Size | Awareness |")
+    lines.append("|---|---|---|---|---|")
+
+    for t in templates:
+        tid = t.get("id", "")
+        name = t.get("name", "Unnamed")[:40]
+        cat = t.get("category", "-")
+        size = t.get("canvas_size", "-")
+        awareness = t.get("awareness_level", "-")
+        lines.append(f"| `{tid}` | {name} | {cat} | {size} | {awareness} |")
+
+    lines.append(f"\nUse a template ID with `create_ads_v2` to generate ads from it.")
+    return "\n".join(lines)
+
+
+EDIT_PRESETS = [
+    "text_larger", "more_contrast", "brighter", "warmer",
+    "cooler", "bolder_cta", "cleaner_layout"
+]
+
+
+@ad_creation_agent.tool(
+    metadata={
+        'category': 'Generation',
+        'platform': 'Facebook',
+        'use_cases': [
+            'Apply a quick edit preset to an approved ad',
+            'Make text bigger, bolder CTA, adjust colors',
+        ],
+        'examples': [
+            'Make the text larger on this ad',
+            'Apply bolder CTA to ad X',
+            'Make this ad warmer'
+        ]
+    }
+)
+async def smart_edit_ad(
+    ctx: RunContext[AgentDependencies],
+    source_ad_id: str,
+    preset: str,
+) -> Dict:
+    """
+    Apply a preset edit to an existing approved ad.
+
+    Available presets:
+    - text_larger: Make all text 20% larger and more prominent
+    - more_contrast: Increase contrast between text and background
+    - brighter: Make the overall image 15% brighter
+    - warmer: Shift colors to warmer tones (orange/red)
+    - cooler: Shift colors to cooler tones (blue/green)
+    - bolder_cta: Make the CTA button/text more prominent
+    - cleaner_layout: Simplify layout, reduce visual clutter
+
+    Args:
+        ctx: Run context with AgentDependencies
+        source_ad_id: UUID of the approved ad to edit
+        preset: One of the available preset names listed above
+
+    Returns:
+        Dictionary with the new edited ad ID, storage path, and review results.
+    """
+    from uuid import UUID as _UUID
+
+    if preset not in EDIT_PRESETS:
+        return {
+            "error": f"Invalid preset '{preset}'. Available: {', '.join(EDIT_PRESETS)}"
+        }
+
+    try:
+        result = await ctx.deps.ad_creation.create_edited_ad(
+            source_ad_id=_UUID(source_ad_id),
+            edit_prompt=preset,
+        )
+        return {
+            "success": True,
+            "new_ad_id": str(result.get("id", "")),
+            "storage_path": result.get("storage_path", ""),
+            "final_status": result.get("final_status", ""),
+            "preset_applied": preset,
+            "parent_ad_id": source_ad_id,
+        }
+    except Exception as e:
+        return {"error": f"Failed to edit ad: {e}"}
+
+
+@ad_creation_agent.tool(
+    metadata={
+        'category': 'Generation',
+        'platform': 'Facebook',
+        'use_cases': [
+            'Retry a rejected or flagged ad with a fresh attempt',
+            'Regenerate an ad that failed review',
+        ],
+        'examples': [
+            'Regenerate this rejected ad',
+            'Retry ad X',
+        ]
+    }
+)
+async def regenerate_ad(
+    ctx: RunContext[AgentDependencies],
+    source_ad_id: str,
+) -> Dict:
+    """
+    Regenerate a rejected or flagged ad with a fresh attempt.
+
+    Takes the original ad's parameters and generates a new version,
+    which goes through dual AI review (Claude + Gemini).
+
+    Args:
+        ctx: Run context with AgentDependencies
+        source_ad_id: UUID of the rejected or flagged ad to regenerate
+
+    Returns:
+        Dictionary with the new ad ID, status, and review results.
+    """
+    from uuid import UUID as _UUID
+
+    try:
+        result = await ctx.deps.ad_creation.regenerate_ad(
+            source_ad_id=_UUID(source_ad_id),
+        )
+        return {
+            "success": True,
+            "new_ad_id": str(result.get("id", "")),
+            "storage_path": result.get("storage_path", ""),
+            "final_status": result.get("final_status", ""),
+            "parent_ad_id": source_ad_id,
+        }
+    except Exception as e:
+        return {"error": f"Failed to regenerate ad: {e}"}
 
 
 # ============================================================================
@@ -1057,4 +1267,4 @@ async def list_pending_templates(
 # Tool count and initialization
 # ============================================================================
 
-logger.info("Ad Creation Agent initialized with 11 tools")
+logger.info("Ad Creation Agent initialized with 14 tools")
