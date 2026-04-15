@@ -232,7 +232,7 @@ async def check_job_status(
         run_result = (
             db.table("scheduled_job_runs")
             .select("id, status, started_at, completed_at, error_message")
-            .eq("job_id", job_id)
+            .eq("scheduled_job_id", job_id)
             .order("started_at", desc=True)
             .limit(1)
             .execute()
@@ -458,7 +458,7 @@ async def get_system_health(
         # Get recent job runs
         runs = (
             db.table("scheduled_job_runs")
-            .select("status, job_id, started_at, completed_at, error_message")
+            .select("status, scheduled_job_id, started_at, completed_at, error_message")
             .gte("started_at", cutoff)
             .execute()
         )
@@ -493,7 +493,7 @@ async def get_system_health(
             lines.append(f"\n**Recent Failures ({len(failures)}):**")
             for f in failures[:5]:
                 err = (f.get("error_message") or "Unknown error")[:100]
-                lines.append(f"- Job {f['job_id'][:8]}... at {f['started_at']}: {err}")
+                lines.append(f"- Job {f['scheduled_job_id'][:8]}... at {f['started_at']}: {err}")
 
         if not failures:
             lines.append("\n✅ No failures in this period.")
