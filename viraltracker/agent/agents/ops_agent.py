@@ -109,6 +109,69 @@ Other:
 )
 
 
+async def _resolve_brand(db, brand_id: str, ctx) -> str:
+    """Resolve a brand name or UUID to a valid brand UUID.
+
+    Accepts a UUID (returned as-is) or a brand name (fuzzy matched via
+    case-insensitive substring search). Returns "Error: ..." on failure.
+    """
+    import re
+
+    # If it looks like a UUID, return as-is
+    if re.match(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', brand_id, re.I):
+        return brand_id
+
+    # It's a name — search for it
+    try:
+        query = db.table("brands").select("id, name")
+        org_id = getattr(ctx.deps, "_organization_id", None)
+        if org_id and org_id != "all":
+            query = query.eq("organization_id", org_id)
+        result = query.execute()
+        brands = result.data or []
+    except Exception as e:
+        return f"Error: Failed to look up brands: {e}"
+
+    if not brands:
+        return "Error: No brands found in your organization."
+
+    search = brand_id.lower().strip()
+
+    # Exact match first
+    for b in brands:
+        if b["name"].lower() == search:
+            return b["id"]
+
+    # Substring / fuzzy match: check if search is contained in name or vice versa
+    matches = []
+    for b in brands:
+        name_lower = b["name"].lower()
+        if search in name_lower or name_lower in search:
+            matches.append(b)
+
+    if len(matches) == 1:
+        return matches[0]["id"]
+    elif len(matches) > 1:
+        names = ", ".join(f"**{m['name']}**" for m in matches)
+        return f"Error: Multiple brands match '{brand_id}': {names}. Please be more specific."
+
+    # No substring match — try word overlap
+    search_words = set(search.split())
+    for b in brands:
+        name_words = set(b["name"].lower().split())
+        if search_words & name_words:
+            matches.append(b)
+
+    if len(matches) == 1:
+        return matches[0]["id"]
+    elif len(matches) > 1:
+        names = ", ".join(f"**{m['name']}**" for m in matches)
+        return f"Error: Multiple brands match '{brand_id}': {names}. Please be more specific."
+
+    available = ", ".join(f"**{b['name']}**" for b in brands)
+    return f"Error: No brand matching '{brand_id}'. Available brands: {available}"
+
+
 # ============================================================================
 # Job Management Tools
 # ============================================================================
@@ -146,7 +209,7 @@ async def queue_job(
     Args:
         ctx: Run context with AgentDependencies
         job_type: Type of job (e.g., 'meta_sync', 'ad_classification', 'template_scrape')
-        brand_id: UUID of the brand to run the job for
+        brand_id: UUID of the brand, OR the brand name (fuzzy matched)
         parameters: Optional job-specific parameters as a dict
         name: Optional display name for the job
 
@@ -162,6 +225,11 @@ async def queue_job(
     from viraltracker.core.database import get_supabase_client
 
     db = get_supabase_client()
+
+    # Resolve brand_id: accept UUID or fuzzy name match
+    brand_id = await _resolve_brand(db, brand_id, ctx)
+    if brand_id.startswith("Error:"):
+        return brand_id
 
     # Duplicate detection: check for same job_type + brand_id created in last 5 minutes
     try:
@@ -349,7 +417,7 @@ async def list_recent_jobs(
 
     Args:
         ctx: Run context with AgentDependencies
-        brand_id: Optional brand UUID to filter by. If not provided, shows all brands in the user's org.
+        brand_id: Optional brand UUID or name (fuzzy matched) to filter by. If not provided, shows all brands in the user's org.
         status_filter: Optional status filter ('active', 'paused', 'completed', 'archived')
         limit: Max number of jobs to return (default: 10, max: 25)
 
@@ -360,6 +428,12 @@ async def list_recent_jobs(
 
     db = get_supabase_client()
     limit = min(limit, 25)
+
+    # Resolve brand name to UUID if provided
+    if brand_id:
+        brand_id = await _resolve_brand(db, brand_id, ctx)
+        if brand_id.startswith("Error:"):
+            return brand_id
 
     try:
         query = (
