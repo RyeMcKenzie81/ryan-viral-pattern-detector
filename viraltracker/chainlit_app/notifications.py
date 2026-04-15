@@ -52,12 +52,15 @@ async def start_job_notification_poller(org_id: str | None):
             cutoff = last_check.isoformat()
             logger.info(f"Notification poll: checking since {cutoff}")
 
-            # Find job runs that completed or failed since last check
+            # Find job runs that completed or failed since last check.
+            # Note: scheduled_jobs.brand_id has no FK to brands, so we
+            # cannot use nested PostgREST joins for brand names. Look
+            # up brand names separately instead.
             query = (
                 db.table("scheduled_job_runs")
                 .select(
                     "id, status, started_at, completed_at, error_message, "
-                    "scheduled_jobs(id, job_type, brand_id, name, brands(name))"
+                    "scheduled_jobs(id, job_type, brand_id, name)"
                 )
                 .in_("status", ["completed", "failed"])
                 .gte("completed_at", cutoff)
@@ -73,16 +76,35 @@ async def start_job_notification_poller(org_id: str | None):
                 last_check = datetime.now(timezone.utc)
                 continue
 
+            # Collect brand IDs we need to resolve
+            brand_ids_needed = set()
+            for run in runs:
+                job_info = run.get("scheduled_jobs") or {}
+                bid = job_info.get("brand_id")
+                if bid:
+                    brand_ids_needed.add(bid)
+
+            # Look up brand names (no FK, so separate query)
+            brand_names = {}
+            if brand_ids_needed:
+                brand_result = (
+                    db.table("brands")
+                    .select("id, name")
+                    .in_("id", list(brand_ids_needed))
+                    .execute()
+                )
+                brand_names = {b["id"]: b["name"] for b in (brand_result.data or [])}
+
             # Filter to runs belonging to this org's brands (or platform jobs)
             org_brand_ids = None
             if org_id and org_id != "all":
-                brand_result = (
+                org_result = (
                     db.table("brands")
                     .select("id")
                     .eq("organization_id", org_id)
                     .execute()
                 )
-                org_brand_ids = {b["id"] for b in (brand_result.data or [])}
+                org_brand_ids = {b["id"] for b in (org_result.data or [])}
 
             for run in runs:
                 job_info = run.get("scheduled_jobs") or {}
@@ -96,8 +118,7 @@ async def start_job_notification_poller(org_id: str | None):
 
                 job_type = job_info.get("job_type", "unknown")
                 job_name = job_info.get("name", "")
-                brand_info = job_info.get("brands") or {}
-                brand_name = brand_info.get("name", "Platform")
+                brand_name = brand_names.get(brand_id, "Platform") if brand_id else "Platform"
                 status = run["status"]
 
                 if status == "completed":
