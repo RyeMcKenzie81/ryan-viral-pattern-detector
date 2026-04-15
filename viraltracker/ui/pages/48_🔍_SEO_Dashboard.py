@@ -51,6 +51,7 @@ if "code" in st.query_params and "state" in st.query_params:
         st.session_state["_gsc_pending_tokens"] = tokens
         st.session_state["_gsc_pending_state"] = state_data
         st.session_state["_gsc_pending_sites"] = sites
+        st.session_state["_oauth_return"] = True  # Signal auth to wait for cookie iframe
 
         st.query_params.clear()
         st.rerun()
@@ -58,8 +59,9 @@ if "code" in st.query_params and "state" in st.query_params:
         logger.error(f"OAuth callback failed: {e}")
         st.error(f"OAuth callback failed: {e}")
         st.query_params.clear()
+        st.session_state["_oauth_return"] = True  # Even on error, we came from OAuth
 
-# Auth check AFTER OAuth callback — cookie iframe needs time to init after redirect
+# Auth check AFTER OAuth callback — cookie iframe needs extra cycles after redirect
 require_auth()
 
 # =============================================================================

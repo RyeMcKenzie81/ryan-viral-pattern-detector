@@ -70,6 +70,7 @@ if "code" in st.query_params and "state" in st.query_params:
         # Save final integration with account details
         svc.save_integration(brand_id, org_id, tokens, account_id, account_name)
         svc.delete_pending_oauth(brand_id, org_id)
+        st.session_state["_oauth_return"] = True  # Signal auth to wait for cookie iframe
 
         st.query_params.clear()
         st.rerun()
@@ -77,8 +78,9 @@ if "code" in st.query_params and "state" in st.query_params:
         logger.error(f"Klaviyo OAuth callback failed: {e}")
         st.error(f"OAuth callback failed: {e}")
         st.query_params.clear()
+        st.session_state["_oauth_return"] = True  # Even on error, we came from OAuth
 
-# Auth check AFTER OAuth callback — cookie iframe needs time to init after redirect
+# Auth check AFTER OAuth callback — cookie iframe needs extra cycles after redirect
 require_auth()
 
 from viraltracker.ui.utils import require_feature, render_brand_selector
