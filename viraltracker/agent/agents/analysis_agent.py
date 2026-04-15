@@ -29,6 +29,8 @@ Your ONLY responsibility is advanced analysis operations:
 **Available Services:**
 - StatsService: For statistical analysis and database queries
 - GeminiService: For AI-powered hook and pattern analysis
+- BrandResearchService: For brand research summaries and landing page stats
+- SEOProjectService: For SEO project listing and status
 
 **Result Format:**
 - Provide clear, structured responses with statistical insights
@@ -472,4 +474,211 @@ async def export_results(
         return f"Error exporting results: {str(e)}"
 
 
-logger.info("Analysis Agent initialized with 3 tools")
+# ============================================================================
+# Brand Research Tools
+# ============================================================================
+
+
+@analysis_agent.tool(
+    metadata={
+        "category": "Query",
+        "platform": "Brand Research",
+        "use_cases": [
+            "Get brand research overview",
+            "Check research analysis counts",
+            "See what research exists for a brand",
+        ],
+        "examples": [
+            "What research do we have for BobaNutrition?",
+            "Show me the research summary for Wonder Paws",
+            "How many analyses exist for this brand?",
+        ],
+    }
+)
+async def get_research_summary(
+    ctx: RunContext[AgentDependencies],
+    brand_id: str,
+) -> str:
+    """Get a summary of brand research: analysis counts, landing pages, and insights.
+
+    Args:
+        ctx: Run context with AgentDependencies.
+        brand_id: Brand UUID string.
+
+    Returns:
+        Formatted summary of research status for the brand.
+    """
+    try:
+        from uuid import UUID
+
+        # Get analysis count
+        analyses = ctx.deps.brand_research.get_analyses_for_brand(UUID(brand_id))
+        analysis_count = len(analyses) if analyses else 0
+
+        # Get landing page stats
+        lp_stats = ctx.deps.brand_research.get_landing_page_stats(UUID(brand_id))
+
+        # Get belief-first analysis stats
+        belief_stats = ctx.deps.brand_research.get_belief_first_analysis_stats(UUID(brand_id))
+
+        lines = [
+            f"## Brand Research Summary\n",
+            f"- **Ad analyses:** {analysis_count}",
+            f"- **Landing pages scraped:** {lp_stats.get('total', 0)}",
+            f"- **Landing pages analyzed:** {lp_stats.get('analyzed', 0)}",
+            f"- **Belief-first analyses:** {belief_stats.get('total', 0)}",
+        ]
+
+        # Breakdown by analysis type if available
+        if analyses:
+            types = {}
+            for a in analyses:
+                t = a.get("analysis_type", "unknown")
+                types[t] = types.get(t, 0) + 1
+            if types:
+                lines.append("\n**Analysis breakdown:**")
+                for t, count in sorted(types.items(), key=lambda x: -x[1]):
+                    lines.append(f"  - {t}: {count}")
+
+        return "\n".join(lines)
+
+    except Exception as e:
+        logger.error(f"get_research_summary failed: {e}")
+        return f"Failed to get research summary: {e}"
+
+
+# ============================================================================
+# SEO Tools
+# ============================================================================
+
+
+@analysis_agent.tool(
+    metadata={
+        "category": "Query",
+        "platform": "SEO",
+        "use_cases": [
+            "List SEO projects",
+            "Check what SEO work exists",
+            "Find SEO project for a brand",
+        ],
+        "examples": [
+            "What SEO projects do we have?",
+            "List SEO projects for BobaNutrition",
+            "Show me active SEO projects",
+        ],
+    }
+)
+async def list_seo_projects(
+    ctx: RunContext[AgentDependencies],
+    brand_id: Optional[str] = None,
+    status: Optional[str] = None,
+) -> str:
+    """List SEO content projects, optionally filtered by brand and status.
+
+    Args:
+        ctx: Run context with AgentDependencies.
+        brand_id: Optional brand UUID to filter by.
+        status: Optional status filter (e.g., 'active', 'completed', 'draft').
+
+    Returns:
+        Formatted list of SEO projects.
+    """
+    if not ctx.deps.seo_project:
+        return "SEO service is not available. Check that OPENAI_API_KEY is configured."
+
+    try:
+        org_id = getattr(ctx.deps, "_organization_id", None) or "all"
+        projects = ctx.deps.seo_project.list_projects(
+            organization_id=org_id,
+            brand_id=brand_id,
+            status=status,
+        )
+
+        if not projects:
+            return "No SEO projects found."
+
+        lines = [f"**SEO Projects** ({len(projects)} found)\n"]
+        for p in projects:
+            status_icon = {"active": "🟢", "completed": "✅", "draft": "📝"}.get(
+                p.get("status", ""), "❓"
+            )
+            line = (
+                f"{status_icon} **{p.get('name', 'Untitled')}** — {p.get('status', 'unknown')}"
+            )
+            if p.get("brand_id"):
+                line += f" | Brand: {p['brand_id'][:8]}..."
+            line += f"\n   ID: `{p['id']}`"
+            lines.append(line)
+
+        return "\n".join(lines)
+
+    except Exception as e:
+        logger.error(f"list_seo_projects failed: {e}")
+        return f"Failed to list SEO projects: {e}"
+
+
+@analysis_agent.tool(
+    metadata={
+        "category": "Query",
+        "platform": "SEO",
+        "use_cases": [
+            "Check SEO project status",
+            "See pipeline progress",
+            "Get project details",
+        ],
+        "examples": [
+            "What's the status of SEO project abc-123?",
+            "Show me the SEO pipeline progress",
+        ],
+    }
+)
+async def get_seo_project_status(
+    ctx: RunContext[AgentDependencies],
+    project_id: str,
+) -> str:
+    """Get details and pipeline status for a specific SEO project.
+
+    Args:
+        ctx: Run context with AgentDependencies.
+        project_id: SEO project UUID string.
+
+    Returns:
+        Project details including pipeline status and configuration.
+    """
+    if not ctx.deps.seo_project:
+        return "SEO service is not available."
+
+    try:
+        org_id = getattr(ctx.deps, "_organization_id", None) or "all"
+        project = ctx.deps.seo_project.get_project(project_id, org_id)
+
+        if not project:
+            return f"No SEO project found with ID {project_id}."
+
+        lines = [
+            f"## SEO Project: {project.get('name', 'Untitled')}",
+            f"**ID:** {project['id']}",
+            f"**Status:** {project.get('status', 'unknown')}",
+        ]
+
+        if project.get("config"):
+            config = project["config"]
+            if config.get("target_keyword"):
+                lines.append(f"**Target keyword:** {config['target_keyword']}")
+            if config.get("word_count_target"):
+                lines.append(f"**Word count target:** {config['word_count_target']}")
+
+        if project.get("workflow_state"):
+            lines.append(f"**Pipeline stage:** {project['workflow_state']}")
+
+        if project.get("created_at"):
+            lines.append(f"**Created:** {project['created_at']}")
+
+        return "\n".join(lines)
+
+    except Exception as e:
+        logger.error(f"get_seo_project_status failed: {e}")
+        return f"Failed to get SEO project status: {e}"
+
+
+logger.info("Analysis Agent initialized with 6 tools")

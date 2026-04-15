@@ -164,4 +164,107 @@ async def scrape_facebook_page_ads(
         return f"Error scraping Facebook page ads: {str(e)}"
 
 
-logger.info("Facebook Agent initialized with 2 tools")
+# ============================================================================
+# Meta Ads Account Tools
+# ============================================================================
+
+
+@facebook_agent.tool(
+    metadata={
+        "category": "Query",
+        "platform": "Meta Ads",
+        "use_cases": [
+            "Check which Meta ad account is linked to a brand",
+            "Verify Meta integration status",
+        ],
+        "examples": [
+            "What's the Meta ad account for BobaNutrition?",
+            "Is there an ad account linked to this brand?",
+        ],
+    }
+)
+async def get_meta_account_info(
+    ctx: RunContext[AgentDependencies],
+    brand_id: str,
+) -> str:
+    """Get the Meta Ads account linked to a brand.
+
+    Args:
+        ctx: Run context with AgentDependencies.
+        brand_id: Brand UUID string.
+
+    Returns:
+        Meta ad account ID and validation status, or indication that no account is linked.
+    """
+    try:
+        from uuid import UUID
+
+        account_id = ctx.deps.meta_ads.get_ad_account_for_brand(UUID(brand_id))
+
+        if not account_id:
+            return f"No Meta ad account linked to brand {brand_id}."
+
+        return (
+            f"**Meta Ad Account:** `{account_id}`\n"
+            f"**Brand:** {brand_id}\n"
+            f"**Status:** Linked"
+        )
+
+    except Exception as e:
+        logger.error(f"get_meta_account_info failed: {e}")
+        return f"Failed to get Meta account info: {e}"
+
+
+@facebook_agent.tool(
+    metadata={
+        "category": "Query",
+        "platform": "Meta Ads",
+        "use_cases": [
+            "Check how many ad assets have been downloaded",
+            "See asset download progress",
+        ],
+        "examples": [
+            "How many assets have been downloaded for BobaNutrition?",
+            "Show asset download stats",
+        ],
+    }
+)
+async def get_asset_stats(
+    ctx: RunContext[AgentDependencies],
+    brand_id: str,
+) -> str:
+    """Get asset download statistics for a brand's Meta ads.
+
+    Args:
+        ctx: Run context with AgentDependencies.
+        brand_id: Brand UUID string.
+
+    Returns:
+        Counts of downloaded videos, images, and pending assets.
+    """
+    try:
+        from uuid import UUID
+
+        stats = ctx.deps.meta_ads.get_asset_download_stats(UUID(brand_id))
+
+        if not stats:
+            return f"No asset download data for brand {brand_id}."
+
+        lines = [
+            "## Asset Download Stats\n",
+            f"- **Videos downloaded:** {stats.get('videos_downloaded', 0)}",
+            f"- **Images downloaded:** {stats.get('images_downloaded', 0)}",
+            f"- **Total assets:** {stats.get('total_assets', 0)}",
+        ]
+
+        if stats.get("pending"):
+            lines.append(f"- **Pending download:** {stats['pending']}")
+
+        return "\n".join(lines)
+
+    except Exception as e:
+        logger.error(f"get_asset_stats failed: {e}")
+        return f"Failed to get asset stats: {e}"
+
+
+logger.info("Facebook Agent initialized with 4 tools")
