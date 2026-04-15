@@ -6020,7 +6020,8 @@ async def execute_seo_opportunity_scan_job(job: Dict) -> Dict[str, Any]:
 
     job_id = job["id"]
     job_name = job.get("name", "SEO Opportunity Scan")
-    run_id = create_job_run(job_id, job.get("job_type", "seo_opportunity_scan"))
+    update_job(job_id, {"next_run_at": None})  # Prevent duplicate pickup
+    run_id = create_job_run(job_id, job)
     if not run_id:
         return {"success": False, "error": "Failed to create job run"}
 
@@ -6204,8 +6205,8 @@ async def execute_token_refresh_job(job: Dict) -> Dict[str, Any]:
     supabase = get_supabase_client()
     logs = []
 
-    # Create job run record
-    run_id = create_job_run(job_id, job_name)
+    update_job(job_id, {"next_run_at": None})  # Prevent duplicate pickup
+    run_id = create_job_run(job_id, job)
 
     try:
         # Find OAuth tokens expiring within 7 days (but not already expired)
@@ -6264,6 +6265,7 @@ async def execute_token_refresh_job(job: Dict) -> Dict[str, Any]:
             "logs": "\n".join(logs),
             "metadata": json.dumps(metadata),
         })
+        _update_job_next_run(job, job_id)
         return {"success": True, **metadata}
 
     except Exception as e:
