@@ -455,10 +455,11 @@ async def get_system_health(
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours_back)).isoformat()
 
     try:
-        # Get recent job runs
+        # Get recent job runs with parent job info
         runs = (
             db.table("scheduled_job_runs")
-            .select("status, scheduled_job_id, started_at, completed_at, error_message")
+            .select("status, scheduled_job_id, started_at, completed_at, error_message, "
+                    "scheduled_jobs(id, job_type, brand_id, name)")
             .gte("started_at", cutoff)
             .execute()
         )
@@ -487,13 +488,36 @@ async def get_system_health(
             f"- **Active schedules:** {active_count}",
         ]
 
-        # Show recent failures
+        # Show recent failures with full job context
         failures = [r for r in run_data if r["status"] == "failed"]
         if failures:
-            lines.append(f"\n**Recent Failures ({len(failures)}):**")
-            for f in failures[:5]:
-                err = (f.get("error_message") or "Unknown error")[:100]
-                lines.append(f"- Job {f['scheduled_job_id'][:8]}... at {f['started_at']}: {err}")
+            # Deduplicate by job ID and count occurrences
+            job_failure_counts: dict = {}
+            for f in failures:
+                jid = f.get("scheduled_job_id", "unknown")
+                if jid not in job_failure_counts:
+                    job_info = f.get("scheduled_jobs") or {}
+                    job_failure_counts[jid] = {
+                        "count": 0,
+                        "job_type": job_info.get("job_type", "unknown"),
+                        "name": job_info.get("name", ""),
+                        "latest_error": f.get("error_message") or "Unknown error",
+                        "latest_at": f.get("started_at", ""),
+                    }
+                job_failure_counts[jid]["count"] += 1
+                # Keep the most recent error
+                if f.get("started_at", "") > job_failure_counts[jid]["latest_at"]:
+                    job_failure_counts[jid]["latest_error"] = f.get("error_message") or "Unknown error"
+                    job_failure_counts[jid]["latest_at"] = f.get("started_at", "")
+
+            lines.append(f"\n**Failing Jobs ({len(job_failure_counts)} unique, {len(failures)} total failures):**")
+            for jid, info in sorted(job_failure_counts.items(), key=lambda x: -x[1]["count"])[:10]:
+                err = info["latest_error"][:120]
+                lines.append(
+                    f"- **{info['job_type']}** — {info['count']}x failures"
+                    f"\n  Job ID: `{jid}`"
+                    f"\n  Latest error: {err}"
+                )
 
         if not failures:
             lines.append("\n✅ No failures in this period.")
