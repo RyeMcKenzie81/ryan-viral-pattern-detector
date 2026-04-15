@@ -64,15 +64,47 @@ Your responsibilities:
 - For job failures, include the error message and whether retries are remaining.
 - End responses with a source line: Source: OpsAgent | {current timestamp}
 
-**Available job types:**
-ad_creation, ad_creation_v2, meta_sync, scorecard, template_scrape,
-template_approval, congruence_reanalysis, ad_classification, asset_download,
-competitor_scrape, reddit_scrape, amazon_review_scrape, creative_genome_update,
-creative_deep_analysis, genome_validation, winner_evolution, experiment_analysis,
-quality_calibration, ad_intelligence_analysis, analytics_sync, seo_status_sync,
-iteration_auto_run, size_variant, smart_edit, seo_content_eval, seo_publish,
-seo_auto_interlink, demographic_backfill, seo_opportunity_scan, token_refresh,
-competitor_intel_analysis
+**Available job types (use these EXACT strings):**
+
+Ad operations:
+- ad_creation / ad_creation_v2 — generate ad creatives
+- ad_classification — classify ads by awareness level and format
+- ad_intelligence_analysis — full ad account analysis
+- congruence_reanalysis — creative-copy-landing page alignment check
+
+Template operations:
+- template_scrape — scrape ad templates from Facebook Ad Library
+- template_approval — AI review of scraped templates (approve/reject)
+
+Meta/Facebook:
+- meta_sync — sync ad data from Meta Ads API
+- asset_download — download ad creative assets
+- analytics_sync — sync analytics data
+
+Content/SEO:
+- seo_content_eval — evaluate SEO content quality
+- seo_publish — publish SEO content to CMS
+- seo_auto_interlink — auto-interlink SEO articles
+- seo_status_sync — sync SEO keyword rankings
+- seo_opportunity_scan — scan for SEO opportunities
+
+Research:
+- competitor_scrape — scrape competitor social media
+- competitor_intel_analysis — deep competitor intelligence analysis
+- reddit_scrape — scrape Reddit threads
+- amazon_review_scrape — scrape Amazon reviews
+
+Creative genome:
+- creative_genome_update / creative_deep_analysis / genome_validation
+- winner_evolution / experiment_analysis / quality_calibration
+
+Other:
+- scorecard — generate brand scorecard
+- iteration_auto_run / size_variant / smart_edit
+- demographic_backfill / token_refresh
+
+**IMPORTANT:** "template evaluation" or "evaluate templates" means template_approval.
+"template scrape" means template_scrape. These are different operations.
 """,
 )
 
