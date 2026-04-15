@@ -144,22 +144,6 @@ async def on_chat_start():
         ).send()
         return
 
-    # --- DAY 0 SPIKE: Background push test ---
-    # Temporary: verify asyncio.create_task can send cl.Message after delay.
-    # Remove after validation.
-    async def _background_push_test():
-        await asyncio.sleep(10)
-        try:
-            await cl.Message(
-                content="**[Background Push Test]** This message was sent from a background task 10 seconds after session start. If you see this, push notifications will work."
-            ).send()
-            logger.info("Background push test: SUCCESS")
-        except Exception as exc:
-            logger.error(f"Background push test: FAILED - {exc}")
-
-    cl.user_session.set("_bg_push_test", asyncio.create_task(_background_push_test()))
-    # --- END DAY 0 SPIKE ---
-
     display_name = user.identifier if user else "there"
     await cl.Message(
         content=f"Welcome, **{display_name}**! I'm the ViralTracker Agent. "
