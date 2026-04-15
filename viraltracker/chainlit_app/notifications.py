@@ -121,16 +121,34 @@ async def start_job_notification_poller(org_id: str | None):
                 brand_name = brand_names.get(brand_id, "Platform") if brand_id else "Platform"
                 status = run["status"]
 
+                # Calculate elapsed time
+                duration_str = ""
+                started = run.get("started_at")
+                completed = run.get("completed_at")
+                if started and completed:
+                    try:
+                        t_start = datetime.fromisoformat(started)
+                        t_end = datetime.fromisoformat(completed)
+                        elapsed = (t_end - t_start).total_seconds()
+                        if elapsed < 60:
+                            duration_str = f" in {int(elapsed)}s"
+                        else:
+                            minutes = int(elapsed // 60)
+                            secs = int(elapsed % 60)
+                            duration_str = f" in {minutes}m {secs}s"
+                    except (ValueError, TypeError):
+                        pass
+
                 if status == "completed":
                     icon = "✅"
-                    msg = f"{icon} **{job_type}** for **{brand_name}** completed"
+                    msg = f"{icon} **{job_type}** for **{brand_name}** completed{duration_str}"
                     if job_name:
                         msg += f"\n_{job_name}_"
                 else:
                     icon = "❌"
                     error = (run.get("error_message") or "Unknown error")[:200]
                     msg = (
-                        f"{icon} **{job_type}** for **{brand_name}** failed"
+                        f"{icon} **{job_type}** for **{brand_name}** failed{duration_str}"
                         f"\n_{error}_"
                     )
 
