@@ -23,7 +23,7 @@ from ...core.config import Config
 
 # Create Ad Creation Agent
 ad_creation_agent = Agent(
-    model=Config.get_model("ad_creation"),
+    model=Config.get_model("orchestrator"),
     deps_type=AgentDependencies,
     system_prompt="""You are the Ad Creation specialist agent.
 
