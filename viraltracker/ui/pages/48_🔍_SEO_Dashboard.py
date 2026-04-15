@@ -20,13 +20,13 @@ import streamlit as st
 from viraltracker.ui.auth import require_auth
 
 st.set_page_config(page_title="SEO Dashboard", page_icon="🔍", layout="wide")
-require_auth()
 
 logger = logging.getLogger(__name__)
 
 
 # =============================================================================
-# OAUTH CALLBACK HANDLING (must be before UI renders)
+# OAUTH CALLBACK HANDLING (BEFORE require_auth — cookie iframe hasn't
+# initialized yet after cross-domain redirect from accounts.google.com)
 # =============================================================================
 
 def _get_oauth_redirect_uri() -> str:
@@ -59,6 +59,8 @@ if "code" in st.query_params and "state" in st.query_params:
         st.error(f"OAuth callback failed: {e}")
         st.query_params.clear()
 
+# Auth check AFTER OAuth callback — cookie iframe needs time to init after redirect
+require_auth()
 
 # =============================================================================
 # HELPERS
