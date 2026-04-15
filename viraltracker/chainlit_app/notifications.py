@@ -35,12 +35,22 @@ async def start_job_notification_poller(org_id: str | None):
 
     logger.info(f"Job notification poller started (org: {org_id})")
 
+    # One-time confirmation so user knows the poller is alive
+    try:
+        await cl.Message(
+            content="🔔 Job notifications active. I'll let you know when background jobs complete."
+        ).send()
+    except Exception as e:
+        logger.error(f"Poller cannot send messages (context lost?): {e}")
+        return
+
     while True:
         try:
             await asyncio.sleep(POLL_INTERVAL)
 
             db = get_supabase_client()
             cutoff = last_check.isoformat()
+            logger.info(f"Notification poll: checking since {cutoff}")
 
             # Find job runs that completed or failed since last check
             query = (
@@ -57,6 +67,7 @@ async def start_job_notification_poller(org_id: str | None):
 
             result = query.execute()
             runs = result.data or []
+            logger.info(f"Notification poll: {len(runs)} runs found since {cutoff}")
 
             if not runs:
                 last_check = datetime.now(timezone.utc)
@@ -80,6 +91,7 @@ async def start_job_notification_poller(org_id: str | None):
                 # Filter: only show jobs for this org's brands or platform-level jobs
                 if org_brand_ids is not None and brand_id is not None:
                     if brand_id not in org_brand_ids:
+                        logger.info(f"Notification poll: filtered out {job_info.get('job_type')} (brand {brand_id} not in org)")
                         continue
 
                 job_type = job_info.get("job_type", "unknown")
