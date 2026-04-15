@@ -58,7 +58,7 @@ if "code" in st.query_params and "state" in st.query_params:
         st.session_state["_meta_pending_user"] = user_info.get("name", "Unknown")
         st.session_state["_meta_ad_accounts"] = ad_accounts
         st.session_state["_meta_brand_id"] = brand_id_cb
-        st.session_state["_oauth_return"] = True  # Signal auth to wait for cookie iframe
+        st.session_state["_oauth_return"] = True
 
         st.query_params.clear()
         st.rerun()
@@ -67,7 +67,7 @@ if "code" in st.query_params and "state" in st.query_params:
         logger.error(f"Meta OAuth callback failed: {e}")
         st.error(f"Meta OAuth failed: {e}")
         st.query_params.clear()
-        st.session_state["_oauth_return"] = True  # Even on error, we came from OAuth
+        st.session_state["_oauth_return"] = True
 
 # Auth check AFTER OAuth callback — cookie iframe needs extra cycles after redirect
 require_auth()

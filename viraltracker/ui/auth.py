@@ -424,9 +424,12 @@ def require_auth(public: bool = False) -> bool:
     # Without this guard, rapid st.rerun() cycles (e.g. job polling) after a
     # server restart can race the CookieController iframe, read empty cookies,
     # and flash the login form instead of restoring the session.
+    # After OAuth redirects, we actively drive the rerun loop with sleep+rerun
+    # because st.stop() alone has nothing to trigger the next render cycle.
     if not are_cookies_ready():
-        st.spinner("Restoring session...")
-        st.stop()
+        with st.spinner("Restoring session..."):
+            time.sleep(0.5)
+        st.rerun()
         return False
 
     # Try to restore session from cookie
