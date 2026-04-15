@@ -217,7 +217,8 @@ async def check_job_status(
             db.table("scheduled_jobs")
             .select("id, job_type, brand_id, name, status, schedule_type, "
                     "created_at, updated_at, next_run_at, last_error, "
-                    "runs_completed, max_retries, parameters, trigger_source")
+                    "runs_completed, max_retries, parameters, trigger_source, "
+                    "brands(id, name)")
             .eq("id", job_id)
             .limit(1)
             .execute()
@@ -227,6 +228,8 @@ async def check_job_status(
             return f"No job found with ID {job_id}."
 
         job = result.data[0]
+        brand_info = job.get("brands") or {}
+        brand_name = brand_info.get("name", "Unknown")
 
         # Also check most recent run
         run_result = (
@@ -239,14 +242,34 @@ async def check_job_status(
         )
         latest_run = run_result.data[0] if run_result.data else None
 
+        # Count total failures for this job
+        fail_count_result = (
+            db.table("scheduled_job_runs")
+            .select("id", count="exact")
+            .eq("scheduled_job_id", job_id)
+            .eq("status", "failed")
+            .execute()
+        )
+        total_failures = fail_count_result.count or 0
+
         lines = [
             f"**Job:** {job['name'] or job['job_type']}",
             f"**ID:** {job['id']}",
             f"**Type:** {job['job_type']}",
+            f"**Brand:** {brand_name}",
             f"**Status:** {job['status']}",
+            f"**Schedule:** {job.get('schedule_type', 'unknown')}",
             f"**Created:** {job['created_at']}",
             f"**Runs completed:** {job['runs_completed'] or 0}",
+            f"**Total failures:** {total_failures}",
         ]
+
+        if job.get("parameters"):
+            params = job["parameters"]
+            # Show key parameters without dumping the whole blob
+            param_keys = list(params.keys())[:5]
+            if param_keys:
+                lines.append(f"**Parameters:** {', '.join(f'{k}={params[k]}' for k in param_keys)}")
 
         if job["last_error"]:
             lines.append(f"**Last error:** {job['last_error']}")
@@ -491,16 +514,33 @@ async def get_system_health(
         # Show recent failures with full job context
         failures = [r for r in run_data if r["status"] == "failed"]
         if failures:
+            # Build brand name lookup
+            brand_ids = set()
+            for f in failures:
+                job_info = f.get("scheduled_jobs") or {}
+                if job_info.get("brand_id"):
+                    brand_ids.add(job_info["brand_id"])
+            brand_names = {}
+            if brand_ids:
+                try:
+                    brands_result = db.table("brands").select("id, name").in_("id", list(brand_ids)).execute()
+                    brand_names = {b["id"]: b["name"] for b in (brands_result.data or [])}
+                except Exception:
+                    pass
+
             # Deduplicate by job ID and count occurrences
             job_failure_counts: dict = {}
             for f in failures:
                 jid = f.get("scheduled_job_id", "unknown")
                 if jid not in job_failure_counts:
                     job_info = f.get("scheduled_jobs") or {}
+                    bid = job_info.get("brand_id", "")
                     job_failure_counts[jid] = {
                         "count": 0,
                         "job_type": job_info.get("job_type", "unknown"),
                         "name": job_info.get("name", ""),
+                        "brand_id": bid,
+                        "brand_name": brand_names.get(bid, "Unknown"),
                         "latest_error": f.get("error_message") or "Unknown error",
                         "latest_at": f.get("started_at", ""),
                     }
@@ -514,7 +554,7 @@ async def get_system_health(
             for jid, info in sorted(job_failure_counts.items(), key=lambda x: -x[1]["count"])[:10]:
                 err = info["latest_error"][:120]
                 lines.append(
-                    f"- **{info['job_type']}** — {info['count']}x failures"
+                    f"- **{info['job_type']}** for **{info['brand_name']}** — {info['count']}x failures"
                     f"\n  Job ID: `{jid}`"
                     f"\n  Latest error: {err}"
                 )
