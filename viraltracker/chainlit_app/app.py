@@ -33,6 +33,7 @@ from viraltracker.agent.orchestrator import orchestrator
 from viraltracker.agent.dependencies import AgentDependencies
 
 from viraltracker.chainlit_app.auth import authenticate
+from viraltracker.chainlit_app.notifications import start_job_notification_poller
 from viraltracker.chainlit_app.streaming import stream_agent_run
 
 logger = logging.getLogger(__name__)
@@ -127,6 +128,11 @@ async def on_chat_start():
         cl.user_session.set("deps", deps)
         cl.user_session.set("message_history", [])
         cl.user_session.set("tool_results", [])
+
+        # Start background job notification poller
+        poller_task = asyncio.create_task(start_job_notification_poller(org_id))
+        cl.user_session.set("_notification_poller", poller_task)
+
         logger.info(f"Chainlit session initialized for {user.identifier if user else 'unknown'}")
 
     except Exception as e:
