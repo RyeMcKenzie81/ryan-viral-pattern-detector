@@ -946,7 +946,115 @@ async def list_product_personas(
 
 
 # ============================================================================
+# Template Queue Tools
+# ============================================================================
+
+
+@ad_creation_agent.tool(
+    metadata={
+        "category": "Query",
+        "platform": "Templates",
+        "use_cases": [
+            "Check template queue status",
+            "See how many templates need review",
+            "Get template pipeline health",
+        ],
+        "examples": [
+            "How many templates are pending review?",
+            "Template queue stats",
+            "What's the template queue look like?",
+        ],
+    }
+)
+async def get_template_queue_stats(
+    ctx: RunContext[AgentDependencies],
+) -> str:
+    """Get template queue statistics: pending, approved, rejected, archived counts.
+
+    Args:
+        ctx: Run context with AgentDependencies.
+
+    Returns:
+        Formatted template queue status with counts by status.
+    """
+    try:
+        stats = ctx.deps.template_queue.get_queue_stats()
+
+        if not stats:
+            return "No template queue data available."
+
+        total = sum(stats.values())
+        lines = [
+            "## Template Queue Stats\n",
+            f"- **Total:** {total}",
+            f"- ⏳ Pending: {stats.get('pending', 0)}",
+            f"- ✅ Approved: {stats.get('approved', 0)}",
+            f"- ❌ Rejected: {stats.get('rejected', 0)}",
+            f"- 📦 Archived: {stats.get('archived', 0)}",
+        ]
+
+        return "\n".join(lines)
+
+    except Exception as e:
+        logger.error(f"get_template_queue_stats failed: {e}")
+        return f"Failed to get template queue stats: {e}"
+
+
+@ad_creation_agent.tool(
+    metadata={
+        "category": "Query",
+        "platform": "Templates",
+        "use_cases": [
+            "See pending templates",
+            "Review template queue",
+            "List templates awaiting approval",
+        ],
+        "examples": [
+            "Show me pending templates",
+            "What templates need review?",
+            "List the template queue",
+        ],
+    }
+)
+async def list_pending_templates(
+    ctx: RunContext[AgentDependencies],
+    limit: int = 10,
+) -> str:
+    """List templates pending review in the approval queue.
+
+    Args:
+        ctx: Run context with AgentDependencies.
+        limit: Max items to return (default: 10, max: 25).
+
+    Returns:
+        Formatted list of pending templates with IDs and source info.
+    """
+    limit = min(limit, 25)
+
+    try:
+        pending = ctx.deps.template_queue.get_pending_queue(limit=limit, offset=0)
+
+        if not pending:
+            return "No templates pending review."
+
+        lines = [f"**Pending Templates** ({len(pending)} shown)\n"]
+        for i, item in enumerate(pending, 1):
+            name = item.get("name") or item.get("ad_name") or "Untitled"
+            source = item.get("source_brand") or "Unknown source"
+            line = f"{i}. **{name}** — from {source}"
+            if item.get("id"):
+                line += f"\n   ID: `{item['id']}`"
+            lines.append(line)
+
+        return "\n".join(lines)
+
+    except Exception as e:
+        logger.error(f"list_pending_templates failed: {e}")
+        return f"Failed to list pending templates: {e}"
+
+
+# ============================================================================
 # Tool count and initialization
 # ============================================================================
 
-logger.info("Ad Creation Agent initialized with 9 tools (pipeline handles orchestration)")
+logger.info("Ad Creation Agent initialized with 11 tools")

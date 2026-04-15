@@ -2196,4 +2196,190 @@ async def get_breakdown_by_product(
     return output
 
 
-logger.info("Ad Intelligence Agent initialized with 19 tools")
+@ad_intelligence_agent.tool(
+    metadata={
+        "category": "Query",
+        "platform": "Meta Ads",
+        "use_cases": [
+            "Compare performance across awareness levels",
+            "Find funnel gaps by awareness stage",
+            "See spend distribution by awareness level",
+        ],
+        "examples": [
+            "Break down performance by awareness level",
+            "How does spend compare across awareness stages?",
+            "Show me ROAS by awareness level for the last 30 days",
+        ],
+    }
+)
+async def get_breakdown_by_awareness(
+    ctx: RunContext[AgentDependencies],
+    brand_id: str,
+    days_back: int = 30,
+    product_id: Optional[str] = None,
+    format_filter: Optional[str] = None,
+    date_start: Optional[str] = None,
+    date_end: Optional[str] = None,
+) -> str:
+    """Get performance breakdown by consumer awareness level (Schwartz model).
+
+    Groups classified ads by awareness level and computes spend, CTR, ROAS, CPA
+    per level. Identifies funnel gaps.
+
+    Args:
+        ctx: Run context with AgentDependencies.
+        brand_id: Brand UUID string.
+        days_back: Days to look back (default 30). Ignored if date_start/date_end set.
+        product_id: Optional product UUID to filter by.
+        format_filter: Optional 'video' or 'image' to filter by creative format.
+        date_start: Explicit start date, ISO format (e.g., '2026-01-01').
+        date_end: Explicit end date, ISO format (e.g., '2026-01-31').
+
+    Returns:
+        Formatted markdown table with awareness-level breakdown.
+    """
+    try:
+        result = ctx.deps.ad_performance_query.get_breakdown_by_awareness(
+            brand_id=brand_id,
+            days_back=days_back,
+            product_id=product_id,
+            format_filter=format_filter,
+            date_start=date_start,
+            date_end=date_end,
+        )
+    except Exception as e:
+        logger.error(f"get_breakdown_by_awareness failed: {e}")
+        return f"Failed to query awareness breakdown: {e}"
+
+    levels = result.get("levels", [])
+    gaps = result.get("gaps", [])
+
+    if not levels:
+        return "No classified ads found for this brand/period."
+
+    lines = [
+        "## Performance by Awareness Level",
+        f"*{result.get('classified_ads', 0)} classified of {result.get('total_ads', 0)} total ads*\n",
+        "| Level | Ads | Spend | ROAS | CPA | CTR | Purchases |",
+        "|-------|-----|-------|------|-----|-----|-----------|",
+    ]
+
+    for lvl in levels:
+        cpa_str = f"${lvl.get('cpa', 0):,.2f}" if lvl.get("cpa", 0) > 0 else "-"
+        lines.append(
+            f"| {lvl.get('label', lvl.get('level', '?'))} | "
+            f"{lvl.get('ad_count', 0)} | "
+            f"${lvl.get('spend', 0):,.2f} | "
+            f"{lvl.get('roas', 0):.2f}x | "
+            f"{cpa_str} | "
+            f"{lvl.get('ctr', 0):.2f}% | "
+            f"{lvl.get('purchases', 0)} |"
+        )
+
+    if gaps:
+        lines.append(f"\n**Funnel gaps:** {', '.join(gaps)}")
+
+    output = "\n".join(lines)
+    ctx.deps.result_cache.custom["ad_intelligence_result"] = {
+        "tool_name": "get_breakdown_by_awareness",
+        "rendered_markdown": output,
+    }
+    return output
+
+
+@ad_intelligence_agent.tool(
+    metadata={
+        "category": "Query",
+        "platform": "Meta Ads",
+        "use_cases": [
+            "Find top ads at a specific awareness level",
+            "See best ROAS ads for problem-aware audience",
+            "Top performing most-aware ads",
+        ],
+        "examples": [
+            "Show top ads for problem_aware",
+            "Best performing most_aware ads this month",
+            "Top 5 solution_aware ads by ROAS",
+        ],
+    }
+)
+async def get_top_ads_by_awareness(
+    ctx: RunContext[AgentDependencies],
+    brand_id: str,
+    awareness_level: str,
+    days_back: int = 30,
+    limit: int = 10,
+    product_id: Optional[str] = None,
+    date_start: Optional[str] = None,
+    date_end: Optional[str] = None,
+) -> str:
+    """Get top performing ads for a specific awareness level, sorted by ROAS.
+
+    Args:
+        ctx: Run context with AgentDependencies.
+        brand_id: Brand UUID string.
+        awareness_level: One of: unaware, problem_aware, solution_aware, product_aware, most_aware.
+        days_back: Days to look back (default 30). Ignored if date_start/date_end set.
+        limit: Max ads to return (default 10).
+        product_id: Optional product UUID to filter by.
+        date_start: Explicit start date, ISO format (e.g., '2026-01-01').
+        date_end: Explicit end date, ISO format (e.g., '2026-01-31').
+
+    Returns:
+        Formatted markdown table with top ads for that awareness level.
+    """
+    valid_levels = ["unaware", "problem_aware", "solution_aware", "product_aware", "most_aware"]
+    if awareness_level not in valid_levels:
+        return f"Invalid awareness_level '{awareness_level}'. Valid: {valid_levels}"
+
+    try:
+        result = ctx.deps.ad_performance_query.get_top_ads_by_awareness(
+            brand_id=brand_id,
+            awareness_level=awareness_level,
+            days_back=days_back,
+            limit=limit,
+            product_id=product_id,
+            date_start=date_start,
+            date_end=date_end,
+        )
+    except Exception as e:
+        logger.error(f"get_top_ads_by_awareness failed: {e}")
+        return f"Failed to query top ads by awareness: {e}"
+
+    ads = result.get("ads", [])
+    meta = result.get("meta", {})
+
+    if not ads:
+        return f"No ads found for awareness level '{awareness_level}' in this period."
+
+    level_label = awareness_level.replace("_", " ").title()
+    lines = [
+        f"## Top {level_label} Ads",
+        f"*{meta.get('total', len(ads))} ads found*\n",
+        "| # | Ad Name | Spend | ROAS | Purchases | Revenue | Format |",
+        "|---|---------|-------|------|-----------|---------|--------|",
+    ]
+
+    for i, ad in enumerate(ads[:limit], 1):
+        name = (ad.get("ad_name") or "Untitled")[:35]
+        if len(ad.get("ad_name", "") or "") > 35:
+            name += "..."
+        fmt = ad.get("creative_format", "-")
+        lines.append(
+            f"| {i} | {name} | "
+            f"${ad.get('spend', 0):,.2f} | "
+            f"{ad.get('roas', 0):.2f}x | "
+            f"{ad.get('purchases', 0)} | "
+            f"${ad.get('purchase_value', 0):,.2f} | "
+            f"{fmt} |"
+        )
+
+    output = "\n".join(lines)
+    ctx.deps.result_cache.custom["ad_intelligence_result"] = {
+        "tool_name": "get_top_ads_by_awareness",
+        "rendered_markdown": output,
+    }
+    return output
+
+
+logger.info("Ad Intelligence Agent initialized with 21 tools")

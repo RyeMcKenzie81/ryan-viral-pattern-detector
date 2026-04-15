@@ -13,6 +13,7 @@ query and routes it to the appropriate specialized agent:
 """
 
 import logging
+import os
 from pydantic_ai import Agent, RunContext
 from .dependencies import AgentDependencies
 
@@ -26,6 +27,7 @@ from .agents import (
     ad_creation_agent,
     ad_intelligence_agent,
     klaviyo_agent,
+    ops_agent,
 )
 
 logger = logging.getLogger(__name__)
@@ -58,22 +60,27 @@ Your role is to analyze user requests and route them to the appropriate speciali
 3. **YouTube Agent** - For YouTube operations:
    - Searching YouTube for viral videos and Shorts
 
-4. **Facebook Agent** - For Facebook Ad Library operations:
+4. **Facebook Agent** - For Facebook Ad Library and Meta Ads operations:
    - Searching ads by URL
    - Scraping ads from specific pages
+   - Checking Meta ad account info for a brand
+   - Getting asset download statistics
 
-5. **Analysis Agent** - For advanced analytics:
+5. **Analysis Agent** - For advanced analytics, brand research, and SEO:
    - Finding viral outliers using statistical methods
    - Analyzing tweet hooks with AI
    - Exporting comprehensive analysis reports
+   - Getting brand research summaries and analysis counts
+   - Listing SEO projects and checking project status
 
-6. **Ad Creation Agent** - For Facebook ad creative generation:
+6. **Ad Creation Agent** - For Facebook ad creative generation and templates:
    - Creating Facebook ad variations using AI
    - Analyzing reference ads with Claude vision
    - Selecting viral hooks and product images
    - Generating ad creatives with Gemini Nano Banana
    - Dual AI review (Claude + Gemini) with OR logic
    - Sequential generation of 5 ad variations
+   - Template queue stats and pending template listing
 
 7. **Klaviyo Agent** - For email marketing operations:
    - Listing and creating email campaigns
@@ -91,6 +98,16 @@ Your role is to analyze user requests and route them to the appropriate speciali
    - Responds to: /analyze_account, /recommend, /fatigue_check, /coverage_gaps, /congruence_check
    - Also responds to: "what are my top ads?", "how much did I spend?", "which campaigns are best?"
    - Also responds to: "analyze my ad account", "which ads should I kill", "check for fatigued ads"
+
+9. **Ops Agent** - For operational queries and job management:
+   - Queue background jobs (meta sync, ad classification, template scrape, etc.)
+   - Check job status and progress
+   - List recent jobs (filter by brand, status)
+   - List brands the user has access to
+   - System health summary (job success/failure rates, what ran overnight)
+   - Responds to: "queue a meta sync", "run ad classification", "start a template scrape"
+   - Also responds to: "check job status", "what's running?", "any failed jobs?", "system health"
+   - Also responds to: "list my brands", "what brands do I have?", "what happened overnight?"
 
 **Your Responsibilities:**
 - Understand the user's intent
@@ -253,6 +270,33 @@ async def route_to_klaviyo_agent(
     return result.output
 
 @orchestrator.tool
+async def route_to_ops_agent(
+    ctx: RunContext[AgentDependencies],
+    query: str
+) -> str:
+    """Route request to Ops Agent for job management and system operations.
+
+    This agent handles operational queries:
+    - Queueing background jobs (meta sync, ad classification, template scrape, etc.)
+    - Checking job status and progress
+    - Listing recent jobs filtered by brand or status
+    - Listing brands the user has access to
+    - System health overview (success/failure rates, active schedules)
+
+    Route here when users ask about:
+    - Running or queueing any background job
+    - Checking if a job finished or failed
+    - What's currently running or what happened overnight
+    - Listing their brands or finding a brand ID
+    - System status or health
+    """
+    if os.getenv("CHAT_OPS_ENABLED", "true").lower() == "false":
+        return "Ops tools are currently disabled. Set CHAT_OPS_ENABLED=true to enable."
+    logger.info(f"Routing to Ops Agent: {query}")
+    result = await ops_agent.run(query, deps=ctx.deps)
+    return result.output
+
+@orchestrator.tool
 async def resolve_product_name(
     ctx: RunContext[AgentDependencies],
     product_name: str
@@ -315,4 +359,4 @@ async def resolve_product_name(
             "count": 0
         })
 
-logger.info("Orchestrator Agent initialized with 9 tools (8 routing + 1 utility)")
+logger.info("Orchestrator Agent initialized with 11 tools (9 routing + 1 utility)")
