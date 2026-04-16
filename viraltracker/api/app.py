@@ -48,12 +48,8 @@ from ..agent.agents.tiktok_agent import tiktok_agent
 from ..agent.agents.youtube_agent import youtube_agent
 from ..agent.agents.facebook_agent import facebook_agent
 from ..agent.agents.analysis_agent import analysis_agent
-from ..agent.agents.ad_creation_agent import ad_creation_agent, complete_ad_workflow
+from ..agent.agents.ad_creation_agent import ad_creation_agent
 from ..agent.dependencies import AgentDependencies
-
-# For direct workflow execution (bypassing agent prompt)
-from pydantic_ai import RunContext
-from pydantic_ai.usage import RunUsage
 
 # ============================================================================
 # Logging Configuration
@@ -525,33 +521,17 @@ async def create_ads(
             project_name="default"  # Project context optional for ad creation
         )
 
-        # TODO: REFACTOR TO PYDANTIC-GRAPH
-        # This workflow should be refactored to use pydantic-graph for proper
-        # workflow orchestration. Currently using direct function call which:
-        # - Works but bypasses pydantic-ai's agent orchestration
-        # - Doesn't allow adding LLM logic to intermediate steps easily
-        # - See: https://ai.pydantic.dev/graph/ for the proper pattern
-        #
-        # The workflow has 4 deterministic steps and 4 LLM steps - ideal for
-        # a graph with typed nodes where LLM nodes call specialized agents.
+        # Call V2 pipeline directly (bypasses agent layer)
+        from viraltracker.pipelines.ad_creation_v2.orchestrator import run_ad_creation_v2
 
-        # Create RunContext for direct tool execution (no LLM orchestration needed)
-        ctx = RunContext(
-            deps=deps,
-            model=None,  # No model needed - workflow calls agents internally
-            usage=RunUsage()
-        )
-
-        # Call workflow directly - avoids embedding large base64 in prompt
-        # This mirrors how test_parallel_workflows.py executes the workflow
-        workflow_data = await complete_ad_workflow(
-            ctx=ctx,
+        workflow_data = await run_ad_creation_v2(
             product_id=str(ad_request.product_id),
             reference_ad_base64=ad_request.reference_ad_base64,
             reference_ad_filename=ad_request.reference_ad_filename,
-            project_id=str(ad_request.project_id) if ad_request.project_id else "",
+            project_id=str(ad_request.project_id) if ad_request.project_id else None,
             num_variations=ad_request.num_variations,
-            content_source=ad_request.content_source
+            content_source=ad_request.content_source,
+            deps=deps,
         )
 
         execution_time = time.time() - start_time
