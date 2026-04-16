@@ -296,14 +296,18 @@ async def queue_job(
 )
 async def check_job_status(
     ctx: RunContext[AgentDependencies],
-    job_id: str,
+    job_id: Optional[str] = None,
 ) -> str:
     """
     Check the current status of a scheduled job.
 
+    If no job_id is provided, shows the most recently created job.
+    Use this when the user asks "check on the job" or "is my job done?"
+    without specifying an ID.
+
     Args:
         ctx: Run context with AgentDependencies
-        job_id: UUID of the job to check
+        job_id: Optional UUID of the job. If not provided, checks the most recent job.
 
     Returns:
         Job status details including type, status, timestamps, and any errors.
@@ -313,6 +317,26 @@ async def check_job_status(
     db = get_supabase_client()
 
     try:
+        if not job_id:
+            # Find the most recent job for the user's org
+            query = (
+                db.table("scheduled_jobs")
+                .select("id")
+                .eq("schedule_type", "one_time")
+                .order("created_at", desc=True)
+                .limit(1)
+            )
+            org_id = getattr(ctx.deps, "_organization_id", None)
+            if org_id and org_id != "all":
+                brand_result = db.table("brands").select("id").eq("organization_id", org_id).execute()
+                org_brand_ids = [b["id"] for b in (brand_result.data or [])]
+                if org_brand_ids:
+                    query = query.in_("brand_id", org_brand_ids)
+            recent = query.execute()
+            if not recent.data:
+                return "No recent jobs found. Queue a job first."
+            job_id = recent.data[0]["id"]
+
         result = (
             db.table("scheduled_jobs")
             .select("id, job_type, brand_id, name, status, schedule_type, "
