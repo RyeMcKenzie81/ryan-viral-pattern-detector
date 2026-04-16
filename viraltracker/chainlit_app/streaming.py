@@ -7,6 +7,7 @@ Handles text streaming, thinking blocks, and tool call Steps.
 
 import json
 import logging
+import time
 from typing import Any, Optional
 
 import chainlit as cl
@@ -158,6 +159,8 @@ async def stream_agent_run(
     full_text = ""
     thinking_text = ""
     thinking_step: Optional[cl.Step] = None
+    routed_agents: list[str] = []  # Track which agents handled the request
+    start_time = time.time()
 
     async with orchestrator.iter(
         user_prompt,
@@ -214,6 +217,12 @@ async def stream_agent_run(
                             tool_name = event.part.tool_name
                             call_id = event.part.tool_call_id or tool_name
 
+                            # Track which specialist agent handled the request
+                            if tool_name.startswith("route_to_"):
+                                agent_label = tool_name.replace("route_to_", "").replace("_agent", "").replace("_", " ").title()
+                                if agent_label not in routed_agents:
+                                    routed_agents.append(agent_label)
+
                             step = cl.Step(
                                 name=tool_name,
                                 type="tool",
@@ -237,6 +246,22 @@ async def stream_agent_run(
 
             elif Agent.is_end_node(node):
                 break
+
+    # Append provenance footer (agent + elapsed time)
+    elapsed = time.time() - start_time
+    if elapsed < 60:
+        time_str = f"{elapsed:.1f}s"
+    else:
+        time_str = f"{int(elapsed // 60)}m {int(elapsed % 60)}s"
+
+    if routed_agents:
+        agents_str = ", ".join(routed_agents)
+        footer = f"\n\n---\n*{agents_str} Agent · {time_str}*"
+    else:
+        footer = f"\n\n---\n*{time_str}*"
+
+    full_text += footer
+    await msg.stream_token(footer)
 
     # Finalize the streaming message
     await msg.update()
