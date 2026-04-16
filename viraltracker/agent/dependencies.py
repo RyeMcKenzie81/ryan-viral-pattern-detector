@@ -41,6 +41,11 @@ from ..services.usage_tracker import UsageTracker
 from ..services.ad_intelligence.ad_intelligence_service import AdIntelligenceService
 from ..services.meta_ads_service import MetaAdsService
 from ..services.seo_pipeline.services.seo_project_service import SEOProjectService
+from ..services.seo_pipeline.services.keyword_discovery_service import KeywordDiscoveryService
+from ..services.seo_pipeline.services.seo_analytics_service import SEOAnalyticsService
+from ..services.seo_pipeline.services.opportunity_miner_service import OpportunityMinerService
+from ..services.seo_pipeline.services.article_tracking_service import ArticleTrackingService
+from ..services.seo_pipeline.services.ga4_service import GA4Service
 from ..services.ad_performance_query_service import AdPerformanceQueryService
 from ..services.klaviyo_service import KlaviyoService
 from ..services.competitor_service import CompetitorService
@@ -139,6 +144,11 @@ class AgentDependencies(BaseModel):
     competitor: CompetitorService
     competitor_intel: CompetitorIntelService
     seo_project: Optional[SEOProjectService] = None
+    seo_keyword_discovery: Optional[KeywordDiscoveryService] = None
+    seo_analytics: Optional[SEOAnalyticsService] = None
+    seo_opportunity_miner: Optional[OpportunityMinerService] = None
+    seo_article_tracking: Optional[ArticleTrackingService] = None
+    seo_ga4: Optional[GA4Service] = None
     ad_performance_query: AdPerformanceQueryService
     docs: Optional[DocService] = None
     project_name: str = "yakety-pack-instagram"
@@ -312,9 +322,14 @@ class AgentDependencies(BaseModel):
         competitor_intel = CompetitorIntelService()
         logger.info("CompetitorService + CompetitorIntelService initialized")
 
-        # Initialize SEOProjectService for SEO pipeline
+        # Initialize SEO pipeline services
         seo_project = SEOProjectService(supabase_client=supabase)
-        logger.info("SEOProjectService initialized")
+        seo_keyword_discovery = KeywordDiscoveryService(supabase_client=supabase)
+        seo_analytics = SEOAnalyticsService(supabase_client=supabase)
+        seo_opportunity_miner = OpportunityMinerService(supabase_client=supabase)
+        seo_article_tracking = ArticleTrackingService(supabase_client=supabase)
+        seo_ga4 = GA4Service(supabase_client=supabase)
+        logger.info("SEO pipeline services initialized (6 services)")
 
         # Initialize AdIntelligenceService for ad account analysis
         if supabase is None:
@@ -359,6 +374,11 @@ class AgentDependencies(BaseModel):
             competitor=competitor,
             competitor_intel=competitor_intel,
             seo_project=seo_project,
+            seo_keyword_discovery=seo_keyword_discovery,
+            seo_analytics=seo_analytics,
+            seo_opportunity_miner=seo_opportunity_miner,
+            seo_article_tracking=seo_article_tracking,
+            seo_ga4=seo_ga4,
             ad_performance_query=ad_performance_query,
             docs=docs,
             project_name=project_name

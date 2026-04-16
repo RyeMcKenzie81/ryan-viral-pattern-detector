@@ -1,4 +1,5 @@
 """Analysis Specialist Agent"""
+import json
 import logging
 from typing import Optional, List
 from pydantic_ai import Agent, RunContext
@@ -31,6 +32,11 @@ Your ONLY responsibility is advanced analysis operations:
 - GeminiService: For AI-powered hook and pattern analysis
 - BrandResearchService: For brand research summaries and landing page stats
 - SEOProjectService: For SEO project listing and status
+- KeywordDiscoveryService: For discovering long-tail keywords
+- SEOAnalyticsService: For ranking tracking and history
+- OpportunityMinerService: For finding "striking distance" keyword opportunities
+- ArticleTrackingService: For listing and tracking SEO articles
+- GA4Service: For Google Analytics page analytics and traffic sources
 - RedditSentimentService: For Reddit scraping and sentiment analysis
 
 **Result Format:**
@@ -682,6 +688,389 @@ async def get_seo_project_status(
         return f"Failed to get SEO project status: {e}"
 
 
+@analysis_agent.tool(
+    metadata={
+        "category": "SEO",
+        "use_cases": [
+            "Find long-tail keywords",
+            "Discover keyword ideas from seeds",
+        ],
+    }
+)
+async def discover_keywords(
+    ctx: RunContext[AgentDependencies],
+    project_id: str,
+    seed_keywords: List[str],
+    min_word_count: int = 3,
+    max_word_count: int = 8,
+) -> str:
+    """Discover long-tail keywords from seed terms using Google Autocomplete.
+
+    Expands seed keywords into hundreds of long-tail variations via autocomplete
+    suggestions. Keywords are saved to the project for enrichment and scoring.
+
+    Args:
+        ctx: Run context with AgentDependencies
+        project_id: SEO project UUID
+        seed_keywords: List of seed keywords (e.g. ["cortisol supplements", "stress relief"])
+        min_word_count: Minimum words per keyword (default: 3)
+        max_word_count: Maximum words per keyword (default: 8)
+
+    Returns:
+        Summary of discovered keywords with counts.
+    """
+    if not ctx.deps.seo_keyword_discovery:
+        return "Keyword discovery service not available."
+
+    try:
+        result = await ctx.deps.seo_keyword_discovery.discover_keywords(
+            project_id=project_id,
+            seeds=seed_keywords,
+            min_word_count=min_word_count,
+            max_word_count=max_word_count,
+        )
+
+        total = result.get("total_keywords", 0)
+        saved = result.get("saved_count", 0)
+        keywords = result.get("keywords", [])
+
+        lines = [
+            f"**Keyword Discovery Complete**",
+            f"- Seeds: {', '.join(seed_keywords)}",
+            f"- Total discovered: {total}",
+            f"- New keywords saved: {saved}",
+        ]
+
+        if keywords:
+            lines.append(f"\n**Sample keywords** (showing first 15):")
+            for kw in keywords[:15]:
+                if isinstance(kw, dict):
+                    lines.append(f"- {kw.get('keyword', kw)}")
+                else:
+                    lines.append(f"- {kw}")
+
+        return "\n".join(lines)
+
+    except Exception as e:
+        logger.error(f"discover_keywords failed: {e}")
+        return f"Keyword discovery failed: {e}"
+
+
+@analysis_agent.tool(
+    metadata={
+        "category": "SEO",
+        "use_cases": [
+            "Find SEO opportunities",
+            "Striking distance keywords",
+            "What keywords can we rank for",
+        ],
+    }
+)
+async def scan_seo_opportunities(
+    ctx: RunContext[AgentDependencies],
+    brand_id: str,
+) -> str:
+    """Scan for "striking distance" keyword opportunities (positions 4-20).
+
+    Finds keywords where the brand is close to page 1 or already on page 1
+    but not yet in top 3. These are high-ROI opportunities for content
+    optimization or new content.
+
+    Args:
+        ctx: Run context with AgentDependencies
+        brand_id: Brand UUID string
+
+    Returns:
+        Scored list of keyword opportunities with current position and potential.
+    """
+    if not ctx.deps.seo_opportunity_miner:
+        return "SEO opportunity mining service not available."
+
+    try:
+        org_id = getattr(ctx.deps, "_organization_id", None) or "all"
+        opportunities = ctx.deps.seo_opportunity_miner.scan_opportunities(
+            brand_id=brand_id,
+            organization_id=org_id,
+        )
+
+        if not opportunities:
+            return "No striking-distance opportunities found. This could mean no GSC data is available or all keywords are already ranking well."
+
+        lines = [f"**SEO Opportunities** ({len(opportunities)} found)\n"]
+        for i, opp in enumerate(opportunities[:20], 1):
+            keyword = opp.get("keyword", "unknown")
+            position = opp.get("position", "?")
+            clicks = opp.get("clicks", 0)
+            impressions = opp.get("impressions", 0)
+            score = opp.get("score", 0)
+            lines.append(
+                f"{i}. **{keyword}** — Position: {position}, "
+                f"Clicks: {clicks}, Impressions: {impressions}, "
+                f"Score: {score:.1f}"
+            )
+
+        if len(opportunities) > 20:
+            lines.append(f"\n_...and {len(opportunities) - 20} more opportunities_")
+
+        return "\n".join(lines)
+
+    except Exception as e:
+        logger.error(f"scan_seo_opportunities failed: {e}")
+        return f"Opportunity scan failed: {e}"
+
+
+@analysis_agent.tool(
+    metadata={
+        "category": "SEO",
+        "use_cases": [
+            "Check keyword rankings",
+            "How are our articles ranking",
+            "SEO ranking dashboard",
+        ],
+    }
+)
+async def get_seo_rankings(
+    ctx: RunContext[AgentDependencies],
+    project_id: str,
+) -> str:
+    """Get latest keyword rankings for all articles in an SEO project.
+
+    Shows current ranking position for each published article and its
+    target keyword.
+
+    Args:
+        ctx: Run context with AgentDependencies
+        project_id: SEO project UUID
+
+    Returns:
+        Table of articles with their current rankings.
+    """
+    if not ctx.deps.seo_analytics:
+        return "SEO analytics service not available."
+
+    try:
+        org_id = getattr(ctx.deps, "_organization_id", None) or "all"
+        rankings = ctx.deps.seo_analytics.get_latest_rankings(
+            project_id=project_id,
+            organization_id=org_id,
+        )
+
+        if not rankings:
+            return "No ranking data available for this project. Rankings are populated after articles are published and indexed."
+
+        lines = [f"**SEO Rankings** ({len(rankings)} articles tracked)\n"]
+        for r in rankings:
+            keyword = r.get("keyword", "unknown")
+            position = r.get("position", "?")
+            title = r.get("title", r.get("article_id", "")[:12] + "...")
+            checked = r.get("checked_at", "")[:10] if r.get("checked_at") else "N/A"
+            pos_display = f"#{position}" if position else "Not ranking"
+            lines.append(f"- **{title}** → `{keyword}` — {pos_display} (as of {checked})")
+
+        return "\n".join(lines)
+
+    except Exception as e:
+        logger.error(f"get_seo_rankings failed: {e}")
+        return f"Failed to get rankings: {e}"
+
+
+@analysis_agent.tool(
+    metadata={
+        "category": "SEO",
+        "use_cases": [
+            "List SEO articles",
+            "Show published articles",
+            "What content have we published",
+        ],
+    }
+)
+async def list_seo_articles(
+    ctx: RunContext[AgentDependencies],
+    project_id: Optional[str] = None,
+    brand_id: Optional[str] = None,
+    status: Optional[str] = None,
+) -> str:
+    """List SEO articles, optionally filtered by project, brand, and status.
+
+    Args:
+        ctx: Run context with AgentDependencies
+        project_id: Optional SEO project UUID to filter by
+        brand_id: Optional brand UUID to filter by
+        status: Optional status filter (e.g. 'published', 'draft', 'in_review')
+
+    Returns:
+        List of articles with status, word count, and publication details.
+    """
+    if not ctx.deps.seo_article_tracking:
+        return "Article tracking service not available."
+
+    try:
+        org_id = getattr(ctx.deps, "_organization_id", None) or "all"
+        articles = ctx.deps.seo_article_tracking.list_articles(
+            organization_id=org_id,
+            project_id=project_id,
+            brand_id=brand_id,
+            status=status,
+        )
+
+        if not articles:
+            return "No SEO articles found matching those filters."
+
+        lines = [f"**SEO Articles** ({len(articles)} found)\n"]
+        for a in articles[:25]:
+            title = a.get("title", "Untitled")
+            art_status = a.get("status", "unknown")
+            keyword = a.get("target_keyword", "")
+            word_count = a.get("word_count", "?")
+            status_icon = {
+                "published": "✅",
+                "draft": "📝",
+                "in_review": "👀",
+                "generating": "⚙️",
+            }.get(art_status, "❓")
+            line = f"{status_icon} **{title}** — {art_status}"
+            if keyword:
+                line += f" · Keyword: `{keyword}`"
+            if word_count and word_count != "?":
+                line += f" · {word_count} words"
+            lines.append(line)
+
+        if len(articles) > 25:
+            lines.append(f"\n_...and {len(articles) - 25} more articles_")
+
+        return "\n".join(lines)
+
+    except Exception as e:
+        logger.error(f"list_seo_articles failed: {e}")
+        return f"Failed to list articles: {e}"
+
+
+@analysis_agent.tool(
+    metadata={
+        "category": "SEO",
+        "use_cases": [
+            "Show page analytics",
+            "Which pages get the most traffic",
+            "GA4 page performance",
+        ],
+    }
+)
+async def get_page_analytics(
+    ctx: RunContext[AgentDependencies],
+    brand_id: str,
+    days_back: int = 28,
+) -> str:
+    """Get page-level analytics from Google Analytics 4.
+
+    Shows sessions, pageviews, bounce rate, and average engagement time
+    for each page. Requires GA4 integration to be configured.
+
+    Args:
+        ctx: Run context with AgentDependencies
+        brand_id: Brand UUID string
+        days_back: Number of days to look back (default: 28)
+
+    Returns:
+        Page analytics table sorted by sessions.
+    """
+    if not ctx.deps.seo_ga4:
+        return "GA4 service not available."
+
+    try:
+        org_id = getattr(ctx.deps, "_organization_id", None) or "all"
+        pages = ctx.deps.seo_ga4.fetch_page_analytics(
+            brand_id=brand_id,
+            organization_id=org_id,
+            days_back=days_back,
+        )
+
+        if not pages:
+            return "No page analytics data available. Check that GA4 integration is configured for this brand."
+
+        lines = [f"**Page Analytics** (last {days_back} days, {len(pages)} pages)\n"]
+        for p in pages[:20]:
+            path = p.get("page_path", p.get("page", "unknown"))
+            sessions = p.get("sessions", 0)
+            pageviews = p.get("pageviews", p.get("screenPageViews", 0))
+            bounce = p.get("bounce_rate", p.get("bounceRate", "N/A"))
+            if isinstance(bounce, (int, float)):
+                bounce = f"{bounce:.0%}" if bounce <= 1 else f"{bounce:.0f}%"
+            lines.append(
+                f"- **{path}** — Sessions: {sessions}, "
+                f"Pageviews: {pageviews}, Bounce: {bounce}"
+            )
+
+        if len(pages) > 20:
+            lines.append(f"\n_...and {len(pages) - 20} more pages_")
+
+        return "\n".join(lines)
+
+    except Exception as e:
+        logger.error(f"get_page_analytics failed: {e}")
+        return f"Failed to get page analytics: {e}"
+
+
+@analysis_agent.tool(
+    metadata={
+        "category": "SEO",
+        "use_cases": [
+            "Traffic sources breakdown",
+            "Where is traffic coming from",
+            "Channel performance",
+        ],
+    }
+)
+async def get_traffic_sources(
+    ctx: RunContext[AgentDependencies],
+    brand_id: str,
+    days_back: int = 28,
+) -> str:
+    """Get traffic source breakdown from Google Analytics 4.
+
+    Shows sessions by channel (organic search, direct, social, referral, etc.).
+    Requires GA4 integration to be configured.
+
+    Args:
+        ctx: Run context with AgentDependencies
+        brand_id: Brand UUID string
+        days_back: Number of days to look back (default: 28)
+
+    Returns:
+        Traffic sources sorted by session count.
+    """
+    if not ctx.deps.seo_ga4:
+        return "GA4 service not available."
+
+    try:
+        org_id = getattr(ctx.deps, "_organization_id", None) or "all"
+        sources = ctx.deps.seo_ga4.fetch_traffic_sources(
+            brand_id=brand_id,
+            organization_id=org_id,
+            days_back=days_back,
+        )
+
+        if not sources:
+            return "No traffic source data available. Check that GA4 integration is configured for this brand."
+
+        lines = [f"**Traffic Sources** (last {days_back} days)\n"]
+        total_sessions = sum(s.get("sessions", 0) for s in sources)
+
+        for s in sources:
+            channel = s.get("channel", s.get("sessionDefaultChannelGroup", "unknown"))
+            sessions = s.get("sessions", 0)
+            pct = f"{sessions / total_sessions:.1%}" if total_sessions > 0 else "N/A"
+            lines.append(f"- **{channel}** — {sessions} sessions ({pct})")
+
+        if total_sessions:
+            lines.append(f"\n**Total sessions:** {total_sessions}")
+
+        return "\n".join(lines)
+
+    except Exception as e:
+        logger.error(f"get_traffic_sources failed: {e}")
+        return f"Failed to get traffic sources: {e}"
+
+
 # ============================================================================
 # REDDIT RESEARCH TOOLS
 # ============================================================================
@@ -836,4 +1225,4 @@ async def analyze_reddit_sentiment(
     return "\n".join(lines)
 
 
-logger.info("Analysis Agent initialized with 8 tools")
+logger.info("Analysis Agent initialized with 14 tools")
