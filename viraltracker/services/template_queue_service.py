@@ -1084,7 +1084,7 @@ class TemplateQueueService:
         try:
             result = (
                 self.supabase.table("scraped_templates")
-                .select("id, storage_path, bucket")
+                .select("id, storage_path")
                 .eq("id", template_id)
                 .limit(1)
                 .execute()
@@ -1095,14 +1095,21 @@ class TemplateQueueService:
 
             row = result.data[0]
             storage_path = row.get("storage_path", "")
-            bucket = row.get("bucket", "scraped-assets")
 
-            if "/" in storage_path and not bucket:
+            if not storage_path:
+                logger.warning(f"Template {template_id} has no storage_path")
+                return None
+
+            # storage_path is "bucket/path/to/file" — split into bucket + path
+            if "/" in storage_path:
                 parts = storage_path.split("/", 1)
                 bucket = parts[0]
-                storage_path = parts[1]
+                path = parts[1]
+            else:
+                bucket = "scraped-assets"
+                path = storage_path
 
-            data = self.supabase.storage.from_(bucket).download(storage_path)
+            data = self.supabase.storage.from_(bucket).download(path)
             return base64.b64encode(data).decode("utf-8")
         except Exception as e:
             logger.error(f"Failed to download template image {template_id}: {e}")
