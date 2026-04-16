@@ -30,8 +30,8 @@ VALID_JOB_TYPES = {
     "token_refresh", "competitor_intel_analysis",
 }
 
-# Rough completion time estimates per job type (minutes)
-JOB_TIME_ESTIMATES = {
+# Fallback estimates when no historical data exists (minutes)
+_FALLBACK_ESTIMATES = {
     "meta_sync": 5,
     "ad_classification": 10,
     "template_scrape": 5,
@@ -45,6 +45,33 @@ JOB_TIME_ESTIMATES = {
     "creative_deep_analysis": 15,
     "ad_intelligence_analysis": 10,
 }
+
+# Cache: {job_type: avg_minutes} — refreshed once per session
+_duration_cache: dict[str, float] = {}
+_duration_cache_loaded = False
+
+
+def _get_estimated_minutes(job_type: str) -> int:
+    """Get estimated completion time from historical data, with fallback."""
+    global _duration_cache, _duration_cache_loaded
+
+    if not _duration_cache_loaded:
+        try:
+            from viraltracker.core.database import get_supabase_client
+            db = get_supabase_client()
+            # Avg duration of completed runs in last 30 days, grouped by job type
+            result = db.rpc("get_job_duration_estimates", {}).execute()
+            if result.data:
+                for row in result.data:
+                    _duration_cache[row["job_type"]] = round(row["avg_minutes"], 1)
+        except Exception as e:
+            # RPC may not exist yet — fall back silently
+            logger.debug(f"Duration estimate RPC unavailable, using fallbacks: {e}")
+        _duration_cache_loaded = True
+
+    if job_type in _duration_cache:
+        return max(1, round(_duration_cache[job_type]))
+    return _FALLBACK_ESTIMATES.get(job_type, 10)
 
 ops_agent = Agent(
     model=Config.get_model("orchestrator"),
@@ -270,7 +297,7 @@ async def queue_job(
     if not job_id:
         return f"Failed to queue {job_type} job. Check logs for details."
 
-    est_minutes = JOB_TIME_ESTIMATES.get(job_type, 10)
+    est_minutes = _get_estimated_minutes(job_type)
     return (
         f"Queued {job_type} job (ID: {job_id}). "
         f"Estimated completion: ~{est_minutes} minutes. "
