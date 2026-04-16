@@ -411,7 +411,7 @@ async def create_ads_v2(
     product_id: str,
     template_id: Optional[str] = None,
     num_variations: int = 5,
-    content_source: str = "hooks",
+    content_source: str = "recreate_template",
     canvas_sizes: Optional[List[str]] = None,
     color_modes: Optional[List[str]] = None,
     persona_id: Optional[str] = None,
@@ -433,7 +433,8 @@ async def create_ads_v2(
         template_id: Optional template UUID. If not provided, auto-selects the best
             template using smart_select scoring.
         num_variations: Number of ad variations to generate (1-15, default: 5)
-        content_source: Source for ad copy ("hooks", "recreate_template", "belief_first")
+        content_source: Source for ad copy (default: "recreate_template"). Options:
+            "recreate_template", "hooks", "belief_first"
         canvas_sizes: List of canvas sizes (e.g. ["1080x1080px", "1080x1350px"]).
             If not provided, uses the template's default size.
         color_modes: List of color modes (e.g. ["original", "complementary"]).
