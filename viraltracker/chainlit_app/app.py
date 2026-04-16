@@ -90,6 +90,54 @@ def build_conversation_context(tool_results: list) -> str:
     return context
 
 
+def _build_active_context_prefix(active_ctx: dict) -> str:
+    """Build a prompt prefix from active session context."""
+    if not active_ctx:
+        return ""
+    parts = []
+    if active_ctx.get("brand_name"):
+        parts.append(f"Brand: **{active_ctx['brand_name']}** (ID: {active_ctx.get('brand_id', 'unknown')})")
+    if active_ctx.get("product_name"):
+        parts.append(f"Product: **{active_ctx['product_name']}** (ID: {active_ctx.get('product_id', 'unknown')})")
+    if not parts:
+        return ""
+    return "## Active Context:\n" + "\n".join(parts) + "\n\n"
+
+
+def _update_active_context(user_query: str, response: str, ctx: dict):
+    """Extract brand/product references from the conversation and persist them.
+
+    Looks for common patterns in the response text:
+    - Brand IDs and names from tool results
+    - Product IDs and names from tool results
+    """
+    import re
+
+    # Look for brand references in the response
+    # Pattern: **Brand Name** or "Brand: Name" or brand_id UUID after brand resolution
+    brand_match = re.search(r'brand[_\s]*(?:id|ID)?[:\s]*[`"]?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})[`"]?', response, re.I)
+    if brand_match:
+        ctx["brand_id"] = brand_match.group(1)
+
+    # Try to extract brand name from common patterns
+    brand_name_match = re.search(r'(?:for|brand[:\s]*)\s*\*\*([^*]+)\*\*', response, re.I)
+    if brand_name_match:
+        name = brand_name_match.group(1).strip()
+        if len(name) < 50:  # Sanity check
+            ctx["brand_name"] = name
+
+    # Look for product references
+    product_match = re.search(r'product[_\s]*(?:id|ID)?[:\s]*[`"]?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})[`"]?', response, re.I)
+    if product_match:
+        ctx["product_id"] = product_match.group(1)
+
+    product_name_match = re.search(r'(?:product|for)\s*\*\*([^*]+)\*\*', response, re.I)
+    if product_name_match:
+        name = product_name_match.group(1).strip()
+        if len(name) < 50:
+            ctx["product_name"] = name
+
+
 # ==========================================================================
 # Authentication
 # ==========================================================================
@@ -128,6 +176,7 @@ async def on_chat_start():
         cl.user_session.set("deps", deps)
         cl.user_session.set("message_history", [])
         cl.user_session.set("tool_results", [])
+        cl.user_session.set("active_context", {})  # {brand_id, brand_name, product_id, product_name}
 
         # Start background job notification poller
         poller_task = asyncio.create_task(start_job_notification_poller(org_id))
@@ -174,10 +223,16 @@ async def on_message(message: cl.Message):
 
     message_history = cl.user_session.get("message_history") or []
     tool_results = cl.user_session.get("tool_results") or []
+    active_ctx = cl.user_session.get("active_context") or {}
 
-    # Build conversation context from recent tool results
+    # Build conversation context from recent tool results + active context
     context = build_conversation_context(tool_results)
-    full_prompt = f"{context}## Current Query:\n{message.content}" if context else message.content
+    active_prefix = _build_active_context_prefix(active_ctx)
+    parts = [p for p in [active_prefix, context] if p]
+    if parts:
+        full_prompt = "".join(parts) + f"## Current Query:\n{message.content}"
+    else:
+        full_prompt = message.content
 
     # Clear stale side-channel result before running
     deps.result_cache.custom.pop("ad_intelligence_result", None)
@@ -202,6 +257,10 @@ async def on_message(message: cl.Message):
         # Store message history for conversation continuity
         cl.user_session.set("message_history", updated_history)
 
+        # Extract and persist active brand/product context
+        _update_active_context(message.content, display_content, active_ctx)
+        cl.user_session.set("active_context", active_ctx)
+
         # Store tool result for context building
         tool_results.append({
             "timestamp": datetime.now().isoformat(),
@@ -213,13 +272,11 @@ async def on_message(message: cl.Message):
 
     except Exception as e:
         logger.error(f"Agent run failed: {e}\n{traceback.format_exc()}")
+        error_str = str(e)
+        # Extract the root cause from common wrapper patterns
+        if ":" in error_str and len(error_str) > 200:
+            # Long errors — show first line only
+            error_str = error_str.split("\n")[0]
         await cl.Message(
-            content=(
-                f"**Error:** {e}\n\n"
-                "**Possible causes:**\n"
-                "- Invalid API keys\n"
-                "- Network connectivity issues\n"
-                "- Database connection problems\n\n"
-                "Try rephrasing your question or check the logs for details."
-            )
+            content=f"**Error:** {error_str}\n\nTry rephrasing your question or check the logs for details."
         ).send()
