@@ -672,6 +672,7 @@ def render_event_card(event: Dict, brand_names: Dict[str, str], key_prefix: str 
     title = event.get("title", "Unknown event")
     created_at = event.get("created_at", "")
     details = event.get("details") or {}
+    event_id = event.get("id", "")
     brand_id = event.get("brand_id")
     brand_name = brand_names.get(brand_id, "") if brand_id else ""
     duration_ms = event.get("duration_ms")
