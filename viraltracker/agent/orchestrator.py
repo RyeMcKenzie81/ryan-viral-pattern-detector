@@ -28,6 +28,7 @@ from .agents import (
     ad_intelligence_agent,
     klaviyo_agent,
     ops_agent,
+    competitor_agent,
 )
 
 logger = logging.getLogger(__name__)
@@ -99,7 +100,17 @@ Your role is to analyze user requests and route them to the appropriate speciali
    - Also responds to: "what are my top ads?", "how much did I spend?", "which campaigns are best?"
    - Also responds to: "analyze my ad account", "which ads should I kill", "check for fatigued ads"
 
-9. **Ops Agent** - For operational queries and job management:
+9. **Competitor Agent** - For competitor research and intelligence:
+   - Listing tracked competitors and their products
+   - Analyzing competitor landing pages (13-layer belief-first analysis)
+   - Amazon review analysis (pain points, objections, language patterns)
+   - Intel pack generation (video ad analysis → hooks, angles, personas)
+   - Remixing competitor video structures for your brand
+   - Generating alternative hooks from competitor concepts
+   - Responds to: "analyze my competitors", "what are competitors doing?", "competitor landing pages"
+   - Also responds to: "scrape competitor X", "remix their video", "competitor review insights"
+
+10. **Ops Agent** - For operational queries and job management:
    - Queue background jobs (meta sync, ad classification, template scrape, etc.)
    - Check job status and progress
    - List recent jobs (filter by brand, status)
@@ -295,6 +306,32 @@ async def route_to_ops_agent(
     logger.info(f"Routing to Ops Agent: {query}")
     result = await ops_agent.run(query, deps=ctx.deps)
     return result.output
+
+@orchestrator.tool
+async def route_to_competitor_agent(
+    ctx: RunContext[AgentDependencies],
+    query: str
+) -> str:
+    """Route request to Competitor Agent for competitor research and intelligence.
+
+    This agent handles competitor analysis:
+    - Listing tracked competitors and their products
+    - Analyzing competitor landing pages (scraping + 13-layer belief-first analysis)
+    - Amazon review analysis (pain points, objections, language patterns)
+    - Intel pack generation and retrieval (video ad analysis)
+    - Remixing competitor video structures for the user's brand
+    - Generating alternative hooks from competitor concepts
+
+    Route here when users ask about:
+    - Competitor research, analysis, or strategy
+    - Landing page or Amazon review insights
+    - "What are my competitors doing?"
+    - Intel packs, video analysis, or remixing
+    """
+    logger.info(f"Routing to Competitor Agent: {query}")
+    result = await competitor_agent.run(query, deps=ctx.deps)
+    return result.output
+
 
 @orchestrator.tool
 async def resolve_product_name(

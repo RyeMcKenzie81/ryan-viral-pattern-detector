@@ -43,6 +43,8 @@ from ..services.meta_ads_service import MetaAdsService
 from ..services.seo_pipeline.services.seo_project_service import SEOProjectService
 from ..services.ad_performance_query_service import AdPerformanceQueryService
 from ..services.klaviyo_service import KlaviyoService
+from ..services.competitor_service import CompetitorService
+from ..services.competitor_intel_service import CompetitorIntelService
 
 logger = logging.getLogger(__name__)
 
@@ -134,6 +136,8 @@ class AgentDependencies(BaseModel):
     ad_intelligence: AdIntelligenceService
     meta_ads: MetaAdsService
     klaviyo: KlaviyoService
+    competitor: CompetitorService
+    competitor_intel: CompetitorIntelService
     seo_project: Optional[SEOProjectService] = None
     ad_performance_query: AdPerformanceQueryService
     docs: Optional[DocService] = None
@@ -303,6 +307,11 @@ class AgentDependencies(BaseModel):
         klaviyo = KlaviyoService()
         logger.info("KlaviyoService initialized")
 
+        # Initialize CompetitorService and CompetitorIntelService
+        competitor = CompetitorService()
+        competitor_intel = CompetitorIntelService()
+        logger.info("CompetitorService + CompetitorIntelService initialized")
+
         # Initialize SEOProjectService for SEO pipeline
         seo_project = SEOProjectService(supabase_client=supabase)
         logger.info("SEOProjectService initialized")
@@ -347,6 +356,8 @@ class AgentDependencies(BaseModel):
             ad_intelligence=ad_intelligence,
             meta_ads=meta_ads,
             klaviyo=klaviyo,
+            competitor=competitor,
+            competitor_intel=competitor_intel,
             seo_project=seo_project,
             ad_performance_query=ad_performance_query,
             docs=docs,

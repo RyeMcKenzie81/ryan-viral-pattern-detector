@@ -37,6 +37,7 @@ from .ad_creation_agent import ad_creation_agent
 from .ad_intelligence_agent import ad_intelligence_agent
 from .klaviyo_agent import klaviyo_agent
 from .ops_agent import ops_agent
+from .competitor_agent import competitor_agent
 
 __all__ = [
     "twitter_agent",
@@ -48,4 +49,5 @@ __all__ = [
     "ad_intelligence_agent",
     "klaviyo_agent",
     "ops_agent",
+    "competitor_agent",
 ]
