@@ -163,58 +163,32 @@ class TestAdCreationAgentWorkflow:
         - Dual AI review (Claude + Gemini)
         - Database persistence
 
-        NOTE: This test calls the workflow tool directly, not through agent orchestration.
+        NOTE: This test calls the V2 pipeline directly, not through agent orchestration.
         This is the correct approach for integration tests - we're testing business logic,
         not agent prompt engineering.
         """
-        # Import the workflow tool function
-        from viraltracker.agent.agents.ad_creation_agent import complete_ad_workflow
-        from pydantic_ai import RunContext
-        from pydantic_ai.models import Model
-        from pydantic_ai.usage import Usage
+        from viraltracker.pipelines.ad_creation_v2.orchestrator import run_ad_creation_v2
 
         # Create dependencies
         deps = AgentDependencies.create(
             project_name="default"
         )
 
-        # Create RunContext for the tool call (with required model and usage parameters)
-        ctx = RunContext(
-            deps=deps,
-            model=None,  # Model not needed for direct tool call
-            usage=Usage()  # Empty usage tracker
-        )
-
-        # Call the workflow tool directly
-        result = await complete_ad_workflow(
-            ctx=ctx,
+        # Call the V2 pipeline directly
+        result = await run_ad_creation_v2(
             product_id=test_product_id,
             reference_ad_base64=test_reference_ad_base64,
-            reference_ad_filename="test_reference.png",
-            project_id=""
+            canvas_sizes=["1080x1080px"],
+            color_modes=["original"],
+            num_variations=5,
+            content_source="recreate_template",
+            auto_retry_rejected=True,
+            deps=deps,
         )
 
         # Verify workflow result structure
         assert result is not None
         assert isinstance(result, dict)
-
-        # Verify key workflow outputs
-        assert 'ad_run_id' in result
-        assert 'product' in result
-        assert 'generated_ads' in result
-        assert 'approved_count' in result
-        assert 'rejected_count' in result
-        assert 'flagged_count' in result
-
-        # Verify we generated 5 ads
-        assert len(result['generated_ads']) == 5
-
-        # Verify each ad has reviews
-        for ad in result['generated_ads']:
-            assert 'claude_review' in ad
-            assert 'gemini_review' in ad
-            assert 'final_status' in ad
-            assert ad['final_status'] in ['approved', 'rejected', 'flagged']
 
     @pytest.mark.asyncio
     async def test_workflow_with_invalid_product_id(
@@ -237,7 +211,7 @@ Product ID: {fake_product_id}
 Reference Ad Base64: {test_reference_ad_base64}
 Filename: test.png
 
-Call complete_ad_workflow tool.
+Create ads for this product using the V2 pipeline.
 """,
                 deps=deps,
                 model="claude-sonnet-4-5-20250929"

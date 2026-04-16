@@ -53,38 +53,93 @@ except Exception:
 # ==========================================================================
 
 
+def _extract_ids(text: str) -> dict:
+    """Extract UUIDs and key identifiers from response text for follow-up context."""
+    import re
+    ids = {}
+
+    # Extract UUIDs with their labels
+    uuid_pattern = r'(?:ID|id|Id)[:\s]*`?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})`?'
+    uuid_matches = re.findall(uuid_pattern, text, re.I)
+    if uuid_matches:
+        ids["referenced_ids"] = list(dict.fromkeys(uuid_matches))[:10]  # Dedup, keep order
+
+    # Extract persona IDs specifically
+    persona_match = re.search(r'persona[_\s]*(?:id|ID)?[:\s]*`?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})`?', text, re.I)
+    if persona_match:
+        ids["persona_id"] = persona_match.group(1)
+
+    # Extract project IDs
+    project_match = re.search(r'project[_\s]*(?:id|ID)?[:\s]*`?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})`?', text, re.I)
+    if project_match:
+        ids["project_id"] = project_match.group(1)
+
+    # Extract ad IDs
+    ad_match = re.search(r'ad[_\s]*(?:id|ID)?[:\s]*`?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})`?', text, re.I)
+    if ad_match:
+        ids["ad_id"] = ad_match.group(1)
+
+    # Extract competitor IDs
+    comp_match = re.search(r'competitor[_\s]*(?:id|ID)?[:\s]*`?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})`?', text, re.I)
+    if comp_match:
+        ids["competitor_id"] = comp_match.group(1)
+
+    return ids
+
+
 def build_conversation_context(tool_results: list) -> str:
     """
     Build context string from recent tool results.
 
-    Ported from viraltracker/ui/pages/00_Agent_Chat.py:254-283.
-    Enables follow-up queries like "analyze those tweets' hooks".
+    Provides the orchestrator with recent query results and extracted IDs
+    so users can make follow-up queries like "analyze those", "edit that ad",
+    "export that persona as a copy brief", etc.
     """
     if not tool_results:
         return ""
 
-    recent_results = tool_results[-3:]
+    recent_results = tool_results[-5:]
     if not recent_results:
         return ""
 
     context = "## Recent Context:\n\n"
     context += "You have access to the results of these recent queries:\n\n"
 
+    # Collect all referenced IDs across results for quick access
+    all_ids = {}
+
     for i, result in enumerate(recent_results, 1):
         context += f"{i}. **User asked:** \"{result['user_query']}\"\n"
-        response_preview = result["agent_response"][:800]
-        if len(result["agent_response"]) > 800:
+        response_preview = result["agent_response"][:1500]
+        if len(result["agent_response"]) > 1500:
             response_preview += "..."
         context += f"   **Result:** {response_preview}\n\n"
 
+        # Merge extracted IDs
+        result_ids = result.get("extracted_ids", {})
+        for key, val in result_ids.items():
+            if key == "referenced_ids":
+                all_ids.setdefault("referenced_ids", []).extend(val)
+            else:
+                all_ids[key] = val  # Later results override earlier
+
+    # Add extracted IDs section for easy follow-up
+    if all_ids:
+        context += "**Extracted IDs from recent results:**\n"
+        for key, val in all_ids.items():
+            if key == "referenced_ids":
+                continue  # Too noisy
+            context += f"- {key}: `{val}`\n"
+        context += "\n"
+
     context += (
-        '**IMPORTANT:** When the user refers to "those tweets", "their hooks", '
-        '"them", "these", etc., they are referring to the tweets/results shown above. '
-        "To analyze the SAME tweets:\n"
-        "- Extract usernames (e.g., @username) from the context above\n"
-        "- OR use the SAME tool parameters (hours_back, limit, etc.) to retrieve the same data\n"
-        "- For hook analysis: if the user says 'analyze their hooks' or 'analyze those hooks', "
-        "use analyze_hooks_tool with the SAME time range from the previous find_outliers call\n\n"
+        '**IMPORTANT:** When the user refers to "those", "that", "them", "these", '
+        '"it", etc., they are referring to items from the results above.\n'
+        "- Use the extracted IDs above when the user wants to act on previous results\n"
+        "- Reuse the same tool parameters (search terms, filters, etc.) when the user "
+        "wants to re-analyze the same data\n"
+        "- If the user says 'edit that ad', 'export that persona', 'check that project', etc. "
+        "— look up the relevant ID from the context above\n\n"
         "---\n\n"
     )
     return context
@@ -261,11 +316,12 @@ async def on_message(message: cl.Message):
         _update_active_context(message.content, display_content, active_ctx)
         cl.user_session.set("active_context", active_ctx)
 
-        # Store tool result for context building
+        # Store tool result for context building (with extracted IDs)
         tool_results.append({
             "timestamp": datetime.now().isoformat(),
             "user_query": message.content,
             "agent_response": display_content,
+            "extracted_ids": _extract_ids(display_content),
         })
         # Keep only last 10 results
         cl.user_session.set("tool_results", tool_results[-10:])
