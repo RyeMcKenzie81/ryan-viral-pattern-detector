@@ -109,8 +109,11 @@ Your role is to analyze user requests and route them to the appropriate speciali
    - Intel pack generation (video ad analysis → hooks, angles, personas)
    - Remixing competitor video structures for your brand
    - Generating alternative hooks from competitor concepts
+   - Persona synthesis: build 4D personas from competitor data or product data
+   - Export personas as copywriting briefs for ad creation
    - Responds to: "analyze my competitors", "what are competitors doing?", "competitor landing pages"
    - Also responds to: "scrape competitor X", "remix their video", "competitor review insights"
+   - Also responds to: "build a persona for X", "generate persona from competitor", "persona copy brief"
 
 10. **Ops Agent** - For operational queries and job management:
    - Queue background jobs (meta sync, ad classification, template scrape, etc.)
