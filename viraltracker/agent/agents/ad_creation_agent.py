@@ -423,7 +423,7 @@ async def create_ads_v2(
 
     Args:
         ctx: Run context with AgentDependencies
-        product_id: UUID of the product to create ads for
+        product_id: UUID or name of the product to create ads for
         template_id: Optional template UUID. If not provided, auto-selects the best
             template using smart_select scoring.
         num_variations: Number of ad variations to generate (1-15, default: 5)
@@ -440,8 +440,19 @@ async def create_ads_v2(
         Dictionary with ad creation results including approved/rejected/flagged
         counts and ad IDs for follow-up actions (edit, export, resize).
     """
+    import re
     from uuid import UUID as _UUID
     from viraltracker.pipelines.ad_creation_v2.orchestrator import run_ad_creation_v2
+
+    # --- Resolve product_id: accept UUID or product name ---
+    if not re.match(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', product_id, re.I):
+        products = await ctx.deps.ad_creation.search_products_by_name(product_id)
+        if not products:
+            return {"error": f"No product found matching '{product_id}'."}
+        if len(products) > 1:
+            names = ", ".join(f"**{p.name}**" for p in products[:5])
+            return {"error": f"Multiple products match '{product_id}': {names}. Please be more specific."}
+        product_id = str(products[0].id)
 
     # --- Template selection ---
     selected_template = None
