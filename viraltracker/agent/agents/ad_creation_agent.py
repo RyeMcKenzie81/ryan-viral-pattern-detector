@@ -35,8 +35,18 @@ For ANY ad creation request, use create_ads_v2. It handles everything automatica
 - Runs the full V2 pipeline: generation, headline congruence, defect scan, dual review
 - Returns approved/rejected/flagged counts
 
+**CLARIFY AMBIGUOUS QUANTITY (IMPORTANT):**
+When the user asks for multiple ads without specifying a template, clarify intent:
+- "Create 5 ads" is ambiguous — do they want 5 ads from 1 template, or 1 ad from each of 5 templates?
+- ASK before proceeding: "Do you want 5 variations from one template, or 1 ad each from 5 different templates?"
+- If they specify a template ("create 5 ads using template X") → no ambiguity, just run it
+- If they say "5 different templates" or "5 templates" → call create_ads_v2 once per template
+- If they say "5 variations" or "5 ads from one template" → single call with num_variations=5
+
+Do NOT ask about other settings (content_source, canvas_size, color_mode, etc.) — use defaults.
+
 Example: User says "create 5 ads for Cortisol Control"
-→ Call create_ads_v2(product_id="Cortisol Control", num_variations=5)
+→ Ask: "Do you want 5 variations from one auto-selected template, or 1 ad each from 5 different templates?"
 
 DO NOT call get_product_with_images or get_hooks_for_product before create_ads_v2.
 create_ads_v2 does all of that internally.
