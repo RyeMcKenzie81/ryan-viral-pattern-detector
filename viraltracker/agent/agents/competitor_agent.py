@@ -10,6 +10,7 @@ This agent exposes 8 tools:
 
 import json
 import logging
+import re
 from typing import Dict, List, Optional
 
 from pydantic_ai import Agent, RunContext
@@ -18,6 +19,43 @@ from ..dependencies import AgentDependencies
 from ...core.config import Config
 
 logger = logging.getLogger(__name__)
+
+_UUID_RE = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', re.I)
+
+
+async def _resolve_brand(brand_id: str) -> str:
+    """Resolve a brand name or UUID to a valid brand UUID."""
+    if _UUID_RE.match(brand_id):
+        return brand_id
+
+    from viraltracker.core.database import get_supabase_client
+    db = get_supabase_client()
+    result = db.table("brands").select("id, name").execute()
+    brands = result.data or []
+
+    search = brand_id.lower().strip()
+
+    # Exact match
+    for b in brands:
+        if b["name"].lower() == search:
+            return b["id"]
+
+    # Substring match
+    matches = [b for b in brands if search in b["name"].lower() or b["name"].lower() in search]
+    if len(matches) == 1:
+        return matches[0]["id"]
+
+    # Word overlap
+    if not matches:
+        search_words = set(search.split())
+        matches = [b for b in brands if search_words & set(b["name"].lower().split())]
+        if len(matches) == 1:
+            return matches[0]["id"]
+
+    if matches:
+        names = ", ".join(f"**{m['name']}**" for m in matches)
+        raise ValueError(f"Multiple brands match '{brand_id}': {names}. Please be more specific.")
+    raise ValueError(f"No brand found matching '{brand_id}'.")
 
 competitor_agent = Agent(
     model=Config.get_model("orchestrator"),
@@ -68,11 +106,12 @@ async def list_competitors(
 
     Args:
         ctx: Run context with AgentDependencies
-        brand_id: UUID of the brand
+        brand_id: UUID or name of the brand (e.g. "Martin Clinic")
 
     Returns:
         Formatted list of competitors with product counts and ad stats.
     """
+    brand_id = await _resolve_brand(brand_id)
     service = ctx.deps.competitor
     competitors = service.get_competitors_for_brand(brand_id)
 
@@ -394,12 +433,13 @@ async def queue_intel_pack_analysis(
     Args:
         ctx: Run context with AgentDependencies
         competitor_id: UUID of the competitor
-        brand_id: UUID of the brand (for organization context)
+        brand_id: UUID or name of the brand (for organization context)
         n_videos: Number of top videos to analyze (default: 10)
 
     Returns:
         Confirmation with job ID and estimated time.
     """
+    brand_id = await _resolve_brand(brand_id)
     from viraltracker.services.pipeline_helpers import queue_one_time_job
 
     job_id = queue_one_time_job(
