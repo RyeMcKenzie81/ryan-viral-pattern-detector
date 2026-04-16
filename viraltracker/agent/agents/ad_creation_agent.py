@@ -511,10 +511,10 @@ async def create_ads_v2(
             scorers=PHASE_8_SCORERS,
         )
 
-        if not selection.selected:
-            return {"error": "Template scoring returned no viable templates."}
+        if selection.empty:
+            return {"error": f"Template scoring returned no viable templates. {selection.reason or ''}"}
 
-        selected_template = selection.selected[0]
+        selected_template = selection.templates[0]
         template_id = str(selected_template["id"])
 
         # Download selected template image
