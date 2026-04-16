@@ -1,13 +1,14 @@
 """
 Ad Creation Agent - Specialized agent for Facebook ad creative generation.
 
-The main workflow is handled by the ad_creation pipeline (pydantic-graph).
-This agent exposes 9 tools:
+The main workflow is handled by the V2 ad creation pipeline (pydantic-graph).
+This agent exposes 14 tools:
+- Primary: create_ads_v2 (end-to-end ad generation with auto template selection)
 - Data retrieval: get_product_with_images, get_hooks_for_product
 - Analysis: analyze_product_image
-- Orchestration: complete_ad_workflow (thin wrapper → pipeline)
+- Templates: search_templates, get_template_queue_stats, list_pending_templates
+- Post-creation: smart_edit_ad, regenerate_ad, generate_size_variant
 - Export: send_ads_email, send_ads_slack
-- Post-processing: generate_size_variant
 - Personas: get_persona_for_copy, list_product_personas
 """
 
@@ -27,34 +28,34 @@ ad_creation_agent = Agent(
     deps_type=AgentDependencies,
     system_prompt="""You are the Ad Creation specialist agent.
 
-Your ONLY responsibility is generating Facebook ad creative:
-- Analyzing reference ads to understand format and style
-- Selecting diverse persuasive hooks from database
-- Generating image prompts for Nano Banana Pro 3
-- Executing sequential image generation
-- Coordinating dual AI review (Claude + Gemini)
-- Compiling results with approval status
+**PRIMARY TOOL: create_ads_v2**
+For ANY ad creation request, use create_ads_v2. It handles everything automatically:
+- Accepts product names OR UUIDs (resolves names to UUIDs internally)
+- Auto-selects the best template via smart scoring (or accepts a specific template_id)
+- Runs the full V2 pipeline: generation, headline congruence, defect scan, dual review
+- Returns approved/rejected/flagged counts
 
-CRITICAL RULES:
-1. Product images must be reproduced EXACTLY (no hallucination)
-2. Execute generation ONE AT A TIME (not batched) - resilience
-3. Save each image IMMEDIATELY after generation
-4. Either reviewer approving = approved (OR logic)
-5. Flag disagreements for human review
-6. Minimum quality threshold: 0.8 for product/text accuracy
+Example: User says "create 5 ads for Cortisol Control"
+→ Call create_ads_v2(product_id="Cortisol Control", num_variations=5)
 
-You have access to 14 specialized tools for this workflow.
-Use them sequentially, validating output at each step.
+DO NOT call get_product_with_images or get_hooks_for_product before create_ads_v2.
+create_ads_v2 does all of that internally.
 
-**Available Services:**
-- AdCreationService: For product/hook/template data and storage operations
-- GeminiService: For AI vision analysis, image generation, and reviews
+**Other tools (for follow-up actions):**
+- search_templates: Browse available templates before choosing one
+- smart_edit_ad: Apply visual presets to a generated ad (text_larger, more_contrast, etc.)
+- regenerate_ad: Re-generate a specific ad with different parameters
+- generate_size_variant: Resize an ad to a different canvas size
+- send_ads_email / send_ads_slack: Export results
+- get_product_with_images / get_hooks_for_product: Data lookup (rarely needed directly)
+- analyze_product_image: Analyze a product image for visual details
+- get_persona_for_copy / list_product_personas: Persona selection
+- get_template_queue_stats / list_pending_templates: Template pipeline status
 
 **Result Format:**
 - Provide clear, structured responses
-- Show generation progress for each ad
 - Include review scores and approval status
-- Return complete AdCreationResult with all metadata
+- Mention how many ads were approved vs rejected
 """
 )
 
@@ -92,7 +93,7 @@ async def get_product_with_images(
 
     Args:
         ctx: Run context with AgentDependencies
-        product_id: UUID of product as string
+        product_id: UUID or name of the product
 
     Returns:
         Dictionary with product data including image storage paths:
@@ -110,13 +111,18 @@ async def get_product_with_images(
     Raises:
         ValueError: If product not found
     """
+    import re
     try:
         logger.info(f"Fetching product: {product_id}")
 
-        # Convert string to UUID
-        product_uuid = UUID(product_id)
+        # Resolve product name to UUID if needed
+        if not re.match(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', product_id, re.I):
+            products = await ctx.deps.ad_creation.search_products_by_name(product_id)
+            if not products:
+                raise ValueError(f"No product found matching '{product_id}'")
+            product_id = str(products[0].id)
 
-        # Fetch product via service
+        product_uuid = UUID(product_id)
         product = await ctx.deps.ad_creation.get_product(product_uuid)
 
         logger.info(f"Product fetched: {product.name}")
