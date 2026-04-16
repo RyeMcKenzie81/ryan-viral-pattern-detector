@@ -31,6 +31,7 @@ Your ONLY responsibility is advanced analysis operations:
 - GeminiService: For AI-powered hook and pattern analysis
 - BrandResearchService: For brand research summaries and landing page stats
 - SEOProjectService: For SEO project listing and status
+- RedditSentimentService: For Reddit scraping and sentiment analysis
 
 **Result Format:**
 - Provide clear, structured responses with statistical insights
@@ -681,4 +682,158 @@ async def get_seo_project_status(
         return f"Failed to get SEO project status: {e}"
 
 
-logger.info("Analysis Agent initialized with 6 tools")
+# ============================================================================
+# REDDIT RESEARCH TOOLS
+# ============================================================================
+
+
+@analysis_agent.tool(
+    metadata={
+        "category": "Reddit",
+        "use_cases": [
+            "Search Reddit for customer sentiment",
+            "What does Reddit say about X",
+            "Find Reddit discussions about a topic",
+        ],
+    }
+)
+async def search_reddit(
+    ctx: RunContext[AgentDependencies],
+    queries: list[str],
+    subreddits: Optional[List[str]] = None,
+) -> str:
+    """Search Reddit for posts matching queries and return top results.
+
+    Scrapes Reddit via Apify and returns the most relevant posts with
+    engagement metrics. Use this for quick research on what people say
+    about a topic, product category, or pain point.
+
+    Args:
+        ctx: Run context with AgentDependencies
+        queries: List of search queries (e.g. ["cortisol supplements side effects"])
+        subreddits: Optional list of subreddits to search (e.g. ["Supplements", "health"])
+
+    Returns:
+        Top Reddit posts with titles, scores, comment counts, and URLs.
+    """
+    from viraltracker.services.models import RedditScrapeConfig
+
+    config = RedditScrapeConfig(
+        search_queries=queries,
+        subreddits=subreddits,
+    )
+
+    try:
+        posts, comments = ctx.deps.reddit_sentiment.scrape_reddit(config, timeout=120)
+    except Exception as e:
+        return f"Reddit scrape failed: {e}"
+
+    if not posts:
+        return "No Reddit posts found for those queries."
+
+    # Sort by score and return top 15
+    sorted_posts = sorted(posts, key=lambda p: p.score, reverse=True)[:15]
+
+    lines = [f"**Found {len(posts)} posts** (showing top {len(sorted_posts)}):\n"]
+    for i, post in enumerate(sorted_posts, 1):
+        lines.append(
+            f"{i}. **{post.title}** (r/{post.subreddit})\n"
+            f"   Score: {post.score} · Comments: {post.num_comments} · "
+            f"URL: {post.url}"
+        )
+
+    return "\n".join(lines)
+
+
+@analysis_agent.tool(
+    metadata={
+        "category": "Reddit",
+        "use_cases": [
+            "Analyze Reddit sentiment for a topic",
+            "Extract pain points from Reddit",
+            "What are people complaining about on Reddit",
+        ],
+    }
+)
+async def analyze_reddit_sentiment(
+    ctx: RunContext[AgentDependencies],
+    queries: list[str],
+    subreddits: Optional[List[str]] = None,
+    product_context: Optional[str] = None,
+) -> str:
+    """Run full Reddit sentiment analysis: scrape, score relevance, and extract quotes.
+
+    This is a comprehensive analysis that:
+    1. Scrapes Reddit for matching posts
+    2. Scores each post for relevance using Claude
+    3. Extracts categorized quotes (pain points, objections, desires, etc.)
+
+    Takes 1-3 minutes depending on volume. Use for deep customer research.
+
+    Args:
+        ctx: Run context with AgentDependencies
+        queries: Search queries (e.g. ["insomnia natural remedies"])
+        subreddits: Optional subreddits to target
+        product_context: Optional product description for relevance scoring
+
+    Returns:
+        Structured sentiment analysis with categorized quotes.
+    """
+    from viraltracker.services.models import RedditScrapeConfig
+
+    config = RedditScrapeConfig(
+        search_queries=queries,
+        subreddits=subreddits,
+    )
+
+    service = ctx.deps.reddit_sentiment
+
+    # Step 1: Scrape
+    try:
+        posts, _ = service.scrape_reddit(config, timeout=120)
+    except Exception as e:
+        return f"Reddit scrape failed: {e}"
+
+    if not posts:
+        return "No Reddit posts found for those queries."
+
+    # Step 2: Score relevance
+    try:
+        scored = await service.score_relevance(
+            posts,
+            topic_context=", ".join(queries),
+            threshold=0.5,
+        )
+    except Exception as e:
+        return f"Relevance scoring failed: {e}. Got {len(posts)} raw posts."
+
+    if not scored:
+        return f"Found {len(posts)} posts but none scored as relevant."
+
+    # Step 3: Extract categorized quotes
+    try:
+        categories = await service.categorize_and_extract_quotes(
+            scored,
+            product_context=product_context,
+        )
+    except Exception as e:
+        return f"Quote extraction failed: {e}. {len(scored)} relevant posts found."
+
+    # Format results
+    lines = [
+        f"**Reddit Sentiment Analysis** — {len(scored)}/{len(posts)} posts relevant\n"
+    ]
+
+    for category, quotes in categories.items():
+        if quotes:
+            lines.append(f"### {category.value.replace('_', ' ').title()} ({len(quotes)})")
+            for q in quotes[:3]:
+                lines.append(f"- \"{q.quote}\" — r/{q.subreddit} (score: {q.engagement_score})")
+            if len(quotes) > 3:
+                lines.append(f"  _{len(quotes) - 3} more..._")
+            lines.append("")
+
+    return "\n".join(lines)
+
+
+logger.info("Analysis Agent initialized with 8 tools")
