@@ -424,9 +424,12 @@ def require_auth(public: bool = False) -> bool:
     # Without this guard, rapid st.rerun() cycles (e.g. job polling) after a
     # server restart can race the CookieController iframe, read empty cookies,
     # and flash the login form instead of restoring the session.
+    # After OAuth redirects, we actively drive the rerun loop with sleep+rerun
+    # because st.stop() alone has nothing to trigger the next render cycle.
     if not are_cookies_ready():
-        st.spinner("Restoring session...")
-        st.stop()
+        with st.spinner("Restoring session..."):
+            time.sleep(0.5)
+        st.rerun()
         return False
 
     # Try to restore session from cookie
@@ -468,6 +471,9 @@ def are_cookies_ready() -> bool:
 
     The CookieController is still instantiated (iframe rendered), so it will
     load and trigger a Streamlit rerun with actual cookie data.
+
+    After a cross-domain OAuth redirect (Google/Meta/Klaviyo), the iframe may
+    need extra render cycles to initialize. The _oauth_return flag signals this.
     """
     # If already authenticated in this session, cookies are irrelevant
     if st.session_state.get(AUTHENTICATED_KEY):
@@ -481,13 +487,19 @@ def are_cookies_ready() -> bool:
     if all_cookies:
         return True
 
-    # Empty dict — either iframe not loaded OR user has no cookies.
-    # Use a flag to distinguish: first render (no flag) vs second render (flag set).
-    if not st.session_state.get(_COOKIES_CHECKED_KEY):
-        st.session_state[_COOKIES_CHECKED_KEY] = True
-        return False  # First render — wait for iframe
+    # After OAuth redirect, give the iframe up to 3 render cycles instead of 1.
+    # Cross-domain redirects (e.g. facebook.com → our app) reset the Streamlit
+    # websocket, and the cookie iframe needs more time to initialize.
+    max_wait_cycles = 3 if st.session_state.get("_oauth_return") else 1
+    cookie_check_count = st.session_state.get("_cookies_check_count", 0)
 
-    # Flag exists: we've waited one cycle. Proceed with auth check.
+    if cookie_check_count < max_wait_cycles:
+        st.session_state["_cookies_check_count"] = cookie_check_count + 1
+        return False  # Wait for iframe
+
+    # Clear the oauth return flag after we've waited
+    st.session_state.pop("_oauth_return", None)
+    st.session_state.pop("_cookies_check_count", None)
     return True
 
 

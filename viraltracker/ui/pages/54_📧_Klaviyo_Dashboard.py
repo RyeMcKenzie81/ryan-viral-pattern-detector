@@ -13,17 +13,13 @@ import streamlit as st
 from viraltracker.ui.auth import require_auth
 
 st.set_page_config(page_title="Klaviyo Dashboard", page_icon="📧", layout="wide")
-require_auth()
-
-from viraltracker.ui.utils import require_feature, render_brand_selector
-
-require_feature("klaviyo_dashboard", "Klaviyo Dashboard")
 
 logger = logging.getLogger(__name__)
 
 
 # =============================================================================
-# OAUTH CALLBACK HANDLING (must be before UI renders)
+# OAUTH CALLBACK HANDLING (BEFORE require_auth — cookie iframe hasn't
+# initialized yet after cross-domain redirect from klaviyo.com)
 # =============================================================================
 
 def _get_oauth_redirect_uri() -> str:
@@ -74,6 +70,7 @@ if "code" in st.query_params and "state" in st.query_params:
         # Save final integration with account details
         svc.save_integration(brand_id, org_id, tokens, account_id, account_name)
         svc.delete_pending_oauth(brand_id, org_id)
+        st.session_state["_oauth_return"] = True  # Signal auth to wait for cookie iframe
 
         st.query_params.clear()
         st.rerun()
@@ -81,7 +78,14 @@ if "code" in st.query_params and "state" in st.query_params:
         logger.error(f"Klaviyo OAuth callback failed: {e}")
         st.error(f"OAuth callback failed: {e}")
         st.query_params.clear()
+        st.session_state["_oauth_return"] = True  # Even on error, we came from OAuth
 
+# Auth check AFTER OAuth callback — cookie iframe needs extra cycles after redirect
+require_auth()
+
+from viraltracker.ui.utils import require_feature, render_brand_selector
+
+require_feature("klaviyo_dashboard", "Klaviyo Dashboard")
 
 # =============================================================================
 # PAGE UI
