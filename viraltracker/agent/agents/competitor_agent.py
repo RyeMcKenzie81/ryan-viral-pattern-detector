@@ -59,6 +59,42 @@ async def _resolve_brand(brand_id: str) -> str:
         raise ValueError(f"Multiple brands match '{brand_id}': {names}. Please be more specific.")
     raise ValueError(f"No brand found matching '{brand_id}'.")
 
+
+async def _resolve_competitor(competitor_id: str) -> str:
+    """Resolve a competitor name or UUID to a valid competitor UUID."""
+    if _UUID_RE.match(competitor_id):
+        return competitor_id
+
+    from viraltracker.core.database import get_supabase_client
+    db = get_supabase_client()
+    result = db.table("competitors").select("id, name").execute()
+    competitors = result.data or []
+
+    search = competitor_id.lower().strip()
+
+    # Exact match
+    for c in competitors:
+        if c["name"].lower() == search:
+            return c["id"]
+
+    # Substring match
+    matches = [c for c in competitors if search in c["name"].lower() or c["name"].lower() in search]
+    if len(matches) == 1:
+        return matches[0]["id"]
+
+    # Word overlap
+    if not matches:
+        search_words = set(search.split())
+        matches = [c for c in competitors if search_words & set(c["name"].lower().split())]
+        if len(matches) == 1:
+            return matches[0]["id"]
+
+    if matches:
+        names = ", ".join(f"**{m['name']}**" for m in matches)
+        raise ValueError(f"Multiple competitors match '{competitor_id}': {names}. Please be more specific.")
+    raise ValueError(f"No competitor found matching '{competitor_id}'.")
+
+
 competitor_agent = Agent(
     model=Config.get_model("orchestrator"),
     deps_type=AgentDependencies,
@@ -159,11 +195,12 @@ async def get_competitor_summary(
 
     Args:
         ctx: Run context with AgentDependencies
-        competitor_id: UUID of the competitor
+        competitor_id: UUID or name of the competitor (e.g. "Mars Men")
 
     Returns:
         Structured summary with products, analysis coverage, and key findings.
     """
+    competitor_id = await _resolve_competitor(competitor_id)
     service = ctx.deps.competitor
 
     competitor = service.get_competitor(competitor_id)
@@ -240,12 +277,13 @@ async def analyze_competitor_landing_pages(
 
     Args:
         ctx: Run context with AgentDependencies
-        competitor_id: UUID of the competitor
+        competitor_id: UUID or name of the competitor (e.g. "Mars Men")
         belief_first: If True, runs deep belief-first analysis (default: True)
 
     Returns:
         Summary of analysis results or status if already analyzed.
     """
+    competitor_id = await _resolve_competitor(competitor_id)
     service = ctx.deps.competitor
     stats = service.get_landing_page_stats(competitor_id)
 
@@ -306,12 +344,13 @@ async def get_amazon_review_insights(
 
     Args:
         ctx: Run context with AgentDependencies
-        competitor_id: UUID of the competitor
+        competitor_id: UUID or name of the competitor (e.g. "Mars Men")
         product_id: Optional competitor product UUID to filter by
 
     Returns:
         Structured analysis of customer pain points, desires, and objections.
     """
+    competitor_id = await _resolve_competitor(competitor_id)
     from viraltracker.core.database import get_supabase_client
 
     db = get_supabase_client()
@@ -374,12 +413,13 @@ async def get_intel_pack(
 
     Args:
         ctx: Run context with AgentDependencies
-        competitor_id: UUID of the competitor
+        competitor_id: UUID or name of the competitor (e.g. "Mars Men")
         pack_id: Optional specific pack UUID. If not provided, returns the latest.
 
     Returns:
         Formatted intel pack with key findings.
     """
+    competitor_id = await _resolve_competitor(competitor_id)
     intel_service = ctx.deps.competitor_intel
 
     if pack_id:
@@ -440,13 +480,14 @@ async def queue_intel_pack_analysis(
 
     Args:
         ctx: Run context with AgentDependencies
-        competitor_id: UUID of the competitor
+        competitor_id: UUID or name of the competitor (e.g. "Mars Men")
         brand_id: UUID or name of the brand (for organization context)
         n_videos: Number of top videos to analyze (default: 10)
 
     Returns:
         Confirmation with job ID and estimated time.
     """
+    competitor_id = await _resolve_competitor(competitor_id)
     brand_id = await _resolve_brand(brand_id)
     from viraltracker.services.pipeline_helpers import queue_one_time_job
 
@@ -606,13 +647,14 @@ async def synthesize_competitor_persona(
 
     Args:
         ctx: Run context with AgentDependencies
-        competitor_id: UUID of the competitor
+        competitor_id: UUID or name of the competitor (e.g. "Mars Men")
         brand_id: UUID or name of the brand tracking this competitor
         competitor_product_id: Optional competitor product UUID for product-level persona
 
     Returns:
         Summary of the generated persona with ID for follow-up.
     """
+    competitor_id = await _resolve_competitor(competitor_id)
     brand_id = await _resolve_brand(brand_id)
 
     try:
