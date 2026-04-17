@@ -1909,9 +1909,11 @@ Return ONLY valid JSON."""
             )
 
             # Call Pydantic AI Agent (Complex assumption)
+            # 13-layer belief-first JSON is large (~11K chars), needs high max_tokens
             agent = Agent(
                 model=Config.get_model("complex"),
-                system_prompt="You are an expert market analyst. Return ONLY valid JSON."
+                system_prompt="You are an expert market analyst. Return ONLY valid JSON.",
+                model_settings={"max_tokens": 16384},
             )
 
             result = await run_agent_with_tracking(

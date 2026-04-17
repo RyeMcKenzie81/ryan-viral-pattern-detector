@@ -4058,11 +4058,12 @@ class BrandResearchService:
                 content=content
             )
 
-            # Call Claude Opus 4.6
-            # Pydantic AI Agent (Complex assumption)
+            # Pydantic AI Agent (Complex model)
+            # 13-layer belief-first JSON is large (~11K chars), needs high max_tokens
             agent = Agent(
                 model=Config.get_model("complex"),
-                system_prompt="You are an expert market analyst. Return ONLY valid JSON."
+                system_prompt="You are an expert market analyst. Return ONLY valid JSON.",
+                model_settings={"max_tokens": 16384},
             )
             
             result = await agent.run(prompt)
