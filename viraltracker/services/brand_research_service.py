@@ -4068,21 +4068,15 @@ class BrandResearchService:
             result = await agent.run(prompt)
             response_text = result.output
 
-            # Parse JSON response (with repair for common LLM JSON issues)
-            json_match = re.search(r'\{[\s\S]*\}', response_text)
-            if not json_match:
-                logger.error(f"No JSON found in belief-first analysis response for {page_id}")
-                return None
-
-            json_str = json_match.group()
+            # Parse JSON response using robust parser (handles trailing commas,
+            # missing commas, markdown fences, etc.)
+            from viraltracker.services.persona_service import parse_llm_json
             try:
-                analysis = json.loads(json_str)
-            except json.JSONDecodeError:
-                # Repair common LLM JSON issues: trailing commas, comments
-                repaired = re.sub(r',(\s*[}\]])', r'\1', json_str)
-                repaired = re.sub(r'//.*?$', '', repaired, flags=re.MULTILINE)
-                repaired = re.sub(r'/\*[\s\S]*?\*/', '', repaired)
-                analysis = json.loads(repaired)
+                analysis = parse_llm_json(response_text)
+            except ValueError as e:
+                logger.error(f"Failed to parse belief-first JSON for {page_id}: {e}")
+                logger.debug(f"Response text (first 1000 chars): {response_text[:1000]}")
+                return None
 
             # Add metadata
             analysis["page_id"] = str(page_id)
