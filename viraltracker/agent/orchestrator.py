@@ -214,8 +214,15 @@ def session_instructions(ctx: RunContext[AgentDependencies]) -> str:
         parts.append(f"brand={state['brand_name']} ({state.get('brand_id', '?')})")
     if state.get("product_name"):
         parts.append(f"product={state['product_name']} ({state.get('product_id', '?')})")
-    if state.get("competitor_name"):
-        parts.append(f"competitor={state['competitor_name']} ({state.get('competitor_id', '?')})")
+    # Show all competitors if a list was captured, otherwise single
+    if state.get("competitor_ids") and state.get("competitor_names"):
+        comp_pairs = [
+            f"{n} ({i})" for n, i in
+            zip(state["competitor_names"], state["competitor_ids"])
+        ]
+        parts.append(f"competitors=[{', '.join(comp_pairs)}]")
+    elif state.get("competitor_id"):
+        parts.append(f"competitor={state.get('competitor_name', '?')} ({state['competitor_id']})")
     if state.get("persona_id"):
         parts.append(f"persona={state.get('persona_name') or state['persona_id']}")
     if state.get("seo_project_id"):

@@ -84,40 +84,65 @@ def _extract_names_from_response(state: dict, response_text: str):
     """Regex fallback to extract entity names from response text."""
     import re
 
-    # Brand ID
+    _UUID = r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
+
+    # Brand ID — explicit "brand_id: UUID" or "brand ID: UUID"
     brand_match = re.search(
-        r'brand[_\s]*(?:id|ID)?[:\s]*[`"]?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})[`"]?',
+        rf'brand[_\s]*(?:id|ID)?[:\s]*[`"]?({_UUID})[`"]?',
         response_text, re.I
     )
     if brand_match:
         state["brand_id"] = brand_match.group(1)
 
-    # Brand name from **Bold** patterns
-    brand_name_match = re.search(r'(?:for|brand[:\s]*)\s*\*\*([^*]+)\*\*', response_text, re.I)
+    # Brand name — "for **Brand**" or "for Brand:" (common in competitor/analysis responses)
+    brand_name_match = re.search(
+        r'(?:for|brand[:\s]*)\s*\*\*([^*]+)\*\*', response_text, re.I
+    )
+    if not brand_name_match:
+        # Fallback: "tracked for Brand Name:" or "results for Brand Name"
+        brand_name_match = re.search(
+            r'(?:tracked |results |competitors |data )?for ([A-Z][A-Za-z\s]+?)(?::|\.|\n)',
+            response_text,
+        )
     if brand_name_match:
         name = brand_name_match.group(1).strip()
-        if len(name) < 50:
+        if 2 < len(name) < 50:
             state["brand_name"] = name
 
     # Product ID
     product_match = re.search(
-        r'product[_\s]*(?:id|ID)?[:\s]*[`"]?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})[`"]?',
+        rf'product[_\s]*(?:id|ID)?[:\s]*[`"]?({_UUID})[`"]?',
         response_text, re.I
     )
     if product_match:
         state["product_id"] = product_match.group(1)
 
-    # Competitor ID
-    comp_match = re.search(
-        r'competitor[_\s]*(?:id|ID)?[:\s]*[`"]?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})[`"]?',
+    # Competitor IDs — collect all from numbered list format:
+    #   1. **Name**
+    #      - ID: `uuid`
+    # Store first as competitor_id, all as competitor_ids list
+    comp_id_match = re.search(
+        rf'competitor[_\s]*(?:id|ID)?[:\s]*[`"]?({_UUID})[`"]?',
         response_text, re.I
     )
-    if comp_match:
-        state["competitor_id"] = comp_match.group(1)
+    if comp_id_match:
+        state["competitor_id"] = comp_id_match.group(1)
+
+    # Also extract from "**Name**\n...ID: `uuid`" patterns (competitor list format)
+    list_ids = re.findall(
+        rf'\*\*([^*]+)\*\*[^*]*?ID[:\s]*`?({_UUID})`?',
+        response_text, re.I | re.S
+    )
+    if list_ids and state.get("last_agent") == "competitor":
+        # Store all competitor IDs + names for follow-up
+        state["competitor_ids"] = [uid for _, uid in list_ids]
+        state["competitor_names"] = [name.strip() for name, _ in list_ids]
+        if not state.get("competitor_id"):
+            state["competitor_id"] = list_ids[0][1]
 
     # Persona ID
     persona_match = re.search(
-        r'persona[_\s]*(?:id|ID)?[:\s]*[`"]?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})[`"]?',
+        rf'persona[_\s]*(?:id|ID)?[:\s]*[`"]?({_UUID})[`"]?',
         response_text, re.I
     )
     if persona_match:
