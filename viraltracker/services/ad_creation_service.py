@@ -1256,7 +1256,7 @@ This is a SIZE VARIANT - the content should be IDENTICAL, only the canvas dimens
         ad_analysis: Dict[str, Any],
         template_angle: Dict[str, Any],
         original_filename: Optional[str] = None,
-        analysis_model: str = "claude-opus-4-5-20251101"
+        analysis_model: str = "claude-opus-4-7"
     ) -> bool:
         """
         Save template analysis to cache for future reuse.

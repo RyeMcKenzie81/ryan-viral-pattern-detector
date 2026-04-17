@@ -85,8 +85,8 @@ BANNED_PATTERNS = {
 class CopyScaffoldService:
     """Service for copy scaffold management and LLM-powered generation."""
 
-    # Claude Opus 4.5 for high-quality copy
-    DEFAULT_MODEL = "claude-opus-4-5-20251101"
+    # Claude Opus 4.7 for high-quality copy
+    DEFAULT_MODEL = "claude-opus-4-7"
 
     def __init__(self):
         """

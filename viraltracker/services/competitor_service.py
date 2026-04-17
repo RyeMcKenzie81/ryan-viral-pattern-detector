@@ -1936,7 +1936,7 @@ Return ONLY valid JSON."""
             # Add metadata
             analysis["page_id"] = str(landing_page_id)
             analysis["url"] = page.get("url", "")
-            analysis["model_used"] = "claude-opus-4-5-20251101"
+            analysis["model_used"] = "claude-opus-4-7"
             analysis["analyzed_at"] = datetime.utcnow().isoformat()
 
             # Save to database

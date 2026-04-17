@@ -36,8 +36,8 @@ class ScriptGenerationService:
     the brand bible guidelines exactly.
     """
 
-    # Claude Opus 4.5 model ID
-    DEFAULT_MODEL = "claude-opus-4-5-20251101"
+    # Claude Opus 4.7 model ID
+    DEFAULT_MODEL = "claude-opus-4-7"
 
     # Script generation prompt - injects full bible for quality
     GENERATION_PROMPT = """You are a script writer for "Trash Panda Economics" - a YouTube channel that explains complex financial concepts using raccoon characters.

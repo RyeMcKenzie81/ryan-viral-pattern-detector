@@ -45,7 +45,7 @@ from .models import (
 logger = logging.getLogger(__name__)
 
 # Default model for AI suggestions
-DEFAULT_MODEL = "claude-opus-4-5-20251101"
+DEFAULT_MODEL = "claude-opus-4-7"
 
 
 class PlanningService:

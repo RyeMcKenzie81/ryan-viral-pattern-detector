@@ -1525,7 +1525,7 @@ class BrandResearchService:
                 "visual_style_guide": summary.get("visual_style_guide"),
                 "images_analyzed": images_analyzed,
                 "videos_analyzed": videos_analyzed,
-                "model_used": "claude-opus-4-6",
+                "model_used": "claude-opus-4-7",
                 "generated_at": datetime.utcnow().isoformat()
             }
 
@@ -4079,7 +4079,7 @@ class BrandResearchService:
             # Add metadata
             analysis["page_id"] = str(page_id)
             analysis["url"] = page.get("url", "")
-            analysis["model_used"] = "claude-opus-4-6"
+            analysis["model_used"] = "claude-opus-4-7"
             analysis["analyzed_at"] = datetime.utcnow().isoformat()
 
             # Save to database
@@ -4326,7 +4326,7 @@ class BrandResearchService:
                 "average_score": aggregation.get("overall", {}).get("average_score"),
                 "most_common_issues": aggregation.get("overall", {}).get("most_common_issues", []),
                 "strongest_layers": aggregation.get("overall", {}).get("strongest_layers", []),
-                "model_used": "claude-opus-4-6",
+                "model_used": "claude-opus-4-7",
                 "generated_at": datetime.utcnow().isoformat()
             }
 
