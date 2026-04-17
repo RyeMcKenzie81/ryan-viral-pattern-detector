@@ -244,14 +244,19 @@ async def stream_agent_run(
                             record = ToolCallRecord(tool_name=tool_name, args=args_dict)
                             pending_calls[call_id] = record
 
-                            step = cl.Step(
-                                name=tool_name,
-                                type="tool",
-                                parent_id=msg.id,
-                            )
-                            step.input = format_tool_args(event.part.args)
-                            await step.send()
-                            active_steps[call_id] = step
+                            # Skip Step UI for routing tools — the provenance footer
+                            # already shows which agent handled it, and sub-agent tools
+                            # are visualized via ChainlitEventHandler
+                            is_routing = tool_name.startswith("route_to_")
+                            if not is_routing:
+                                step = cl.Step(
+                                    name=tool_name,
+                                    type="tool",
+                                    parent_id=msg.id,
+                                )
+                                step.input = format_tool_args(event.part.args)
+                                await step.send()
+                                active_steps[call_id] = step
 
                         elif isinstance(event, FunctionToolResultEvent):
                             call_id = getattr(event, 'tool_call_id', None)
