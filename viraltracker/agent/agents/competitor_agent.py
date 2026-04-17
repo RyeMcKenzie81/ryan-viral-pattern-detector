@@ -286,29 +286,39 @@ async def analyze_competitor_landing_pages(
     competitor_id = await _resolve_competitor(competitor_id)
     service = ctx.deps.competitor
     stats = service.get_landing_page_stats(competitor_id)
+    msg = ""
 
-    if stats.get("total", 0) == 0:
-        # Need to scrape first
+    # Step 1: Discover & scrape pages that don't have content yet
+    unscraped = stats.get("total", 0) - stats.get("scraped", 0)
+    if stats.get("total", 0) == 0 or unscraped > 0:
         try:
-            scraped = service.scrape_landing_pages_for_competitor(competitor_id)
-            msg = f"Scraped {len(scraped)} landing pages. "
+            scraped = await service.scrape_landing_pages_for_competitor(competitor_id)
+            msg += f"Scraped {len(scraped)} landing pages. "
+            # Refresh stats after scraping
+            stats = service.get_landing_page_stats(competitor_id)
         except Exception as e:
-            return f"Failed to scrape landing pages: {e}"
-    else:
-        msg = f"{stats['total']} landing pages already scraped. "
+            if stats.get("scraped", 0) == 0:
+                return f"Failed to scrape landing pages: {e}"
+            msg += f"Scraping had issues ({e}), continuing with {stats.get('scraped', 0)} already scraped. "
 
+    if not msg:
+        msg = f"{stats.get('scraped', 0)} landing pages scraped. "
+
+    # Step 2: Run belief-first analysis on scraped but unanalyzed pages
     if belief_first:
-        pending = stats.get("total", 0) - stats.get("analyzed", 0)
+        pending = stats.get("to_analyze", 0)
         if pending > 0:
             try:
-                results = service.analyze_landing_pages_belief_first_for_competitor(
+                results = await service.analyze_landing_pages_belief_first_for_competitor(
                     competitor_id
                 )
                 msg += f"Ran belief-first analysis on {len(results)} pages."
             except Exception as e:
                 return msg + f"Analysis failed: {e}"
-        else:
+        elif stats.get("analyzed", 0) > 0:
             msg += "All pages already analyzed."
+        else:
+            msg += "No scraped pages available for analysis."
 
         # Get aggregate
         try:
@@ -379,7 +389,7 @@ async def get_amazon_review_insights(
     # No analysis — trigger one
     service = ctx.deps.competitor
     try:
-        analysis_result = service.analyze_amazon_reviews_for_competitor(competitor_id)
+        analysis_result = await service.analyze_amazon_reviews_for_competitor(competitor_id)
         if analysis_result:
             return f"Analysis complete. {json.dumps(analysis_result, indent=2, default=str)[:2000]}"
         return "No Amazon reviews found for this competitor. Add Amazon URLs first."
