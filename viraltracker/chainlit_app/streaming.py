@@ -193,6 +193,7 @@ async def stream_agent_run(
                                 thinking_step = cl.Step(
                                     name="Thinking",
                                     type="llm",
+                                    parent_id=msg.id,
                                 )
                                 thinking_step.input = ""
                                 thinking_text = ""
@@ -246,6 +247,7 @@ async def stream_agent_run(
                             step = cl.Step(
                                 name=tool_name,
                                 type="tool",
+                                parent_id=msg.id,
                             )
                             step.input = format_tool_args(event.part.args)
                             await step.send()
