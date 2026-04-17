@@ -306,21 +306,22 @@ async def analyze_competitor_landing_pages(
 
     # Step 2: Run belief-first analysis on scraped but unanalyzed pages
     if belief_first:
-        pending = stats.get("to_analyze", 0)
+        bf_stats = service.get_belief_first_analysis_stats_for_competitor(competitor_id)
+        pending = bf_stats.get("pending", 0)
         if pending > 0:
             try:
                 results = await service.analyze_landing_pages_belief_first_for_competitor(
                     competitor_id
                 )
-                msg += f"Ran belief-first analysis on {len(results)} pages."
+                msg += f"Ran belief-first analysis on {len(results)} pages. "
             except Exception as e:
                 return msg + f"Analysis failed: {e}"
-        elif stats.get("analyzed", 0) > 0:
-            msg += "All pages already analyzed."
+        elif bf_stats.get("analyzed", 0) > 0:
+            msg += f"All {bf_stats['analyzed']} pages already have belief-first analysis. "
         else:
             msg += "No scraped pages available for analysis."
 
-        # Get aggregate
+        # Get aggregate findings
         try:
             aggregate = service.aggregate_belief_first_analysis_for_competitor(
                 competitor_id
