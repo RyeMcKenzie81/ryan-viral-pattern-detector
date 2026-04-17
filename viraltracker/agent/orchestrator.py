@@ -15,6 +15,7 @@ query and routes it to the appropriate specialized agent:
 import logging
 import os
 from pydantic_ai import Agent, RunContext
+from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse, ToolReturnPart, ThinkingPart
 from .dependencies import AgentDependencies
 
 # Import all specialized agents
@@ -35,10 +36,50 @@ logger = logging.getLogger(__name__)
 
 from ..core.config import Config
 
+
+# ---------------------------------------------------------------------------
+# History processor: trim old tool results to keep context window manageable
+# ---------------------------------------------------------------------------
+
+def trim_long_tool_results(
+    messages: list[ModelMessage],
+) -> list[ModelMessage]:
+    """Truncate old tool results and drop old thinking parts.
+
+    Strategy:
+    - Last 6 messages: untouched (current turn + recent context)
+    - Older messages: truncate ToolReturnPart.content to 500 chars,
+      drop ThinkingPart entirely from ModelResponse
+    """
+    if len(messages) <= 6:
+        return messages
+
+    cutoff = len(messages) - 6
+
+    for i, msg in enumerate(messages):
+        if i >= cutoff:
+            break
+        if isinstance(msg, ModelRequest):
+            for part in msg.parts:
+                if isinstance(part, ToolReturnPart):
+                    content = str(part.content)
+                    if len(content) > 500:
+                        part.content = content[:500] + f"... [truncated from {len(content)} chars]"
+        elif isinstance(msg, ModelResponse):
+            msg.parts = [p for p in msg.parts if not isinstance(p, ThinkingPart)]
+            # Keep at least one part to preserve message alternation
+            if not msg.parts:
+                from pydantic_ai.messages import TextPart
+                msg.parts = [TextPart(content="(trimmed)")]
+
+    return messages
+
+
 # Create orchestrator agent
 orchestrator = Agent(
     model=Config.get_model("orchestrator"),
     deps_type=AgentDependencies,
+    history_processors=[trim_long_tool_results],
     system_prompt="""You are the Orchestrator Agent for the ViralTracker system.
 
 Your role is to analyze user requests and route them to the appropriate specialized agent.
@@ -73,8 +114,15 @@ Your role is to analyze user requests and route them to the appropriate speciali
    - Exporting comprehensive analysis reports
    - Getting brand research summaries and analysis counts
    - Listing SEO projects and checking project status
+   - SEO keyword discovery from seed terms
+   - Finding "striking distance" keyword opportunities
+   - Checking keyword rankings and ranking history
+   - Listing SEO articles by status (published, draft, in_review)
+   - GA4 page analytics and traffic source breakdowns
    - Reddit research: searching posts and analyzing sentiment
    - Responds to: "what does Reddit say about X", "Reddit sentiment on X", "search Reddit for X"
+   - Also responds to: "find keywords for X", "SEO opportunities", "how are our articles ranking?"
+   - Also responds to: "page analytics", "traffic sources", "where is our traffic coming from?"
 
 6. **Ad Creation Agent** - For Facebook ad creative generation and templates:
    - Creating Facebook ad variations using AI
@@ -109,8 +157,11 @@ Your role is to analyze user requests and route them to the appropriate speciali
    - Intel pack generation (video ad analysis → hooks, angles, personas)
    - Remixing competitor video structures for your brand
    - Generating alternative hooks from competitor concepts
+   - Persona synthesis: build 4D personas from competitor data or product data
+   - Export personas as copywriting briefs for ad creation
    - Responds to: "analyze my competitors", "what are competitors doing?", "competitor landing pages"
    - Also responds to: "scrape competitor X", "remix their video", "competitor review insights"
+   - Also responds to: "build a persona for X", "generate persona from competitor", "persona copy brief"
 
 10. **Ops Agent** - For operational queries and job management:
    - Queue background jobs (meta sync, ad classification, template scrape, etc.)
@@ -121,6 +172,12 @@ Your role is to analyze user requests and route them to the appropriate speciali
    - Responds to: "queue a meta sync", "run ad classification", "start a template scrape"
    - Also responds to: "check job status", "what's running?", "any failed jobs?", "system health"
    - Also responds to: "list my brands", "what brands do I have?", "what happened overnight?"
+
+**Follow-up Handling:**
+When the user says "that", "those", "it", "them", "the same", etc., resolve the
+referent from session context (injected via dynamic instructions). Include relevant
+entity IDs (brand_id, product_id, competitor_id, etc.) when routing to sub-agents
+so they don't have to re-ask the user.
 
 **Your Responsibilities:**
 - Understand the user's intent
@@ -134,6 +191,48 @@ Your role is to analyze user requests and route them to the appropriate speciali
 - Provide clear summaries of results from specialized agents
 """
 )
+
+
+# ---------------------------------------------------------------------------
+# Dynamic instructions: inject session state each turn
+# ---------------------------------------------------------------------------
+
+@orchestrator.instructions
+def session_instructions(ctx: RunContext[AgentDependencies]) -> str:
+    """Inject session state as dynamic instructions.
+
+    Re-evaluated every turn (old instructions dropped from history).
+    Gives the orchestrator awareness of active brand, product, competitor, etc.
+    so it can resolve follow-up references like "analyze those" or "that brand".
+    """
+    state = ctx.deps.result_cache.custom.get("session_state")
+    if not state:
+        return ""
+
+    parts = []
+    if state.get("brand_name"):
+        parts.append(f"brand={state['brand_name']} ({state.get('brand_id', '?')})")
+    if state.get("product_name"):
+        parts.append(f"product={state['product_name']} ({state.get('product_id', '?')})")
+    if state.get("competitor_name"):
+        parts.append(f"competitor={state['competitor_name']} ({state.get('competitor_id', '?')})")
+    if state.get("persona_id"):
+        parts.append(f"persona={state.get('persona_name') or state['persona_id']}")
+    if state.get("seo_project_id"):
+        parts.append(f"seo_project={state.get('seo_project_name') or state['seo_project_id']}")
+    if state.get("last_agent"):
+        parts.append(f"last_agent={state['last_agent']}")
+
+    if not parts:
+        return ""
+
+    return (
+        f"[Session: {', '.join(parts)}]\n"
+        "When the user says 'that', 'it', 'those', 'the same' — resolve from session context above. "
+        "Include relevant entity IDs when routing to sub-agents. "
+        "Do NOT re-ask for an ID already in the session."
+    )
+
 
 # Routing tools
 @orchestrator.tool

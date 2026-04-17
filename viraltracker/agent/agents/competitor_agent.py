@@ -1,17 +1,19 @@
 """
 Competitor Intelligence Agent - Specialized agent for competitor research and analysis.
 
-This agent exposes 8 tools:
+This agent exposes 11 tools:
 - Discovery: list_competitors, get_competitor_summary
 - Research: analyze_competitor_landing_pages, get_amazon_review_insights
 - Intel packs: get_intel_pack, queue_intel_pack_analysis
 - Creative: remix_competitor_video, generate_competitor_hooks
+- Personas: synthesize_competitor_persona, generate_persona_from_product, get_persona_copy_brief
 """
 
 import json
 import logging
 import re
 from typing import Dict, List, Optional
+from uuid import UUID
 
 from pydantic_ai import Agent, RunContext
 
@@ -75,11 +77,17 @@ actionable insights for ad creation and positioning.
 - remix_competitor_video: Adapt a competitor's video structure for the user's brand
 - generate_competitor_hooks: Generate alternative hooks from a competitor video
 
+**Persona tools:**
+- synthesize_competitor_persona: Build a 4D persona from competitor research data
+- generate_persona_from_product: Generate a persona from your own product data
+- get_persona_copy_brief: Export a persona as a copywriting brief
+
 **Guidelines:**
 - When the user mentions a competitor by name, resolve it from the list first
 - For long-running operations (landing page scrape, intel pack), explain it's queued
 - Present insights in a structured, actionable format
 - Connect findings back to opportunities for the user's brand
+- When synthesizing personas, remind the user to review and refine the generated persona
 """,
 )
 
@@ -565,3 +573,248 @@ async def generate_competitor_hooks(
         return f"## Alternative Hooks\n\n{json.dumps(hooks, indent=2, default=str)[:2000]}"
     except Exception as e:
         return f"Hook generation failed: {e}"
+
+
+# ============================================================================
+# PERSONA TOOLS
+# ============================================================================
+
+
+@competitor_agent.tool(
+    metadata={
+        "category": "Persona",
+        "use_cases": [
+            "Build persona from competitor research",
+            "Reverse-engineer who a competitor is targeting",
+        ],
+    }
+)
+async def synthesize_competitor_persona(
+    ctx: RunContext[AgentDependencies],
+    competitor_id: str,
+    brand_id: str,
+    competitor_product_id: Optional[str] = None,
+) -> str:
+    """Synthesize a 4D persona from competitor analysis data (Amazon reviews,
+    landing pages, ads).
+
+    Requires prior research — at least one of: Amazon review analysis,
+    landing page analysis, or ad analysis for this competitor. If none exist,
+    run those analyses first.
+
+    The persona is saved to the database and can be used for ad creation.
+
+    Args:
+        ctx: Run context with AgentDependencies
+        competitor_id: UUID of the competitor
+        brand_id: UUID or name of the brand tracking this competitor
+        competitor_product_id: Optional competitor product UUID for product-level persona
+
+    Returns:
+        Summary of the generated persona with ID for follow-up.
+    """
+    brand_id = await _resolve_brand(brand_id)
+
+    try:
+        persona = await ctx.deps.persona.synthesize_competitor_persona(
+            competitor_id=UUID(competitor_id),
+            brand_id=UUID(brand_id),
+            competitor_product_id=UUID(competitor_product_id) if competitor_product_id else None,
+        )
+
+        # Save to database
+        persona_id = ctx.deps.persona.create_persona(persona)
+
+        sections = [
+            f"## Persona Generated: {persona.name}",
+            f"ID: `{persona_id}`",
+            f"Type: competitor",
+            "",
+            f"**Snapshot:** {persona.snapshot or 'N/A'}",
+        ]
+
+        if persona.demographics:
+            demo = persona.demographics
+            sections.append(f"**Demographics:** {demo.age_range or 'N/A'}, {demo.gender or 'N/A'}, {demo.income_level or 'N/A'}")
+
+        if persona.self_narratives:
+            sections.append(f"\n**Self-narratives:** {'; '.join(persona.self_narratives[:3])}")
+
+        if persona.pain_points:
+            emotional = persona.pain_points.emotional[:3] if persona.pain_points.emotional else []
+            if emotional:
+                sections.append(f"\n**Pain points:** {'; '.join(emotional)}")
+
+        if persona.activation_events:
+            sections.append(f"\n**Activation events:** {'; '.join(persona.activation_events[:3])}")
+
+        sections.append(f"\n_Saved as persona `{persona_id}`. Use `get_persona_copy_brief` to export for ad creation._")
+        return "\n".join(sections)
+
+    except ValueError as e:
+        return f"Cannot synthesize persona: {e}"
+    except Exception as e:
+        logger.error(f"Persona synthesis failed: {e}")
+        return f"Persona synthesis failed: {e}"
+
+
+@competitor_agent.tool(
+    metadata={
+        "category": "Persona",
+        "use_cases": [
+            "Generate persona for a product",
+            "Create persona from product data",
+        ],
+    }
+)
+async def generate_persona_from_product(
+    ctx: RunContext[AgentDependencies],
+    product_id: str,
+    brand_id: Optional[str] = None,
+    offer_variant_id: Optional[str] = None,
+) -> str:
+    """Generate a 4D persona from product data and existing ad analyses.
+
+    Uses product details, offer variant data (if specified), and any existing
+    ad image analyses to generate a comprehensive persona.
+
+    The persona is saved to the database and can be used for ad creation.
+
+    Args:
+        ctx: Run context with AgentDependencies
+        product_id: UUID of the product
+        brand_id: Optional brand UUID (resolved from product if not provided)
+        offer_variant_id: Optional offer variant UUID for variant-specific persona
+
+    Returns:
+        Summary of the generated persona with ID for follow-up.
+    """
+    # Resolve product name if not UUID
+    resolved_product_id = product_id
+    if not _UUID_RE.match(product_id):
+        products = await ctx.deps.ad_creation.search_products_by_name(product_id)
+        if not products:
+            return f"No product found matching '{product_id}'."
+        if len(products) > 1:
+            names = ", ".join(f"**{p.name}**" for p in products)
+            return f"Multiple products match: {names}. Please be more specific."
+        resolved_product_id = str(products[0].id)
+
+    resolved_brand_id = None
+    if brand_id:
+        resolved_brand_id = UUID(await _resolve_brand(brand_id))
+
+    try:
+        persona = await ctx.deps.persona.generate_persona_from_product(
+            product_id=UUID(resolved_product_id),
+            brand_id=resolved_brand_id,
+            offer_variant_id=UUID(offer_variant_id) if offer_variant_id else None,
+        )
+
+        persona_id = ctx.deps.persona.create_persona(persona)
+
+        sections = [
+            f"## Persona Generated: {persona.name}",
+            f"ID: `{persona_id}`",
+            f"Type: product-specific",
+            "",
+            f"**Snapshot:** {persona.snapshot or 'N/A'}",
+        ]
+
+        if persona.demographics:
+            demo = persona.demographics
+            sections.append(f"**Demographics:** {demo.age_range or 'N/A'}, {demo.gender or 'N/A'}, {demo.income_level or 'N/A'}")
+
+        if persona.self_narratives:
+            sections.append(f"\n**Self-narratives:** {'; '.join(persona.self_narratives[:3])}")
+
+        if persona.pain_points:
+            emotional = persona.pain_points.emotional[:3] if persona.pain_points.emotional else []
+            if emotional:
+                sections.append(f"\n**Pain points:** {'; '.join(emotional)}")
+
+        sections.append(f"\n_Saved as persona `{persona_id}`. Use `get_persona_copy_brief` to export for ad creation._")
+        return "\n".join(sections)
+
+    except ValueError as e:
+        return f"Cannot generate persona: {e}"
+    except Exception as e:
+        logger.error(f"Persona generation failed: {e}")
+        return f"Persona generation failed: {e}"
+
+
+@competitor_agent.tool(
+    metadata={
+        "category": "Persona",
+        "use_cases": [
+            "Export persona for ad copywriting",
+            "Get persona copy brief",
+        ],
+    }
+)
+async def get_persona_copy_brief(
+    ctx: RunContext[AgentDependencies],
+    persona_id: str,
+) -> str:
+    """Export a persona as a structured copywriting brief for ad creation.
+
+    Returns the persona's key traits formatted for writing ad copy:
+    desires, pain points, language patterns, objections, activation events.
+
+    Args:
+        ctx: Run context with AgentDependencies
+        persona_id: UUID of the persona to export
+
+    Returns:
+        Formatted copy brief ready for use in ad creation prompts.
+    """
+    try:
+        brief = ctx.deps.persona.export_for_copy_brief_dict(UUID(persona_id))
+
+        sections = [
+            f"## Copy Brief: {brief.get('persona_name', 'Unknown')}",
+            "",
+            f"**Snapshot:** {brief.get('snapshot', 'N/A')}",
+        ]
+
+        if brief.get("target_demo"):
+            demo = brief["target_demo"]
+            sections.append(f"\n**Target Demo:** {json.dumps(demo, default=str)[:300]}")
+
+        if brief.get("primary_desires"):
+            sections.append(f"\n**Primary Desires:**")
+            for d in brief["primary_desires"]:
+                sections.append(f"- {d}")
+
+        if brief.get("top_pain_points"):
+            sections.append(f"\n**Top Pain Points:**")
+            for p in brief["top_pain_points"]:
+                sections.append(f"- {p}")
+
+        if brief.get("their_language"):
+            sections.append(f"\n**Their Language (self-narratives):**")
+            for s in brief["their_language"][:5]:
+                sections.append(f"- \"{s}\"")
+
+        if brief.get("objections"):
+            sections.append(f"\n**Objections:**")
+            for o in brief["objections"][:5]:
+                sections.append(f"- {o}")
+
+        if brief.get("activation_events"):
+            sections.append(f"\n**Activation Events:**")
+            for e in brief["activation_events"][:5]:
+                sections.append(f"- {e}")
+
+        if brief.get("allergies"):
+            sections.append(f"\n**Allergies (avoid these):**")
+            for a in brief["allergies"][:5]:
+                sections.append(f"- {a}")
+
+        return "\n".join(sections)
+
+    except ValueError as e:
+        return f"Error: {e}"
+    except Exception as e:
+        logger.error(f"Failed to export copy brief: {e}")
+        return f"Failed to export copy brief: {e}"

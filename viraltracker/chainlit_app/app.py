@@ -18,7 +18,6 @@ import asyncio
 import logging
 import os
 import traceback
-from datetime import datetime
 from typing import Optional
 
 import chainlit as cl
@@ -49,93 +48,105 @@ except Exception:
 
 
 # ==========================================================================
-# Conversation Context (ported from 00_Agent_Chat.py)
+# Session State (replaces old context builders)
 # ==========================================================================
 
-
-def build_conversation_context(tool_results: list) -> str:
-    """
-    Build context string from recent tool results.
-
-    Ported from viraltracker/ui/pages/00_Agent_Chat.py:254-283.
-    Enables follow-up queries like "analyze those tweets' hooks".
-    """
-    if not tool_results:
-        return ""
-
-    recent_results = tool_results[-3:]
-    if not recent_results:
-        return ""
-
-    context = "## Recent Context:\n\n"
-    context += "You have access to the results of these recent queries:\n\n"
-
-    for i, result in enumerate(recent_results, 1):
-        context += f"{i}. **User asked:** \"{result['user_query']}\"\n"
-        response_preview = result["agent_response"][:800]
-        if len(result["agent_response"]) > 800:
-            response_preview += "..."
-        context += f"   **Result:** {response_preview}\n\n"
-
-    context += (
-        '**IMPORTANT:** When the user refers to "those tweets", "their hooks", '
-        '"them", "these", etc., they are referring to the tweets/results shown above. '
-        "To analyze the SAME tweets:\n"
-        "- Extract usernames (e.g., @username) from the context above\n"
-        "- OR use the SAME tool parameters (hours_back, limit, etc.) to retrieve the same data\n"
-        "- For hook analysis: if the user says 'analyze their hooks' or 'analyze those hooks', "
-        "use analyze_hooks_tool with the SAME time range from the previous find_outliers call\n\n"
-        "---\n\n"
-    )
-    return context
+_UUID_RE = None  # lazy-compiled regex
 
 
-def _build_active_context_prefix(active_ctx: dict) -> str:
-    """Build a prompt prefix from active session context."""
-    if not active_ctx:
-        return ""
-    parts = []
-    if active_ctx.get("brand_name"):
-        parts.append(f"Brand: **{active_ctx['brand_name']}** (ID: {active_ctx.get('brand_id', 'unknown')})")
-    if active_ctx.get("product_name"):
-        parts.append(f"Product: **{active_ctx['product_name']}** (ID: {active_ctx.get('product_id', 'unknown')})")
-    if not parts:
-        return ""
-    return "## Active Context:\n" + "\n".join(parts) + "\n\n"
+def _is_uuid(val: str) -> bool:
+    """Check if a string looks like a UUID."""
+    global _UUID_RE
+    if _UUID_RE is None:
+        import re
+        _UUID_RE = re.compile(
+            r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', re.I
+        )
+    return bool(_UUID_RE.match(str(val)))
 
 
-def _update_active_context(user_query: str, response: str, ctx: dict):
-    """Extract brand/product references from the conversation and persist them.
+def _parse_product_resolution(state: dict, result_preview: str):
+    """Extract product info from resolve_product_name result preview."""
+    import json
+    try:
+        data = json.loads(result_preview)
+        if data.get("success") and data.get("products"):
+            first = data["products"][0]
+            state["product_id"] = first.get("id")
+            state["product_name"] = first.get("name")
+            if first.get("brand_id"):
+                state["brand_id"] = first["brand_id"]
+    except (json.JSONDecodeError, KeyError, IndexError):
+        pass
 
-    Looks for common patterns in the response text:
-    - Brand IDs and names from tool results
-    - Product IDs and names from tool results
-    """
+
+def _extract_names_from_response(state: dict, response_text: str):
+    """Regex fallback to extract entity names from response text."""
     import re
 
-    # Look for brand references in the response
-    # Pattern: **Brand Name** or "Brand: Name" or brand_id UUID after brand resolution
-    brand_match = re.search(r'brand[_\s]*(?:id|ID)?[:\s]*[`"]?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})[`"]?', response, re.I)
+    # Brand ID
+    brand_match = re.search(
+        r'brand[_\s]*(?:id|ID)?[:\s]*[`"]?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})[`"]?',
+        response_text, re.I
+    )
     if brand_match:
-        ctx["brand_id"] = brand_match.group(1)
+        state["brand_id"] = brand_match.group(1)
 
-    # Try to extract brand name from common patterns
-    brand_name_match = re.search(r'(?:for|brand[:\s]*)\s*\*\*([^*]+)\*\*', response, re.I)
+    # Brand name from **Bold** patterns
+    brand_name_match = re.search(r'(?:for|brand[:\s]*)\s*\*\*([^*]+)\*\*', response_text, re.I)
     if brand_name_match:
         name = brand_name_match.group(1).strip()
-        if len(name) < 50:  # Sanity check
-            ctx["brand_name"] = name
-
-    # Look for product references
-    product_match = re.search(r'product[_\s]*(?:id|ID)?[:\s]*[`"]?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})[`"]?', response, re.I)
-    if product_match:
-        ctx["product_id"] = product_match.group(1)
-
-    product_name_match = re.search(r'(?:product|for)\s*\*\*([^*]+)\*\*', response, re.I)
-    if product_name_match:
-        name = product_name_match.group(1).strip()
         if len(name) < 50:
-            ctx["product_name"] = name
+            state["brand_name"] = name
+
+    # Product ID
+    product_match = re.search(
+        r'product[_\s]*(?:id|ID)?[:\s]*[`"]?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})[`"]?',
+        response_text, re.I
+    )
+    if product_match:
+        state["product_id"] = product_match.group(1)
+
+    # Competitor ID
+    comp_match = re.search(
+        r'competitor[_\s]*(?:id|ID)?[:\s]*[`"]?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})[`"]?',
+        response_text, re.I
+    )
+    if comp_match:
+        state["competitor_id"] = comp_match.group(1)
+
+    # Persona ID
+    persona_match = re.search(
+        r'persona[_\s]*(?:id|ID)?[:\s]*[`"]?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})[`"]?',
+        response_text, re.I
+    )
+    if persona_match:
+        state["persona_id"] = persona_match.group(1)
+
+
+def update_session_state(state: dict, tool_log: list, response_text: str):
+    """Update session state from structured tool data + response text.
+
+    Primary source: tool args/results (structured, reliable).
+    Fallback: regex on response text for names not in tool args.
+    """
+    for record in tool_log:
+        # Track which agent handled the request
+        if record.tool_name.startswith("route_to_"):
+            state["last_agent"] = record.tool_name.replace("route_to_", "").replace("_agent", "")
+
+        # Extract entity IDs from tool args (structured, reliable)
+        args = record.args
+        for key in ("brand_id", "product_id", "competitor_id", "persona_id", "project_id"):
+            if key in args and _is_uuid(args[key]):
+                state[key] = args[key]
+
+        # Extract from resolve_product_name results
+        if record.tool_name == "resolve_product_name" and record.result_preview:
+            _parse_product_resolution(state, record.result_preview)
+
+    # Regex fallback on response text for names and IDs not in tool args
+    _extract_names_from_response(state, response_text)
 
 
 # ==========================================================================
@@ -173,10 +184,11 @@ async def on_chat_start():
         from viraltracker.chainlit_app.streaming import make_chainlit_event_handler
         deps.result_cache.custom["_make_event_handler"] = make_chainlit_event_handler
 
+        # Initialize session state in result_cache so @orchestrator.instructions can read it
+        deps.result_cache.custom["session_state"] = {}
+
         cl.user_session.set("deps", deps)
         cl.user_session.set("message_history", [])
-        cl.user_session.set("tool_results", [])
-        cl.user_session.set("active_context", {})  # {brand_id, brand_name, product_id, product_name}
 
         # Start background job notification poller
         poller_task = asyncio.create_task(start_job_notification_poller(org_id))
@@ -213,7 +225,13 @@ async def on_chat_start():
 
 @cl.on_message
 async def on_message(message: cl.Message):
-    """Handle incoming user messages with streaming orchestrator execution."""
+    """Handle incoming user messages with streaming orchestrator execution.
+
+    Context is managed by PydanticAI's built-in mechanisms:
+    - message_history: full conversation (trimmed by history_processors)
+    - @orchestrator.instructions: dynamic session state injected each turn
+    - tool_log: structured tool call capture for session state updates
+    """
     deps = cl.user_session.get("deps")
     if not deps:
         await cl.Message(
@@ -222,34 +240,22 @@ async def on_message(message: cl.Message):
         return
 
     message_history = cl.user_session.get("message_history") or []
-    tool_results = cl.user_session.get("tool_results") or []
-    active_ctx = cl.user_session.get("active_context") or {}
-
-    # Build conversation context from recent tool results + active context
-    context = build_conversation_context(tool_results)
-    active_prefix = _build_active_context_prefix(active_ctx)
-    parts = [p for p in [active_prefix, context] if p]
-    if parts:
-        full_prompt = "".join(parts) + f"## Current Query:\n{message.content}"
-    else:
-        full_prompt = message.content
 
     # Clear stale side-channel result before running
     deps.result_cache.custom.pop("ad_intelligence_result", None)
 
     try:
-        final_text, updated_history = await stream_agent_run(
+        final_text, updated_history, tool_log = await stream_agent_run(
             orchestrator=orchestrator,
-            user_prompt=full_prompt,
+            user_prompt=message.content,  # Clean user message — no context wrappers
             deps=deps,
             message_history=message_history,
         )
 
-        # Handle ad intelligence side-channel (same pattern as 00_Agent_Chat.py:465-471)
+        # Handle ad intelligence side-channel (rendered markdown bypass)
         ad_intel = deps.result_cache.custom.get("ad_intelligence_result")
         if ad_intel and ad_intel.get("rendered_markdown"):
             display_content = ad_intel["rendered_markdown"]
-            # Send the side-channel markdown as a separate message
             await cl.Message(content=display_content).send()
         else:
             display_content = final_text
@@ -257,25 +263,14 @@ async def on_message(message: cl.Message):
         # Store message history for conversation continuity
         cl.user_session.set("message_history", updated_history)
 
-        # Extract and persist active brand/product context
-        _update_active_context(message.content, display_content, active_ctx)
-        cl.user_session.set("active_context", active_ctx)
-
-        # Store tool result for context building
-        tool_results.append({
-            "timestamp": datetime.now().isoformat(),
-            "user_query": message.content,
-            "agent_response": display_content,
-        })
-        # Keep only last 10 results
-        cl.user_session.set("tool_results", tool_results[-10:])
+        # Update session state from structured tool data
+        state = deps.result_cache.custom.setdefault("session_state", {})
+        update_session_state(state, tool_log, display_content)
 
     except Exception as e:
         logger.error(f"Agent run failed: {e}\n{traceback.format_exc()}")
         error_str = str(e)
-        # Extract the root cause from common wrapper patterns
         if ":" in error_str and len(error_str) > 200:
-            # Long errors — show first line only
             error_str = error_str.split("\n")[0]
         await cl.Message(
             content=f"**Error:** {error_str}\n\nTry rephrasing your question or check the logs for details."
