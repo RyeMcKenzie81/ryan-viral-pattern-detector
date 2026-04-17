@@ -181,7 +181,7 @@ def analyze_competitors(keyword: str, urls: tuple, keyword_id: str):
 @click.option("--article-id", help="Existing article ID (creates new if omitted)")
 @click.option("--project-id", help="Project ID (required for new articles)")
 @click.option("--brand", "brand_slug", help="Brand slug (required for new articles)")
-@click.option("--model", default="claude-opus-4-20250514", help="Model for API mode")
+@click.option("--model", default="claude-opus-4-7", help="Model for API mode")
 def generate_content(keyword: str, phase: str, mode: str, author: str,
                      article_id: str, project_id: str, brand_slug: str, model: str):
     """Generate article content for a keyword."""

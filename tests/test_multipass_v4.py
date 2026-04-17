@@ -5532,11 +5532,11 @@ class TestPhase1FallbackCascade:
             assert f'{{{{sec_{i}}}}}' in skeleton
 
     def test_token_costs_include_claude_opus(self):
-        """claude-opus-4-6 must be in TOKEN_COSTS."""
+        """claude-opus-4-7 must be in TOKEN_COSTS."""
         from viraltracker.core.config import Config
 
-        cost = Config.get_token_cost("claude-opus-4-6")
-        assert cost != (0.0, 0.0), "claude-opus-4-6 should have non-zero costs"
+        cost = Config.get_token_cost("claude-opus-4-7")
+        assert cost != (0.0, 0.0), "claude-opus-4-7 should have non-zero costs"
         cost = Config.get_token_cost("claude-sonnet-4-6")
         assert cost != (0.0, 0.0), "claude-sonnet-4-6 should have non-zero costs"
 

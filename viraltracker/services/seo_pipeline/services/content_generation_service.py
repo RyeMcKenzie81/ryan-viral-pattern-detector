@@ -82,7 +82,7 @@ class ContentGenerationService:
         author_id: Optional[str] = None,
         mode: str = "api",
         organization_id: Optional[str] = None,
-        model: str = "claude-opus-4-20250514",
+        model: str = "claude-opus-4-7",
         brand_config: Optional[Dict[str, Any]] = None,
         cluster_context: Optional[str] = None,
         keyword_id: Optional[str] = None,
@@ -130,7 +130,7 @@ class ContentGenerationService:
         author_id: Optional[str] = None,
         mode: str = "api",
         organization_id: Optional[str] = None,
-        model: str = "claude-opus-4-20250514",
+        model: str = "claude-opus-4-7",
         brand_config: Optional[Dict[str, Any]] = None,
         cluster_context: Optional[str] = None,
         content_fingerprints: Optional[str] = None,
@@ -184,7 +184,7 @@ class ContentGenerationService:
         author_id: Optional[str] = None,
         mode: str = "api",
         organization_id: Optional[str] = None,
-        model: str = "claude-opus-4-20250514",
+        model: str = "claude-opus-4-7",
         brand_config: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """

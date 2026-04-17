@@ -266,8 +266,8 @@ class ComicService:
     Uses comic-production KB for best practices and quality assessment.
     """
 
-    # Claude Opus 4.5 model ID
-    DEFAULT_MODEL = "claude-opus-4-5-20251101"
+    # Claude Opus 4.7 model ID
+    DEFAULT_MODEL = "claude-opus-4-7"
 
     # KB document tags for targeted retrieval
     KB_PLANNING_TAGS = [

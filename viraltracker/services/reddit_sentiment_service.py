@@ -47,7 +47,7 @@ REDDIT_SCRAPER_ACTOR = "fatihtahta/reddit-scraper-search-fast"
 
 # Model choices per user requirements
 FAST_MODEL = "claude-sonnet-4-20250514"  # For filtering (relevance, signal, intent)
-DEEP_MODEL = "claude-opus-4-5-20251101"  # For extraction (categorization, quotes)
+DEEP_MODEL = "claude-opus-4-7"  # For extraction (categorization, quotes)
 
 # Cost estimates per 1M tokens (approximate)
 SONNET_INPUT_COST = 3.0  # $3/1M input

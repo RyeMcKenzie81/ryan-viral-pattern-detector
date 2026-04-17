@@ -383,7 +383,7 @@ class TestAPIMode:
 
         service.anthropic_client.messages.create.assert_called_once()
         call_args = service.anthropic_client.messages.create.call_args
-        assert call_args.kwargs["model"] == "claude-opus-4-20250514"
+        assert call_args.kwargs["model"] == "claude-opus-4-7"
         assert call_args.kwargs["max_tokens"] == 8192
 
     def test_api_mode_tracks_usage(self, service):
