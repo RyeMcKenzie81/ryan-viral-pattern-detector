@@ -4068,13 +4068,21 @@ class BrandResearchService:
             result = await agent.run(prompt)
             response_text = result.output
 
-            # Parse JSON response
+            # Parse JSON response (with repair for common LLM JSON issues)
             json_match = re.search(r'\{[\s\S]*\}', response_text)
-            if json_match:
-                analysis = json.loads(json_match.group())
-            else:
+            if not json_match:
                 logger.error(f"No JSON found in belief-first analysis response for {page_id}")
                 return None
+
+            json_str = json_match.group()
+            try:
+                analysis = json.loads(json_str)
+            except json.JSONDecodeError:
+                # Repair common LLM JSON issues: trailing commas, comments
+                repaired = re.sub(r',(\s*[}\]])', r'\1', json_str)
+                repaired = re.sub(r'//.*?$', '', repaired, flags=re.MULTILINE)
+                repaired = re.sub(r'/\*[\s\S]*?\*/', '', repaired)
+                analysis = json.loads(repaired)
 
             # Add metadata
             analysis["page_id"] = str(page_id)
