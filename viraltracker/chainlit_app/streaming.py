@@ -244,26 +244,16 @@ async def stream_agent_run(
                             record = ToolCallRecord(tool_name=tool_name, args=args_dict)
                             pending_calls[call_id] = record
 
-                            # Routing tools get a friendly loading step that is
-                            # removed once the sub-agent finishes, so the user sees
-                            # activity without a leftover "Used route_to_..." artifact.
+                            # Show all tool calls as Steps with friendly labels
                             is_routing = tool_name.startswith("route_to_")
-                            if is_routing:
-                                step = cl.Step(
-                                    name=f"{agent_label} Agent",
-                                    type="run",
-                                )
-                                await step.send()
-                                active_steps[call_id] = step
-                            else:
-                                step = cl.Step(
-                                    name=tool_name,
-                                    type="tool",
-                                    parent_id=msg.id,
-                                )
-                                step.input = format_tool_args(event.part.args)
-                                await step.send()
-                                active_steps[call_id] = step
+                            display_name = f"{agent_label} Agent" if is_routing else tool_name
+                            step = cl.Step(
+                                name=display_name,
+                                type="tool",
+                            )
+                            step.input = format_tool_args(event.part.args)
+                            await step.send()
+                            active_steps[call_id] = step
 
                         elif isinstance(event, FunctionToolResultEvent):
                             call_id = getattr(event, 'tool_call_id', None)
@@ -278,14 +268,10 @@ async def stream_agent_run(
                                 pending_calls[call_id].result_preview = result_str[:500]
                                 tool_log.append(pending_calls.pop(call_id))
 
-                            step = active_steps.pop(call_id, None) if call_id else None
+                            step = active_steps.get(call_id) if call_id else None
                             if step:
-                                if step.type == "run":
-                                    # Routing step — remove it now that we have the result
-                                    await step.remove()
-                                else:
-                                    step.output = truncate_output(result_str)
-                                    await step.update()
+                                step.output = truncate_output(result_str)
+                                await step.update()
 
             elif Agent.is_end_node(node):
                 break
