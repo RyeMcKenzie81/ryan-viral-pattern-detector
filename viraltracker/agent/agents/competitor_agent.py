@@ -268,17 +268,21 @@ async def get_competitor_summary(
 async def analyze_competitor_landing_pages(
     ctx: RunContext[AgentDependencies],
     competitor_id: str,
-    belief_first: bool = True,
+    analysis_type: str = "both",
 ) -> str:
     """Scrape and analyze landing pages for a competitor.
 
-    This runs the 13-layer belief-first analysis by default, extracting
-    strategic insights about messaging, positioning, and conversion tactics.
+    Two analysis types are available:
+    - "basic": Quick extraction of headlines, CTAs, value props, social proof
+    - "belief_first": Deep 13-layer belief-first analysis of messaging, positioning, conversion tactics
+    - "both": Run basic first, then belief-first (recommended)
+
+    Ask the user which type they want if unclear.
 
     Args:
         ctx: Run context with AgentDependencies
         competitor_id: UUID or name of the competitor (e.g. "Mars Men")
-        belief_first: If True, runs deep belief-first analysis (default: True)
+        analysis_type: "basic", "belief_first", or "both" (default: "both")
 
     Returns:
         Summary of analysis results or status if already analyzed.
@@ -294,7 +298,6 @@ async def analyze_competitor_landing_pages(
         try:
             scraped = await service.scrape_landing_pages_for_competitor(competitor_id)
             msg += f"Scraped {len(scraped)} landing pages. "
-            # Refresh stats after scraping
             stats = service.get_landing_page_stats(competitor_id)
         except Exception as e:
             if stats.get("scraped", 0) == 0:
@@ -302,10 +305,22 @@ async def analyze_competitor_landing_pages(
             msg += f"Scraping had issues ({e}), continuing with {stats.get('scraped', 0)} already scraped. "
 
     if not msg:
-        msg = f"{stats.get('scraped', 0)} landing pages scraped. "
+        msg = f"{stats.get('scraped', 0)} landing pages already scraped. "
 
-    # Step 2: Run belief-first analysis on scraped but unanalyzed pages
-    if belief_first:
+    # Step 2: Basic analysis
+    if analysis_type in ("basic", "both"):
+        basic_pending = stats.get("to_analyze", 0)
+        if basic_pending > 0:
+            try:
+                results = await service.analyze_landing_pages_for_competitor(competitor_id)
+                msg += f"Ran basic analysis on {len(results)} pages. "
+            except Exception as e:
+                msg += f"Basic analysis failed: {e}. "
+        elif stats.get("analyzed", 0) > 0:
+            msg += f"All {stats['analyzed']} pages already have basic analysis. "
+
+    # Step 3: Belief-first analysis
+    if analysis_type in ("belief_first", "both"):
         bf_stats = service.get_belief_first_analysis_stats_for_competitor(competitor_id)
         pending = bf_stats.get("pending", 0)
         if pending > 0:
@@ -315,11 +330,9 @@ async def analyze_competitor_landing_pages(
                 )
                 msg += f"Ran belief-first analysis on {len(results)} pages. "
             except Exception as e:
-                return msg + f"Analysis failed: {e}"
+                msg += f"Belief-first analysis failed: {e}. "
         elif bf_stats.get("analyzed", 0) > 0:
             msg += f"All {bf_stats['analyzed']} pages already have belief-first analysis. "
-        else:
-            msg += "No scraped pages available for analysis."
 
         # Get aggregate findings
         try:
