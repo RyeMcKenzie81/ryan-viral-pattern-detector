@@ -8,6 +8,7 @@ Handles text streaming, thinking blocks, and tool call Steps.
 import json
 import logging
 import time
+from dataclasses import dataclass, field
 from typing import Any, Optional
 
 import chainlit as cl
@@ -22,6 +23,14 @@ from pydantic_ai import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ToolCallRecord:
+    """Structured record of a tool call + result captured during streaming."""
+    tool_name: str
+    args: dict = field(default_factory=dict)
+    result_preview: str = ""  # First 500 chars of result
 
 
 def format_tool_args(args: Any) -> str:
@@ -134,7 +143,7 @@ async def stream_agent_run(
     user_prompt: str,
     deps: Any,
     message_history: list,
-) -> tuple[str, list]:
+) -> tuple[str, list, list[ToolCallRecord]]:
     """
     Run the orchestrator with iter() and stream results to Chainlit.
 
@@ -142,6 +151,7 @@ async def stream_agent_run(
     - Token-by-token text streaming
     - Extended thinking blocks (rendered as cl.Step)
     - Tool call visualization (rendered as cl.Step with args/results)
+    - Structured tool call capture for session state updates
 
     Args:
         orchestrator: The pydantic-ai orchestrator Agent
@@ -150,7 +160,7 @@ async def stream_agent_run(
         message_history: Prior message history for conversation continuity
 
     Returns:
-        Tuple of (final_response_text, updated_message_history)
+        Tuple of (final_response_text, updated_message_history, tool_call_log)
     """
     # Create the streaming message placeholder
     msg = cl.Message(content="")
@@ -160,6 +170,8 @@ async def stream_agent_run(
     thinking_text = ""
     thinking_step: Optional[cl.Step] = None
     routed_agents: list[str] = []  # Track which agents handled the request
+    tool_log: list[ToolCallRecord] = []  # Structured tool call records
+    pending_calls: dict[str, ToolCallRecord] = {}  # tool_call_id -> record
     start_time = time.time()
 
     async with orchestrator.iter(
@@ -223,6 +235,14 @@ async def stream_agent_run(
                                 if agent_label not in routed_agents:
                                     routed_agents.append(agent_label)
 
+                            # Capture structured tool call for session state
+                            try:
+                                args_dict = event.part.args_as_dict()
+                            except Exception:
+                                args_dict = {}
+                            record = ToolCallRecord(tool_name=tool_name, args=args_dict)
+                            pending_calls[call_id] = record
+
                             step = cl.Step(
                                 name=tool_name,
                                 type="tool",
@@ -234,14 +254,19 @@ async def stream_agent_run(
                         elif isinstance(event, FunctionToolResultEvent):
                             call_id = getattr(event, 'tool_call_id', None)
                             if not call_id:
-                                # Try to get from result
                                 result_obj = event.result
                                 call_id = getattr(result_obj, 'tool_call_id', None)
 
+                            # Capture result preview for session state
+                            result_content = getattr(event.result, 'content', event.result)
+                            result_str = str(result_content)
+                            if call_id and call_id in pending_calls:
+                                pending_calls[call_id].result_preview = result_str[:500]
+                                tool_log.append(pending_calls.pop(call_id))
+
                             step = active_steps.get(call_id) if call_id else None
                             if step:
-                                result_content = getattr(event.result, 'content', event.result)
-                                step.output = truncate_output(str(result_content))
+                                step.output = truncate_output(result_str)
                                 await step.update()
 
             elif Agent.is_end_node(node):
@@ -269,4 +294,4 @@ async def stream_agent_run(
     # Get updated message history
     updated_history = run.result.all_messages() if run.result else message_history
 
-    return full_text, updated_history
+    return full_text, updated_history, tool_log
