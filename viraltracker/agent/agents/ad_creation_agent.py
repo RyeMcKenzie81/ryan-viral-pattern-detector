@@ -430,13 +430,8 @@ async def create_ads_v2(
     image_resolution: str = "2K",
 ) -> Dict:
     """
-    Create ads using the V2 pipeline with automatic template selection.
-
-    This is the primary ad creation tool. It:
-    1. Selects template(s) automatically (smart_select) or uses a specified template
-    2. Downloads the template image(s)
-    3. Runs the V2 ad creation pipeline (headline congruence, defect scan, auto-retry)
-    4. Returns results with approved/rejected/flagged counts
+    Schedule ad creation using the V2 pipeline. Creates a scheduler job that
+    runs in ~1 minute, respecting API rate limits.
 
     When the user asks for "5 templates with 3 ads each", set num_templates=5
     and num_variations=3. Total ads = num_templates × num_variations.
@@ -460,14 +455,14 @@ async def create_ads_v2(
         image_resolution: Image quality ("1K", "2K", "4K", default: "2K")
 
     Returns:
-        Dictionary with ad creation results including approved/rejected/flagged
-        counts and ad IDs for follow-up actions (edit, export, resize).
+        Dictionary with scheduled job details. The user will be notified
+        when the job completes via the job notification system.
     """
     import re
-    from uuid import UUID as _UUID
-    from viraltracker.pipelines.ad_creation_v2.orchestrator import run_ad_creation_v2
+    from datetime import datetime, timedelta, timezone
 
     # --- Resolve product_id: accept UUID or product name ---
+    product_name = product_id
     if not re.match(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', product_id, re.I):
         products = await ctx.deps.ad_creation.search_products_by_name(product_id)
         if not products:
@@ -476,177 +471,75 @@ async def create_ads_v2(
             names = ", ".join(f"**{p.name}**" for p in products[:5])
             return {"error": f"Multiple products match '{product_id}': {names}. Please be more specific."}
         product_id = str(products[0].id)
+        product_name = products[0].name
 
-    # --- Template selection ---
-    selected_template = None
+    # --- Get brand_id from product ---
+    from viraltracker.core.database import get_supabase_client
+    db = get_supabase_client()
+    prod_result = db.table("products").select("brand_id, name").eq("id", product_id).limit(1).execute()
+    if not prod_result.data:
+        return {"error": f"Product {product_id} not found in database."}
+    brand_id = prod_result.data[0]["brand_id"]
+    product_name = prod_result.data[0].get("name", product_name)
 
-    if template_id:
-        # User specified a template — just download its image
-        template_base64 = ctx.deps.template_queue.download_template_image(template_id)
-        if not template_base64:
-            return {"error": f"Could not download template {template_id}. Check it exists and has an image."}
-        # Fetch template metadata for canvas_size default
-        from viraltracker.core.database import get_supabase_client
-        db = get_supabase_client()
-        tmpl_result = db.table("scraped_templates").select("id, name, canvas_size").eq("id", template_id).limit(1).execute()
-        selected_template = tmpl_result.data[0] if tmpl_result.data else {}
-    else:
-        # Auto-select via smart_select
-        from viraltracker.services.template_scoring_service import (
-            fetch_template_candidates,
-            select_templates_with_fallback,
-            prefetch_product_asset_tags,
-            SelectionContext,
-            SMART_SELECT_WEIGHTS,
-            PHASE_8_SCORERS,
-        )
+    # --- Build job parameters ---
+    parameters = {
+        "template_selection_mode": "manual" if template_id else "smart_select",
+        "template_count": min(num_templates, 10),
+        "content_source": content_source,
+        "num_variations": min(num_variations, 15),
+        "canvas_sizes": canvas_sizes or ["1080x1080px"],
+        "color_modes": color_modes or ["original"],
+        "image_resolution": image_resolution,
+    }
+    if persona_id:
+        parameters["persona_id"] = persona_id
+    if creative_direction:
+        parameters["additional_instructions"] = creative_direction
 
-        candidates = await fetch_template_candidates(product_id)
-        if not candidates:
-            return {"error": "No active templates found. Upload or approve templates first."}
+    # Template IDs for manual mode
+    scraped_template_ids = [template_id] if template_id else None
 
-        # Build selection context
-        asset_tags = await prefetch_product_asset_tags(product_id)
+    # Schedule to run in ~1 minute
+    run_at = (datetime.now(timezone.utc) + timedelta(minutes=1)).isoformat()
 
-        # Get brand_id from product
-        from viraltracker.core.database import get_supabase_client
-        db = get_supabase_client()
-        prod_result = db.table("products").select("brand_id").eq("id", product_id).limit(1).execute()
-        brand_id = prod_result.data[0]["brand_id"] if prod_result.data else product_id
+    total_ads = (1 if template_id else min(num_templates, 10)) * min(num_variations, 15)
+    job_name = f"Chat: {product_name} - {total_ads} ads ({content_source})"
 
-        context = SelectionContext(
-            product_id=_UUID(product_id),
-            brand_id=_UUID(brand_id),
-            product_asset_tags=asset_tags,
-        )
+    job_data = {
+        "job_type": "ad_creation_v2",
+        "product_id": product_id,
+        "brand_id": brand_id,
+        "name": job_name,
+        "schedule_type": "one_time",
+        "cron_expression": None,
+        "scheduled_at": run_at,
+        "next_run_at": run_at,
+        "max_runs": None,
+        "template_source": "scraped",
+        "scraped_template_ids": scraped_template_ids,
+        "parameters": parameters,
+    }
 
-        select_count = min(num_templates, 10)
-        selection = select_templates_with_fallback(
-            candidates=candidates,
-            context=context,
-            weights=SMART_SELECT_WEIGHTS,
-            count=select_count,
-            scorers=PHASE_8_SCORERS,
-        )
-
-        if selection.empty:
-            return {"error": f"Template scoring returned no viable templates. {selection.reason or ''}"}
-
-        # --- Run V2 pipeline for each selected template ---
-        all_results = []
-        total_approved = 0
-        total_rejected = 0
-        total_flagged = 0
-        all_approved_ids = []
-
-        for tmpl in selection.templates:
-            tmpl_id = str(tmpl["id"])
-            tmpl_base64 = ctx.deps.template_queue.download_template_image(tmpl_id)
-            if not tmpl_base64:
-                logger.warning(f"Could not download template {tmpl_id}, skipping")
-                continue
-
-            tmpl_canvas = canvas_sizes
-            if not tmpl_canvas:
-                tmpl_size = tmpl.get("canvas_size")
-                tmpl_canvas = [tmpl_size] if tmpl_size else ["1080x1080px"]
-
-            result = await run_ad_creation_v2(
-                product_id=product_id,
-                reference_ad_base64=tmpl_base64,
-                reference_ad_filename=f"template_{tmpl_id}.png",
-                template_id=tmpl_id,
-                canvas_sizes=tmpl_canvas,
-                color_modes=color_modes or ["original"],
-                num_variations=num_variations,
-                content_source=content_source,
-                persona_id=persona_id,
-                creative_direction=creative_direction,
-                image_resolution=image_resolution,
-                auto_retry_rejected=True,
-                max_retry_attempts=1,
-                deps=ctx.deps,
-            )
-
-            approved = result.get("approved_count", 0)
-            rejected = result.get("rejected_count", 0)
-            flagged = result.get("flagged_count", 0)
-            total_approved += approved
-            total_rejected += rejected
-            total_flagged += flagged
-
-            run_approved_ids = [
-                ad["id"] for ad in (result.get("generated_ads") or [])
-                if ad.get("final_status") == "approved" and ad.get("id")
-            ]
-            all_approved_ids.extend(run_approved_ids)
-
-            all_results.append({
-                "ad_run_id": result.get("ad_run_id"),
-                "template_id": tmpl_id,
-                "template_name": tmpl.get("name", ""),
-                "approved_count": approved,
-                "rejected_count": rejected,
-                "flagged_count": flagged,
-            })
-
-        return {
-            "templates_used": len(all_results),
-            "num_variations_per_template": num_variations,
-            "total_approved": total_approved,
-            "total_rejected": total_rejected,
-            "total_flagged": total_flagged,
-            "approved_ad_ids": all_approved_ids,
-            "runs": all_results,
-            "summary": f"{len(all_results)} templates × {num_variations} variations: {total_approved} approved, {total_rejected} rejected, {total_flagged} flagged",
-        }
-
-    # --- Single template path (template_id specified) ---
-    # Canvas size default: use template's size
-    if not canvas_sizes:
-        tmpl_size = (selected_template or {}).get("canvas_size")
-        canvas_sizes = [tmpl_size] if tmpl_size else ["1080x1080px"]
-
-    # Run V2 pipeline
-    result = await run_ad_creation_v2(
-        product_id=product_id,
-        reference_ad_base64=template_base64,
-        reference_ad_filename=f"template_{template_id}.png",
-        template_id=template_id,
-        canvas_sizes=canvas_sizes,
-        color_modes=color_modes or ["original"],
-        num_variations=num_variations,
-        content_source=content_source,
-        persona_id=persona_id,
-        creative_direction=creative_direction,
-        image_resolution=image_resolution,
-        auto_retry_rejected=True,
-        max_retry_attempts=1,
-        deps=ctx.deps,
-    )
-
-    # Format response
-    approved = result.get("approved_count", 0)
-    rejected = result.get("rejected_count", 0)
-    flagged = result.get("flagged_count", 0)
-
-    approved_ids = [
-        ad["id"] for ad in (result.get("generated_ads") or [])
-        if ad.get("final_status") == "approved" and ad.get("id")
-    ]
+    try:
+        result = db.table("scheduled_jobs").insert(job_data).execute()
+        if not result.data:
+            return {"error": "Failed to create scheduled job."}
+        job_id = result.data[0]["id"]
+    except Exception as e:
+        return {"error": f"Failed to schedule ad creation: {e}"}
 
     return {
-        "ad_run_id": result.get("ad_run_id"),
-        "template_id": template_id,
-        "template_name": (selected_template or {}).get("name", ""),
-        "canvas_sizes": canvas_sizes,
-        "color_modes": color_modes or ["original"],
-        "num_variations": num_variations,
-        "approved_count": approved,
-        "rejected_count": rejected,
-        "flagged_count": flagged,
-        "approved_ad_ids": approved_ids,
-        "summary": result.get("summary", f"{approved} approved, {rejected} rejected, {flagged} flagged"),
+        "scheduled": True,
+        "job_id": job_id,
+        "job_name": job_name,
+        "product": product_name,
+        "templates": 1 if template_id else min(num_templates, 10),
+        "variations_per_template": min(num_variations, 15),
+        "total_ads_planned": total_ads,
+        "content_source": content_source,
+        "runs_in": "~1 minute",
+        "summary": f"Scheduled {total_ads} ads for {product_name} ({content_source}). Job will run in ~1 minute. You'll be notified when it completes.",
     }
 
 
