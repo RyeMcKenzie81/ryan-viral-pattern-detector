@@ -421,6 +421,7 @@ async def create_ads_v2(
     product_id: str,
     template_id: Optional[str] = None,
     num_variations: int = 5,
+    num_templates: int = 1,
     content_source: str = "recreate_template",
     canvas_sizes: Optional[List[str]] = None,
     color_modes: Optional[List[str]] = None,
@@ -432,17 +433,22 @@ async def create_ads_v2(
     Create ads using the V2 pipeline with automatic template selection.
 
     This is the primary ad creation tool. It:
-    1. Selects a template automatically (smart_select) or uses a specified template
-    2. Downloads the template image
+    1. Selects template(s) automatically (smart_select) or uses a specified template
+    2. Downloads the template image(s)
     3. Runs the V2 ad creation pipeline (headline congruence, defect scan, auto-retry)
     4. Returns results with approved/rejected/flagged counts
+
+    When the user asks for "5 templates with 3 ads each", set num_templates=5
+    and num_variations=3. Total ads = num_templates × num_variations.
 
     Args:
         ctx: Run context with AgentDependencies
         product_id: UUID or name of the product to create ads for
         template_id: Optional template UUID. If not provided, auto-selects the best
-            template using smart_select scoring.
-        num_variations: Number of ad variations to generate (1-15, default: 5)
+            template(s) using smart_select scoring.
+        num_variations: Number of ad variations per template (1-15, default: 5)
+        num_templates: Number of templates to use (1-10, default: 1). Ignored if
+            template_id is specified.
         content_source: Source for ad copy (default: "recreate_template"). Options:
             "recreate_template", "hooks", "belief_first"
         canvas_sizes: List of canvas sizes (e.g. ["1080x1080px", "1080x1350px"]).
@@ -514,31 +520,94 @@ async def create_ads_v2(
             product_asset_tags=asset_tags,
         )
 
+        select_count = min(num_templates, 10)
         selection = select_templates_with_fallback(
             candidates=candidates,
             context=context,
             weights=SMART_SELECT_WEIGHTS,
-            count=1,
+            count=select_count,
             scorers=PHASE_8_SCORERS,
         )
 
         if selection.empty:
             return {"error": f"Template scoring returned no viable templates. {selection.reason or ''}"}
 
-        selected_template = selection.templates[0]
-        template_id = str(selected_template["id"])
+        # --- Run V2 pipeline for each selected template ---
+        all_results = []
+        total_approved = 0
+        total_rejected = 0
+        total_flagged = 0
+        all_approved_ids = []
 
-        # Download selected template image
-        template_base64 = ctx.deps.template_queue.download_template_image(template_id)
-        if not template_base64:
-            return {"error": f"Could not download auto-selected template {template_id}."}
+        for tmpl in selection.templates:
+            tmpl_id = str(tmpl["id"])
+            tmpl_base64 = ctx.deps.template_queue.download_template_image(tmpl_id)
+            if not tmpl_base64:
+                logger.warning(f"Could not download template {tmpl_id}, skipping")
+                continue
 
-    # --- Canvas size default: use template's size ---
+            tmpl_canvas = canvas_sizes
+            if not tmpl_canvas:
+                tmpl_size = tmpl.get("canvas_size")
+                tmpl_canvas = [tmpl_size] if tmpl_size else ["1080x1080px"]
+
+            result = await run_ad_creation_v2(
+                product_id=product_id,
+                reference_ad_base64=tmpl_base64,
+                reference_ad_filename=f"template_{tmpl_id}.png",
+                template_id=tmpl_id,
+                canvas_sizes=tmpl_canvas,
+                color_modes=color_modes or ["original"],
+                num_variations=num_variations,
+                content_source=content_source,
+                persona_id=persona_id,
+                creative_direction=creative_direction,
+                image_resolution=image_resolution,
+                auto_retry_rejected=True,
+                max_retry_attempts=1,
+                deps=ctx.deps,
+            )
+
+            approved = result.get("approved_count", 0)
+            rejected = result.get("rejected_count", 0)
+            flagged = result.get("flagged_count", 0)
+            total_approved += approved
+            total_rejected += rejected
+            total_flagged += flagged
+
+            run_approved_ids = [
+                ad["id"] for ad in (result.get("generated_ads") or [])
+                if ad.get("final_status") == "approved" and ad.get("id")
+            ]
+            all_approved_ids.extend(run_approved_ids)
+
+            all_results.append({
+                "ad_run_id": result.get("ad_run_id"),
+                "template_id": tmpl_id,
+                "template_name": tmpl.get("name", ""),
+                "approved_count": approved,
+                "rejected_count": rejected,
+                "flagged_count": flagged,
+            })
+
+        return {
+            "templates_used": len(all_results),
+            "num_variations_per_template": num_variations,
+            "total_approved": total_approved,
+            "total_rejected": total_rejected,
+            "total_flagged": total_flagged,
+            "approved_ad_ids": all_approved_ids,
+            "runs": all_results,
+            "summary": f"{len(all_results)} templates × {num_variations} variations: {total_approved} approved, {total_rejected} rejected, {total_flagged} flagged",
+        }
+
+    # --- Single template path (template_id specified) ---
+    # Canvas size default: use template's size
     if not canvas_sizes:
         tmpl_size = (selected_template or {}).get("canvas_size")
         canvas_sizes = [tmpl_size] if tmpl_size else ["1080x1080px"]
 
-    # --- Run V2 pipeline ---
+    # Run V2 pipeline
     result = await run_ad_creation_v2(
         product_id=product_id,
         reference_ad_base64=template_base64,
@@ -556,7 +625,7 @@ async def create_ads_v2(
         deps=ctx.deps,
     )
 
-    # --- Format response ---
+    # Format response
     approved = result.get("approved_count", 0)
     rejected = result.get("rejected_count", 0)
     flagged = result.get("flagged_count", 0)

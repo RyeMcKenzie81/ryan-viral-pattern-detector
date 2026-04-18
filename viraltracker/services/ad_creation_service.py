@@ -62,6 +62,11 @@ class AdCreationService:
         """
         Search products by name using case-insensitive partial matching.
 
+        Tries the full name first, then progressively shorter word subsets
+        to handle cases where brand name is included (e.g. "Martin Clinic
+        Cortisol Control" → tries full, then "Cortisol Control", then
+        "Martin Clinic").
+
         Args:
             product_name: Product name (or partial name) to search for
 
@@ -72,10 +77,30 @@ class AdCreationService:
             >>> search_products_by_name("Wonder Paws")
             [Product(name="Wonder Paws Collagen 3x"), Product(name="Wonder Paws Omega")]
         """
-        # Use ilike for case-insensitive partial matching
+        # Try full name first
         result = self.supabase.table("products").select("*").ilike("name", f"%{product_name}%").order("name").execute()
+        if result.data:
+            return [Product(**row) for row in result.data]
 
-        return [Product(**row) for row in result.data]
+        # Try word subsets (user may have included brand name)
+        words = product_name.split()
+        if len(words) > 1:
+            # Try dropping words from the front, then from the back
+            for i in range(1, len(words)):
+                # Drop first i words (e.g. "Martin Clinic Cortisol Control" → "Cortisol Control")
+                subset = " ".join(words[i:])
+                result = self.supabase.table("products").select("*").ilike("name", f"%{subset}%").order("name").execute()
+                if result.data:
+                    return [Product(**row) for row in result.data]
+
+            for i in range(len(words) - 1, 0, -1):
+                # Drop last words (e.g. "Martin Clinic Cortisol Control" → "Martin Clinic")
+                subset = " ".join(words[:i])
+                result = self.supabase.table("products").select("*").ilike("name", f"%{subset}%").order("name").execute()
+                if result.data:
+                    return [Product(**row) for row in result.data]
+
+        return []
 
     async def get_hooks(
         self,
