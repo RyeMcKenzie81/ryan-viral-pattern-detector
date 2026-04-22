@@ -1295,6 +1295,7 @@ async def lookup_ad(
     IMPORTANT: When displaying results, embed the ad image inline using markdown image syntax:
     ![Ad Preview](image_url_value)
     Do NOT use a text link. The user wants to SEE the ad image in the chat.
+    Also include a "View Full Size" link below the image: [View Full Size](image_url_value)
 
     Args:
         ctx: Run context with AgentDependencies.
