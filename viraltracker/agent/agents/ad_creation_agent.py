@@ -1292,12 +1292,16 @@ async def lookup_ad(
 
     Returns ad details including copy, image URL, performance data, and translation lineage.
 
+    IMPORTANT: When displaying results, embed the ad image inline using markdown image syntax:
+    ![Ad Preview](image_url_value)
+    Do NOT use a text link. The user wants to SEE the ad image in the chat.
+
     Args:
         ctx: Run context with AgentDependencies.
         query: Ad identifier in any supported format.
 
     Returns:
-        Ad details dict or error message.
+        Ad details dict or error message. image_url contains a signed URL for the ad image.
     """
     try:
         result = await ctx.deps.ad_translation.lookup_ad(query)
