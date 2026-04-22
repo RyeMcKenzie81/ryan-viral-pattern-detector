@@ -189,7 +189,14 @@ class AdTranslationService:
             return None
 
     async def _enrich_with_performance(self, ad: Dict) -> Dict:
-        """Add performance data from meta_ads_performance if linked."""
+        """Add performance data and signed image URL."""
+        # Signed URL for image display
+        storage_path = ad.get("storage_path")
+        if storage_path:
+            signed_url = self._get_signed_url(storage_path)
+            if signed_url:
+                ad["image_url"] = signed_url
+
         try:
             mapping = self.supabase.table("meta_ad_mapping").select(
                 "meta_ad_id"
@@ -210,6 +217,18 @@ class AdTranslationService:
             logger.debug(f"Performance enrichment failed for ad {ad['id']}: {e}")
 
         return ad
+
+    def _get_signed_url(self, storage_path: str) -> Optional[str]:
+        """Convert Supabase storage path to a signed URL (1 hour expiry)."""
+        try:
+            parts = storage_path.split("/", 1)
+            bucket = parts[0]
+            path = parts[1] if len(parts) > 1 else storage_path
+            result = self.supabase.storage.from_(bucket).create_signed_url(path, 3600)
+            return result.get("signedURL", "")
+        except Exception as e:
+            logger.debug(f"Failed to create signed URL for {storage_path}: {e}")
+            return None
 
     # =========================================================================
     # COPY TRANSLATION
