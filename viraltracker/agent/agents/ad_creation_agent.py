@@ -1348,6 +1348,10 @@ async def translate_ads(
     or structured filenames (e.g. "SAV-FTS-65bb40-04161b-SQ"). They will be
     resolved to UUIDs automatically.
 
+    IMPORTANT: If the result contains errors, show the EXACT error messages to the user
+    verbatim. Do not paraphrase or summarize errors. The user needs the raw error text
+    to debug issues.
+
     Args:
         ctx: Run context with AgentDependencies.
         target_language: Target language as IETF tag (es-MX, pt-BR, fr-FR) or name (Spanish, Portuguese, American Spanish).
@@ -1389,10 +1393,12 @@ async def translate_ads(
         )
         return result
     except ValueError as e:
-        return {"error": f"Invalid ID format: {e}"}
+        return {"error": f"[SHOW THIS TO USER] Invalid ID format: {e}"}
     except Exception as e:
-        logger.error(f"translate_ads failed: {e}")
-        return {"error": f"Failed to translate ads: {e}"}
+        import traceback
+        tb = traceback.format_exc()
+        logger.error(f"translate_ads failed: {e}\n{tb}")
+        return {"error": f"[SHOW THIS TO USER] translate_ads exception: {type(e).__name__}: {e}"}
 
 
 # ============================================================================
