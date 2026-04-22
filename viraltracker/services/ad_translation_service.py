@@ -24,6 +24,7 @@ _LANGUAGE_MAP = {
     "spanish": "es",
     "mexican spanish": "es-MX",
     "latin american spanish": "es-419",
+    "american spanish": "es-419",
     "portuguese": "pt",
     "brazilian portuguese": "pt-BR",
     "french": "fr",
@@ -517,39 +518,58 @@ Output (JSON only):"""
             product_id = ad_runs.get("product_id") if isinstance(ad_runs, dict) else None
 
         new_ad_id = uuid4()
+        run_id = ad_run_id or UUID(source_ad["ad_run_id"])
 
-        # Upload image
-        upload_path, _ = await self.ad_creation.upload_generated_ad(
-            ad_run_id=ad_run_id or UUID(source_ad["ad_run_id"]),
-            prompt_index=0,
-            image_base64=gen_result["image_base64"],
-            product_id=UUID(product_id) if product_id else None,
-            ad_id=new_ad_id,
-            canvas_size=ad_extras.get("canvas_size"),
-        )
+        try:
+            # Upload image
+            upload_path, _ = await self.ad_creation.upload_generated_ad(
+                ad_run_id=run_id,
+                prompt_index=0,
+                image_base64=gen_result["image_base64"],
+                product_id=UUID(product_id) if product_id else None,
+                ad_id=new_ad_id,
+                canvas_size=ad_extras.get("canvas_size"),
+            )
+        except Exception as e:
+            logger.error(f"Image upload failed for translation of {source_ad_id}: {e}")
+            return {
+                "status": "error",
+                "reason": "upload_failed",
+                "source_ad_id": str(source_ad_id),
+                "message": str(e),
+            }
 
-        # Save to generated_ads
-        saved_id = await self.ad_creation.save_generated_ad(
-            ad_run_id=ad_run_id or UUID(source_ad["ad_run_id"]),
-            prompt_index=0,
-            prompt_text=modified_prompt_text,
-            prompt_spec=modified_spec,
-            hook_id=UUID(source_ad["hook_id"]) if source_ad.get("hook_id") else None,
-            hook_text=translated["hook_text"],
-            storage_path=upload_path,
-            final_status="approved",
-            model_requested=gen_result.get("model_requested"),
-            model_used=gen_result.get("model_used"),
-            generation_time_ms=generation_time_ms,
-            generation_retries=gen_result.get("retries", 0),
-            ad_id=new_ad_id,
-            meta_headline=translated.get("meta_headline"),
-            meta_primary_text=translated.get("meta_primary_text"),
-            canvas_size=ad_extras.get("canvas_size"),
-            color_mode=ad_extras.get("color_mode"),
-            language=target_language,
-            translation_parent_id=source_ad_id,
-        )
+        try:
+            # Save to generated_ads
+            saved_id = await self.ad_creation.save_generated_ad(
+                ad_run_id=run_id,
+                prompt_index=0,
+                prompt_text=modified_prompt_text,
+                prompt_spec=modified_spec,
+                hook_id=UUID(source_ad["hook_id"]) if source_ad.get("hook_id") else None,
+                hook_text=translated["hook_text"],
+                storage_path=upload_path,
+                final_status="approved",
+                model_requested=gen_result.get("model_requested"),
+                model_used=gen_result.get("model_used"),
+                generation_time_ms=generation_time_ms,
+                generation_retries=gen_result.get("retries", 0),
+                ad_id=new_ad_id,
+                meta_headline=translated.get("meta_headline"),
+                meta_primary_text=translated.get("meta_primary_text"),
+                canvas_size=ad_extras.get("canvas_size"),
+                color_mode=ad_extras.get("color_mode"),
+                language=target_language,
+                translation_parent_id=source_ad_id,
+            )
+        except Exception as e:
+            logger.error(f"DB save failed for translation of {source_ad_id}: {e}")
+            return {
+                "status": "error",
+                "reason": "save_failed",
+                "source_ad_id": str(source_ad_id),
+                "message": str(e),
+            }
 
         logger.info(f"Translated ad {source_ad_id} → {saved_id} ({target_language})")
         return {
