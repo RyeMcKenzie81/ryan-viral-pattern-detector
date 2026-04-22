@@ -688,12 +688,14 @@ Output (JSON only):"""
                 else:
                     error_count += 1
             except Exception as e:
-                logger.error(f"Translation failed for ad {ad_id}: {e}")
+                import traceback
+                tb = traceback.format_exc()
+                logger.error(f"Translation failed for ad {ad_id}: {e}\n{tb}")
                 results.append({
                     "status": "error",
                     "reason": "unexpected_error",
                     "source_ad_id": str(ad_id),
-                    "message": str(e),
+                    "message": f"{type(e).__name__}: {e}",
                 })
                 error_count += 1
 
