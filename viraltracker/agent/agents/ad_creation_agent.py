@@ -1303,6 +1303,9 @@ async def lookup_ad(
         result = await ctx.deps.ad_translation.lookup_ad(query)
         if result is None:
             return {"error": f"No ad found matching '{query}'"}
+        # Strip large fields that clutter the LLM response
+        result.pop("prompt_spec", None)
+        result.pop("prompt_text", None)
         return result
     except Exception as e:
         logger.error(f"lookup_ad failed: {e}")
