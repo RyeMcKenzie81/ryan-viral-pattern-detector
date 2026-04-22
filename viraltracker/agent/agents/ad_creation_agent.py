@@ -10,6 +10,7 @@ This agent exposes 14 tools:
 - Post-creation: smart_edit_ad, regenerate_ad, generate_size_variant
 - Export: send_ads_email, send_ads_slack
 - Personas: get_persona_for_copy, list_product_personas
+- Translation: lookup_ad, translate_ads
 """
 
 import logging
@@ -65,6 +66,10 @@ create_ads_v2 does all of that internally.
 - analyze_product_image: Analyze a product image for visual details
 - get_persona_for_copy / list_product_personas: Persona selection
 - get_template_queue_stats / list_pending_templates: Template pipeline status
+
+**Translation tools:**
+- lookup_ad: Find any ad by UUID, structured filename fragment (e.g. "65bb40"), or Meta ad ID
+- translate_ads: Translate existing ads into another language. Regenerates images with translated text.
 
 **Result Format:**
 - Only report results that came from actual tool calls
@@ -1258,7 +1263,108 @@ async def list_pending_templates(
 
 
 # ============================================================================
+# TRANSLATION TOOLS
+# ============================================================================
+
+@ad_creation_agent.tool(
+    metadata={
+        'category': 'Translation',
+        'rate_limit': '30/minute',
+        'use_cases': [
+            'Look up any ad by its UUID, structured filename, or Meta ad ID',
+            'Get ad details including copy, image URL, performance data, and lineage',
+        ],
+        'examples': [
+            'Find the ad with ID 65bb40',
+            'Look up ad SAV-FTS-65bb40-04161b-SQ',
+            'Show me ad details for Meta ad 23851234567890',
+        ]
+    }
+)
+async def lookup_ad(
+    ctx: RunContext[AgentDependencies],
+    query: str,
+) -> Dict:
+    """Look up an ad by ID. Accepts any format:
+    - Full UUID (e.g. 65bb40a1-...)
+    - Structured filename or fragment (e.g. SAV-FTS-65bb40-04161b-SQ or just 65bb40)
+    - Meta ad ID (numeric, e.g. 23851234567890)
+
+    Returns ad details including copy, image URL, performance data, and translation lineage.
+
+    Args:
+        ctx: Run context with AgentDependencies.
+        query: Ad identifier in any supported format.
+
+    Returns:
+        Ad details dict or error message.
+    """
+    try:
+        result = await ctx.deps.ad_translation.lookup_ad(query)
+        if result is None:
+            return {"error": f"No ad found matching '{query}'"}
+        return result
+    except Exception as e:
+        logger.error(f"lookup_ad failed: {e}")
+        return {"error": f"Failed to look up ad: {e}"}
+
+
+@ad_creation_agent.tool(
+    metadata={
+        'category': 'Translation',
+        'rate_limit': '5/minute',
+        'use_cases': [
+            'Translate existing winning ads into Spanish, Portuguese, or any language',
+            'Batch translate top-performing ads by ROAS',
+            'Create translated versions of specific ads',
+        ],
+        'examples': [
+            'Translate ad 65bb40 into Spanish',
+            'Translate my top 5 ads for Cortisol Control into Mexican Spanish',
+            'Translate these ads into Portuguese: ad1, ad2, ad3',
+        ]
+    }
+)
+async def translate_ads(
+    ctx: RunContext[AgentDependencies],
+    target_language: str,
+    ad_ids: Optional[List[str]] = None,
+    product_id: Optional[str] = None,
+    top_n_by_roas: Optional[int] = None,
+) -> Dict:
+    """Translate existing ads into a target language. Regenerates images with translated text.
+    Provide specific ad IDs, or use product_id + top_n_by_roas to auto-select winners.
+
+    Args:
+        ctx: Run context with AgentDependencies.
+        target_language: Target language as IETF tag (es-MX, pt-BR, fr-FR) or name (Spanish, Portuguese).
+        ad_ids: Optional list of ad UUIDs or filename fragments to translate.
+        product_id: Optional product UUID for performance-filtered batch selection.
+        top_n_by_roas: Optional number of top ads by ROAS to translate (requires product_id).
+
+    Returns:
+        Translation results with counts, ad_run_id, and per-ad success/failure details.
+    """
+    try:
+        parsed_ids = [UUID(aid) for aid in ad_ids] if ad_ids else None
+        parsed_product = UUID(product_id) if product_id else None
+
+        result = await ctx.deps.ad_translation.translate_batch(
+            ad_ids=parsed_ids,
+            product_id=parsed_product,
+            top_n_by_roas=top_n_by_roas,
+            target_language=target_language,
+        )
+        return result
+    except ValueError as e:
+        return {"error": f"Invalid ID format: {e}"}
+    except Exception as e:
+        logger.error(f"translate_ads failed: {e}")
+        return {"error": f"Failed to translate ads: {e}"}
+
+
+# ============================================================================
 # Tool count and initialization
 # ============================================================================
 
-logger.info("Ad Creation Agent initialized with 14 tools")
+logger.info("Ad Creation Agent initialized with 16 tools")
