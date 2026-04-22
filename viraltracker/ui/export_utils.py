@@ -81,13 +81,18 @@ def get_format_code_from_spec(prompt_spec: dict) -> str:
 
 
 def generate_structured_filename(brand_code: str, product_code: str, run_id: str,
-                                  ad_id: str, format_code: str, ext: str = "png") -> str:
-    """Generate structured filename like WP-C3-a1b2c3-d4e5f6-SQ.png"""
+                                  ad_id: str, format_code: str, ext: str = "png",
+                                  language: str | None = None) -> str:
+    """Generate structured filename like WP-C3-a1b2c3-d4e5f6-SQ.png
+    Non-English ads get a language suffix: WP-C3-a1b2c3-d4e5f6-SQ-ES.png"""
     run_short = run_id.replace("-", "")[:6]
     ad_short = ad_id.replace("-", "")[:6]
     bc = (brand_code or "XX").upper()
     pc = (product_code or "XX").upper()
-    return f"{bc}-{pc}-{run_short}-{ad_short}-{format_code}.{ext}"
+    lang_suffix = ""
+    if language and language.lower() not in ("en", "english"):
+        lang_suffix = f"-{language.split('-')[0].upper()}"
+    return f"{bc}-{pc}-{run_short}-{ad_short}-{format_code}{lang_suffix}.{ext}"
 
 
 # ---------------------------------------------------------------------------

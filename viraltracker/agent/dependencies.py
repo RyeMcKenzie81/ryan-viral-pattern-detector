@@ -50,6 +50,7 @@ from ..services.ad_performance_query_service import AdPerformanceQueryService
 from ..services.klaviyo_service import KlaviyoService
 from ..services.competitor_service import CompetitorService
 from ..services.competitor_intel_service import CompetitorIntelService
+from ..services.ad_translation_service import AdTranslationService
 
 logger = logging.getLogger(__name__)
 
@@ -150,6 +151,7 @@ class AgentDependencies(BaseModel):
     seo_article_tracking: Optional[ArticleTrackingService] = None
     seo_ga4: Optional[GA4Service] = None
     ad_performance_query: AdPerformanceQueryService
+    ad_translation: AdTranslationService
     docs: Optional[DocService] = None
     project_name: str = "yakety-pack-instagram"
     result_cache: ResultCache = Field(default_factory=ResultCache)
@@ -343,6 +345,14 @@ class AgentDependencies(BaseModel):
         ad_performance_query = AdPerformanceQueryService(supabase)
         logger.info("AdPerformanceQueryService initialized")
 
+        # Initialize AdTranslationService for multi-language ad translation
+        ad_translation = AdTranslationService(
+            supabase=supabase,
+            gemini_service=gemini,
+            ad_creation_service=ad_creation,
+        )
+        logger.info("AdTranslationService initialized")
+
         return cls(
             twitter=twitter,
             gemini=gemini,
@@ -380,6 +390,7 @@ class AgentDependencies(BaseModel):
             seo_article_tracking=seo_article_tracking,
             seo_ga4=seo_ga4,
             ad_performance_query=ad_performance_query,
+            ad_translation=ad_translation,
             docs=docs,
             project_name=project_name
         )

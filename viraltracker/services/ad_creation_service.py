@@ -340,13 +340,15 @@ class AdCreationService:
         ad_run_id: UUID,
         ad_id: UUID,
         format_code: str,
-        extension: str = "png"
+        extension: str = "png",
+        language: Optional[str] = None,
     ) -> str:
         """
         Generate structured ad filename with ad_id first for Meta Ads matching.
 
-        Format: {ad_id_8char}-{brand_code}-{product_code}-{format}.{ext}
-        Example: d4e5f6a7-WP-C3-SQ.png
+        Format: {ad_id_8char}-{brand_code}-{product_code}-{format}[-{LANG}].{ext}
+        Example: d4e5f6a7-WP-C3-SQ.png (English, no suffix)
+        Example: d4e5f6a7-WP-C3-SQ-ES.png (Spanish)
 
         The ad_id is placed first (8 chars) so users can easily copy it to the
         Meta ad name when uploading, enabling auto-matching in the performance
@@ -359,6 +361,7 @@ class AdCreationService:
             ad_id: UUID of the generated ad
             format_code: Format code (SQ, ST, PT, LS)
             extension: File extension (default: png)
+            language: IETF language tag (e.g. 'es-MX'). None or 'en' = no suffix.
 
         Returns:
             Structured filename with ad_id first
@@ -366,7 +369,12 @@ class AdCreationService:
         # Use 8 chars for ~2.8 trillion combinations (collision-safe)
         ad_short = str(ad_id).replace("-", "")[:8]
 
-        return f"M5-{ad_short}-{brand_code}-{product_code}-{format_code}.{extension}"
+        # Language suffix for non-English ads (es-MX → ES, pt-BR → PT)
+        lang_suffix = ""
+        if language and language.lower() not in ("en", "english"):
+            lang_suffix = f"-{language.split('-')[0].upper()}"
+
+        return f"M5-{ad_short}-{brand_code}-{product_code}-{format_code}{lang_suffix}.{extension}"
 
     # ============================================
     # IMAGE UPLOAD
@@ -624,6 +632,9 @@ class AdCreationService:
         pre_gen_score: Optional[float] = None,
         # Blueprint-aware generation
         blueprint_id: Optional[UUID] = None,
+        # Translation support
+        language: Optional[str] = None,
+        translation_parent_id: Optional[UUID] = None,
     ) -> UUID:
         """
         Save generated ad metadata to database.
@@ -654,6 +665,8 @@ class AdCreationService:
             canvas_size: Canvas dimensions string (e.g. '1080x1080', '1080x1350')
             color_mode: Color mode used (e.g. 'original', 'complementary', 'brand')
             prompt_version: Pydantic prompt schema version (e.g. 'v2.1.0')
+            language: IETF language tag (e.g. 'es-MX', 'pt-BR'). None = English default.
+            translation_parent_id: Source ad UUID when this is a translation
 
         Returns:
             UUID of generated ad record
@@ -737,6 +750,12 @@ class AdCreationService:
         # Blueprint-aware generation
         if blueprint_id is not None:
             data["blueprint_id"] = str(blueprint_id)
+
+        # Translation support
+        if language is not None:
+            data["language"] = language
+        if translation_parent_id is not None:
+            data["translation_parent_id"] = str(translation_parent_id)
 
         result = self.supabase.table("generated_ads").insert(data).execute()
         generated_ad_id = UUID(result.data[0]["id"])

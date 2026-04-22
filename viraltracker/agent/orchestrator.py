@@ -124,7 +124,7 @@ Your role is to analyze user requests and route them to the appropriate speciali
    - Also responds to: "find keywords for X", "SEO opportunities", "how are our articles ranking?"
    - Also responds to: "page analytics", "traffic sources", "where is our traffic coming from?"
 
-6. **Ad Creation Agent** - For Facebook ad creative generation and templates:
+6. **Ad Creation Agent** - For Facebook ad creative generation, templates, and translation:
    - Creating Facebook ad variations using AI
    - Analyzing reference ads with Claude vision
    - Selecting viral hooks and product images
@@ -132,6 +132,8 @@ Your role is to analyze user requests and route them to the appropriate speciali
    - Dual AI review (Claude + Gemini) with OR logic
    - Sequential generation of 5 ad variations
    - Template queue stats and pending template listing
+   - Looking up ads by any ID format (UUID, filename fragment, Meta ad ID)
+   - Translating existing ads into other languages (Spanish, Portuguese, etc.)
 
 7. **Klaviyo Agent** - For email marketing operations:
    - Listing and creating email campaigns

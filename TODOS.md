@@ -26,3 +26,21 @@
 **Context:** All per-video extraction data already exists in `video_analyses` JSONB. No new video analysis needed — just one Claude call over the existing extractions. Could also power cross-competitor comparison ("Competitor A bets on mechanism, Competitor B bets on social proof").
 **Depends on:** Phase 1 tested and stable.
 **Added:** 2026-04-08 from Phase 1 testing discussion.
+
+## Ad Translation Capability B — Pipeline Language Threading
+**What:** Thread `language` param into `create_ads_v2()` pipeline so new ads can be generated directly in any language. Hooks adapted in target language, copy scaffolding generates in target language. Requires adding `language` param to `run_ad_creation_v2()`, `ContentService.select_hooks()`, `CopyScaffoldService.generate_copy_set()`, and `AdGenerationService.generate_prompt()`.
+**Why:** Lets users create fresh Spanish ads from templates, not just translate existing ones. Currently only Capability A (translate existing ads) is implemented.
+**Pros:** Complete multi-language story. Users can create AND translate.
+**Cons:** Touches 4 deep pipeline files (content_service, copy_scaffold_service, generation_service, orchestrator). Also requires copy guardrail localization (see below).
+**Context:** Deferred from ad-translation PR during /plan-eng-review scope reduction. Capability A must be merged and tested first. ~30min CC time.
+**Depends on:** Ad Translation Capability A merged. Copy Guardrail Localization (below).
+**Added:** 2026-04-22 from /plan-eng-review of Ad Translation feature.
+
+## Copy Guardrail Localization
+**What:** The copy validation regexes in `copy_scaffold_service.py` (lines 42-82) are English-only. Patterns like `r'\d+%\s*off'` won't catch Spanish equivalents (`'\d+%\s*de descuento'`). Non-English copy bypasses ALL safety checks.
+**Why:** Blocks Capability B (pipeline language threading). Not needed for Capability A since we translate already-approved English copy.
+**Pros:** Safety parity across languages. Prevents prohibited claims in non-English ads.
+**Cons:** Maintaining regex patterns per language is brittle. Better long-term approach: switch to Claude-based semantic validation instead of regex.
+**Context:** Current guardrails check for discounts, medical claims, guarantees, urgency language — all via English regex. Could either (a) add per-language regex sets, or (b) replace with a Claude validation call that works in any language. Option (b) is more robust but adds latency + cost.
+**Depends on:** Nothing, but only matters when Capability B is implemented.
+**Added:** 2026-04-22 from /plan-eng-review of Ad Translation feature (outside voice finding).
