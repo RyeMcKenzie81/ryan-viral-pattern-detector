@@ -1039,7 +1039,7 @@ else:
         with col_stats:
             approval_pct = int(approved_ads/total_ads*100) if total_ads > 0 else 0
             if status == 'failed':
-                error_msg = run.get('error_message', '')
+                error_msg = run.get('error_message') or ''
                 # Show truncated error in summary row
                 short_error = (error_msg[:80] + '...') if len(error_msg) > 80 else error_msg
                 st.markdown(f"{get_status_badge(status)} {short_error}", unsafe_allow_html=True)
