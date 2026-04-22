@@ -1341,12 +1341,17 @@ async def translate_ads(
     top_n_by_roas: Optional[int] = None,
 ) -> Dict:
     """Translate existing ads into a target language. Regenerates images with translated text.
+    Use this tool (NOT lookup_ad) when the user asks to translate an ad.
     Provide specific ad IDs, or use product_id + top_n_by_roas to auto-select winners.
+
+    ad_ids accepts ANY format: full UUIDs, filename fragments (e.g. "65bb40"),
+    or structured filenames (e.g. "SAV-FTS-65bb40-04161b-SQ"). They will be
+    resolved to UUIDs automatically.
 
     Args:
         ctx: Run context with AgentDependencies.
-        target_language: Target language as IETF tag (es-MX, pt-BR, fr-FR) or name (Spanish, Portuguese).
-        ad_ids: Optional list of ad UUIDs or filename fragments to translate.
+        target_language: Target language as IETF tag (es-MX, pt-BR, fr-FR) or name (Spanish, Portuguese, American Spanish).
+        ad_ids: Optional list of ad identifiers to translate (UUIDs, filename fragments, or structured filenames).
         product_id: Optional product UUID for performance-filtered batch selection.
         top_n_by_roas: Optional number of top ads by ROAS to translate (requires product_id).
 
@@ -1354,12 +1359,31 @@ async def translate_ads(
         Translation results with counts, ad_run_id, and per-ad success/failure details.
     """
     try:
-        parsed_ids = [UUID(aid) for aid in ad_ids] if ad_ids else None
+        # Resolve ad identifiers to UUIDs (supports fragments, filenames, etc.)
+        resolved_ids = None
+        if ad_ids:
+            resolved_ids = []
+            for aid in ad_ids:
+                # Try direct UUID parse first
+                try:
+                    resolved_ids.append(UUID(aid))
+                    continue
+                except ValueError:
+                    pass
+                # Fall back to lookup
+                result = await ctx.deps.ad_translation.lookup_ad(aid)
+                if result and not result.get("multiple_matches") and result.get("id"):
+                    resolved_ids.append(UUID(result["id"]))
+                elif result and result.get("multiple_matches"):
+                    return {"error": f"Ambiguous ad identifier '{aid}' matched {result['count']} ads. Use a more specific ID."}
+                else:
+                    return {"error": f"Could not find ad matching '{aid}'"}
+
         parsed_product = UUID(product_id) if product_id else None
 
         result = await ctx.deps.ad_translation.translate_batch(
-            ad_ids=parsed_ids,
-            product_id=parsed_product,
+            ad_ids=[str(aid) for aid in resolved_ids] if resolved_ids else None,
+            product_id=str(parsed_product) if parsed_product else None,
             top_n_by_roas=top_n_by_roas,
             target_language=target_language,
         )
