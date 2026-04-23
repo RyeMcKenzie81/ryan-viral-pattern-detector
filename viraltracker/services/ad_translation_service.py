@@ -336,6 +336,32 @@ Output (JSON only):"""
             return None
         return self._CANVAS_ASPECT_MAP.get((w, h))
 
+    def _build_edit_prompt(
+        self,
+        original_hook: str,
+        translated_hook: str,
+        original_benefit: Optional[str] = None,
+        translated_benefit: Optional[str] = None,
+    ) -> str:
+        """Build an image-edit prompt that swaps only overlay text."""
+        lines = [
+            "Edit this ad image. Change ONLY the overlay text as specified below. "
+            "Keep everything else EXACTLY the same — layout, colors, background, "
+            "product packaging, logos, and all text ON the product must not change.",
+            "",
+            "Text changes:",
+            f'  Change "{original_hook}" → "{translated_hook}"',
+        ]
+        if original_benefit and translated_benefit:
+            lines.append(f'  Change "{original_benefit}" → "{translated_benefit}"')
+        lines.append("")
+        lines.append(
+            "Do NOT re-render the product, background, or any other element. "
+            "The result should look identical to the original except for the "
+            "translated overlay text."
+        )
+        return "\n".join(lines)
+
     def _swap_prompt_spec_text(
         self,
         prompt_spec: Dict,
@@ -512,8 +538,7 @@ Output (JSON only):"""
         )
         modified_prompt_text = json.dumps(modified_spec, indent=2, ensure_ascii=False)
 
-        # 5. Regenerate image via Gemini
-        # Download original reference images (template + product)
+        # 5. Edit image via Gemini — change only the overlay text, keep everything else
         reference_images = []
         storage_path = source_ad.get("storage_path")
         if storage_path:
@@ -526,13 +551,21 @@ Output (JSON only):"""
         # Map canvas_size to Gemini aspect_ratio to preserve original dimensions
         aspect_ratio = self._canvas_size_to_aspect_ratio(ad_extras.get("canvas_size"))
 
+        # Build an edit-style prompt: tell Gemini exactly which text to swap
+        edit_prompt = self._build_edit_prompt(
+            original_hook=hook_text,
+            translated_hook=translated["hook_text"],
+            original_benefit=benefit_text,
+            translated_benefit=translated_benefit,
+        )
+
         try:
             generation_start = time.time()
             gen_result = await self.gemini.generate_image(
-                prompt=modified_prompt_text,
+                prompt=edit_prompt,
                 reference_images=reference_images if reference_images else None,
                 return_metadata=True,
-                temperature=0.4,
+                temperature=0.15,
                 image_size="4K",
                 aspect_ratio=aspect_ratio,
             )
