@@ -181,11 +181,20 @@ referent from session context (injected via dynamic instructions). Include relev
 entity IDs (brand_id, product_id, competitor_id, etc.) when routing to sub-agents
 so they don't have to re-ask the user.
 
+**Routing Priority Rules:**
+- For compound queries that combine **performance data** (sales, ROAS, top ads) with
+  **translation** (translate, translated, translation status, Spanish, Portuguese):
+  1. First route to **Ad Intelligence Agent** to get the ad IDs that match performance criteria
+  2. Then route to **Ad Creation Agent** with those ad IDs for translation or translation status checks
+- If the request is purely about translating specific ads (by ID), route directly to Ad Creation Agent.
+- For multi-step queries, YOU can call multiple agent routing tools sequentially.
+  Pass results from one agent to the next.
+
 **Your Responsibilities:**
 - Understand the user's intent
 - Route to the most appropriate specialized agent
 - Pass relevant context and parameters
-- Coordinate multi-step workflows if needed
+- Coordinate multi-step workflows by calling multiple agents sequentially when needed
 
 **Important:**
 - ALWAYS route to a specialized agent - do not try to handle requests directly
@@ -299,16 +308,22 @@ async def route_to_ad_creation_agent(
     ctx: RunContext[AgentDependencies],
     query: str
 ) -> str:
-    """Route request to Ad Creation Agent for Facebook ad creative generation.
+    """Route request to Ad Creation Agent for Facebook ad creative generation and translation.
 
     This agent generates Facebook ad variations using:
     - Claude vision for reference ad analysis
     - Viral hooks from database
     - Product images from database
-    - Gemini Nano Banana for ad generation
+    - Gemini for ad generation
     - Dual AI review (Claude + Gemini) with OR logic
 
-    The agent generates 5 ad variations sequentially with automatic quality review.
+    Also handles ad TRANSLATION into other languages (Spanish, Portuguese, etc.):
+    - Translating existing ads into other languages
+    - Looking up ads by ID/filename to check translation status
+    - Checking which ads have or haven't been translated
+
+    Route here when users mention: translate, translation, Spanish, Portuguese,
+    language, or ask about translation status of ads.
     """
     logger.info(f"Routing to Ad Creation Agent: {query}")
     result = await ad_creation_agent.run(query, deps=ctx.deps)
