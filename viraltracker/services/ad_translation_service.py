@@ -771,6 +771,12 @@ Output (JSON only):"""
             },
         )
 
+        # Mark the run as generating
+        await self.ad_creation.update_ad_run(
+            ad_run_id=ad_run_id,
+            status="generating",
+        )
+
         # Translate each ad
         results = []
         success_count = 0
