@@ -533,7 +533,7 @@ Output (JSON only):"""
                 reference_images=reference_images if reference_images else None,
                 return_metadata=True,
                 temperature=0.4,
-                image_size="2K",
+                image_size="4K",
                 aspect_ratio=aspect_ratio,
             )
             generation_time_ms = int((time.time() - generation_start) * 1000)
