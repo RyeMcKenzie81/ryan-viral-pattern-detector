@@ -196,13 +196,26 @@ class AdTranslationService:
             return None
 
     async def _enrich_with_performance(self, ad: Dict) -> Dict:
-        """Add performance data and signed image URL."""
+        """Add performance data, translation status, and signed image URL."""
         # Signed URL for image display
         storage_path = ad.get("storage_path")
         if storage_path:
             signed_url = self._get_signed_url(storage_path)
             if signed_url:
                 ad["image_url"] = signed_url
+
+        # Check for existing translations of this ad
+        try:
+            translations = self.supabase.table("generated_ads").select(
+                "id, language"
+            ).eq("translation_parent_id", ad["id"]).execute()
+            if translations.data:
+                ad["translations"] = [
+                    {"id": t["id"], "language": t["language"]}
+                    for t in translations.data
+                ]
+        except Exception as e:
+            logger.debug(f"Translation check failed for ad {ad['id']}: {e}")
 
         try:
             mapping = self.supabase.table("meta_ad_mapping").select(

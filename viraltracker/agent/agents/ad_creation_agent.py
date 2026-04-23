@@ -1291,6 +1291,8 @@ async def lookup_ad(
     - Meta ad ID (numeric, e.g. 23851234567890)
 
     Returns ad details including copy, image URL, performance data, and translation lineage.
+    The result includes a "translations" list showing existing translations of this ad
+    (each with id and language), so you can tell the user which languages are already done.
 
     IMPORTANT: When displaying results, embed the ad image inline using markdown image syntax:
     ![Ad Preview](image_url_value)
@@ -1303,6 +1305,7 @@ async def lookup_ad(
 
     Returns:
         Ad details dict or error message. image_url contains a signed URL for the ad image.
+        translations contains a list of existing translations [{id, language}].
     """
     try:
         result = await ctx.deps.ad_translation.lookup_ad(query)
