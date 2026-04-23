@@ -214,6 +214,31 @@ class TestSwapPromptSpecText:
 
 
 # ============================================================================
+# _build_edit_prompt
+# ============================================================================
+
+class TestBuildEditPrompt:
+    def test_basic_prompt(self, service):
+        result = service._build_edit_prompt("Hello", "Hola")
+        assert 'Change "Hello" → "Hola"' in result
+        assert "product packaging" not in result.split("Text changes:")[1].split("Do NOT")[0]
+
+    def test_with_benefit(self, service):
+        result = service._build_edit_prompt("Hello", "Hola", "Save 20%", "Ahorra 20%")
+        assert 'Change "Hello" → "Hola"' in result
+        assert 'Change "Save 20%" → "Ahorra 20%"' in result
+
+    def test_with_product_images(self, service):
+        result = service._build_edit_prompt("Hello", "Hola", has_product_images=True)
+        assert "actual product packaging" in result
+        assert "EXACTLY as it appears" in result
+
+    def test_without_product_images(self, service):
+        result = service._build_edit_prompt("Hello", "Hola", has_product_images=False)
+        assert "actual product packaging" not in result
+
+
+# ============================================================================
 # translate_ad_copy (mocked Anthropic)
 # ============================================================================
 
