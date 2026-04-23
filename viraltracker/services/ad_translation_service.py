@@ -120,12 +120,7 @@ class AdTranslationService:
         """Direct lookup by full UUID."""
         try:
             result = self.supabase.table("generated_ads").select(
-                "id, storage_path, prompt_spec, prompt_text, hook_text, hook_id, "
-                "meta_headline, meta_primary_text, canvas_size, color_mode, "
-                "final_status, language, translation_parent_id, "
-                "ad_run_id, ad_runs(product_id, parameters), "
-                "template_name, angle_id, belief_plan_id, "
-                "parent_ad_id, edit_parent_id, regenerate_parent_id"
+                self._AD_LOOKUP_FIELDS
             ).eq("id", uuid_str).execute()
 
             if result.data:
@@ -136,17 +131,28 @@ class AdTranslationService:
             logger.error(f"UUID lookup failed for {uuid_str}: {e}")
             return None
 
+    _AD_LOOKUP_FIELDS = (
+        "id, storage_path, prompt_spec, prompt_text, hook_text, hook_id, "
+        "meta_headline, meta_primary_text, canvas_size, color_mode, "
+        "final_status, language, translation_parent_id, "
+        "ad_run_id, ad_runs(product_id, parameters), "
+        "template_name, angle_id, belief_plan_id, "
+        "parent_ad_id, edit_parent_id, regenerate_parent_id"
+    )
+
     async def _lookup_by_prefix(self, prefix: str) -> Optional[Dict[str, Any]]:
-        """Lookup by id_prefix column (indexed, fast)."""
+        """Lookup by id_prefix column, falling back to ad_run_id prefix."""
         try:
+            # Primary: match against id_prefix (first 8 chars of ad UUID)
             result = self.supabase.table("generated_ads").select(
-                "id, storage_path, prompt_spec, prompt_text, hook_text, hook_id, "
-                "meta_headline, meta_primary_text, canvas_size, color_mode, "
-                "final_status, language, translation_parent_id, "
-                "ad_run_id, ad_runs(product_id, parameters), "
-                "template_name, angle_id, belief_plan_id, "
-                "parent_ad_id, edit_parent_id, regenerate_parent_id"
+                self._AD_LOOKUP_FIELDS
             ).like("id_prefix", f"{prefix}%").execute()
+
+            # Fallback: the fragment might be a run_id prefix (3rd segment of filename)
+            if not result.data:
+                result = self.supabase.table("generated_ads").select(
+                    self._AD_LOOKUP_FIELDS
+                ).like("ad_run_id", f"{prefix}%").execute()
 
             if not result.data:
                 return None
