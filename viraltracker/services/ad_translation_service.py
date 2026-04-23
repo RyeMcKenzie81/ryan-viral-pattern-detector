@@ -972,10 +972,10 @@ Output (JSON only):"""
             uuid_str = f"{clean[:8]}-{clean[8:12]}-{clean[12:16]}-{clean[16:20]}-{clean[20:]}"
             return {"type": "uuid", "value": uuid_str}
 
-        # Structured filename: SAV-FTS-65bb40-04161b-SQ or SAV-FTS-65bb40-04161b-SQ-ES
+        # Structured filename: SAV-FTS-65bb40-04161b-SQ or SAV-FTS-65bb40-04161b (no size suffix)
         # Extract the ad_id fragment (4th segment, 6 hex chars)
         struct_match = re.match(
-            r"[A-Za-z]{2,4}-[A-Za-z0-9]{2,4}-[a-f0-9]{6}-([a-f0-9]{6})-[A-Za-z]{2}",
+            r"[A-Za-z]{2,4}-[A-Za-z0-9]{2,4}-[a-f0-9]{6}-([a-f0-9]{6})(?:-[A-Za-z]{2})?",
             query, re.IGNORECASE
         )
         if struct_match:
