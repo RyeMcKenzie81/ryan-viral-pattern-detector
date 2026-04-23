@@ -348,6 +348,7 @@ Output (JSON only):"""
         translated_hook: str,
         original_benefit: Optional[str] = None,
         translated_benefit: Optional[str] = None,
+        has_product_images: bool = False,
     ) -> str:
         """Build an image-edit prompt that swaps only overlay text."""
         lines = [
@@ -361,6 +362,13 @@ Output (JSON only):"""
         if original_benefit and translated_benefit:
             lines.append(f'  Change "{original_benefit}" → "{translated_benefit}"')
         lines.append("")
+        if has_product_images:
+            lines.append(
+                "The additional images show the actual product packaging. "
+                "Reproduce ALL text on the packaging EXACTLY as it appears in those "
+                "reference photos — do not alter, rephrase, or misspell any product label text."
+            )
+            lines.append("")
         lines.append(
             "Do NOT re-render the product, background, or any other element. "
             "The result should look identical to the original except for the "
@@ -554,15 +562,34 @@ Output (JSON only):"""
             except Exception as e:
                 logger.warning(f"Could not download source ad image: {e}")
 
+        # Include product packaging images so Gemini has a clean reference for labels
+        ad_run_id_str = source_ad.get("ad_run_id")
+        if ad_run_id_str:
+            try:
+                run_data = self.supabase.table("ad_runs").select(
+                    "selected_product_images"
+                ).eq("id", ad_run_id_str).execute()
+                product_paths = (run_data.data[0].get("selected_product_images") or []) if run_data.data else []
+                for pp in product_paths[:2]:  # max 2 product images
+                    try:
+                        img_data = await self.ad_creation.download_image(pp)
+                        reference_images.append(img_data)
+                    except Exception:
+                        pass
+            except Exception as e:
+                logger.warning(f"Could not fetch product images: {e}")
+
         # Map canvas_size to Gemini aspect_ratio to preserve original dimensions
         aspect_ratio = self._canvas_size_to_aspect_ratio(ad_extras.get("canvas_size"))
 
         # Build an edit-style prompt: tell Gemini exactly which text to swap
+        has_product_images = len(reference_images) > 1  # first is the ad itself
         edit_prompt = self._build_edit_prompt(
             original_hook=hook_text,
             translated_hook=translated["hook_text"],
             original_benefit=benefit_text,
             translated_benefit=translated_benefit,
+            has_product_images=has_product_images,
         )
 
         try:
