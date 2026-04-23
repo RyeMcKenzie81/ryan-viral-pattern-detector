@@ -714,7 +714,12 @@ Output (JSON only):"""
             f"{skip_count} skipped, {error_count} errors"
         )
 
-        return {
+        # Collect error messages for top-level visibility
+        error_messages = [
+            r.get("message", "unknown") for r in results if r.get("status") == "error"
+        ]
+
+        batch_result = {
             "status": "success" if success_count > 0 else "failed",
             "ad_run_id": str(ad_run_id),
             "target_language": target_language,
@@ -724,6 +729,11 @@ Output (JSON only):"""
             "errors": error_count,
             "results": results,
         }
+
+        if error_messages:
+            batch_result["error_details"] = " | ".join(error_messages)
+
+        return batch_result
 
     async def _get_top_ads_by_roas(
         self, product_id: UUID, top_n: int
