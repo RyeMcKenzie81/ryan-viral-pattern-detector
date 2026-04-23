@@ -405,6 +405,7 @@ Output (JSON only):"""
         source_ad_id: UUID,
         target_language: str,
         ad_run_id: Optional[UUID] = None,
+        force: bool = False,
     ) -> Dict[str, Any]:
         """
         Translate a single ad into the target language.
@@ -421,6 +422,7 @@ Output (JSON only):"""
             source_ad_id: UUID of the ad to translate
             target_language: IETF language tag (e.g., "es-MX")
             ad_run_id: Optional ad_run_id to group translations into
+            force: If True, delete existing translation and redo it
 
         Returns:
             Dict with new ad info or error details
@@ -431,13 +433,19 @@ Output (JSON only):"""
         ).eq("language", target_language).limit(1).execute()
 
         if existing.data:
-            return {
-                "status": "skipped",
-                "reason": "already_translated",
-                "existing_translation_id": existing.data[0]["id"],
-                "source_ad_id": str(source_ad_id),
-                "language": target_language,
-            }
+            if force:
+                # Delete the old translation so we can redo it
+                old_id = existing.data[0]["id"]
+                logger.info(f"Force retranslation: deleting old translation {old_id}")
+                self.supabase.table("generated_ads").delete().eq("id", old_id).execute()
+            else:
+                return {
+                    "status": "exists",
+                    "reason": "already_translated",
+                    "existing_translation_id": existing.data[0]["id"],
+                    "source_ad_id": str(source_ad_id),
+                    "language": target_language,
+                }
 
         # 2. Fetch source ad
         source_ad = await self.ad_creation.get_ad_for_variant(source_ad_id)
@@ -618,6 +626,7 @@ Output (JSON only):"""
         product_id: Optional[str] = None,
         top_n_by_roas: Optional[int] = None,
         target_language: str = "es-MX",
+        force: bool = False,
     ) -> Dict[str, Any]:
         """
         Translate a batch of ads into the target language.
@@ -633,6 +642,7 @@ Output (JSON only):"""
             product_id: Product UUID for performance-based selection
             top_n_by_roas: Number of top ads by ROAS to translate
             target_language: IETF language tag
+            force: If True, delete existing translations and redo them
 
         Returns:
             Dict with ad_run_id, results per ad, and summary counts
@@ -707,11 +717,12 @@ Output (JSON only):"""
                     source_ad_id=ad_id,
                     target_language=target_language,
                     ad_run_id=ad_run_id,
+                    force=force,
                 )
                 results.append(result)
                 if result["status"] == "success":
                     success_count += 1
-                elif result["status"] == "skipped":
+                elif result["status"] in ("skipped", "exists"):
                     skip_count += 1
                 else:
                     error_count += 1

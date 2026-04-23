@@ -295,7 +295,7 @@ class TestTranslateSingleAd:
         )
 
         result = await service.translate_single_ad(uuid4(), "es-MX")
-        assert result["status"] == "skipped"
+        assert result["status"] == "exists"
         assert result["reason"] == "already_translated"
 
     @pytest.mark.asyncio
