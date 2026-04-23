@@ -1339,6 +1339,7 @@ async def translate_ads(
     ad_ids: Optional[List[str]] = None,
     product_id: Optional[str] = None,
     top_n_by_roas: Optional[int] = None,
+    force: bool = False,
 ) -> Dict:
     """Translate existing ads into a target language. Regenerates images with translated text.
     Use this tool (NOT lookup_ad) when the user asks to translate an ad.
@@ -1352,12 +1353,17 @@ async def translate_ads(
     verbatim. Do not paraphrase or summarize errors. The user needs the raw error text
     to debug issues.
 
+    If any result has status "exists", a translation already exists for that ad.
+    Tell the user it was already translated and ask if they want to redo it.
+    If they say yes, call this tool again with force=True.
+
     Args:
         ctx: Run context with AgentDependencies.
         target_language: Target language as IETF tag (es-MX, pt-BR, fr-FR) or name (Spanish, Portuguese, American Spanish).
         ad_ids: Optional list of ad identifiers to translate (UUIDs, filename fragments, or structured filenames).
         product_id: Optional product UUID for performance-filtered batch selection.
         top_n_by_roas: Optional number of top ads by ROAS to translate (requires product_id).
+        force: If True, delete existing translations and redo them. Only set after user confirms.
 
     Returns:
         Translation results with counts, ad_run_id, and per-ad success/failure details.
@@ -1390,6 +1396,7 @@ async def translate_ads(
             product_id=str(parsed_product) if parsed_product else None,
             top_n_by_roas=top_n_by_roas,
             target_language=target_language,
+            force=force,
         )
         return result
     except ValueError as e:
