@@ -1353,6 +1353,10 @@ async def translate_ads(
     verbatim. Do not paraphrase or summarize errors. The user needs the raw error text
     to debug issues.
 
+    IMPORTANT: When translation succeeds, each result includes an image_url. Display the
+    translated ad image inline using markdown: ![Translated Ad](image_url_value)
+    The user wants to SEE the result in the chat, not just read text.
+
     If any result has status "exists", a translation already exists for that ad.
     Tell the user it was already translated and ask if they want to redo it.
     If they say yes, call this tool again with force=True.

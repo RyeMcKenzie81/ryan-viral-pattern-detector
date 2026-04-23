@@ -673,14 +673,24 @@ Output (JSON only):"""
                 "message": str(e),
             }
 
+        # Generate a signed URL so the chat can display the translated image
+        image_url = None
+        try:
+            image_url = self._get_signed_url(upload_path)
+        except Exception:
+            pass
+
         logger.info(f"Translated ad {source_ad_id} → {saved_id} ({target_language})")
-        return {
+        result = {
             "status": "success",
             "source_ad_id": str(source_ad_id),
             "translated_ad_id": str(saved_id),
             "language": target_language,
             "translated_hook_text": translated["hook_text"],
         }
+        if image_url:
+            result["image_url"] = image_url
+        return result
 
     # =========================================================================
     # BATCH TRANSLATION
