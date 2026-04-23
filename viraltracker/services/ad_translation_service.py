@@ -312,6 +312,30 @@ Output (JSON only):"""
     # PROMPT SPEC MODIFICATION
     # =========================================================================
 
+    # Canvas size to Gemini aspect ratio mapping
+    # Gemini supports: 1:1, 3:4, 4:3, 9:16, 16:9, 2:3, 3:2, 21:9
+    _CANVAS_ASPECT_MAP = {
+        (1080, 1080): "1:1",
+        (1080, 1350): "3:4",   # 4:5 → closest supported
+        (1080, 1920): "9:16",
+        (1920, 1080): "16:9",
+    }
+
+    def _canvas_size_to_aspect_ratio(self, canvas_size: Optional[str]) -> Optional[str]:
+        """Map canvas_size like '1080x1350px' to a Gemini aspect_ratio like '3:4'."""
+        if not canvas_size:
+            return None
+        # Strip non-digit suffixes (e.g. "px") and split
+        clean = canvas_size.lower().replace("px", "").strip()
+        parts = clean.split("x")
+        if len(parts) != 2:
+            return None
+        try:
+            w, h = int(parts[0]), int(parts[1])
+        except ValueError:
+            return None
+        return self._CANVAS_ASPECT_MAP.get((w, h))
+
     def _swap_prompt_spec_text(
         self,
         prompt_spec: Dict,
@@ -491,6 +515,9 @@ Output (JSON only):"""
             except Exception as e:
                 logger.warning(f"Could not download source ad image: {e}")
 
+        # Map canvas_size to Gemini aspect_ratio to preserve original dimensions
+        aspect_ratio = self._canvas_size_to_aspect_ratio(ad_extras.get("canvas_size"))
+
         try:
             generation_start = time.time()
             gen_result = await self.gemini.generate_image(
@@ -499,6 +526,7 @@ Output (JSON only):"""
                 return_metadata=True,
                 temperature=0.4,
                 image_size="2K",
+                aspect_ratio=aspect_ratio,
             )
             generation_time_ms = int((time.time() - generation_start) * 1000)
         except Exception as e:
@@ -699,14 +727,13 @@ Output (JSON only):"""
                 })
                 error_count += 1
 
-        # Update ad_run status
-        run_status = "completed" if error_count == 0 else "completed_with_errors"
-        if success_count == 0 and skip_count == 0:
-            run_status = "failed"
+        # Update ad_run status (valid values: pending, running, complete, failed)
+        run_status = "complete" if success_count > 0 or skip_count > 0 else "failed"
 
         await self.ad_creation.update_ad_run(
             ad_run_id=ad_run_id,
             status=run_status,
+            error_message=f"{error_count} translation(s) failed" if error_count > 0 else None,
         )
 
         logger.info(
