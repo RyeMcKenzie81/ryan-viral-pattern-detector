@@ -524,7 +524,7 @@ Output (JSON only):"""
             # Upload image
             upload_path, _ = await self.ad_creation.upload_generated_ad(
                 ad_run_id=run_id,
-                prompt_index=0,
+                prompt_index=1,
                 image_base64=gen_result["image_base64"],
                 product_id=UUID(product_id) if product_id else None,
                 ad_id=new_ad_id,
@@ -543,7 +543,7 @@ Output (JSON only):"""
             # Save to generated_ads
             saved_id = await self.ad_creation.save_generated_ad(
                 ad_run_id=run_id,
-                prompt_index=0,
+                prompt_index=1,
                 prompt_text=modified_prompt_text,
                 prompt_spec=modified_spec,
                 hook_id=UUID(source_ad["hook_id"]) if source_ad.get("hook_id") else None,
