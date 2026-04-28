@@ -7,10 +7,10 @@ are congruent. Large gaps indicate misalignment that may hurt conversion.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 from uuid import UUID
 
-from .helpers import _safe_numeric
+from .helpers import _safe_numeric, resolve_product_ad_ids
 from .models import CongruenceCheckResult
 
 logger = logging.getLogger(__name__)
@@ -44,6 +44,7 @@ class CongruenceChecker:
     async def check_congruence(
         self,
         brand_id: UUID,
+        product_id: Optional[UUID] = None,
     ) -> CongruenceCheckResult:
         """Check congruence across all classified ads for a brand.
 
@@ -52,6 +53,7 @@ class CongruenceChecker:
 
         Args:
             brand_id: Brand UUID.
+            product_id: Optional product UUID. If set, restricts to ads for that product.
 
         Returns:
             CongruenceCheckResult with scores and misaligned ads.
@@ -60,6 +62,14 @@ class CongruenceChecker:
 
         # Fetch all classifications
         classifications = await self._get_classifications(brand_id)
+
+        # Filter to product if requested
+        if product_id is not None and classifications:
+            ad_ids = list({c.get("meta_ad_id") for c in classifications if c.get("meta_ad_id")})
+            product_ad_ids = resolve_product_ad_ids(
+                self.supabase, str(brand_id), str(product_id), ad_ids
+            )
+            classifications = [c for c in classifications if c.get("meta_ad_id") in product_ad_ids]
 
         if not classifications:
             return CongruenceCheckResult(

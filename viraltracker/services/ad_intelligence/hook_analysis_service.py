@@ -20,7 +20,7 @@ from datetime import date, timedelta
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
-from .helpers import _safe_numeric
+from .helpers import _safe_numeric, resolve_product_ad_ids
 
 logger = logging.getLogger(__name__)
 
@@ -105,7 +105,8 @@ class HookAnalysisService:
         min_spend: float = DEFAULT_MIN_SPEND,
         date_range_days: int = 30,
         sort_by: str = "roas",  # roas, hook_rate, spend, ctr, cpa
-        sort_order: str = "desc"
+        sort_order: str = "desc",
+        product_id: Optional[UUID] = None,
     ) -> List[Dict]:
         """Get top performing hooks by unique fingerprint.
 
@@ -163,6 +164,13 @@ class HookAnalysisService:
                 ad_id = row.get("meta_ad_id")
                 if ad_id and row.get("hook_fingerprint"):
                     ad_to_hook[ad_id] = row
+
+            # Filter to product if requested
+            if product_id is not None and ad_to_hook:
+                product_ad_ids = resolve_product_ad_ids(
+                    self.supabase, str(brand_id), str(product_id), list(ad_to_hook.keys())
+                )
+                ad_to_hook = {aid: row for aid, row in ad_to_hook.items() if aid in product_ad_ids}
 
             # Aggregate performance by hook fingerprint
             fingerprint_stats: Dict[str, Dict[str, Any]] = {}
@@ -1247,13 +1255,15 @@ class HookAnalysisService:
     def get_hook_insights(
         self,
         brand_id: UUID,
-        date_range_days: int = 30
+        date_range_days: int = 30,
+        product_id: Optional[UUID] = None,
     ) -> Dict:
         """Generate actionable hook insights.
 
         Args:
             brand_id: Brand UUID.
             date_range_days: Number of days to look back.
+            product_id: Optional product UUID. If set, restricts to ads for that product.
 
         Returns:
             Dict with:
@@ -1271,7 +1281,8 @@ class HookAnalysisService:
                 min_spend=DEFAULT_MIN_SPEND,
                 date_range_days=date_range_days,
                 sort_by="roas",
-                sort_order="desc"
+                sort_order="desc",
+                product_id=product_id,
             )
 
             if not top_hooks:

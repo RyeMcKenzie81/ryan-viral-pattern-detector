@@ -11,7 +11,8 @@ from datetime import date, timedelta
 from typing import Any, Dict, List
 from uuid import UUID
 
-from .helpers import _safe_numeric, get_active_ad_ids
+from typing import Optional
+from .helpers import _safe_numeric, get_active_ad_ids, resolve_product_ad_ids
 from .models import FatigueCheckResult
 
 logger = logging.getLogger(__name__)
@@ -44,6 +45,7 @@ class FatigueDetector:
         date_range_end: date,
         active_window_days: int = 7,
         days_back: int = 30,
+        product_id: Optional[UUID] = None,
     ) -> FatigueCheckResult:
         """Check all active ads for fatigue signals.
 
@@ -55,6 +57,7 @@ class FatigueDetector:
             date_range_end: End of analysis window (anchor date).
             active_window_days: Days to look back for active ads.
             days_back: Days of trend data to analyze.
+            product_id: Optional product UUID. If set, restricts to ads for that product.
 
         Returns:
             FatigueCheckResult with fatigued, at-risk, and healthy counts.
@@ -66,6 +69,12 @@ class FatigueDetector:
         active_ids = await get_active_ad_ids(
             self.supabase, brand_id, date_range_end, active_window_days
         )
+
+        if product_id is not None and active_ids:
+            product_ad_ids = resolve_product_ad_ids(
+                self.supabase, str(brand_id), str(product_id), active_ids
+            )
+            active_ids = [aid for aid in active_ids if aid in product_ad_ids]
 
         if not active_ids:
             return FatigueCheckResult(
