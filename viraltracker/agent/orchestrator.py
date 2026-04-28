@@ -355,14 +355,27 @@ async def route_to_ad_intelligence_agent(
     - Account summaries or period-over-period comparisons
     - Individual ad performance details
 
-    PRODUCT-SCOPED REQUESTS: When the user asks about a specific product
-    (e.g. "analyze Cortisol Control", "top ads for our heating pad"), you MUST
-    first call resolve_product_name to convert the product name to a UUID, then
-    pass that UUID to the analysis tool as product_id. Most ad intelligence
-    tools support a product_id parameter that restricts analysis to ads
-    associated with that product. Do NOT attempt product-scoped analysis
-    without resolving and passing product_id — the tool will silently return
-    brand-wide data otherwise.
+    PRODUCT-SCOPED REQUESTS: When the user mentions a specific product
+    (e.g. "analyze Cortisol Control", "top ads for our heating pad"):
+
+    1. Call resolve_brand_name(brand_name) to get the BRAND UUID
+    2. Call resolve_product_name(product_name) to get the PRODUCT UUID
+    3. Call the analysis tool with BOTH:
+       - brand_id = the brand UUID from step 1
+       - product_id = the product UUID from step 2
+
+    These are two DIFFERENT UUIDs from two DIFFERENT tables. Brand and product
+    are not interchangeable — a brand owns many products. If you only have a
+    product UUID and pass it as both brand_id and product_id, the analysis
+    will fail (the worker will refuse to run because the product UUID isn't a
+    valid brand). Always resolve BOTH the brand AND the product, even if the
+    user only said the product name (infer the brand from context or ask).
+
+    FOLLOW-UPS ON QUEUED ANALYSES: When the user asks "is it done?" / "did
+    the analysis finish?" / "any results yet?", route here and tell the agent
+    to call analyze_account again with the same brand_id (and product_id).
+    Do NOT just assume completion based on elapsed time. The cached result
+    will be returned if the worker has finished.
     """
     # Inject cached brand and product context for follow-up queries
     cached_brand_id = ctx.deps.result_cache.custom.get("ad_intelligence_brand_id")
