@@ -138,6 +138,7 @@ class AdPerformanceQueryService:
         compare_previous: bool = False,
         date_start: Optional[str] = None,
         date_end: Optional[str] = None,
+        product_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Get account-level summary with optional period-over-period comparison.
 
@@ -147,6 +148,8 @@ class AdPerformanceQueryService:
             compare_previous: If True, also compute previous period of same length.
             date_start: Explicit start date (ISO format).
             date_end: Explicit end date (ISO format).
+            product_id: Optional product UUID. If set, restricts the summary to
+                ads associated with this product.
 
         Returns:
             Dict with 'current' period totals, optional 'previous' period totals,
@@ -154,6 +157,12 @@ class AdPerformanceQueryService:
         """
         start, end = self._resolve_date_range(days_back, date_start, date_end)
         rows = self._fetch_performance_rows(brand_id, start, end)
+
+        if product_id and rows:
+            ad_ids = list({r.get("meta_ad_id") for r in rows if r.get("meta_ad_id")})
+            product_ad_ids = self._resolve_product_ad_ids(brand_id, product_id, ad_ids)
+            rows = [r for r in rows if r.get("meta_ad_id") in product_ad_ids]
+
         current = self._compute_period_totals(rows)
 
         result: Dict[str, Any] = {
@@ -162,6 +171,7 @@ class AdPerformanceQueryService:
                 "date_start": start.isoformat(),
                 "date_end": end.isoformat(),
                 "days": (end - start).days + 1,
+                "product_id": product_id,
             },
         }
 
@@ -171,6 +181,11 @@ class AdPerformanceQueryService:
             prev_start = prev_end - timedelta(days=period_days - 1)
 
             prev_rows = self._fetch_performance_rows(brand_id, prev_start, prev_end)
+            if product_id and prev_rows:
+                prev_ad_ids = list({r.get("meta_ad_id") for r in prev_rows if r.get("meta_ad_id")})
+                prev_product_ids = self._resolve_product_ad_ids(brand_id, product_id, prev_ad_ids)
+                prev_rows = [r for r in prev_rows if r.get("meta_ad_id") in prev_product_ids]
+
             previous = self._compute_period_totals(prev_rows)
 
             result["previous"] = previous
@@ -191,6 +206,7 @@ class AdPerformanceQueryService:
         limit: int = 20,
         date_start: Optional[str] = None,
         date_end: Optional[str] = None,
+        product_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Get performance breakdown by campaign or adset.
 
@@ -202,6 +218,8 @@ class AdPerformanceQueryService:
             limit: Max items to return.
             date_start: Explicit start date (ISO format).
             date_end: Explicit end date (ISO format).
+            product_id: Optional product UUID. If set, restricts to campaigns/adsets
+                that contain ads associated with this product.
 
         Returns:
             Dict with 'items' list and 'meta' dict.
@@ -209,8 +227,13 @@ class AdPerformanceQueryService:
         start, end = self._resolve_date_range(days_back, date_start, date_end)
         rows = self._fetch_performance_rows(brand_id, start, end)
 
+        if product_id and rows:
+            ad_ids = list({r.get("meta_ad_id") for r in rows if r.get("meta_ad_id")})
+            product_ad_ids = self._resolve_product_ad_ids(brand_id, product_id, ad_ids)
+            rows = [r for r in rows if r.get("meta_ad_id") in product_ad_ids]
+
         if not rows:
-            return {"items": [], "meta": {"date_start": start.isoformat(), "date_end": end.isoformat(), "level": level}}
+            return {"items": [], "meta": {"date_start": start.isoformat(), "date_end": end.isoformat(), "level": level, "product_id": product_id}}
 
         if level == "adset":
             items = self._aggregate_by_adset(rows)
@@ -228,6 +251,7 @@ class AdPerformanceQueryService:
                 "sort_by": sort_by,
                 "total": len(items),
                 "returned": min(limit, len(items)),
+                "product_id": product_id,
             },
         }
 
@@ -340,6 +364,7 @@ class AdPerformanceQueryService:
         awareness_level: Optional[str] = None,
         date_start: Optional[str] = None,
         date_end: Optional[str] = None,
+        product_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Aggregate performance by media type (video/image/carousel/other).
 
@@ -355,6 +380,8 @@ class AdPerformanceQueryService:
             awareness_level: Optional filter (unaware, problem_aware, etc.).
             date_start: Explicit start date (ISO format).
             date_end: Explicit end date (ISO format).
+            product_id: Optional product UUID. If set, restricts to ads
+                associated with this product.
 
         Returns:
             Dict with 'groups' list and 'meta' dict.
@@ -368,6 +395,11 @@ class AdPerformanceQueryService:
                 if r.get("creative_awareness_level") == awareness_level
             ]
 
+        if product_id and classified:
+            ad_ids = list({r.get("meta_ad_id") for r in classified if r.get("meta_ad_id")})
+            product_ad_ids = self._resolve_product_ad_ids(brand_id, product_id, ad_ids)
+            classified = [r for r in classified if r.get("meta_ad_id") in product_ad_ids]
+
         if not classified:
             return {
                 "groups": [],
@@ -375,6 +407,7 @@ class AdPerformanceQueryService:
                     "date_start": start.isoformat(),
                     "date_end": end.isoformat(),
                     "awareness_level": awareness_level,
+                    "product_id": product_id,
                     "message": "No classified ads found for this period.",
                 },
             }
@@ -434,6 +467,7 @@ class AdPerformanceQueryService:
                 "date_start": start.isoformat(),
                 "date_end": end.isoformat(),
                 "awareness_level": awareness_level,
+                "product_id": product_id,
                 "total_groups": len(groups),
             },
         }
@@ -1007,93 +1041,9 @@ class AdPerformanceQueryService:
     def _resolve_product_ad_ids(
         self, brand_id: str, product_id: str, ad_ids: List[str]
     ) -> set:
-        """Resolve which ad_ids belong to a product via two-tier matching.
-
-        Tier 1: Join classified ads via landing_page_id -> brand_landing_pages.product_id.
-        Tier 2: Campaign/adset/ad name substring match on product name.
-
-        Args:
-            brand_id: Brand UUID string.
-            product_id: Product UUID string.
-            ad_ids: List of ad_ids to filter.
-
-        Returns:
-            Set of ad_ids belonging to the product.
-        """
-        if not ad_ids or not product_id:
-            return set(ad_ids)
-
-        matched = set()
-
-        # Get product name
-        product_name = ""
-        try:
-            result = self.supabase.table("products").select("name").eq("id", product_id).limit(1).execute()
-            if result.data:
-                product_name = result.data[0].get("name", "")
-        except Exception as e:
-            logger.debug(f"Failed to fetch product name: {e}")
-
-        # Tier 1: Landing page -> product_id match
-        try:
-            # Get landing page IDs linked to this product
-            lp_result = (
-                self.supabase.table("brand_landing_pages")
-                .select("id")
-                .eq("brand_id", brand_id)
-                .eq("product_id", product_id)
-                .execute()
-            )
-            lp_ids = [r["id"] for r in (lp_result.data or [])]
-
-            if lp_ids:
-                # Get classified ads pointing to those landing pages
-                for i in range(0, len(ad_ids), 500):
-                    batch = ad_ids[i:i + 500]
-                    cls_result = (
-                        self.supabase.table("ad_creative_classifications")
-                        .select("meta_ad_id, landing_page_id")
-                        .eq("brand_id", brand_id)
-                        .in_("meta_ad_id", batch)
-                        .in_("landing_page_id", lp_ids)
-                        .execute()
-                    )
-                    for c in (cls_result.data or []):
-                        if c.get("meta_ad_id"):
-                            matched.add(c["meta_ad_id"])
-        except Exception as e:
-            logger.debug(f"Tier 1 product resolution failed: {e}")
-
-        # Tier 2: Name substring match (catches unclassified ads)
-        if product_name:
-            name_lower = product_name.lower()
-            try:
-                for i in range(0, len(ad_ids), 500):
-                    batch = ad_ids[i:i + 500]
-                    perf_result = (
-                        self.supabase.table("meta_ads_performance")
-                        .select("meta_ad_id, ad_name, campaign_name, adset_name")
-                        .eq("brand_id", brand_id)
-                        .in_("meta_ad_id", batch)
-                        .execute()
-                    )
-                    seen = set()
-                    for r in (perf_result.data or []):
-                        aid = r.get("meta_ad_id")
-                        if aid in seen or aid in matched:
-                            continue
-                        seen.add(aid)
-                        searchable = " ".join([
-                            r.get("ad_name", ""),
-                            r.get("campaign_name", ""),
-                            r.get("adset_name", ""),
-                        ]).lower()
-                        if name_lower in searchable:
-                            matched.add(aid)
-            except Exception as e:
-                logger.debug(f"Tier 2 product name matching failed: {e}")
-
-        return matched
+        """Resolve which ad_ids belong to a product. Delegates to shared helper."""
+        from .ad_intelligence.helpers import resolve_product_ad_ids
+        return resolve_product_ad_ids(self.supabase, brand_id, product_id, ad_ids)
 
     def _resolve_date_range(
         self,

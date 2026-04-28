@@ -8,10 +8,10 @@ from __future__ import annotations
 
 import logging
 from datetime import date
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 from uuid import UUID
 
-from .helpers import get_active_ad_ids
+from .helpers import get_active_ad_ids, resolve_product_ad_ids
 from .models import AwarenessLevel, CoverageGapResult, CreativeFormat
 
 logger = logging.getLogger(__name__)
@@ -50,6 +50,7 @@ class CoverageAnalyzer:
         brand_id: UUID,
         date_range_end: date,
         active_window_days: int = 7,
+        product_id: Optional[UUID] = None,
     ) -> CoverageGapResult:
         """Analyze ad inventory coverage and identify gaps.
 
@@ -60,6 +61,7 @@ class CoverageAnalyzer:
             brand_id: Brand UUID.
             date_range_end: End of analysis window (anchor date).
             active_window_days: Days to look back for active ads.
+            product_id: Optional product UUID. If set, restricts to ads for that product.
 
         Returns:
             CoverageGapResult with matrix, gaps, and recommendations.
@@ -70,6 +72,12 @@ class CoverageAnalyzer:
         active_ids = await get_active_ad_ids(
             self.supabase, brand_id, date_range_end, active_window_days
         )
+
+        if product_id is not None and active_ids:
+            product_ad_ids = resolve_product_ad_ids(
+                self.supabase, str(brand_id), str(product_id), active_ids
+            )
+            active_ids = [aid for aid in active_ids if aid in product_ad_ids]
 
         if not active_ids:
             return CoverageGapResult(

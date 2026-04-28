@@ -83,6 +83,7 @@ class RunConfig(BaseModel):
     kpi: str = "cpa"
     max_classifications_per_run: int = 200
     max_video_classifications_per_run: int = 15
+    product_id: Optional[str] = None
     thresholds: Dict[str, Any] = Field(default_factory=dict)
 
 

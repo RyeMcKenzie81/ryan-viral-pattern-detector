@@ -207,6 +207,7 @@ async def analyze_account(
     days_back: int = 30,
     goal: str = "",
     force_refresh: bool = False,
+    product_id: str = "",
 ) -> str:
     """Run full 4-layer account analysis: classify → baseline → diagnose → recommend.
 
@@ -217,12 +218,21 @@ async def analyze_account(
 
     Ask the user to check back in a few minutes if a new analysis was queued.
 
+    PRODUCT-SCOPED ANALYSIS: When the user asks about a specific product
+    (e.g. "analyze Cortisol Control"), pass the product UUID as product_id.
+    The analysis will only include ads associated with that product. Cache is
+    keyed separately per product, so a brand-level analysis and a product-level
+    analysis are stored independently.
+
     Args:
         ctx: Run context with AgentDependencies.
         brand_id: Brand UUID string.
         days_back: Number of days to analyze (default: 30).
         goal: Analysis goal (e.g., 'lower_cpa', 'scale', 'stability').
         force_refresh: If True, queue a new analysis even if cache exists.
+        product_id: Optional product UUID. If set, restricts analysis to ads
+            for that product. Use resolve_product_name first to convert a
+            product name to a UUID.
 
     Returns:
         Cached analysis markdown, or status message about queued job.
@@ -233,23 +243,33 @@ async def analyze_account(
     db = get_supabase_client()
     intel_service = ctx.deps.ad_intelligence
 
+    product_uuid = UUID(product_id) if product_id else None
+
     # Cache brand context for follow-up queries
     ctx.deps.result_cache.custom["ad_intelligence_brand_id"] = brand_id
+    if product_uuid:
+        ctx.deps.result_cache.custom["ad_intelligence_product_id"] = str(product_uuid)
 
     # --- Step 1: App-level dedup check (one-time jobs only) ---
-    # 1a. Check for queued (not yet running) one-time jobs
+    # Dedup is scoped to (brand_id, product_id) since brand-level and
+    # product-level analyses are independent.
     try:
-        queued_result = db.table("scheduled_jobs").select("id").eq(
+        queued_query = db.table("scheduled_jobs").select("id, parameters").eq(
             "brand_id", brand_id
         ).eq("job_type", "ad_intelligence_analysis").eq(
             "schedule_type", "one_time"
-        ).eq("status", "active").limit(1).execute()
+        ).eq("status", "active")
+        queued_result = queued_query.execute()
 
-        if queued_result.data:
-            return (
-                "An ad intelligence analysis is already queued for this brand. "
-                "Please ask again in a few minutes to see the results."
-            )
+        for row in (queued_result.data or []):
+            row_params = row.get("parameters") or {}
+            row_product = row_params.get("product_id")
+            if (row_product or None) == (str(product_uuid) if product_uuid else None):
+                scope = f" for this product" if product_uuid else ""
+                return (
+                    f"An ad intelligence analysis is already queued{scope}. "
+                    "Please ask again in a few minutes to see the results."
+                )
     except Exception as e:
         logger.warning(f"Dedup pre-check failed: {e}")
 
@@ -258,37 +278,47 @@ async def analyze_account(
         from datetime import datetime, timedelta, timezone
         stale_cutoff = (datetime.now(timezone.utc) - timedelta(minutes=120)).isoformat()
 
-        # Get all ad_intelligence_analysis job IDs for this brand
-        job_ids_result = db.table("scheduled_jobs").select("id").eq(
+        # Get all ad_intelligence_analysis job IDs for this brand (with their params)
+        job_ids_result = db.table("scheduled_jobs").select("id, parameters").eq(
             "brand_id", brand_id
         ).eq("job_type", "ad_intelligence_analysis").execute()
 
         if job_ids_result.data:
-            job_ids = [r["id"] for r in job_ids_result.data]
-            running_result = db.table("scheduled_job_runs").select("id").in_(
-                "scheduled_job_id", job_ids
-            ).eq("status", "running").gte(
-                "started_at", stale_cutoff
-            ).limit(1).execute()
+            # Filter to jobs that match our product scope
+            target_product_str = str(product_uuid) if product_uuid else None
+            matching_job_ids = [
+                r["id"] for r in job_ids_result.data
+                if ((r.get("parameters") or {}).get("product_id") or None) == target_product_str
+            ]
 
-            if running_result.data:
-                return (
-                    "An ad intelligence analysis is currently running for this brand. "
-                    "Please ask again in a few minutes to see the results."
-                )
+            if matching_job_ids:
+                running_result = db.table("scheduled_job_runs").select("id").in_(
+                    "scheduled_job_id", matching_job_ids
+                ).eq("status", "running").gte(
+                    "started_at", stale_cutoff
+                ).limit(1).execute()
+
+                if running_result.data:
+                    scope = f" for this product" if product_uuid else ""
+                    return (
+                        f"An ad intelligence analysis is currently running{scope}. "
+                        "Please ask again in a few minutes to see the results."
+                    )
     except Exception as e:
         logger.warning(f"Running-run dedup check failed: {e}")
 
-    # --- Step 2: Check cache ---
+    # --- Step 2: Check cache (scoped to product if provided) ---
     if not force_refresh:
         try:
             cached = await intel_service.get_latest_completed_analysis(
                 brand_id=UUID(brand_id), days_back=days_back,
+                product_id=product_uuid,
             )
             if cached and cached.rendered_markdown:
                 # Serve cached result with date stamp
                 completed_at = cached.completed_at or "unknown"
-                header = f"*Cached analysis from {completed_at} ({cached.config.days_back}-day window)*\n\n"
+                scope_label = " (product-scoped)" if product_uuid else ""
+                header = f"*Cached analysis from {completed_at} ({cached.config.days_back}-day window){scope_label}*\n\n"
                 rendered = header + cached.rendered_markdown
 
                 ctx.deps.result_cache.custom["ad_intelligence_brand_name"] = cached.summary.get("brand_name", "") if cached.summary else ""
@@ -325,20 +355,23 @@ async def analyze_account(
     }
     if goal:
         params["goal"] = goal
+    if product_uuid:
+        params["product_id"] = str(product_uuid)
 
+    scope_name = " (product-scoped)" if product_uuid else ""
     job_id = queue_one_time_job(
         brand_id=brand_id,
         job_type="ad_intelligence_analysis",
         parameters=params,
         trigger_source="manual",
-        name=f"Ad Intelligence Analysis - Agent Chat",
+        name=f"Ad Intelligence Analysis - Agent Chat{scope_name}",
         max_retries=2,
     )
 
     if job_id:
         return (
             f"{hint_text}"
-            f"Queued a full ad intelligence analysis for this brand (job {job_id[:8]}...). "
+            f"Queued a full ad intelligence analysis{scope_name} (job {job_id[:8]}...). "
             f"This typically takes 2-10 minutes depending on account size.\n\n"
             f"Ask me again when you're ready to see the results."
         )
@@ -445,16 +478,20 @@ async def check_fatigue(
     ctx: RunContext[AgentDependencies],
     brand_id: str,
     days_back: int = 30,
+    product_id: str = "",
 ) -> str:
     """Check all active ads for fatigue signals (frequency + CTR trends).
 
     Identifies fatigued ads (high frequency + declining CTR),
     at-risk ads (approaching thresholds), and healthy ads.
 
+    PRODUCT-SCOPED: Pass product_id when the user asks about a specific product.
+
     Args:
         ctx: Run context with AgentDependencies.
         brand_id: Brand UUID string.
         days_back: Days of trend data to analyze.
+        product_id: Optional product UUID. If set, restricts to ads for that product.
 
     Returns:
         Formatted markdown with fatigue results.
@@ -465,6 +502,7 @@ async def check_fatigue(
         brand_id=UUID(brand_id),
         date_range_end=date.today(),
         days_back=days_back,
+        product_id=UUID(product_id) if product_id else None,
     )
     rendered = ChatRenderer.render_fatigue_check(result)
     ctx.deps.result_cache.custom["ad_intelligence_result"] = {
@@ -493,15 +531,20 @@ async def check_fatigue(
 async def check_coverage_gaps(
     ctx: RunContext[AgentDependencies],
     brand_id: str,
+    product_id: str = "",
 ) -> str:
     """Analyze ad inventory coverage across awareness levels and formats.
 
     Builds an awareness level × creative format matrix and identifies
     hard gaps (zero ads), SPOFs (< 2 ads), and percentage gaps.
 
+    PRODUCT-SCOPED: Pass product_id when the user asks about coverage for a
+    specific product.
+
     Args:
         ctx: Run context with AgentDependencies.
         brand_id: Brand UUID string.
+        product_id: Optional product UUID. If set, restricts to ads for that product.
 
     Returns:
         Formatted markdown with coverage matrix and gaps.
@@ -511,6 +554,7 @@ async def check_coverage_gaps(
     result = await ctx.deps.ad_intelligence.coverage.analyze_coverage(
         brand_id=UUID(brand_id),
         date_range_end=date.today(),
+        product_id=UUID(product_id) if product_id else None,
     )
     rendered = ChatRenderer.render_coverage_gaps(result)
     ctx.deps.result_cache.custom["ad_intelligence_result"] = {
@@ -538,15 +582,19 @@ async def check_coverage_gaps(
 async def check_congruence(
     ctx: RunContext[AgentDependencies],
     brand_id: str,
+    product_id: str = "",
 ) -> str:
     """Check creative-copy-landing page awareness level alignment.
 
     Computes congruence scores for all classified ads and identifies
     those with significant misalignment between components.
 
+    PRODUCT-SCOPED: Pass product_id when the user asks about a specific product.
+
     Args:
         ctx: Run context with AgentDependencies.
         brand_id: Brand UUID string.
+        product_id: Optional product UUID. If set, restricts to ads for that product.
 
     Returns:
         Formatted markdown with congruence results.
@@ -555,6 +603,7 @@ async def check_congruence(
 
     result = await ctx.deps.ad_intelligence.congruence.check_congruence(
         brand_id=UUID(brand_id),
+        product_id=UUID(product_id) if product_id else None,
     )
     rendered = ChatRenderer.render_congruence_check(result)
     ctx.deps.result_cache.custom["ad_intelligence_result"] = {
@@ -1000,6 +1049,7 @@ async def hook_analysis(
     hook_fingerprint: Optional[str] = None,
     compare_fingerprint: Optional[str] = None,
     limit: int = 10,
+    product_id: str = "",
 ) -> str:
     """Analyze hook performance for a brand's video ads.
 
@@ -1024,6 +1074,9 @@ async def hook_analysis(
     Key insight: "quadrant" analysis reveals hooks with HIGH hook rate but LOW ROAS -
     these are engaging but not converting, suggesting downstream issues (LP, offer, etc.)
 
+    PRODUCT-SCOPED: product_id filtering is currently only supported for
+    analysis_type='overview'. For other types, omit product_id or use 'overview'.
+
     Args:
         ctx: Run context with AgentDependencies.
         brand_name: Brand name to analyze (will be resolved to brand_id).
@@ -1032,6 +1085,7 @@ async def hook_analysis(
         hook_fingerprint: Specific hook fingerprint for detail view or comparison.
         compare_fingerprint: Second hook fingerprint for comparison (used with analysis_type=compare).
         limit: Maximum hooks to return (default 10).
+        product_id: Optional product UUID. Only honored when analysis_type='overview'.
 
     Returns:
         Formatted markdown with hook analysis results.
@@ -1052,11 +1106,20 @@ async def hook_analysis(
     if analysis_type not in valid_types:
         return f"Invalid analysis_type. Valid options: {', '.join(valid_types)}"
 
+    # Validate product_id is only used with supported types
+    product_uuid = UUID(product_id) if product_id else None
+    if product_uuid and analysis_type != "overview":
+        return (
+            f"product_id is only supported with analysis_type='overview'. "
+            f"You requested analysis_type='{analysis_type}'. Either drop product_id "
+            f"or switch to 'overview'."
+        )
+
     try:
         if analysis_type == "overview":
-            insights = hook_service.get_hook_insights(brand_id)
+            insights = hook_service.get_hook_insights(brand_id, product_id=product_uuid)
             top_hooks = hook_service.get_top_hooks_by_fingerprint(
-                brand_id, limit=limit, sort_by=sort_by
+                brand_id, limit=limit, sort_by=sort_by, product_id=product_uuid,
             )
             rendered = _format_hook_overview(insights, top_hooks)
 
@@ -1129,17 +1192,22 @@ async def top_hooks(
     brand_name: str,
     metric: str = "roas",
     limit: int = 5,
+    product_id: str = "",
 ) -> str:
     """Quick view of top performing hooks ranked by a metric.
 
     Simpler than /hook_analysis - just returns the top N hooks
     with their key metrics and example transcripts.
 
+    PRODUCT-SCOPED: Pass product_id when the user asks about hooks for a
+    specific product.
+
     Args:
         ctx: Run context with AgentDependencies.
         brand_name: Brand name to analyze.
         metric: Ranking metric (roas, hook_rate, spend, ctr). Default: roas.
         limit: Number of hooks to return (default 5).
+        product_id: Optional product UUID. If set, restricts to ads for that product.
 
     Returns:
         Formatted markdown with top hooks.
@@ -1159,10 +1227,11 @@ async def top_hooks(
 
     # Get top hooks
     hook_service = HookAnalysisService(ctx.deps.ad_intelligence.supabase)
+    product_uuid = UUID(product_id) if product_id else None
 
     try:
         hooks = hook_service.get_top_hooks_by_fingerprint(
-            brand_id, limit=limit, sort_by=metric
+            brand_id, limit=limit, sort_by=metric, product_id=product_uuid,
         )
 
         if not hooks:
@@ -1392,11 +1461,16 @@ async def get_top_ads(
     campaign_name_filter: str = "",
     date_start: Optional[str] = None,
     date_end: Optional[str] = None,
+    product_id: str = "",
 ) -> str:
     """Get top or bottom ads ranked by a performance metric.
 
     Use this for questions like "what are my best ads?" or "show worst performers".
     For deep diagnostics (what's wrong, which ads to kill), use analyze_account instead.
+
+    PRODUCT-SCOPED: When the user asks about a specific product (e.g. "top ads
+    for Cortisol Control"), pass the product UUID as product_id. The result
+    will only include ads associated with that product.
 
     Args:
         ctx: Run context with AgentDependencies.
@@ -1412,6 +1486,7 @@ async def get_top_ads(
         campaign_name_filter: Filter to a specific campaign by name substring.
         date_start: Explicit start date, ISO format (e.g., '2026-01-01').
         date_end: Explicit end date, ISO format (e.g., '2026-01-31').
+        product_id: Optional product UUID. If set, restricts to ads for that product.
 
     Returns:
         Formatted markdown table with top/bottom ads.
@@ -1444,6 +1519,7 @@ async def get_top_ads(
             campaign_name_filter=campaign_name_filter,
             date_start=date_start,
             date_end=date_end,
+            product_id=product_id or None,
         )
     except Exception as e:
         logger.error(f"get_top_ads failed: {e}")
@@ -1521,11 +1597,16 @@ async def get_account_summary(
     compare_previous: bool = False,
     date_start: Optional[str] = None,
     date_end: Optional[str] = None,
+    product_id: str = "",
 ) -> str:
     """Get account-level performance summary with optional period comparison.
 
     Use this for "how much did I spend?" or "compare this week to last week".
     For deep diagnostics, use analyze_account instead.
+
+    PRODUCT-SCOPED: When the user asks about a specific product (e.g. "how is
+    Cortisol Control performing?"), pass the product UUID as product_id. The
+    summary will only include ads associated with that product.
 
     Args:
         ctx: Run context with AgentDependencies.
@@ -1535,6 +1616,7 @@ async def get_account_summary(
             and percentage changes.
         date_start: Explicit start date, ISO format (e.g., '2026-01-01').
         date_end: Explicit end date, ISO format (e.g., '2026-01-31').
+        product_id: Optional product UUID. If set, restricts to ads for that product.
 
     Returns:
         Formatted markdown with account summary and optional comparison.
@@ -1546,6 +1628,7 @@ async def get_account_summary(
             compare_previous=compare_previous,
             date_start=date_start,
             date_end=date_end,
+            product_id=product_id or None,
         )
     except Exception as e:
         logger.error(f"get_account_summary failed: {e}")
@@ -1651,10 +1734,13 @@ async def get_campaign_breakdown(
     limit: int = 20,
     date_start: Optional[str] = None,
     date_end: Optional[str] = None,
+    product_id: str = "",
 ) -> str:
     """Get performance breakdown by campaign or adset level.
 
     Use this for "which campaigns are best?" or "show adset performance".
+
+    PRODUCT-SCOPED: Pass product_id when the user asks about a specific product.
 
     Args:
         ctx: Run context with AgentDependencies.
@@ -1666,6 +1752,7 @@ async def get_campaign_breakdown(
         limit: Number of items to return (default 20).
         date_start: Explicit start date, ISO format (e.g., '2026-01-01').
         date_end: Explicit end date, ISO format (e.g., '2026-01-31').
+        product_id: Optional product UUID. If set, restricts to ads for that product.
 
     Returns:
         Formatted markdown table with campaign or adset breakdown.
@@ -1690,6 +1777,7 @@ async def get_campaign_breakdown(
             limit=limit,
             date_start=date_start,
             date_end=date_end,
+            product_id=product_id or None,
         )
     except Exception as e:
         logger.error(f"get_campaign_breakdown failed: {e}")
@@ -1890,12 +1978,15 @@ async def get_breakdown_by_media_type(
     awareness_level: Optional[str] = None,
     date_start: Optional[str] = None,
     date_end: Optional[str] = None,
+    product_id: str = "",
 ) -> str:
     """Get performance breakdown by media type (video/image/carousel/other).
 
     Shows aggregate spend, ROAS, CPA, CTR, and purchases for each media type.
     Uses classification data to determine creative format. Only classified ads
     are included in the breakdown.
+
+    PRODUCT-SCOPED: Pass product_id when the user asks about a specific product.
 
     Args:
         ctx: Run context with AgentDependencies.
@@ -1905,6 +1996,7 @@ async def get_breakdown_by_media_type(
             product_aware, most_aware. When set, only shows ads classified at that level.
         date_start: Explicit start date, ISO format (e.g., '2026-01-01').
         date_end: Explicit end date, ISO format (e.g., '2026-01-31').
+        product_id: Optional product UUID. If set, restricts to ads for that product.
 
     Returns:
         Formatted markdown table with media type breakdown.
@@ -1922,6 +2014,7 @@ async def get_breakdown_by_media_type(
             awareness_level=awareness_level,
             date_start=date_start,
             date_end=date_end,
+            product_id=product_id or None,
         )
     except Exception as e:
         logger.error(f"get_breakdown_by_media_type failed: {e}")

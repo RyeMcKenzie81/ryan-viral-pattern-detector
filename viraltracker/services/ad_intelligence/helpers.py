@@ -195,6 +195,96 @@ def compute_roas(perf_row: Dict, value_field: str) -> Optional[float]:
 # Active Ad Query
 # =============================================================================
 
+def resolve_product_ad_ids(
+    supabase, brand_id: str, product_id: str, ad_ids: List[str]
+) -> set:
+    """Resolve which ad_ids belong to a product via two-tier matching.
+
+    Tier 1: Join classified ads via landing_page_id -> brand_landing_pages.product_id.
+    Tier 2: Campaign/adset/ad name substring match on product name.
+
+    Args:
+        supabase: Supabase client instance.
+        brand_id: Brand UUID string.
+        product_id: Product UUID string.
+        ad_ids: List of meta_ad_id strings to filter.
+
+    Returns:
+        Set of meta_ad_id strings belonging to the product.
+    """
+    if not ad_ids or not product_id:
+        return set(ad_ids)
+
+    matched = set()
+
+    product_name = ""
+    try:
+        result = supabase.table("products").select("name").eq("id", product_id).limit(1).execute()
+        if result.data:
+            product_name = result.data[0].get("name", "")
+    except Exception as e:
+        logger.debug(f"Failed to fetch product name: {e}")
+
+    # Tier 1: Landing page -> product_id match
+    try:
+        lp_result = (
+            supabase.table("brand_landing_pages")
+            .select("id")
+            .eq("brand_id", brand_id)
+            .eq("product_id", product_id)
+            .execute()
+        )
+        lp_ids = [r["id"] for r in (lp_result.data or [])]
+
+        if lp_ids:
+            for i in range(0, len(ad_ids), 500):
+                batch = ad_ids[i:i + 500]
+                cls_result = (
+                    supabase.table("ad_creative_classifications")
+                    .select("meta_ad_id, landing_page_id")
+                    .eq("brand_id", brand_id)
+                    .in_("meta_ad_id", batch)
+                    .in_("landing_page_id", lp_ids)
+                    .execute()
+                )
+                for c in (cls_result.data or []):
+                    if c.get("meta_ad_id"):
+                        matched.add(c["meta_ad_id"])
+    except Exception as e:
+        logger.debug(f"Tier 1 product resolution failed: {e}")
+
+    # Tier 2: Name substring match (catches unclassified ads)
+    if product_name:
+        name_lower = product_name.lower()
+        try:
+            for i in range(0, len(ad_ids), 500):
+                batch = ad_ids[i:i + 500]
+                perf_result = (
+                    supabase.table("meta_ads_performance")
+                    .select("meta_ad_id, ad_name, campaign_name, adset_name")
+                    .eq("brand_id", brand_id)
+                    .in_("meta_ad_id", batch)
+                    .execute()
+                )
+                seen = set()
+                for r in (perf_result.data or []):
+                    aid = r.get("meta_ad_id")
+                    if aid in seen or aid in matched:
+                        continue
+                    seen.add(aid)
+                    searchable = " ".join([
+                        r.get("ad_name", ""),
+                        r.get("campaign_name", ""),
+                        r.get("adset_name", ""),
+                    ]).lower()
+                    if name_lower in searchable:
+                        matched.add(aid)
+        except Exception as e:
+            logger.debug(f"Tier 2 product name matching failed: {e}")
+
+    return matched
+
+
 async def get_active_ad_ids(
     supabase,
     brand_id: UUID,

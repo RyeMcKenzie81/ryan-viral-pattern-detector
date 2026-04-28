@@ -3700,6 +3700,7 @@ async def execute_ad_intelligence_analysis_job(job: Dict) -> Dict[str, Any]:
         max_video: int (default 15)
         days_back: int (default 30)
         goal: str (default None)
+        product_id: str (default None) - if set, restricts analysis to ads for this product
     """
     job_id = job['id']
     brand_id = job.get('brand_id')
@@ -3738,12 +3739,18 @@ async def execute_ad_intelligence_analysis_job(job: Dict) -> Dict[str, Any]:
             max_video_classifications_per_run=params.get('max_video', 15),
         )
 
+        product_id_param = params.get('product_id')
+        product_uuid = _AnalysisUUID(product_id_param) if product_id_param else None
+
         logs.append(f"Running full analysis for: {brand_name}")
         logs.append(f"Config: days_back={config.days_back}, max_new={config.max_classifications_per_run}, max_video={config.max_video_classifications_per_run}")
+        if product_uuid:
+            logs.append(f"Restricting to product_id={product_uuid}")
 
         result = await intel_service.full_analysis(
             brand_id=_AnalysisUUID(brand_id), org_id=org_id,
             config=config, goal=params.get('goal'),
+            product_id=product_uuid,
         )
 
         logs.append(f"Active ads: {result.active_ads}, Recs: {len(result.recommendations)}")

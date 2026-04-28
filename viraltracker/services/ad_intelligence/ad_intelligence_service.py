@@ -19,7 +19,7 @@ from .congruence_checker import CongruenceChecker
 from .coverage_analyzer import CoverageAnalyzer
 from .diagnostic_engine import DiagnosticEngine
 from .fatigue_detector import FatigueDetector
-from .helpers import get_active_ad_ids, validate_org_brand, _safe_numeric
+from .helpers import get_active_ad_ids, resolve_product_ad_ids, validate_org_brand, _safe_numeric
 from ..video_analysis_service import VideoAnalysisService
 from .models import (
     AccountAnalysisResult,
@@ -158,6 +158,7 @@ class AdIntelligenceService:
         config: Optional[RunConfig] = None,
         goal: Optional[str] = None,
         triggered_by: Optional[UUID] = None,
+        product_id: Optional[UUID] = None,
     ) -> AccountAnalysisResult:
         """Run the complete 4-layer analysis pipeline.
 
@@ -170,12 +171,19 @@ class AdIntelligenceService:
             config: Run configuration.
             goal: Analysis goal.
             triggered_by: User UUID.
+            product_id: Optional product UUID. If provided, restricts the analysis
+                to ads associated with this product (via landing-page join or
+                campaign/ad/adset name match).
 
         Returns:
             AccountAnalysisResult with full analysis summary.
         """
         if config is None:
             config = RunConfig()
+
+        # Persist product_id in config so cache lookups can match on it
+        if product_id is not None:
+            config.product_id = str(product_id)
 
         run = await self.create_run(brand_id, org_id, config, goal, triggered_by)
 
@@ -202,6 +210,18 @@ class AdIntelligenceService:
                     brand_id,
                     run.date_range_end,
                     config.days_back,
+                )
+
+            # Restrict to product if specified (after active filtering so we keep
+            # the same active-window semantics, just narrowed to the product)
+            if product_id is not None and active_ids:
+                product_ad_ids = self._resolve_product_ad_ids(
+                    str(brand_id), str(product_id), active_ids
+                )
+                before = len(active_ids)
+                active_ids = [aid for aid in active_ids if aid in product_ad_ids]
+                logger.info(
+                    f"Product filter for {product_id}: {before} → {len(active_ids)} active ads"
                 )
 
             if not active_ids:
@@ -383,6 +403,15 @@ class AdIntelligenceService:
             await self._complete_run(run.id, "failed", error_message=str(e))
             raise
 
+    def _resolve_product_ad_ids(
+        self, brand_id: str, product_id: str, ad_ids: List[str]
+    ) -> set:
+        """Filter ad_ids to those belonging to the given product.
+
+        Delegates to the shared helper in `helpers.resolve_product_ad_ids`.
+        """
+        return resolve_product_ad_ids(self.supabase, brand_id, product_id, ad_ids)
+
     async def get_recommendation_inbox(
         self,
         brand_id: UUID,
@@ -446,6 +475,7 @@ class AdIntelligenceService:
 
     async def get_latest_completed_analysis(
         self, brand_id: UUID, days_back: int = 30,
+        product_id: Optional[UUID] = None,
     ) -> Optional[AnalysisRun]:
         """Get latest completed full analysis with rendered markdown.
 
@@ -453,6 +483,7 @@ class AdIntelligenceService:
         - status = 'completed'
         - rendered_markdown IS NOT NULL (excludes bg classification runs)
         - config->>'days_back' = days_back (strict parameter match via JSONB)
+        - config->>'product_id' = product_id (or NULL when product_id is None)
         - completed_at within last 24 hours
 
         Side effect: cleans up stale running runs (>120 min) for this brand.
@@ -472,15 +503,21 @@ class AdIntelligenceService:
 
         # Find latest completed with matching days_back (JSONB filter in SQL)
         freshness_cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
-        result = self.supabase.table("ad_intelligence_runs").select("*").eq(
+        query = self.supabase.table("ad_intelligence_runs").select("*").eq(
             "brand_id", str(brand_id)
         ).eq("status", "completed").not_.is_(
             "rendered_markdown", "null"
         ).filter(
             "config->>days_back", "eq", str(days_back)
-        ).gte("completed_at", freshness_cutoff).order(
-            "completed_at", desc=True
-        ).limit(1).execute()
+        ).gte("completed_at", freshness_cutoff)
+
+        # Match product_id exactly (NULL if no product, specific UUID if scoped)
+        if product_id is not None:
+            query = query.filter("config->>product_id", "eq", str(product_id))
+        else:
+            query = query.filter("config->>product_id", "is", "null")
+
+        result = query.order("completed_at", desc=True).limit(1).execute()
 
         if result.data:
             row = result.data[0]

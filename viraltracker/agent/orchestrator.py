@@ -354,11 +354,21 @@ async def route_to_ad_intelligence_agent(
     - Ad performance queries (top ads, spend, ROAS, campaign breakdown)
     - Account summaries or period-over-period comparisons
     - Individual ad performance details
+
+    PRODUCT-SCOPED REQUESTS: When the user asks about a specific product
+    (e.g. "analyze Cortisol Control", "top ads for our heating pad"), you MUST
+    first call resolve_product_name to convert the product name to a UUID, then
+    pass that UUID to the analysis tool as product_id. Most ad intelligence
+    tools support a product_id parameter that restricts analysis to ads
+    associated with that product. Do NOT attempt product-scoped analysis
+    without resolving and passing product_id — the tool will silently return
+    brand-wide data otherwise.
     """
-    # Inject cached brand context for follow-up queries
+    # Inject cached brand and product context for follow-up queries
     cached_brand_id = ctx.deps.result_cache.custom.get("ad_intelligence_brand_id")
     cached_brand_name = ctx.deps.result_cache.custom.get("ad_intelligence_brand_name")
     cached_run_id = ctx.deps.result_cache.custom.get("ad_intelligence_run_id")
+    cached_product_id = ctx.deps.result_cache.custom.get("ad_intelligence_product_id")
     if cached_brand_id and cached_brand_name:
         context_prefix = (
             f"[Context: The user is currently working with brand '{cached_brand_name}' "
@@ -366,6 +376,11 @@ async def route_to_ad_intelligence_agent(
         )
         if cached_run_id:
             context_prefix += f" The latest analysis run_id is {cached_run_id}."
+        if cached_product_id:
+            context_prefix += (
+                f" The user previously scoped analysis to product_id={cached_product_id}; "
+                f"reuse this if the new request is a follow-up about the same product."
+            )
         context_prefix += " Use this brand unless the user specifies a different one.]\n\n"
         query = context_prefix + query
 
