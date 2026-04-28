@@ -216,23 +216,32 @@ async def analyze_account(
     2. Queues a new background analysis if no cache or force_refresh=True
     3. Prevents duplicate jobs from being queued
 
-    Ask the user to check back in a few minutes if a new analysis was queued.
+    FOLLOW-UPS: When the user asks "is it done?" / "did the analysis finish?",
+    YOU MUST CALL THIS TOOL AGAIN with the same brand_id (and product_id if set).
+    Do NOT assume the analysis is complete based on elapsed time. The cache
+    lookup will return the rendered markdown if it has finished.
 
-    PRODUCT-SCOPED ANALYSIS: When the user asks about a specific product
-    (e.g. "analyze Cortisol Control"), pass the product UUID as product_id.
-    The analysis will only include ads associated with that product. Cache is
-    keyed separately per product, so a brand-level analysis and a product-level
-    analysis are stored independently.
+    BRAND vs PRODUCT — these are two DIFFERENT UUIDs from two DIFFERENT tables:
+    - brand_id is the UUID from the `brands` table (e.g. Martin Clinic, Savage)
+    - product_id is the UUID from the `products` table (e.g. Cortisol Control,
+      a product OWNED by a brand)
+
+    For "analyze Martin Clinic's Cortisol Control product" you MUST:
+    1. Call resolve_brand_name("Martin Clinic") → brand_id (e.g. abc-123-...)
+    2. Call resolve_product_name("Cortisol Control") → product_id (e.g. def-456-...)
+    3. Call this tool with BOTH brand_id="abc-123-..." AND product_id="def-456-..."
+
+    Never pass the same UUID for both — that means you forgot to resolve the brand.
 
     Args:
         ctx: Run context with AgentDependencies.
-        brand_id: Brand UUID string.
+        brand_id: Brand UUID string from the brands table.
         days_back: Number of days to analyze (default: 30).
         goal: Analysis goal (e.g., 'lower_cpa', 'scale', 'stability').
         force_refresh: If True, queue a new analysis even if cache exists.
-        product_id: Optional product UUID. If set, restricts analysis to ads
-            for that product. Use resolve_product_name first to convert a
-            product name to a UUID.
+        product_id: Optional product UUID from the products table. If set,
+            restricts analysis to ads associated with that product. Must be
+            different from brand_id.
 
     Returns:
         Cached analysis markdown, or status message about queued job.
@@ -243,12 +252,24 @@ async def analyze_account(
     db = get_supabase_client()
     intel_service = ctx.deps.ad_intelligence
 
+    # Validate: brand_id and product_id must be different UUIDs
+    if product_id and product_id == brand_id:
+        return (
+            "ERROR: brand_id and product_id are the same UUID. This usually means "
+            "you skipped resolve_brand_name and passed the product UUID for both. "
+            "Call resolve_brand_name first to get the actual brand UUID (different "
+            "from the product UUID), then call analyze_account again with both IDs."
+        )
+
     product_uuid = UUID(product_id) if product_id else None
 
     # Cache brand context for follow-up queries
     ctx.deps.result_cache.custom["ad_intelligence_brand_id"] = brand_id
     if product_uuid:
         ctx.deps.result_cache.custom["ad_intelligence_product_id"] = str(product_uuid)
+    else:
+        # Clear stale product context when this is a brand-only query
+        ctx.deps.result_cache.custom.pop("ad_intelligence_product_id", None)
 
     # --- Step 1: App-level dedup check (one-time jobs only) ---
     # Dedup is scoped to (brand_id, product_id) since brand-level and
