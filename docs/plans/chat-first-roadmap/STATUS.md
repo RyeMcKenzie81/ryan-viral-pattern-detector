@@ -8,12 +8,12 @@ This doc tracks the implementation state of the chat-first roadmap. **Update it 
 
 ---
 
-## Phase Status (2026-04-29)
+## Phase Status (2026-04-29 — Iteration Lab shipped)
 
 | Phase | Description | Status | % |
 |-------|---|---|---|
 | **Phase 1** | Ops Copilot — read-only chat tools, job management, push notifications | Substantially shipped | ~95% |
-| **Phase 2** | High-value services — competitor intel, image analysis, SEO, ad creation, pattern discovery | In progress | ~75% |
+| **Phase 2** | High-value services — competitor intel, image analysis, SEO, ad creation, pattern discovery | In progress | ~85% |
 | **Phase 3** | API foundation — FastAPI REST endpoints over services, auth, rate limiting | Not started | 0% |
 | **Phase 4** | Next.js frontend — port high-pain Streamlit pages | Not started | 0% |
 | **Phase 5** | MCP server — expose tools as MCP for Claude Code / Cursor / Claude Desktop | Not started | 0% |
@@ -58,6 +58,7 @@ This doc tracks the implementation state of the chat-first roadmap. **Update it 
 - **SEO** (`analysis_agent.py`): 7+ tools — projects, keywords, opportunities, rankings, articles, GA4, Reddit
 - **Ad creation workflows** (`ad_creation_agent.py`): 22+ tools including `complete_ad_workflow`, translations, smart edits
 - **Brand research** (partial): Summary + analysis count; no pipeline triggers
+- **Iteration Lab + Winner DNA** (`iteration_lab_agent.py`, shipped 2026-04-29): 7 tools — `find_iteration_opportunities`, `list_stored_opportunities`, `act_on_opportunity`, `batch_iterate_winners`, `get_iteration_track_record`, `analyze_winner_dna`, `analyze_winning_patterns`. Closes the "pattern discovery / winner DNA" gap. Services (`IterationOpportunityDetector`, `WinnerDNAAnalyzer`) wired into `AgentDependencies`.
 - **Provenance:** Per-tool format (not unified)
 
 ---
@@ -66,7 +67,6 @@ This doc tracks the implementation state of the chat-first roadmap. **Update it 
 
 | Gap | Priority | Effort | Notes |
 |---|---|---|---|
-| **Iteration Lab + Winner DNA** | **HIGH (next up)** | 1-2 days | Services exist (`IterationOpportunityDetector`, `WinnerDNAAnalyzer`) — Streamlit-only today. Closes the "pattern discovery / winner DNA" gap from the plan. See [Next Increment](#next-increment-iteration-lab--chat) below. |
 | Template recommendations | Medium | 0.5 day | Bidirectional template advice over the existing template queue. |
 | Content pipeline triggers | Small | 0.5 day | `ContentPipelineService` is wired but has no chat tools. |
 | `ProductURLService` chat tool | Small | <1 hour | "What product is this URL for?" |
@@ -76,30 +76,15 @@ This doc tracks the implementation state of the chat-first roadmap. **Update it 
 
 ---
 
-## Next Increment: Iteration Lab → Chat
+## Next Increment: TBD
 
-**Goal:** Wire `IterationOpportunityDetector` and `WinnerDNAAnalyzer` services as chat tools. Closes Phase 2's "winner DNA / pattern discovery" gap and surfaces the most operationally valuable tooling currently buried in Streamlit.
+With Iteration Lab shipped, the highest-value remaining Phase 2 gaps are smaller and standalone:
 
-**Tools to add (~6-8):**
-- `find_iteration_opportunities(brand_id, days_back?)` → list of opportunities with explanations + ROAS projections
-- `get_iteration_opportunity(opportunity_id)` → full details
-- `act_on_opportunity(opportunity_id, action)` → execute (iterate / kill / dismiss / restore)
-- `batch_iterate_winners(brand_id, top_n)` → queue iteration jobs for top performers
-- `analyze_winner_dna(ad_id)` → DNA breakdown for one ad
-- `analyze_winning_patterns(brand_id, days_back?)` → cross-winner DNA + action brief
-- `get_iteration_track_record(brand_id)` → historical iterations + outcomes
+**Quick-wins bundle (~half day total):** Template recommendations + content pipeline triggers + `ProductURLService` chat tool. Each is a thin tool around an existing service.
 
-**Service deps to add to `AgentDependencies`:**
-- `IterationOpportunityDetector(supabase_client)`
-- `WinnerDNAAnalyzer(supabase_client, gemini_service=...)`
+**Or one focused workflow:** `BeliefAnalysisService` chat tools (medium effort, frees up belief analysis currently locked inside LP analysis).
 
-**Reference services:**
-- `viraltracker/services/iteration_opportunity_detector.py` (~1500 lines, full API documented)
-- `viraltracker/services/winner_dna_analyzer.py`
-
-**Reference UI** (so we know what good UX looks like): `viraltracker/ui/pages/38_🔬_Iteration_Lab.py`
-
-**Effort:** 1-2 days CC. Each tool is a thin delegation + LLM-friendly response formatting.
+Pick based on user need next session.
 
 ---
 

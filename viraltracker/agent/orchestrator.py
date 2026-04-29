@@ -30,6 +30,7 @@ from .agents import (
     klaviyo_agent,
     ops_agent,
     competitor_agent,
+    iteration_lab_agent,
 )
 
 logger = logging.getLogger(__name__)
@@ -174,6 +175,18 @@ Your role is to analyze user requests and route them to the appropriate speciali
    - Responds to: "queue a meta sync", "run ad classification", "start a template scrape"
    - Also responds to: "check job status", "what's running?", "any failed jobs?", "system health"
    - Also responds to: "list my brands", "what brands do I have?", "what happened overnight?"
+
+11. **Iteration Lab Agent** - For iteration opportunities and winner DNA:
+   - Find iteration opportunities (mixed-signal ads: strong on one metric, weak on another)
+   - Decompose individual winners into element + visual + messaging DNA
+   - Find common patterns across multiple winners (replication blueprint)
+   - Take action on opportunities (iterate / dismiss / restore)
+   - Bulk-queue iteration jobs as background work
+   - Track historical iteration outcomes
+   - Responds to: "show me iteration opportunities", "what ads should I iterate on?"
+   - Also responds to: "why is ad X winning?", "decompose the DNA of this ad"
+   - Also responds to: "what patterns are common across my winners?", "replication blueprint"
+   - Also responds to: "iterate my top winners", "how are our iterations doing?"
 
 **Follow-up Handling:**
 When the user says "that", "those", "it", "them", "the same", etc., resolve the
@@ -483,6 +496,50 @@ async def route_to_competitor_agent(
     """
     logger.info(f"Routing to Competitor Agent: {query}")
     result = await competitor_agent.run(query, deps=ctx.deps)
+    return result.output
+
+
+@orchestrator.tool
+async def route_to_iteration_lab_agent(
+    ctx: RunContext[AgentDependencies],
+    query: str
+) -> str:
+    """Route request to Iteration Lab Agent for iteration opportunities and winner DNA.
+
+    This agent surfaces ads with iteration potential and decomposes WHY winners win:
+    - Find iteration opportunities (mixed-signal ads — strong on one metric, weak on another)
+    - Take action on opportunities (iterate / dismiss / restore)
+    - Bulk-queue iteration jobs for top opportunities (background)
+    - Decompose a single winning ad into element + visual + messaging DNA
+    - Find common patterns across multiple winners (replication blueprint)
+    - Track historical iteration outcomes
+
+    Route here when users ask about:
+    - "Show me iteration opportunities" / "What ads should I iterate on?"
+    - "Why is ad X winning?" / "Decompose the DNA of this ad"
+    - "What patterns are common across my winners?"
+    - "Iterate on opportunity Y" / "Queue iterations for these"
+    - "How are our iterations doing?" (track record)
+
+    PRODUCT-SCOPED REQUESTS work the same as ad intelligence: resolve brand AND
+    product UUIDs separately and pass both. Do NOT pass the same UUID for brand_id
+    and product_id.
+    """
+    # Inject cached brand and product context for follow-up queries
+    cached_brand_id = ctx.deps.result_cache.custom.get("ad_intelligence_brand_id")
+    cached_brand_name = ctx.deps.result_cache.custom.get("ad_intelligence_brand_name")
+    cached_product_id = ctx.deps.result_cache.custom.get("ad_intelligence_product_id")
+    if cached_brand_id and cached_brand_name:
+        context_prefix = (
+            f"[Context: brand '{cached_brand_name}' (brand_id: {cached_brand_id})."
+        )
+        if cached_product_id:
+            context_prefix += f" Previously scoped to product_id={cached_product_id}; reuse if appropriate."
+        context_prefix += " Use this brand unless the user specifies a different one.]\n\n"
+        query = context_prefix + query
+
+    logger.info(f"Routing to Iteration Lab Agent: {query}")
+    result = await iteration_lab_agent.run(query, deps=ctx.deps)
     return result.output
 
 
