@@ -51,6 +51,8 @@ from ..services.klaviyo_service import KlaviyoService
 from ..services.competitor_service import CompetitorService
 from ..services.competitor_intel_service import CompetitorIntelService
 from ..services.ad_translation_service import AdTranslationService
+from ..services.iteration_opportunity_detector import IterationOpportunityDetector
+from ..services.winner_dna_analyzer import WinnerDNAAnalyzer
 
 logger = logging.getLogger(__name__)
 
@@ -152,6 +154,8 @@ class AgentDependencies(BaseModel):
     seo_ga4: Optional[GA4Service] = None
     ad_performance_query: AdPerformanceQueryService
     ad_translation: AdTranslationService
+    iteration_opportunity: IterationOpportunityDetector
+    winner_dna: WinnerDNAAnalyzer
     docs: Optional[DocService] = None
     project_name: str = "yakety-pack-instagram"
     result_cache: ResultCache = Field(default_factory=ResultCache)
@@ -353,6 +357,11 @@ class AgentDependencies(BaseModel):
         )
         logger.info("AdTranslationService initialized")
 
+        # Initialize Iteration Lab services (mixed-signal opportunity detection + winner DNA)
+        iteration_opportunity = IterationOpportunityDetector(supabase)
+        winner_dna = WinnerDNAAnalyzer(supabase, gemini_service=gemini)
+        logger.info("IterationOpportunityDetector + WinnerDNAAnalyzer initialized")
+
         return cls(
             twitter=twitter,
             gemini=gemini,
@@ -391,6 +400,8 @@ class AgentDependencies(BaseModel):
             seo_ga4=seo_ga4,
             ad_performance_query=ad_performance_query,
             ad_translation=ad_translation,
+            iteration_opportunity=iteration_opportunity,
+            winner_dna=winner_dna,
             docs=docs,
             project_name=project_name
         )
