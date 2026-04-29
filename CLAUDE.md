@@ -40,6 +40,17 @@ See [docs/TECH_DEBT.md](docs/TECH_DEBT.md) for tracked improvements and future e
 
 ---
 
+## Roadmap
+
+The active product roadmap is **Chat-First Service Access** (office-hours plan, 2026-04-15). Sequence: Ops Copilot → API foundation → Next.js → MCP. Streamlit is being incrementally replaced as workflows move to chat (conversational) or eventually to Next.js (structured pages).
+
+- **Plan:** [docs/plans/chat-first-roadmap/PLAN.md](docs/plans/chat-first-roadmap/PLAN.md)
+- **Current status & next increment:** [docs/plans/chat-first-roadmap/STATUS.md](docs/plans/chat-first-roadmap/STATUS.md) — keep this updated whenever a phase increment ships
+
+When starting new work: check STATUS.md first to see what phase we're in and what the next agreed increment is. Avoid pulling forward later-phase work (e.g., Next.js / Phase 4) unless the plan itself is being reconsidered.
+
+---
+
 ## Development Workflow (ALWAYS FOLLOW)
 
 For every task, follow this workflow:

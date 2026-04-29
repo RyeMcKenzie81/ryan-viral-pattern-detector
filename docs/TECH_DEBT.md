@@ -2,6 +2,8 @@
 
 This document tracks technical debt and planned future enhancements that aren't urgent but shouldn't be forgotten.
 
+> **Active roadmap:** [docs/plans/chat-first-roadmap/STATUS.md](plans/chat-first-roadmap/STATUS.md) — the chat-first roadmap (Phase 1-5). Items below are *outside* that roadmap. Check the roadmap status doc first when planning new work.
+
 ## How This Works
 
 - **Add items** when you identify improvements that can wait but should be done eventually
@@ -967,3 +969,64 @@ Added `creative_genome_update` job type to Ad Scheduler UI with brand selector +
 4. Re-analyze existing ads (or analyze incrementally as new ads come in)
 
 **Connects to**: Angle pipeline (`belief_angles`, `angle_candidates`) — could auto-link ads to existing angles based on matching pain points/JTBDs.
+
+
+---
+
+### 36. Brand Data Audit Tool (Chat)
+
+**Priority**: Medium (small scope, surfaces value of existing infra)
+**Complexity**: Small (~30 min — thin wrapper around existing service)
+**Added**: 2026-04-29
+
+**Context**: `ToolReadinessService.get_readiness_report(brand_id)` already exists in Streamlit (page `07_📥_Tool_Readiness.py`) and answers exactly "what tools can this brand use, what's blocking each, what fix actions are needed." It has a registry of 13 tools with hard/soft/freshness requirements.
+
+**What to build**: Expose it as a Chainlit chat tool — e.g. `audit_brand_data(brand_name_or_id)` — that returns the readiness report formatted for chat. The framing "what tools become unavailable until I add X" is a natural fit for chat.
+
+**Why deferred**: Sits outside the framework-eval roadmap (`framework-eval-design-20260415-123723.md`). Not blocking Phase 2 progress.
+
+**Reference**: `viraltracker/services/tool_readiness_service.py`, `viraltracker/ui/tool_readiness_requirements.py`
+
+---
+
+### 37. Chat-Native Brand Enrichment Tools
+
+**Priority**: Medium (would unlock progressive onboarding via chat)
+**Complexity**: Medium (3-5 thin tool wrappers around existing CRUD services)
+**Added**: 2026-04-29
+
+**Context**: Today, all brand enrichment (add product, add competitor, add landing page, set FB meta, etc.) goes through Streamlit Brand Manager + Client Onboarding pages. Pattern: chat could let users enrich existing brands without leaving the conversation, while net-new client onboarding stays in Streamlit (where the multi-tab form makes sense).
+
+**What to build**: A small set of chat tools that operate on existing brands:
+- `add_product_to_brand(brand_id, name, website_url?)`
+- `add_competitor_to_brand(brand_id, name, website_url?)`
+- `add_landing_page_to_product(product_id, url)`
+- `update_brand_basics(brand_id, ...)`
+- `set_facebook_meta(brand_id, page_url, ad_library_url)` (the OAuth itself stays in Streamlit Brand Manager)
+
+Each is ~5-10 lines wrapping the existing service. Pair with TECH_DEBT #36 (audit tool) for the workflow: chat says "Cortisol Booster needs a landing page → want to add it?" → user confirms → `add_landing_page_to_product` runs → re-audit shows it unblocked.
+
+**Why deferred**: Sits outside the framework-eval roadmap. Most of the workflow that mattered (FB OAuth) is already accessible via the Streamlit link.
+
+**Reference**: Discussed in extended chat session 2026-04-29 (chat onboarding scope discussion).
+
+---
+
+### 38. Chat-Native Ad Creator V2 Prerequisite Workflows
+
+**Priority**: Low-Medium (significant scope, depends on Phase 4 direction)
+**Complexity**: Large (each workflow is multi-step, multi-day)
+**Added**: 2026-04-29
+
+**Context**: Three workflows currently live in Streamlit that gate Ad Creator V2: persona building (from product or competitor data), offer variants (per product, with extracted pain points / mechanism / hooks), landing page blueprints (structured analysis as reusable template). User has expressed friction with Streamlit's procedural complexity — "I don't always remember the path."
+
+**What to build (per workflow, in order of priority)**:
+1. **Offer variants** — bounded scope, single-row insert with optional LP scrape. Establishes the "draft → confirm" chat pattern.
+2. **Persona building from competitors** — uses existing CompetitorAgent persona synthesis. Wrap as chat workflow with user review.
+3. **Landing page blueprints** — structural analysis of existing LPs as reusable templates.
+
+Each follows the pattern: input → AI generation → user review of draft → commit to production tables. Reuses existing services + LP scraping + Claude analysis.
+
+**Why deferred**: The framework-eval roadmap (`framework-eval-design-20260415-123723.md`) specifies the sequence A → C → Next.js → MCP. These workflows arguably fit in Phase 2 ("ad creation workflows accessible from chat") but the most valuable piece — Ad Creator V2 itself — is already chat-tooled via `complete_ad_workflow`. The prerequisite workflows are higher-effort polish that should come after Phase 3 (API foundation) so they can be built once and consumed by both chat and the eventual Next.js frontend.
+
+**Reference**: Discussed in extended chat session 2026-04-29 (chat workflow scoping). Plan: `~/.gstack/projects/RyeMcKenzie81-ryan-viral-pattern-detector/ryemckenzie-RyeMcKenzie81-framework-eval-design-20260415-123723.md`
