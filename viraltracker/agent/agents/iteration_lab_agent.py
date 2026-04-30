@@ -71,9 +71,11 @@ Action flow guidance:
 - For "best ROAS ads to iterate" / "top performers" / "winners to iterate":
   call `find_iteration_opportunities` with
   `pattern_types=["proven_winner", "size_limited_winner", "efficient_but_starved", "fatiguing_winner"]`
-  and `sort_by="strong_value"`. CRITICAL: do NOT just call with defaults —
-  defaults return mixed-signal opportunities where ROAS is the WEAK metric
-  (i.e. low ROAS), the opposite of what the user asked for.
+  and `sort_by="roas"`. CRITICAL: do NOT just call with defaults — defaults
+  return mixed-signal opportunities where ROAS is the WEAK metric (i.e. low
+  ROAS), the opposite of what the user asked for. Each result includes a
+  `roas` field — show it explicitly. Do NOT show `strong_metric=reward_score`
+  as if it were ROAS.
 - For "static ads" or any creative format scoping: pass `creative_format="image_static"`
   (or similar). Don't return all formats and apologize — pre-filter at the tool.
 - For "iterate this one," call `act_on_opportunity` with the opportunity ID.
@@ -93,6 +95,15 @@ Provenance:
 - Always include the source service in your final summary (Iteration Lab).
 - For background-queued jobs, include the job_id so the user can
   follow up.
+
+Presentation:
+- ALWAYS show the `roas` field for each opportunity when present. The user
+  cares about actual ROAS, not the pattern's strong_metric (which is
+  reward_score for some patterns). Format: "ROAS: 2.4x".
+- Embed the thumbnail with markdown ![Ad Preview](thumbnail_url) ONLY when
+  thumbnail_url is present in the result. If the field is missing/absent,
+  skip the image entirely — do NOT render an empty `[Ad Thumbnail]`
+  placeholder; just show the ad name.
 
 When data is missing:
 - If `find_iteration_opportunities` returns empty, the brand may not have
@@ -156,7 +167,7 @@ async def find_iteration_opportunities(
     QUERY → PATTERN MAPPING:
     - "best ROAS ads to iterate" / "top performers" / "iterate on winners":
       pattern_types=["proven_winner", "size_limited_winner", "efficient_but_starved", "fatiguing_winner"]
-      sort_by="strong_value"  (so highest ROAS first)
+      sort_by="roas"  (so highest actual ROAS first, regardless of pattern's strong_metric)
     - "what should I iterate on?" (general): leave defaults — returns all patterns
     - "ads I should fix": leave defaults — surfaces mixed-signal bottlenecks
 
@@ -168,6 +179,12 @@ async def find_iteration_opportunities(
     - explanation_headline / explanation_projection — plain-language framing
     - projected_roas — if we fix the weak metric
     - creative_format — image_static, video_ugc, etc.
+    - roas — the ad's ACTUAL ROAS over the days_back window (always populated,
+      regardless of the pattern's strong_metric). Use this when telling the
+      user about ROAS — strong_value may be reward_score or another metric.
+    - thumbnail_url — only included if non-empty. When present, embed
+      inline using markdown ![Ad Preview](url). When absent, just describe
+      the ad name without an image placeholder.
 
     BRAND vs PRODUCT: brand_id is required. product_id is optional and scopes
     to ads associated with that product (via landing-page or name match).
@@ -186,8 +203,10 @@ async def find_iteration_opportunities(
             means image_static (and you might also include image_product,
             image_testimonial, image_before_after if they want all image formats).
             For "video ads" pass video_ugc (or "" + filter results).
-        sort_by: How to sort the result. "confidence" (default), "strong_value"
-            (e.g. ROAS desc when strong_metric=roas), "spend".
+        sort_by: How to sort the result. "confidence" (default), "roas" (use
+            this for "best ROAS" intent — sorts by actual ad ROAS desc),
+            "strong_value" (the pattern's strong metric, varies by pattern),
+            "spend".
 
     Returns:
         Dict with opportunities (list of opportunity dicts) and a brief summary.
@@ -213,16 +232,55 @@ async def find_iteration_opportunities(
     if creative_format:
         opportunities = [o for o in opportunities if o.creative_format == creative_format]
 
+    # Enrich every opportunity with the ad's ACTUAL ROAS (not just strong_value,
+    # which varies by pattern). Aggregates spend + purchase_value over the
+    # days_back window from meta_ads_performance.
+    roas_by_ad: dict[str, float] = {}
+    if opportunities:
+        from datetime import date, timedelta
+        ad_ids = list({o.meta_ad_id for o in opportunities})
+        date_cutoff = (date.today() - timedelta(days=days_back)).isoformat()
+        try:
+            spend_by_ad: dict[str, float] = {}
+            value_by_ad: dict[str, float] = {}
+            for i in range(0, len(ad_ids), 100):
+                batch = ad_ids[i:i + 100]
+                res = (
+                    ctx.deps.iteration_opportunity.supabase
+                    .table("meta_ads_performance")
+                    .select("meta_ad_id, spend, purchase_value")
+                    .in_("meta_ad_id", batch)
+                    .eq("brand_id", brand_id)
+                    .gte("date", date_cutoff)
+                    .execute()
+                )
+                for row in (res.data or []):
+                    aid = row.get("meta_ad_id")
+                    if not aid:
+                        continue
+                    spend_by_ad[aid] = spend_by_ad.get(aid, 0.0) + float(row.get("spend") or 0)
+                    value_by_ad[aid] = value_by_ad.get(aid, 0.0) + float(row.get("purchase_value") or 0)
+            for aid, spend in spend_by_ad.items():
+                if spend > 0:
+                    roas_by_ad[aid] = round(value_by_ad.get(aid, 0) / spend, 2)
+                else:
+                    roas_by_ad[aid] = 0.0
+        except Exception as e:
+            logger.debug(f"Could not enrich opportunities with ROAS: {e}")
+
     # Sort
-    if sort_by == "strong_value":
+    if sort_by == "roas":
+        opportunities.sort(key=lambda o: roas_by_ad.get(o.meta_ad_id, 0), reverse=True)
+    elif sort_by == "strong_value":
         opportunities.sort(key=lambda o: o.strong_value or 0, reverse=True)
     elif sort_by == "spend":
         opportunities.sort(key=lambda o: o.spend or 0, reverse=True)
     else:
         opportunities.sort(key=lambda o: o.confidence or 0, reverse=True)
 
-    items = [
-        {
+    items = []
+    for o in opportunities:
+        item = {
             "id": o.id,
             "meta_ad_id": o.meta_ad_id,
             "ad_name": o.ad_name,
@@ -239,11 +297,14 @@ async def find_iteration_opportunities(
             "explanation_projection": o.explanation_projection,
             "projected_roas": o.projected_roas,
             "spend": o.spend,
-            "thumbnail_url": o.thumbnail_url,
             "creative_format": o.creative_format,
+            "roas": roas_by_ad.get(o.meta_ad_id, 0.0),
         }
-        for o in opportunities
-    ]
+        # Only include thumbnail_url if non-empty so the LLM doesn't render
+        # a broken image placeholder.
+        if o.thumbnail_url:
+            item["thumbnail_url"] = o.thumbnail_url
+        items.append(item)
 
     return {
         "brand_id": brand_id,
