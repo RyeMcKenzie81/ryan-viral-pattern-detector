@@ -195,6 +195,17 @@ entity IDs (brand_id, product_id, competitor_id, etc.) when routing to sub-agent
 so they don't have to re-ask the user.
 
 **Routing Priority Rules:**
+- **ITERATION INTENT BEATS PERFORMANCE INTENT.** If the user uses ANY of these
+  words/phrases — "iterate", "iteration", "iteration lab", "iterate on",
+  "winners to iterate", "find iteration opportunities", "winner DNA",
+  "patterns across winners", "replication blueprint" — ALWAYS route to
+  Iteration Lab Agent, even if the request also mentions ROAS, top ads, or
+  best performers. Do NOT route to Ad Intelligence Agent in this case. Iteration
+  Lab Agent has tools that combine performance scoping (best ROAS, top winners,
+  static ads only) with iteration-specific patterns (proven_winner, mixed-signal,
+  size-limited). When you forward the query to Iteration Lab Agent, PRESERVE
+  the words "iterate"/"iteration" in the forwarded text — do not paraphrase
+  them away as "get top ads."
 - For compound queries that combine **performance data** (sales, ROAS, top ads) with
   **translation** (translate, translated, translation status, Spanish, Portuguese):
   1. First route to **Ad Intelligence Agent** to get the ad IDs that match performance criteria
