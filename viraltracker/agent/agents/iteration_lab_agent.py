@@ -65,14 +65,29 @@ Brand & product context:
   resolve it and pass it to scope opportunities/winners to that product.
 
 Action flow guidance:
-- For "show me iteration opportunities," call `find_iteration_opportunities`
-  with the brand and (optionally) product. Format the top 5-10 by confidence.
+- For "show me iteration opportunities" (general): call
+  `find_iteration_opportunities` with no pattern filter. Returns mixed-signal
+  bottlenecks (ads with weak metrics to fix).
+- For "best ROAS ads to iterate" / "top performers" / "winners to iterate":
+  call `find_iteration_opportunities` with
+  `pattern_types=["proven_winner", "size_limited_winner", "efficient_but_starved", "fatiguing_winner"]`
+  and `sort_by="strong_value"`. CRITICAL: do NOT just call with defaults —
+  defaults return mixed-signal opportunities where ROAS is the WEAK metric
+  (i.e. low ROAS), the opposite of what the user asked for.
+- For "static ads" or any creative format scoping: pass `creative_format="image_static"`
+  (or similar). Don't return all formats and apologize — pre-filter at the tool.
 - For "iterate this one," call `act_on_opportunity` with the opportunity ID.
 - For "iterate my top winners," call `batch_iterate_winners`. The jobs run
   in the background (~10 min each); inform the user they'll get notified.
 - For "what's working across my winners," call `analyze_winning_patterns`
   and present the common elements + replication blueprint.
 - For "track record" questions, call `get_iteration_track_record`.
+
+Format mapping for natural-language requests:
+- "static ads" → creative_format="image_static" (or omit and let user clarify
+  whether they also want image_product/image_testimonial/image_before_after)
+- "video ads" → creative_format="video_ugc" (most common; ask if specific)
+- "carousel" → creative_format="carousel"
 
 Provenance:
 - Always include the source service in your final summary (Iteration Lab).
@@ -115,21 +130,44 @@ async def find_iteration_opportunities(
     days_back: int = 30,
     min_confidence: float = 0.3,
     product_id: str = "",
+    pattern_types: Optional[list[str]] = None,
+    creative_format: str = "",
+    sort_by: str = "confidence",
 ) -> dict:
-    """Find iteration opportunities — ads that are strong on one metric and
-    weak on another (e.g. high conversion rate + low CTR).
+    """Find iteration opportunities — ads worth iterating on.
+
+    Two distinct shapes of "opportunity":
+
+    A) **Winners** (use these when user asks for "best/top performers",
+       "high ROAS ads", "winners to scale"):
+       - `proven_winner` — strong on EVERYTHING (CTR + ROAS + conversion)
+       - `size_limited_winner` — high CPA at scale (winner getting expensive)
+       - `efficient_but_starved` — high ROAS, under-scaled (low impressions)
+       - `fatiguing_winner` — was a winner, declining now
+
+    B) **Mixed-signal** (use when user asks "what should I iterate?" without
+       specifying — these are ads with bottlenecks to fix):
+       - `high_converter_low_stopper` — strong ROAS, weak CTR
+       - `good_hook_bad_close` — strong CTR, weak ROAS (low/zero conversions)
+       - `thumb_stopper_quick_dropper` — strong hook, weak retention
+       - `high_cvr_low_ctr` — high conversion rate, weak CTR
+       - `efficient_but_starved` — already listed under winners (overlap)
+
+    QUERY → PATTERN MAPPING:
+    - "best ROAS ads to iterate" / "top performers" / "iterate on winners":
+      pattern_types=["proven_winner", "size_limited_winner", "efficient_but_starved", "fatiguing_winner"]
+      sort_by="strong_value"  (so highest ROAS first)
+    - "what should I iterate on?" (general): leave defaults — returns all patterns
+    - "ads I should fix": leave defaults — surfaces mixed-signal bottlenecks
 
     Each opportunity includes:
     - pattern_type / pattern_label — which mismatch was detected
     - confidence (0-1) — strength of the signal
     - strong_metric / weak_metric — what's working vs what's holding it back
-    - strategy_category (iterate / kill / scale) and evolution_mode
+    - strategy_category (visual / messaging / pacing / budget) and evolution_mode
     - explanation_headline / explanation_projection — plain-language framing
     - projected_roas — if we fix the weak metric
-
-    Detects multiple pattern types per ad: standard mixed-signal patterns,
-    size-limited (high CPA at scale), fatiguing (declining CTR), and
-    proven_winner (strong on everything).
+    - creative_format — image_static, video_ugc, etc.
 
     BRAND vs PRODUCT: brand_id is required. product_id is optional and scopes
     to ads associated with that product (via landing-page or name match).
@@ -140,10 +178,19 @@ async def find_iteration_opportunities(
         days_back: Performance window in days. Default 30.
         min_confidence: Minimum confidence threshold (0-1). Default 0.3.
         product_id: Optional product UUID to filter ads.
+        pattern_types: Optional list of pattern_type values to include. If None,
+            returns all patterns. Use the mapping above to scope to winners.
+        creative_format: Optional filter — image_static, image_product,
+            image_testimonial, image_before_after, video_ugc, video_professional,
+            video_testimonial, video_demo, carousel. The user saying "static ads"
+            means image_static (and you might also include image_product,
+            image_testimonial, image_before_after if they want all image formats).
+            For "video ads" pass video_ugc (or "" + filter results).
+        sort_by: How to sort the result. "confidence" (default), "strong_value"
+            (e.g. ROAS desc when strong_metric=roas), "spend".
 
     Returns:
-        Dict with opportunities (list of opportunity dicts sorted by confidence
-        desc) and a brief summary.
+        Dict with opportunities (list of opportunity dicts) and a brief summary.
     """
     org_id = "all"  # Services treat "all" as no-filter; superuser-friendly default
     try:
@@ -157,6 +204,22 @@ async def find_iteration_opportunities(
     except Exception as e:
         logger.error(f"find_iteration_opportunities failed: {e}", exc_info=True)
         return {"error": f"Failed to detect opportunities: {e}", "opportunities": []}
+
+    # Tool-side filtering since the underlying service has no such params.
+    if pattern_types:
+        wanted = set(pattern_types)
+        opportunities = [o for o in opportunities if o.pattern_type in wanted]
+
+    if creative_format:
+        opportunities = [o for o in opportunities if o.creative_format == creative_format]
+
+    # Sort
+    if sort_by == "strong_value":
+        opportunities.sort(key=lambda o: o.strong_value or 0, reverse=True)
+    elif sort_by == "spend":
+        opportunities.sort(key=lambda o: o.spend or 0, reverse=True)
+    else:
+        opportunities.sort(key=lambda o: o.confidence or 0, reverse=True)
 
     items = [
         {
@@ -177,6 +240,7 @@ async def find_iteration_opportunities(
             "projected_roas": o.projected_roas,
             "spend": o.spend,
             "thumbnail_url": o.thumbnail_url,
+            "creative_format": o.creative_format,
         }
         for o in opportunities
     ]
@@ -185,6 +249,11 @@ async def find_iteration_opportunities(
         "brand_id": brand_id,
         "product_id": product_id or None,
         "days_back": days_back,
+        "filters": {
+            "pattern_types": pattern_types,
+            "creative_format": creative_format or None,
+            "sort_by": sort_by,
+        },
         "count": len(items),
         "opportunities": items,
     }
