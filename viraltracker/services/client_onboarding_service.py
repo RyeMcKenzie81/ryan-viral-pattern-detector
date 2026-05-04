@@ -844,6 +844,7 @@ Return ONLY a JSON array of question strings."""
         self,
         session_id: UUID,
         organization_id: Optional[str] = None,
+        user_id: Optional[str] = None,
     ) -> Optional[UUID]:
         """Ensure a brand row exists for this session and link it.
 
@@ -851,6 +852,11 @@ Return ONLY a JSON array of question strings."""
         Otherwise creates a brand row from `brand_basics` (requires `name`) and
         stores its id on the session. Used so OAuth can attach a real
         `brand_ad_accounts` row before the final import step.
+
+        When `organization_id` is missing or "all" (admin in cross-org view) and
+        `user_id` is provided, auto-creates a new organization named after the
+        brand and uses that as the brand's org. This lets super-admins onboard
+        new clients without first creating their org manually.
         """
         session = self.get_session(session_id)
         if not session:
@@ -864,9 +870,39 @@ Return ONLY a JSON array of question strings."""
         if not brand_basics.get("name"):
             return None
 
-        brand_data = self._build_brand_data(session, organization_id)
+        # Resolve a real organization_id. When admin is in "all" mode, mint a
+        # fresh org named after the brand and own it with the calling user.
+        resolved_org_id = organization_id
+        if not resolved_org_id or resolved_org_id == "all":
+            if not user_id:
+                raise ValueError(
+                    "Cannot create brand without an organization. Either pick a "
+                    "specific organization in the sidebar, or pass user_id so we "
+                    "can mint a new organization for this client."
+                )
+            org_row = self.supabase.table("organizations").insert(
+                {"name": brand_basics["name"], "owner_user_id": user_id}
+            ).execute()
+            resolved_org_id = org_row.data[0]["id"]
+            try:
+                self.supabase.table("user_organizations").insert(
+                    {
+                        "user_id": user_id,
+                        "organization_id": resolved_org_id,
+                        "role": "owner",
+                    }
+                ).execute()
+            except Exception as e:
+                logger.warning(f"Failed to add owner membership for auto-created org: {e}")
+            logger.info(
+                f"Auto-created organization '{brand_basics['name']}' "
+                f"({resolved_org_id}) for onboarding session {session_id}"
+            )
+
+        brand_data = self._build_brand_data(session, resolved_org_id)
         if "name" not in brand_data:
             return None
+        brand_data["organization_id"] = resolved_org_id  # always attach
 
         brand_result = self.supabase.table("brands").insert(brand_data).execute()
         brand_id = UUID(brand_result.data[0]["id"])
@@ -1099,7 +1135,10 @@ Return ONLY a JSON array of question strings."""
         return results
 
     def import_to_production(
-        self, session_id: UUID, organization_id: Optional[str] = None,
+        self,
+        session_id: UUID,
+        organization_id: Optional[str] = None,
+        user_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Import session data to production tables (brands, products, competitors).
@@ -1136,7 +1175,9 @@ Return ONLY a JSON array of question strings."""
             # Brand may already exist (we eagerly create it on Save Brand Basics
             # so OAuth can attach an ad account before final import). Fall back
             # to creating it here for sessions that pre-date that flow.
-            brand_id = self.ensure_brand_for_session(session_id, organization_id)
+            brand_id = self.ensure_brand_for_session(
+                session_id, organization_id, user_id=user_id
+            )
             if not brand_id:
                 raise ValueError("brand_basics.name required to import")
 
