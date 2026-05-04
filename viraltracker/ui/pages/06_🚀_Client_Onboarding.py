@@ -68,6 +68,72 @@ def get_ad_analysis_service():
 
     return AdAnalysisService()
 
+
+# ============================================
+# LOGO STORAGE HELPERS
+# ============================================
+
+_LOGO_BUCKET = "brand-assets"
+_LOGO_ONBOARDING_PREFIX = "_onboarding"
+
+
+def _upload_session_logo(session_id: str, file) -> dict | None:
+    """Upload an onboarding logo to the brand-assets bucket.
+
+    Stored under `_onboarding/{session_id}/{uuid}.{ext}` so it can be moved
+    into `{brand_id}/...` when the brand is created at import time.
+    """
+    import uuid as uuid_module
+    from viraltracker.core.database import get_supabase_client
+
+    try:
+        db = get_supabase_client()
+        file.seek(0)
+        file_bytes = file.read()
+        file.seek(0)
+
+        ext = (file.name.rsplit(".", 1)[-1] or "bin").lower()
+        if ext == "jpg":
+            ext = "jpeg"
+        content_type = file.type or (
+            "image/svg+xml" if ext == "svg" else f"image/{ext}"
+        )
+
+        storage_key = f"{_LOGO_ONBOARDING_PREFIX}/{session_id}/{uuid_module.uuid4()}.{ext}"
+        db.storage.from_(_LOGO_BUCKET).upload(
+            storage_key,
+            file_bytes,
+            {"content-type": content_type, "upsert": "true"},
+        )
+        return {
+            "storage_path": f"{_LOGO_BUCKET}/{storage_key}",
+            "content_type": content_type,
+        }
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Logo upload failed: {e}")
+        return None
+
+
+def _signed_logo_url(storage_path: str, expires: int = 3600) -> str | None:
+    """Return a signed URL for a stored logo path."""
+    from viraltracker.core.database import get_supabase_client
+
+    if not storage_path:
+        return None
+    if storage_path.startswith(f"{_LOGO_BUCKET}/"):
+        key = storage_path[len(_LOGO_BUCKET) + 1:]
+    else:
+        key = storage_path
+    try:
+        db = get_supabase_client()
+        result = db.storage.from_(_LOGO_BUCKET).create_signed_url(key, expires)
+        return result.get("signedURL") or result.get("signed_url") or result.get("signedUrl")
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"Signed logo URL failed: {e}")
+        return None
+
 def get_group_resume_status(group: dict, max_ads: int = 50) -> dict:
     """
     Check how many ads in a group have already been analyzed.
@@ -799,8 +865,28 @@ def render_brand_basics_tab(session: dict):
                 uploaded_logo.seek(0)
             else:
                 st.image(uploaded_logo, width=150)
-            data["logo_filename"] = uploaded_logo.name
-            # TODO: Upload to Supabase storage
+
+            # Upload to storage on first sight of a new file so the asset is
+            # actually persisted (not just the filename string).
+            if data.get("logo_filename") != uploaded_logo.name or not data.get("logo_storage_path"):
+                upload_result = _upload_session_logo(session["id"], uploaded_logo)
+                if upload_result:
+                    data["logo_storage_path"] = upload_result["storage_path"]
+                    data["logo_filename"] = uploaded_logo.name
+                    data["logo_content_type"] = upload_result["content_type"]
+                    service.update_section(UUID(session["id"]), "brand_basics", data)
+                    st.caption(f"✓ Saved {uploaded_logo.name} to storage")
+                else:
+                    st.warning("Logo preview shown, but storage upload failed — re-save before importing.")
+        elif data.get("logo_storage_path"):
+            # No fresh upload, but a logo was previously saved — render from storage.
+            url = _signed_logo_url(data["logo_storage_path"])
+            if url:
+                st.markdown(
+                    f'<img src="{url}" width="150" alt="saved logo" />',
+                    unsafe_allow_html=True,
+                )
+                st.caption(f"Saved: {data.get('logo_filename', 'logo')}")
 
     # Show scraped data if available
     if data.get("scraped_website_data"):
@@ -954,10 +1040,25 @@ def render_facebook_tab(session: dict):
 
             if validation:
                 with validate_col2:
+                    err_msg = validation.get("error") or ""
+                    is_session_invalid = (
+                        "session has been invalidated" in err_msg.lower()
+                        or "error validating access token" in err_msg.lower()
+                    )
                     if validation.get("has_access"):
                         st.success(f"API access confirmed{' — ' + validation['name'] if validation.get('name') else ''}")
+                    elif is_session_invalid:
+                        st.warning(
+                            "**System Meta token has expired.** Validation can't run right now, "
+                            "but this does **not** block onboarding. After you finish this form "
+                            "and import the brand, connect this ad account via Facebook OAuth on "
+                            "the **Brand Manager** page (`02_🏢_Brand_Manager`)."
+                        )
                     elif validation.get("valid_format") and not validation.get("has_access"):
-                        st.warning(validation.get("error", "Account found but no read access."))
+                        st.warning(
+                            (validation.get("error") or "Account found but no read access.")
+                            + "\n\nYou can still continue and connect via Facebook OAuth on Brand Manager after import."
+                        )
                     elif validation.get("error"):
                         st.error(validation.get("error", "Validation failed."))
 
