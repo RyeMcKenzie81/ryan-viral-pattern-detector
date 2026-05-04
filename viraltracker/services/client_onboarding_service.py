@@ -805,6 +805,60 @@ Return ONLY a JSON array of question strings."""
             return match.group(1)
         return None
 
+    def _migrate_onboarding_logo(
+        self,
+        brand_id: UUID,
+        storage_path: str,
+        filename: Optional[str] = None,
+    ) -> None:
+        """Move an onboarding-staged logo into brand-assets/{brand_id}/ and
+        register it as the primary logo on `brand_assets`.
+        """
+        bucket = "brand-assets"
+        prefix = f"{bucket}/"
+        if storage_path.startswith(prefix):
+            old_key = storage_path[len(prefix):]
+        else:
+            old_key = storage_path
+
+        # Derive a destination key: brand-assets/{brand_id}/{basename}
+        basename = old_key.rsplit("/", 1)[-1]
+        new_key = f"{brand_id}/{basename}"
+
+        try:
+            self.supabase.storage.from_(bucket).move(old_key, new_key)
+        except Exception as e:
+            # Some Supabase Python SDK versions don't support `move`; fall back
+            # to download + re-upload + delete original.
+            logger.info(f"storage.move unavailable ({e}); falling back to copy+delete")
+            try:
+                file_bytes = self.supabase.storage.from_(bucket).download(old_key)
+                self.supabase.storage.from_(bucket).upload(
+                    new_key,
+                    file_bytes,
+                    {"upsert": "true"},
+                )
+                try:
+                    self.supabase.storage.from_(bucket).remove([old_key])
+                except Exception:
+                    pass
+            except Exception as inner:
+                logger.warning(f"Logo migration failed: {inner}")
+                return
+
+        try:
+            self.supabase.table("brand_assets").insert(
+                {
+                    "brand_id": str(brand_id),
+                    "storage_path": f"{bucket}/{new_key}",
+                    "asset_type": "logo",
+                    "filename": filename or basename,
+                    "is_primary": True,
+                }
+            ).execute()
+        except Exception as e:
+            logger.warning(f"brand_assets insert failed: {e}")
+
     def backfill_product_images(self, session_id: UUID) -> Dict[str, Any]:
         """
         Backfill product images from an already-imported session.
@@ -1010,6 +1064,18 @@ Return ONLY a JSON array of question strings."""
             created["brand_id"] = str(brand_id)
 
             logger.info(f"Created brand: {brand_basics['name']} ({brand_id})")
+
+            # Migrate onboarding logo into brand-assets/{brand_id}/...
+            if brand_basics.get("logo_storage_path"):
+                try:
+                    self._migrate_onboarding_logo(
+                        brand_id=brand_id,
+                        storage_path=brand_basics["logo_storage_path"],
+                        filename=brand_basics.get("logo_filename"),
+                    )
+                    created["logo_migrated"] = True
+                except Exception as e:
+                    logger.warning(f"Failed to migrate onboarding logo: {e}")
 
             # Link session to brand
             self.supabase.table("client_onboarding_sessions").update(
