@@ -12,11 +12,15 @@ Features:
 Part of the Client Onboarding Pipeline.
 """
 
+import logging
+import os
 import streamlit as st
 import asyncio
 import time
-from datetime import datetime
+from datetime import datetime, timedelta, timezone as _tz
 from uuid import UUID
+
+logger = logging.getLogger(__name__)
 
 # Allow nested event loops (needed for Pydantic AI agent.run_sync() in async context)
 
@@ -27,10 +31,155 @@ st.set_page_config(
     layout="wide",
 )
 
-# Authentication
+# =============================================================================
+# META OAUTH CALLBACK HANDLING (BEFORE require_auth — cookie iframe hasn't
+# initialized yet after cross-domain redirect from facebook.com)
+# =============================================================================
 from viraltracker.ui.auth import require_auth
 
+if "code" in st.query_params and "state" in st.query_params:
+    try:
+        from viraltracker.services.meta_oauth_utils import (
+            decode_oauth_state,
+            exchange_meta_code,
+            exchange_for_long_lived_token,
+            get_token_user_info,
+            get_user_ad_accounts,
+        )
+
+        state_data = decode_oauth_state(st.query_params["state"])
+        # State carries brand_id (eagerly created on Save Brand Basics) plus
+        # session_id so we can return to the right onboarding session.
+        oauth_brand_id = state_data.get("brand_id")
+        oauth_session_id = state_data.get("session_id")
+
+        app_base_url = os.environ.get("APP_BASE_URL", "http://localhost:8501")
+        redirect_uri_cb = f"{app_base_url.rstrip('/')}/Client_Onboarding"
+
+        short_lived = exchange_meta_code(st.query_params["code"], redirect_uri_cb)
+        long_lived = exchange_for_long_lived_token(short_lived["access_token"])
+
+        user_info = get_token_user_info(long_lived["access_token"])
+        ad_accounts = get_user_ad_accounts(long_lived["access_token"])
+
+        st.session_state["_meta_pending_token"] = long_lived
+        st.session_state["_meta_pending_user"] = user_info.get("name", "Unknown")
+        st.session_state["_meta_ad_accounts"] = ad_accounts
+        st.session_state["_meta_brand_id"] = oauth_brand_id
+        if oauth_session_id:
+            st.session_state["onboarding_session_id"] = oauth_session_id
+        st.session_state["_oauth_return"] = True
+
+        st.query_params.clear()
+        st.rerun()
+
+    except Exception as e:
+        logger.error(f"Meta OAuth callback failed: {e}")
+        st.error(f"Meta OAuth failed: {e}")
+        st.query_params.clear()
+        st.session_state["_oauth_return"] = True
+
 require_auth()
+
+# Handle ad account selection after OAuth callback
+if "_meta_ad_accounts" in st.session_state:
+    st.subheader("Select Meta Ad Account")
+    accounts = st.session_state["_meta_ad_accounts"]
+    pending_brand_id = st.session_state.get("_meta_brand_id", "")
+    pending_token = st.session_state.get("_meta_pending_token", {})
+    pending_user = st.session_state.get("_meta_pending_user", "Unknown")
+
+    if not accounts:
+        st.warning("No ad accounts found for this Facebook user. Make sure they have access to ad accounts.")
+        if st.button("Dismiss", key="onboard_meta_dismiss_no_accounts"):
+            for k in ["_meta_ad_accounts", "_meta_brand_id", "_meta_pending_token", "_meta_pending_user"]:
+                st.session_state.pop(k, None)
+            st.rerun()
+    else:
+        account_options = {f"{a.get('name', 'Unnamed')} ({a['id']})": a for a in accounts}
+        selected_label = st.selectbox(
+            "Which ad account to connect?",
+            options=list(account_options.keys()),
+            key="onboard_meta_account_select",
+        )
+        selected_account = account_options[selected_label]
+
+        col_connect, col_cancel = st.columns(2)
+        with col_connect:
+            if st.button("Connect This Account", key="onboard_meta_connect_account", type="primary"):
+                try:
+                    from viraltracker.core.database import get_supabase_client as _get_db
+
+                    db_cb = _get_db()
+                    expires_at = (
+                        datetime.now(_tz.utc)
+                        + timedelta(seconds=pending_token.get("expires_in", 5184000))
+                    ).isoformat()
+
+                    db_cb.table("brand_ad_accounts").upsert(
+                        {
+                            "brand_id": pending_brand_id,
+                            "meta_ad_account_id": selected_account["id"],
+                            "account_name": selected_account.get("name", ""),
+                            "auth_method": "oauth",
+                            "access_token": pending_token["access_token"],
+                            "token_expires_at": expires_at,
+                            "connected_user_name": pending_user,
+                            "is_primary": True,
+                        },
+                        on_conflict="brand_id,meta_ad_account_id",
+                    ).execute()
+
+                    # Persist a pointer in the session JSON so the FB tab
+                    # reflects the connection without re-querying.
+                    if st.session_state.get("onboarding_session_id"):
+                        try:
+                            from viraltracker.services.client_onboarding_service import (
+                                ClientOnboardingService,
+                            )
+
+                            svc = ClientOnboardingService()
+                            sess = svc.get_session(UUID(st.session_state["onboarding_session_id"]))
+                            fb = (sess or {}).get("facebook_meta") or {}
+                            fb["ad_account_id"] = selected_account["id"]
+                            fb["ad_account_name"] = selected_account.get("name", "")
+                            fb["meta_ad_account_id"] = selected_account["id"]
+                            fb["ad_account_connected_via_oauth"] = True
+                            fb["ad_account_has_access"] = True
+                            svc.update_section(
+                                UUID(st.session_state["onboarding_session_id"]),
+                                "facebook_meta",
+                                fb,
+                            )
+                        except Exception as e:
+                            logger.warning(f"Failed to update session facebook_meta after OAuth: {e}")
+
+                    st.success(
+                        f"Connected **{selected_account['name']}** ({selected_account['id']})"
+                    )
+                    for k in [
+                        "_meta_ad_accounts",
+                        "_meta_brand_id",
+                        "_meta_pending_token",
+                        "_meta_pending_user",
+                    ]:
+                        st.session_state.pop(k, None)
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Failed to save connection: {e}")
+
+        with col_cancel:
+            if st.button("Cancel", key="onboard_meta_cancel_connect"):
+                for k in [
+                    "_meta_ad_accounts",
+                    "_meta_brand_id",
+                    "_meta_pending_token",
+                    "_meta_pending_user",
+                ]:
+                    st.session_state.pop(k, None)
+                st.rerun()
+
+    st.divider()
 
 # Session state initialization
 if "onboarding_session_id" not in st.session_state:
@@ -113,6 +262,98 @@ def _upload_session_logo(session_id: str, file) -> dict | None:
         import logging
         logging.getLogger(__name__).error(f"Logo upload failed: {e}")
         return None
+
+
+def _render_meta_oauth_connect(session: dict, data: dict, service) -> None:
+    """Render Meta OAuth connect/status block on the FB tab.
+
+    Requires the brand to already be linked (eagerly created on Save Brand
+    Basics). Mirrors the flow on Brand Manager so users see the same UX.
+    """
+    st.markdown("**Meta Ad Account Connection**")
+
+    brand_id = session.get("brand_id")
+    if not brand_id:
+        st.info(
+            "Save **Brand Basics** first — we eagerly create the brand record so "
+            "Facebook OAuth can attach an ad account to it."
+        )
+        return
+
+    # Show current connection status from brand_ad_accounts
+    try:
+        from viraltracker.core.database import get_supabase_client
+        db = get_supabase_client()
+        existing = db.table("brand_ad_accounts").select(
+            "meta_ad_account_id, account_name, auth_method, "
+            "token_expires_at, connected_user_name"
+        ).eq("brand_id", brand_id).eq("is_primary", True).limit(1).execute()
+    except Exception as e:
+        existing = None
+        logger.warning(f"Failed to load brand_ad_accounts: {e}")
+
+    if existing and existing.data:
+        conn = existing.data[0]
+        account_label = conn.get("account_name") or conn.get("meta_ad_account_id") or "Unknown"
+        user_label = conn.get("connected_user_name") or "Unknown user"
+        if conn.get("auth_method") == "oauth":
+            expires_str = conn.get("token_expires_at")
+            if expires_str:
+                try:
+                    expires_dt = datetime.fromisoformat(expires_str.replace("Z", "+00:00"))
+                    days_left = (expires_dt - datetime.now(_tz.utc)).days
+                    if days_left > 7:
+                        st.success(
+                            f"Connected: **{account_label}** (by {user_label}) — token expires in {days_left} days."
+                        )
+                    elif days_left > 0:
+                        st.warning(
+                            f"Connected: **{account_label}** — token expires in {days_left} days. Reconnect soon."
+                        )
+                    else:
+                        st.error(f"Token expired for **{account_label}**. Reconnect below.")
+                except (ValueError, TypeError):
+                    st.info(f"Connected: **{account_label}** (by {user_label})")
+            else:
+                st.info(f"Connected: **{account_label}** (by {user_label})")
+        else:
+            st.info(f"Connected (legacy auth): **{account_label}**")
+
+    meta_app_id = os.environ.get("META_APP_ID", "")
+    if not meta_app_id:
+        st.caption("Meta OAuth not configured (META_APP_ID not set).")
+        return
+
+    button_label = (
+        "Reconnect Facebook Ad Account"
+        if existing and existing.data
+        else "Connect Facebook Ad Account"
+    )
+    if st.button(button_label, key="onboard_connect_meta_oauth", type="secondary"):
+        try:
+            from viraltracker.services.meta_oauth_utils import (
+                get_meta_authorization_url,
+                encode_oauth_state,
+            )
+            from viraltracker.ui.utils import get_current_organization_id
+            import secrets as _secrets
+
+            org_id = get_current_organization_id() or "all"
+            nonce = _secrets.token_urlsafe(16)
+            state = encode_oauth_state(
+                str(brand_id),
+                org_id,
+                nonce,
+                session_id=str(session["id"]),
+            )
+
+            app_base_url = os.environ.get("APP_BASE_URL", "http://localhost:8501")
+            redirect_uri = f"{app_base_url.rstrip('/')}/Client_Onboarding"
+
+            auth_url = get_meta_authorization_url(redirect_uri=redirect_uri, state=state)
+            st.markdown(f"[Click here to authorize with Facebook]({auth_url})")
+        except Exception as e:
+            st.error(f"Failed to generate auth URL: {e}")
 
 
 def _signed_logo_url(storage_path: str, expires: int = 3600) -> str | None:
@@ -956,6 +1197,22 @@ def render_brand_basics_tab(session: dict):
             }
         )
         service.update_section(UUID(session["id"]), "brand_basics", data)
+
+        # Eagerly create the brand row so OAuth on the FB tab has a real
+        # brand_id to attach to. Idempotent — no-op if already linked.
+        try:
+            from viraltracker.ui.utils import get_current_organization_id
+            org_id_eager = get_current_organization_id()
+            brand_id_eager = service.ensure_brand_for_session(
+                UUID(session["id"]),
+                organization_id=org_id_eager,
+            )
+            if brand_id_eager:
+                # Sync field updates if brand already existed
+                service.update_brand_from_session(UUID(session["id"]))
+        except Exception as e:
+            logger.warning(f"ensure_brand_for_session failed on save: {e}")
+
         st.success("Saved!")
         st.rerun()
 
@@ -987,80 +1244,11 @@ def render_facebook_tab(session: dict):
         )
 
     with col2:
-        ad_account_id = st.text_input(
-            "Ad Account ID (for API access)",
-            value=data.get("ad_account_id", ""),
-            placeholder="act_123456789",
-            key="fb_ad_account_id",
-        )
+        # OAuth-based Meta ad account connection
+        _render_meta_oauth_connect(session, data, service)
 
-        ad_account_name = st.text_input(
-            "Ad Account Name",
-            value=data.get("ad_account_name", ""),
-            placeholder="My Brand - Ad Account",
-            key="fb_ad_account_name",
-        )
-
-        # Validate Account button
-        if ad_account_id:
-            validate_col1, validate_col2 = st.columns([1, 2])
-            with validate_col1:
-                if st.button("Validate Account", key="validate_ad_account"):
-                    with st.spinner("Validating ad account..."):
-                        try:
-                            from viraltracker.services.meta_ads_service import MetaAdsService
-                            meta_service = MetaAdsService()
-                            validation = meta_service.validate_ad_account(ad_account_id)
-
-                            st.session_state["ad_account_validation"] = validation
-
-                            # Auto-fill name from API if not manually set
-                            if validation.get("name") and not ad_account_name:
-                                data["ad_account_name"] = validation["name"]
-
-                            # Store validation results in session data
-                            data["ad_account_validated"] = validation.get("valid_format", False)
-                            data["ad_account_has_access"] = validation.get("has_access", False)
-                            data["ad_account_name"] = validation.get("name") or ad_account_name
-                            data["meta_ad_account_id"] = validation.get("meta_ad_account_id", ad_account_id)
-                            service.update_section(UUID(session["id"]), "facebook_meta", data)
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Validation failed: {e}")
-
-            # Show validation status
-            validation = st.session_state.get("ad_account_validation") or {}
-            if not validation and data.get("ad_account_validated") is not None:
-                # Reconstruct from saved data
-                validation = {
-                    "valid_format": data.get("ad_account_validated", False),
-                    "has_access": data.get("ad_account_has_access", False),
-                    "name": data.get("ad_account_name"),
-                }
-
-            if validation:
-                with validate_col2:
-                    err_msg = validation.get("error") or ""
-                    is_session_invalid = (
-                        "session has been invalidated" in err_msg.lower()
-                        or "error validating access token" in err_msg.lower()
-                    )
-                    if validation.get("has_access"):
-                        st.success(f"API access confirmed{' — ' + validation['name'] if validation.get('name') else ''}")
-                    elif is_session_invalid:
-                        st.warning(
-                            "**System Meta token has expired.** Validation can't run right now, "
-                            "but this does **not** block onboarding. After you finish this form "
-                            "and import the brand, connect this ad account via Facebook OAuth on "
-                            "the **Brand Manager** page (`02_🏢_Brand_Manager`)."
-                        )
-                    elif validation.get("valid_format") and not validation.get("has_access"):
-                        st.warning(
-                            (validation.get("error") or "Account found but no read access.")
-                            + "\n\nYou can still continue and connect via Facebook OAuth on Brand Manager after import."
-                        )
-                    elif validation.get("error"):
-                        st.error(validation.get("error", "Validation failed."))
+        ad_account_id = data.get("ad_account_id", "")
+        ad_account_name = data.get("ad_account_name", "")
 
     # Save basic info
     if st.button("💾 Save Facebook/Meta", type="primary", key="save_facebook"):

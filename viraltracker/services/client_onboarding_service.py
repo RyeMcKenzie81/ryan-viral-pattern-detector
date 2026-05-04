@@ -805,6 +805,108 @@ Return ONLY a JSON array of question strings."""
             return match.group(1)
         return None
 
+    def _build_brand_data(
+        self,
+        session: dict,
+        organization_id: Optional[str] = None,
+        for_update: bool = False,
+    ) -> Dict[str, Any]:
+        """Build a brands insert/update payload from current session JSON."""
+        brand_basics = session.get("brand_basics") or {}
+        facebook_meta = session.get("facebook_meta") or {}
+        data: Dict[str, Any] = {}
+
+        if brand_basics.get("name"):
+            data["name"] = brand_basics["name"]
+            if not for_update:
+                data["slug"] = self._slugify(brand_basics["name"])
+        if not for_update and organization_id and organization_id != "all":
+            data["organization_id"] = organization_id
+        if brand_basics.get("website_url"):
+            data["website"] = brand_basics["website_url"]
+        if brand_basics.get("brand_voice_tone"):
+            data["brand_voice_tone"] = brand_basics["brand_voice_tone"]
+        if brand_basics.get("disallowed_claims"):
+            data["disallowed_claims"] = brand_basics["disallowed_claims"]
+
+        if facebook_meta.get("ad_library_url"):
+            data["ad_library_url"] = facebook_meta["ad_library_url"]
+        if facebook_meta.get("page_id"):
+            data["facebook_page_id"] = facebook_meta["page_id"]
+        elif facebook_meta.get("ad_library_url"):
+            page_id = self._extract_facebook_page_id(facebook_meta["ad_library_url"])
+            if page_id:
+                data["facebook_page_id"] = page_id
+
+        return data
+
+    def ensure_brand_for_session(
+        self,
+        session_id: UUID,
+        organization_id: Optional[str] = None,
+    ) -> Optional[UUID]:
+        """Ensure a brand row exists for this session and link it.
+
+        Idempotent: if the session already has a `brand_id`, returns that id.
+        Otherwise creates a brand row from `brand_basics` (requires `name`) and
+        stores its id on the session. Used so OAuth can attach a real
+        `brand_ad_accounts` row before the final import step.
+        """
+        session = self.get_session(session_id)
+        if not session:
+            raise ValueError(f"Session not found: {session_id}")
+
+        existing_id = session.get("brand_id")
+        if existing_id:
+            return UUID(existing_id)
+
+        brand_basics = session.get("brand_basics") or {}
+        if not brand_basics.get("name"):
+            return None
+
+        brand_data = self._build_brand_data(session, organization_id)
+        if "name" not in brand_data:
+            return None
+
+        brand_result = self.supabase.table("brands").insert(brand_data).execute()
+        brand_id = UUID(brand_result.data[0]["id"])
+
+        self.supabase.table("client_onboarding_sessions").update(
+            {"brand_id": str(brand_id)}
+        ).eq("id", str(session_id)).execute()
+
+        logger.info(f"Pre-created brand for onboarding session: {brand_basics['name']} ({brand_id})")
+
+        # Migrate any logo uploaded before brand existed
+        if brand_basics.get("logo_storage_path"):
+            try:
+                self._migrate_onboarding_logo(
+                    brand_id=brand_id,
+                    storage_path=brand_basics["logo_storage_path"],
+                    filename=brand_basics.get("logo_filename"),
+                )
+            except Exception as e:
+                logger.warning(f"Failed to migrate onboarding logo on pre-create: {e}")
+
+        return brand_id
+
+    def update_brand_from_session(self, session_id: UUID) -> None:
+        """Sync the linked brand row with current session brand_basics/facebook_meta."""
+        session = self.get_session(session_id)
+        if not session or not session.get("brand_id"):
+            return
+        update_data = self._build_brand_data(session, for_update=True)
+        update_data.pop("name", None)  # don't rename mid-flight; slug would diverge
+        update_data.pop("slug", None)
+        if not update_data:
+            return
+        try:
+            self.supabase.table("brands").update(update_data).eq(
+                "id", session["brand_id"]
+            ).execute()
+        except Exception as e:
+            logger.warning(f"Failed to sync brand from session: {e}")
+
     def _migrate_onboarding_logo(
         self,
         brand_id: UUID,
@@ -1028,45 +1130,22 @@ Return ONLY a JSON array of question strings."""
 
         created: Dict[str, Any] = {}
 
-        # Create brand
         brand_basics = session.get("brand_basics") or {}
         facebook_meta = session.get("facebook_meta") or {}
         if brand_basics.get("name"):
-            brand_data = {
-                "name": brand_basics["name"],
-                "slug": self._slugify(brand_basics["name"]),
-            }
+            # Brand may already exist (we eagerly create it on Save Brand Basics
+            # so OAuth can attach an ad account before final import). Fall back
+            # to creating it here for sessions that pre-date that flow.
+            brand_id = self.ensure_brand_for_session(session_id, organization_id)
+            if not brand_id:
+                raise ValueError("brand_basics.name required to import")
 
-            # organization_id is required (NOT NULL) on brands
-            if organization_id and organization_id != "all":
-                brand_data["organization_id"] = organization_id
-
-            if brand_basics.get("website_url"):
-                brand_data["website"] = brand_basics["website_url"]
-            if brand_basics.get("brand_voice_tone"):
-                brand_data["brand_voice_tone"] = brand_basics["brand_voice_tone"]
-            if brand_basics.get("disallowed_claims"):
-                brand_data["disallowed_claims"] = brand_basics["disallowed_claims"]
-
-            # Add Facebook fields from facebook_meta section
-            if facebook_meta.get("ad_library_url"):
-                brand_data["ad_library_url"] = facebook_meta["ad_library_url"]
-            if facebook_meta.get("page_id"):
-                brand_data["facebook_page_id"] = facebook_meta["page_id"]
-            elif facebook_meta.get("ad_library_url"):
-                # Try to extract page_id from ad_library_url if not explicitly set
-                page_id = self._extract_facebook_page_id(facebook_meta["ad_library_url"])
-                if page_id:
-                    brand_data["facebook_page_id"] = page_id
-
-            brand_result = self.supabase.table("brands").insert(brand_data).execute()
-            brand_id = UUID(brand_result.data[0]["id"])
+            self.update_brand_from_session(session_id)
             created["brand_id"] = str(brand_id)
 
-            logger.info(f"Created brand: {brand_basics['name']} ({brand_id})")
-
-            # Migrate onboarding logo into brand-assets/{brand_id}/...
-            if brand_basics.get("logo_storage_path"):
+            # Migrate onboarding logo if it wasn't moved during ensure_brand_for_session
+            # (e.g. logo uploaded after brand was pre-created)
+            if brand_basics.get("logo_storage_path") and brand_basics["logo_storage_path"].startswith("brand-assets/_onboarding/"):
                 try:
                     self._migrate_onboarding_logo(
                         brand_id=brand_id,
@@ -1077,42 +1156,10 @@ Return ONLY a JSON array of question strings."""
                 except Exception as e:
                     logger.warning(f"Failed to migrate onboarding logo: {e}")
 
-            # Link session to brand
+            # Mark session as imported
             self.supabase.table("client_onboarding_sessions").update(
-                {
-                    "brand_id": str(brand_id),
-                    "status": "imported",
-                }
+                {"status": "imported"}
             ).eq("id", str(session_id)).execute()
-
-            # Link ad account — only if validated with API access
-            if (facebook_meta.get("ad_account_id")
-                    and facebook_meta.get("ad_account_has_access")):
-                try:
-                    ad_account_id = facebook_meta["ad_account_id"].strip()
-                    if not ad_account_id.startswith("act_"):
-                        ad_account_id = f"act_{ad_account_id}"
-                    ad_account_data = {
-                        "brand_id": str(brand_id),
-                        "meta_ad_account_id": ad_account_id,
-                        "account_name": facebook_meta.get("ad_account_name"),
-                        "is_primary": True,
-                    }
-                    try:
-                        ad_account_data["auth_method"] = "system_user"
-                        self.supabase.table("brand_ad_accounts").upsert(
-                            ad_account_data, on_conflict="brand_id,meta_ad_account_id"
-                        ).execute()
-                    except Exception:
-                        # auth_method column may not exist if migration not run
-                        ad_account_data.pop("auth_method", None)
-                        self.supabase.table("brand_ad_accounts").upsert(
-                            ad_account_data, on_conflict="brand_id,meta_ad_account_id"
-                        ).execute()
-                    created["ad_account_linked"] = ad_account_id
-                    logger.info(f"Linked ad account {ad_account_id} to brand {brand_id}")
-                except Exception as e:
-                    logger.warning(f"Failed to link ad account: {e}")
 
             # Import scraped Facebook ads
             if facebook_meta.get("url_groups"):
