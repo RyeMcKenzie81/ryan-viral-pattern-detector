@@ -787,7 +787,18 @@ def render_brand_basics_tab(session: dict):
         )
 
         if uploaded_logo:
-            st.image(uploaded_logo, width=150)
+            is_svg = uploaded_logo.name.lower().endswith(".svg") or uploaded_logo.type == "image/svg+xml"
+            if is_svg:
+                import base64
+                svg_bytes = uploaded_logo.getvalue()
+                b64 = base64.b64encode(svg_bytes).decode("ascii")
+                st.markdown(
+                    f'<img src="data:image/svg+xml;base64,{b64}" width="150" alt="logo preview" />',
+                    unsafe_allow_html=True,
+                )
+                uploaded_logo.seek(0)
+            else:
+                st.image(uploaded_logo, width=150)
             data["logo_filename"] = uploaded_logo.name
             # TODO: Upload to Supabase storage
 
