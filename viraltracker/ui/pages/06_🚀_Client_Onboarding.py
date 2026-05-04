@@ -274,10 +274,35 @@ def _render_meta_oauth_connect(session: dict, data: dict, service) -> None:
 
     brand_id = session.get("brand_id")
     if not brand_id:
-        st.info(
-            "Save **Brand Basics** first — we eagerly create the brand record so "
-            "Facebook OAuth can attach an ad account to it."
-        )
+        from viraltracker.ui.utils import get_current_organization_id
+        current_org = get_current_organization_id()
+        if not current_org or current_org == "all":
+            st.warning(
+                "**Brand record not created yet.** Your sidebar org is set to "
+                "**All** — pick a specific organization, return to the Brand Basics "
+                "tab, and click **Save Brand Basics** again. The brand row needs a "
+                "real organization_id before Facebook OAuth can attach an ad account."
+            )
+        else:
+            # User has a real org; offer one-click retry instead of bouncing them.
+            st.info(
+                "**Brand record not created yet.** Click below to create it now — "
+                "we'll attach Facebook OAuth to it on this tab."
+            )
+            if st.button("Create brand record now", key="retry_ensure_brand"):
+                try:
+                    new_brand_id = service.ensure_brand_for_session(
+                        UUID(session["id"]), organization_id=current_org
+                    )
+                    if new_brand_id:
+                        st.success("Brand created — refreshing.")
+                        st.rerun()
+                    else:
+                        st.error(
+                            "Could not create brand. Make sure Brand Basics has a name set."
+                        )
+                except Exception as e:
+                    st.error(f"Failed: {e}")
         return
 
     # Show current connection status from brand_ad_accounts
@@ -1200,20 +1225,30 @@ def render_brand_basics_tab(session: dict):
 
         # Eagerly create the brand row so OAuth on the FB tab has a real
         # brand_id to attach to. Idempotent — no-op if already linked.
+        from viraltracker.ui.utils import get_current_organization_id
+        org_id_eager = get_current_organization_id()
+        if not org_id_eager or org_id_eager == "all":
+            st.success("Saved!")
+            st.warning(
+                "Brand record not yet created — pick a specific organization in the "
+                "sidebar (currently set to **All**), then re-save Brand Basics. "
+                "Facebook OAuth needs a brand_id with an organization attached."
+            )
+            st.rerun()
         try:
-            from viraltracker.ui.utils import get_current_organization_id
-            org_id_eager = get_current_organization_id()
             brand_id_eager = service.ensure_brand_for_session(
                 UUID(session["id"]),
                 organization_id=org_id_eager,
             )
             if brand_id_eager:
-                # Sync field updates if brand already existed
                 service.update_brand_from_session(UUID(session["id"]))
+                st.success("Saved! Brand record ready for Facebook OAuth.")
+            else:
+                st.warning("Saved, but brand row was not created (missing brand name?)")
         except Exception as e:
-            logger.warning(f"ensure_brand_for_session failed on save: {e}")
+            logger.exception("ensure_brand_for_session failed on save")
+            st.error(f"Saved brand_basics, but failed to create brand row: {e}")
 
-        st.success("Saved!")
         st.rerun()
 
 # ============================================
