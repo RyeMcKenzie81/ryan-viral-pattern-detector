@@ -1511,7 +1511,8 @@ Return ONLY the JSON array, no markdown fencing or explanation."""
         agent = Agent(
             model=model,
             system_prompt=system,
-            model_settings=ModelSettings(max_tokens=8192, temperature=0.2),
+            # temperature is deprecated for claude-opus-4-7 and rejected at the API
+            model_settings=ModelSettings(max_tokens=8192),
         )
 
         result = await run_agent_with_tracking(
