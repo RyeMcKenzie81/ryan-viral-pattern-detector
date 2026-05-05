@@ -2287,14 +2287,33 @@ else:
                     prod_url_running_key = f"{prod_url_prefix}_running"
                     prod_url_suggestions_key = f"{prod_url_prefix}_suggestions"
 
-                    purl_col, purl_af_col = st.columns([3, 1])
+                    saved_product_url = product.get('product_url') or ''
+                    purl_col, purl_save_col, purl_af_col = st.columns([3, 1, 1])
                     with purl_col:
                         prod_url_val = st.text_input(
                             "Product Website URL",
+                            value=saved_product_url,
                             placeholder="https://yourbrand.com/product-page",
-                            help="Main product page URL — used to auto-fill guarantee, ingredients, FAQ, etc.",
+                            help="Main product page URL — saved to the product, used to auto-fill product details.",
                             key=f"{prod_url_prefix}_input",
                         )
+                    with purl_save_col:
+                        st.markdown("")  # Align with input
+                        purl_changed = (prod_url_val or '').strip() != saved_product_url.strip()
+                        if st.button(
+                            "💾 Save URL",
+                            key=f"{prod_url_prefix}_save",
+                            disabled=not purl_changed,
+                            help="Persist this URL on the product",
+                        ):
+                            try:
+                                get_supabase_client().table("products").update(
+                                    {"product_url": (prod_url_val or '').strip() or None}
+                                ).eq("id", product_id).execute()
+                                st.success("Product URL saved.")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Failed to save URL: {e}")
                     with purl_af_col:
                         st.markdown("")  # Align
                         if prod_url_val:
