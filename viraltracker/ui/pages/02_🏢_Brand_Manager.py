@@ -2174,9 +2174,9 @@ with st.expander("➕ Add Product", expanded=False):
             st.error("Name is required.")
         else:
             try:
-                from viraltracker.services.product_url_service import ProductUrlService
+                from viraltracker.services.product_url_service import ProductURLService
                 db_np = get_supabase_client()
-                pus = ProductUrlService(supabase=db_np)
+                pus = ProductURLService(supabase=db_np)
                 created = pus.create_product(
                     brand_id=selected_brand_id,
                     name=new_name.strip(),
