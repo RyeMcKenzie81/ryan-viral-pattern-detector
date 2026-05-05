@@ -27,11 +27,20 @@ BM_LP_AUTOFILL_FIELDS = [
 
 # Product/brand-only fields (safe when no offer_variant_id exists)
 BM_PRODUCT_AUTOFILL_FIELDS = [
+    # Landing-page-blueprint fields (downstream LP generation)
     "product.guarantee",
     "product.ingredients",
     "product.faq_items",
     "product.results_timeline",
     "brand.voice_tone",
+    # UI-displayed product card fields (ad-creation context)
+    "product.target_audience",
+    "product.benefits",
+    "product.unique_selling_points",
+    "product.current_offer",
+    "product.founders",
+    "product.key_ingredients",
+    "product.brand_voice_notes",
 ]
 
 # Better display names with entity context
@@ -44,6 +53,13 @@ _DISPLAY_NAMES = {
     "offer_variant.mechanism.root_cause": "Variant > Mechanism Root Cause",
     "offer_variant.pain_points": "Variant > Pain Points",
     "brand.voice_tone": "Brand > Voice/Tone",
+    "product.target_audience": "Product > Target Audience",
+    "product.benefits": "Product > Benefits",
+    "product.unique_selling_points": "Product > USPs",
+    "product.current_offer": "Product > Current Offer",
+    "product.founders": "Product > Founders",
+    "product.key_ingredients": "Product > Key Ingredients",
+    "product.brand_voice_notes": "Product > Brand Voice Notes",
 }
 
 _CONF_ICONS = {"high": "🟢", "medium": "🟡", "low": "🟠"}

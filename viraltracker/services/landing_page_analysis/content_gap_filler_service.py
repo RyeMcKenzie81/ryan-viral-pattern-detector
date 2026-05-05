@@ -115,6 +115,56 @@ GAP_FIELD_REGISTRY: Dict[str, GapFieldSpec] = {
         write_policy="allow_if_empty", display_name="FAQ Items",
         manual_entry_link="/Brand_Manager#faq",
     ),
+    # --- UI-displayed product card fields (Brand Manager card shows these) ---
+    "product.target_audience": GapFieldSpec(
+        key="product.target_audience", table="products", column="target_audience",
+        entity="product", value_type="text", auto_fillable=True, needs_setup=False,
+        sources=["brand_landing_pages", "fresh_scrape"],
+        write_policy="confirm_overwrite", display_name="Target Audience",
+        manual_entry_link="/Brand_Manager#product",
+    ),
+    "product.benefits": GapFieldSpec(
+        key="product.benefits", table="products", column="benefits",
+        entity="product", value_type="text_list", auto_fillable=True, needs_setup=False,
+        sources=["brand_landing_pages", "fresh_scrape"],
+        write_policy="allow_if_empty", display_name="Benefits",
+        manual_entry_link="/Brand_Manager#product",
+    ),
+    "product.unique_selling_points": GapFieldSpec(
+        key="product.unique_selling_points", table="products", column="unique_selling_points",
+        entity="product", value_type="text_list", auto_fillable=True, needs_setup=False,
+        sources=["brand_landing_pages", "fresh_scrape"],
+        write_policy="allow_if_empty", display_name="USPs",
+        manual_entry_link="/Brand_Manager#product",
+    ),
+    "product.current_offer": GapFieldSpec(
+        key="product.current_offer", table="products", column="current_offer",
+        entity="product", value_type="text", auto_fillable=True, needs_setup=False,
+        sources=["brand_landing_pages", "fresh_scrape"],
+        write_policy="confirm_overwrite", display_name="Current Offer",
+        manual_entry_link="/Brand_Manager#product",
+    ),
+    "product.founders": GapFieldSpec(
+        key="product.founders", table="products", column="founders",
+        entity="product", value_type="text", auto_fillable=True, needs_setup=False,
+        sources=["brand_landing_pages", "fresh_scrape"],
+        write_policy="confirm_overwrite", display_name="Founders",
+        manual_entry_link="/Brand_Manager#product",
+    ),
+    "product.key_ingredients": GapFieldSpec(
+        key="product.key_ingredients", table="products", column="key_ingredients",
+        entity="product", value_type="text_list", auto_fillable=True, needs_setup=False,
+        sources=["brand_landing_pages", "fresh_scrape"],
+        write_policy="allow_if_empty", display_name="Key Ingredients",
+        manual_entry_link="/Brand_Manager#product",
+    ),
+    "product.brand_voice_notes": GapFieldSpec(
+        key="product.brand_voice_notes", table="products", column="brand_voice_notes",
+        entity="product", value_type="text", auto_fillable=True, needs_setup=False,
+        sources=["brand_landing_pages", "fresh_scrape"],
+        write_policy="confirm_overwrite", display_name="Brand Voice Notes",
+        manual_entry_link="/Brand_Manager#product",
+    ),
     "offer_variant.mechanism.name": GapFieldSpec(
         key="offer_variant.mechanism.name", table="product_offer_variants",
         column="mechanism_name",
@@ -740,9 +790,13 @@ class ContentGapFillerService:
         return value
 
     def _validate_text_list(self, value: Any) -> List[str]:
-        """Validate text list: strip each, remove empties, deduplicate."""
+        """Validate text list: strip each, remove empties, deduplicate.
+
+        Accepts plain strings, lists of strings, OR lists of
+        {"id": "...", "text": "..."} dicts (the shape the extraction prompt
+        defines for text_list fields with evidence_map).
+        """
         if isinstance(value, str):
-            # Split by newlines or semicolons
             items = re.split(r"[\n;]+", value)
         elif isinstance(value, list):
             items = value
@@ -752,7 +806,13 @@ class ContentGapFillerService:
         cleaned = []
         seen = set()
         for item in items:
-            text = str(item).strip()
+            # Flatten {"id":..., "text":...} or {"name":...} shapes the LLM
+            # may emit per the prompt schema.
+            if isinstance(item, dict):
+                text = item.get("text") or item.get("value") or item.get("name") or ""
+            else:
+                text = str(item)
+            text = text.strip()
             if text and text.lower() not in seen:
                 cleaned.append(text)
                 seen.add(text.lower())
@@ -1165,8 +1225,13 @@ class ContentGapFillerService:
     ) -> None:
         """Record a provenance event in content_field_events."""
         try:
+            # "all" comes from superuser cross-org view — not a valid UUID for the
+            # organization_id column. Drop it so the insert lets organization_id be NULL.
+            resolved_org = org_id or self._org_id
+            if resolved_org == "all":
+                resolved_org = None
             event = {
-                "organization_id": org_id or self._org_id,
+                "organization_id": resolved_org,
                 "target_table": spec.table,
                 "target_id": entity_id,
                 "target_column": spec.column or spec.key,
