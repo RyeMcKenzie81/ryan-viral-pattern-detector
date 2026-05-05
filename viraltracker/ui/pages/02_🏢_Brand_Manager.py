@@ -2327,7 +2327,9 @@ else:
                         with st.spinner("Scraping product page and extracting fields..."):
                             try:
                                 from viraltracker.ui.autofill_suggestions import (
-                                    scrape_and_extract, BM_PRODUCT_AUTOFILL_FIELDS,
+                                    scrape_and_extract,
+                                    scrape_and_save_product_images,
+                                    BM_PRODUCT_AUTOFILL_FIELDS,
                                 )
                                 suggestions, warning = scrape_and_extract(
                                     url=prod_url_val,
@@ -2338,6 +2340,26 @@ else:
                                 st.session_state[prod_url_suggestions_key] = suggestions
                                 if warning:
                                     st.session_state[f"{prod_url_prefix}_warning"] = warning
+
+                                # Also pull product images from the same page —
+                                # only when this product has no images yet, so
+                                # re-running auto-fill doesn't keep duplicating.
+                                existing_imgs = product.get("product_images") or []
+                                if not existing_imgs:
+                                    try:
+                                        saved_count, img_warning = scrape_and_save_product_images(
+                                            url=prod_url_val, product_id=product_id
+                                        )
+                                        if saved_count > 0:
+                                            st.session_state[f"{prod_url_prefix}_images_saved"] = saved_count
+                                        elif img_warning:
+                                            # Append to existing warning rather than overwrite
+                                            cur = st.session_state.get(f"{prod_url_prefix}_warning") or ""
+                                            st.session_state[f"{prod_url_prefix}_warning"] = (
+                                                (cur + "\n\n" + img_warning).strip()
+                                            )
+                                    except Exception as img_err:
+                                        logger.warning(f"Image autofill failed: {img_err}")
                             except Exception as e:
                                 st.session_state[f"{prod_url_prefix}_error"] = str(e)
                             st.session_state[prod_url_running_key] = False
@@ -2347,6 +2369,9 @@ else:
                         st.error(f"Auto-fill failed: {st.session_state.pop(f'{prod_url_prefix}_error')}")
                     if f"{prod_url_prefix}_warning" in st.session_state:
                         st.warning(st.session_state.pop(f"{prod_url_prefix}_warning"))
+                    if f"{prod_url_prefix}_images_saved" in st.session_state:
+                        n = st.session_state.pop(f"{prod_url_prefix}_images_saved")
+                        st.success(f"📸 Pulled and saved {n} product image(s) from the page.")
 
                     prod_url_suggestions = st.session_state.get(prod_url_suggestions_key)
                     if prod_url_suggestions:
