@@ -2040,76 +2040,149 @@ st.subheader("Products")
 products = get_products_for_brand(selected_brand_id)
 
 # ---- Add Product ----
-with st.expander("➕ Add Product", expanded=False):
-    with st.form(key=f"add_product_form_{selected_brand_id}", clear_on_submit=True):
-        st.caption(
-            "Create a new product under this brand. Use this for products that "
-            "don't have ads yet — fill in the rest of the details on the expanded "
-            "product card after creation."
-        )
-        new_name = st.text_input("Name *", placeholder="e.g., Sleep Support")
-        new_description = st.text_area("Description", height=70)
-        col_a, col_b = st.columns(2)
-        with col_a:
-            new_product_url = st.text_input("Product page URL", placeholder="https://...")
-            new_audience = st.text_input("Target audience", placeholder="e.g., Adults 35-65 with sleep issues")
-        with col_b:
-            new_amazon_url = st.text_input("Amazon URL", placeholder="https://amazon.com/...")
-            new_price = st.text_input("Price range", placeholder="e.g., $39 or $20-$60")
+_NP_KEYS = {
+    "name": f"np_name_{selected_brand_id}",
+    "description": f"np_desc_{selected_brand_id}",
+    "product_url": f"np_purl_{selected_brand_id}",
+    "amazon_url": f"np_aurl_{selected_brand_id}",
+    "audience": f"np_aud_{selected_brand_id}",
+    "price": f"np_price_{selected_brand_id}",
+}
 
-        submitted_new_product = st.form_submit_button("Create Product", type="primary")
-        if submitted_new_product:
-            if not new_name.strip():
-                st.error("Name is required.")
-            else:
-                try:
-                    from viraltracker.services.product_url_service import ProductUrlService
-                    db_np = get_supabase_client()
-                    pus = ProductUrlService(supabase=db_np)
-                    created = pus.create_product(
-                        brand_id=selected_brand_id,
-                        name=new_name.strip(),
-                        description=new_description.strip() or None,
+with st.expander("➕ Add Product", expanded=False):
+    st.caption(
+        "Create a new product under this brand. Use this for products that "
+        "don't have ads yet. Paste a product page URL and click **Pull from "
+        "page** to auto-fill the details, then click **Create Product**."
+    )
+
+    # Fields driven by session_state so the Pull button can prefill them.
+    new_name = st.text_input(
+        "Name *", placeholder="e.g., Sleep Support", key=_NP_KEYS["name"]
+    )
+
+    purl_col1, purl_col2 = st.columns([3, 1])
+    with purl_col1:
+        new_product_url = st.text_input(
+            "Product page URL",
+            placeholder="https://...",
+            key=_NP_KEYS["product_url"],
+        )
+    with purl_col2:
+        st.write("")  # spacer to align button vertically with input
+        pull_clicked = st.button(
+            "🔍 Pull from page",
+            key=f"np_pull_{selected_brand_id}",
+            disabled=not new_product_url.strip(),
+            help="Scrape the product page and pre-fill name/description/price",
+        )
+
+    if pull_clicked and new_product_url.strip():
+        with st.spinner("Scraping product page..."):
+            try:
+                from viraltracker.services.web_scraping_service import (
+                    WebScrapingService,
+                    PRODUCT_PAGE_SCHEMA,
+                )
+
+                web_service = WebScrapingService()
+                result = web_service.extract_structured(
+                    url=new_product_url.strip(), schema=PRODUCT_PAGE_SCHEMA
+                )
+                if result.success and result.data:
+                    pulled = result.data or {}
+                    if pulled.get("product_name") and not st.session_state.get(_NP_KEYS["name"]):
+                        st.session_state[_NP_KEYS["name"]] = pulled["product_name"]
+                    if pulled.get("description"):
+                        st.session_state[_NP_KEYS["description"]] = pulled["description"]
+                    price_str = pulled.get("price")
+                    currency = pulled.get("currency") or ""
+                    if price_str:
+                        st.session_state[_NP_KEYS["price"]] = (
+                            f"{currency}{price_str}" if currency and currency not in price_str else price_str
+                        )
+                    st.success("Pulled details from page. Review and adjust before creating.")
+                    st.rerun()
+                else:
+                    st.warning(
+                        f"Couldn't extract structured data: {result.error or 'no data returned'}"
                     )
-                    if created and created.get("id"):
-                        # Patch optional fields directly — create_product only
-                        # writes name/slug/description.
-                        extras: dict = {}
-                        if new_product_url.strip():
-                            extras["product_url"] = new_product_url.strip()
-                        if new_amazon_url.strip():
-                            extras["amazon_url"] = new_amazon_url.strip()
-                        if new_audience.strip():
-                            extras["target_audience"] = new_audience.strip()
-                        if new_price.strip():
-                            extras["price_range"] = new_price.strip()
-                        if extras:
-                            try:
-                                db_np.table("products").update(extras).eq(
-                                    "id", created["id"]
-                                ).execute()
-                            except Exception as patch_err:
-                                # Some columns are optional in older schemas — retry
-                                # one-by-one so a single missing column doesn't lose
-                                # the rest.
-                                logger.warning(
-                                    f"Bulk product update failed ({patch_err}); "
-                                    f"falling back to per-field updates"
-                                )
-                                for k, v in extras.items():
-                                    try:
-                                        db_np.table("products").update({k: v}).eq(
-                                            "id", created["id"]
-                                        ).execute()
-                                    except Exception as field_err:
-                                        logger.warning(f"Skipped {k}: {field_err}")
-                        st.session_state.expanded_product_id = created["id"]
-                        st.success(f"Created '{new_name.strip()}' — opening details below.")
-                        st.rerun()
-                    else:
-                        st.error("Product was not created (no row returned).")
-                except Exception as e:
-                    st.error(f"Failed to create product: {e}")
+            except Exception as e:
+                st.error(f"Scrape failed: {e}")
+
+    new_description = st.text_area(
+        "Description", height=70, key=_NP_KEYS["description"]
+    )
+    col_a, col_b = st.columns(2)
+    with col_a:
+        new_amazon_url = st.text_input(
+            "Amazon URL",
+            placeholder="https://amazon.com/...",
+            key=_NP_KEYS["amazon_url"],
+        )
+        new_audience = st.text_input(
+            "Target audience",
+            placeholder="e.g., Adults 35-65 with sleep issues",
+            key=_NP_KEYS["audience"],
+        )
+    with col_b:
+        new_price = st.text_input(
+            "Price range",
+            placeholder="e.g., $39 or $20-$60",
+            key=_NP_KEYS["price"],
+        )
+
+    if st.button("Create Product", key=f"np_create_{selected_brand_id}", type="primary"):
+        if not new_name.strip():
+            st.error("Name is required.")
+        else:
+            try:
+                from viraltracker.services.product_url_service import ProductUrlService
+                db_np = get_supabase_client()
+                pus = ProductUrlService(supabase=db_np)
+                created = pus.create_product(
+                    brand_id=selected_brand_id,
+                    name=new_name.strip(),
+                    description=new_description.strip() or None,
+                )
+                if created and created.get("id"):
+                    extras: dict = {}
+                    if new_product_url.strip():
+                        extras["product_url"] = new_product_url.strip()
+                    if new_amazon_url.strip():
+                        extras["amazon_url"] = new_amazon_url.strip()
+                    if new_audience.strip():
+                        extras["target_audience"] = new_audience.strip()
+                    if new_price.strip():
+                        extras["price_range"] = new_price.strip()
+                    if extras:
+                        try:
+                            db_np.table("products").update(extras).eq(
+                                "id", created["id"]
+                            ).execute()
+                        except Exception as patch_err:
+                            logger.warning(
+                                f"Bulk product update failed ({patch_err}); "
+                                f"falling back to per-field updates"
+                            )
+                            for k, v in extras.items():
+                                try:
+                                    db_np.table("products").update({k: v}).eq(
+                                        "id", created["id"]
+                                    ).execute()
+                                except Exception as field_err:
+                                    logger.warning(f"Skipped {k}: {field_err}")
+
+                    # Clear inputs after successful create
+                    for k in _NP_KEYS.values():
+                        st.session_state.pop(k, None)
+                    st.session_state.expanded_product_id = created["id"]
+                    st.success(f"Created '{new_name.strip()}' — opening details below.")
+                    st.rerun()
+                else:
+                    st.error("Product was not created (no row returned).")
+            except Exception as e:
+                st.error(f"Failed to create product: {e}")
 
 if not products:
     st.info("No products found for this brand.")
