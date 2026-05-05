@@ -2039,6 +2039,78 @@ st.subheader("Products")
 
 products = get_products_for_brand(selected_brand_id)
 
+# ---- Add Product ----
+with st.expander("➕ Add Product", expanded=False):
+    with st.form(key=f"add_product_form_{selected_brand_id}", clear_on_submit=True):
+        st.caption(
+            "Create a new product under this brand. Use this for products that "
+            "don't have ads yet — fill in the rest of the details on the expanded "
+            "product card after creation."
+        )
+        new_name = st.text_input("Name *", placeholder="e.g., Sleep Support")
+        new_description = st.text_area("Description", height=70)
+        col_a, col_b = st.columns(2)
+        with col_a:
+            new_product_url = st.text_input("Product page URL", placeholder="https://...")
+            new_audience = st.text_input("Target audience", placeholder="e.g., Adults 35-65 with sleep issues")
+        with col_b:
+            new_amazon_url = st.text_input("Amazon URL", placeholder="https://amazon.com/...")
+            new_price = st.text_input("Price range", placeholder="e.g., $39 or $20-$60")
+
+        submitted_new_product = st.form_submit_button("Create Product", type="primary")
+        if submitted_new_product:
+            if not new_name.strip():
+                st.error("Name is required.")
+            else:
+                try:
+                    from viraltracker.services.product_url_service import ProductUrlService
+                    db_np = get_supabase_client()
+                    pus = ProductUrlService(supabase=db_np)
+                    created = pus.create_product(
+                        brand_id=selected_brand_id,
+                        name=new_name.strip(),
+                        description=new_description.strip() or None,
+                    )
+                    if created and created.get("id"):
+                        # Patch optional fields directly — create_product only
+                        # writes name/slug/description.
+                        extras: dict = {}
+                        if new_product_url.strip():
+                            extras["product_url"] = new_product_url.strip()
+                        if new_amazon_url.strip():
+                            extras["amazon_url"] = new_amazon_url.strip()
+                        if new_audience.strip():
+                            extras["target_audience"] = new_audience.strip()
+                        if new_price.strip():
+                            extras["price_range"] = new_price.strip()
+                        if extras:
+                            try:
+                                db_np.table("products").update(extras).eq(
+                                    "id", created["id"]
+                                ).execute()
+                            except Exception as patch_err:
+                                # Some columns are optional in older schemas — retry
+                                # one-by-one so a single missing column doesn't lose
+                                # the rest.
+                                logger.warning(
+                                    f"Bulk product update failed ({patch_err}); "
+                                    f"falling back to per-field updates"
+                                )
+                                for k, v in extras.items():
+                                    try:
+                                        db_np.table("products").update({k: v}).eq(
+                                            "id", created["id"]
+                                        ).execute()
+                                    except Exception as field_err:
+                                        logger.warning(f"Skipped {k}: {field_err}")
+                        st.session_state.expanded_product_id = created["id"]
+                        st.success(f"Created '{new_name.strip()}' — opening details below.")
+                        st.rerun()
+                    else:
+                        st.error("Product was not created (no row returned).")
+                except Exception as e:
+                    st.error(f"Failed to create product: {e}")
+
 if not products:
     st.info("No products found for this brand.")
 else:
