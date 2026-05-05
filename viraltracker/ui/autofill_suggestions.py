@@ -79,6 +79,42 @@ def _get_gap_filler_service():
     return svc
 
 
+def scrape_and_save_product_images(
+    url: str,
+    product_id: str,
+    max_images: int = 8,
+) -> Tuple[int, Optional[str]]:
+    """Scrape a product page for images and save them to product_images.
+
+    Reuses the existing ClientOnboardingService._save_product_images flow
+    so storage paths, image_X.ext naming, and is_main/sort_order conventions
+    match what onboarding produces.
+
+    Returns:
+        (saved_count, optional warning message)
+    """
+    from uuid import UUID
+    from viraltracker.services.web_scraping_service import WebScrapingService
+    from viraltracker.services.client_onboarding_service import ClientOnboardingService
+
+    web_service = WebScrapingService()
+    image_urls = web_service.extract_product_images(url=url, max_images=max_images)
+    if not image_urls:
+        return 0, "No product images found on the page (filtered out icons/logos)."
+
+    onboarding_svc = ClientOnboardingService()
+    try:
+        saved = onboarding_svc._save_product_images(
+            product_id=UUID(product_id), image_urls=image_urls
+        )
+    except Exception as e:
+        return 0, f"Image save failed: {e}"
+
+    if saved == 0:
+        return 0, "Found image URLs but none could be downloaded/saved."
+    return saved, None
+
+
 def scrape_and_extract(
     url: str,
     product_name: Optional[str] = None,
