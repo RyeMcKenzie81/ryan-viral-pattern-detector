@@ -2089,8 +2089,33 @@ with st.expander("➕ Add Product", expanded=False):
                 result = web_service.extract_structured(
                     url=new_product_url.strip(), schema=PRODUCT_PAGE_SCHEMA
                 )
-                if result.success and result.data:
-                    pulled = result.data or {}
+
+                # Firecrawl can return the schema fields directly OR wrapped in
+                # {"data": {...}} / a per-URL list. Normalize before reading.
+                raw = result.data if result.success else None
+                pulled: dict = {}
+                if isinstance(raw, dict):
+                    if any(k in raw for k in ("product_name", "description", "price")):
+                        pulled = raw
+                    elif isinstance(raw.get("data"), dict):
+                        pulled = raw["data"]
+                    elif isinstance(raw.get("data"), list) and raw["data"]:
+                        first = raw["data"][0]
+                        if isinstance(first, dict):
+                            pulled = first.get("extract") if isinstance(first.get("extract"), dict) else first
+                elif isinstance(raw, list) and raw:
+                    first = raw[0]
+                    if isinstance(first, dict):
+                        pulled = first.get("extract") if isinstance(first.get("extract"), dict) else first
+
+                pulled = pulled or {}
+
+                # Did we actually get usable values?
+                got_anything = any(
+                    pulled.get(k) for k in ("product_name", "description", "price")
+                )
+
+                if got_anything:
                     if pulled.get("product_name") and not st.session_state.get(_NP_KEYS["name"]):
                         st.session_state[_NP_KEYS["name"]] = pulled["product_name"]
                     if pulled.get("description"):
@@ -2098,14 +2123,26 @@ with st.expander("➕ Add Product", expanded=False):
                     price_str = pulled.get("price")
                     currency = pulled.get("currency") or ""
                     if price_str:
+                        price_str = str(price_str)
                         st.session_state[_NP_KEYS["price"]] = (
                             f"{currency}{price_str}" if currency and currency not in price_str else price_str
                         )
                     st.success("Pulled details from page. Review and adjust before creating.")
                     st.rerun()
                 else:
+                    # Show what we got so the user (or operator) can see the
+                    # gap. Heavy JS-rendered Shopify pages sometimes return
+                    # very little structured content for LLM extraction.
                     st.warning(
-                        f"Couldn't extract structured data: {result.error or 'no data returned'}"
+                        "Couldn't pull structured fields from the page. "
+                        f"Reason: {result.error or 'extractor returned no recognized fields'}."
+                    )
+                    if raw is not None:
+                        with st.expander("Raw extractor response (debug)"):
+                            st.json(raw)
+                    st.caption(
+                        "Tip: paste the description and price manually below, or try the page's "
+                        "main URL (without `/products/...`) if it's a Shopify storefront."
                     )
             except Exception as e:
                 st.error(f"Scrape failed: {e}")
