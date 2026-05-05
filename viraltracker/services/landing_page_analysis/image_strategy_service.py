@@ -332,10 +332,11 @@ class ImageStrategyService:
         user_content = "\n".join(user_parts)
 
         model = Config.get_model("complex")  # Opus
+        # temperature dropped — claude-opus-4-7 rejects it
         agent = Agent(
             model=model,
             system_prompt=system_prompt,
-            model_settings=ModelSettings(max_tokens=8192, temperature=0.4),
+            model_settings=ModelSettings(max_tokens=8192),
         )
 
         result = await run_agent_with_tracking(
