@@ -461,6 +461,10 @@ def render_persona_editor(persona_id: str):
             ("admire", "People They Admire"),
             ("envy", "People They Envy"),
             ("want_to_belong", "Groups They Want to Belong To"),
+            ("love_loyalty", "People / Brands They Love & Are Loyal To"),
+            ("dislike_animosity", "People / Brands They Dislike or Resent"),
+            ("compared_to", "Who They Compare Themselves Against"),
+            ("distance_from", "People / Groups They Want to Distance From"),
         ]
 
         updated_social = {}
