@@ -193,6 +193,34 @@ def render_persona_card(persona: Dict[str, Any], show_actions: bool = True):
                     st.session_state.selected_persona_id = persona['id']
                     st.rerun()
 
+                # Two-step delete with inline confirmation. Click Delete →
+                # render warning + Yes/Cancel. Yes deletes; Cancel clears.
+                pending_key = f"_pending_delete_{persona['id']}"
+                if st.session_state.get(pending_key):
+                    st.warning(f"Delete **{persona.get('name', 'this persona')}**? This cannot be undone.")
+                    confirm_col, cancel_col = st.columns(2)
+                    with confirm_col:
+                        if st.button("Yes, delete", type="primary", key=f"confirm_del_{persona['id']}"):
+                            try:
+                                service = get_persona_service()
+                                deleted = service.delete_persona(UUID(persona['id']))
+                                if deleted:
+                                    st.success(f"Deleted '{persona.get('name')}'.")
+                                else:
+                                    st.error("Delete failed — persona may have been removed already.")
+                            except Exception as e:
+                                st.error(f"Delete failed: {e}")
+                            st.session_state.pop(pending_key, None)
+                            st.rerun()
+                    with cancel_col:
+                        if st.button("Cancel", key=f"cancel_del_{persona['id']}"):
+                            st.session_state.pop(pending_key, None)
+                            st.rerun()
+                else:
+                    if st.button("🗑️ Delete", key=f"del_{persona['id']}"):
+                        st.session_state[pending_key] = True
+                        st.rerun()
+
 def render_dimension_editor(dimension_name: str, fields: List[Dict], data: Dict[str, Any]) -> Dict[str, Any]:
     """Render an editor for a persona dimension."""
     st.subheader(dimension_name)
@@ -694,7 +722,7 @@ def render_persona_editor(persona_id: str):
 
     # Save button
     st.divider()
-    col1, col2, col3, col4 = st.columns([1, 1, 1, 1])
+    col1, col2, col3, col4, col5 = st.columns([1, 1, 1, 1, 1])
 
     with col1:
         if st.button("Save Changes", type="primary"):
@@ -724,6 +752,40 @@ def render_persona_editor(persona_id: str):
                 st.session_state[f"_persona_md_{persona_id}"] = md
             except Exception as e:
                 st.error(f"Failed to generate: {e}")
+
+    with col5:
+        # Two-step delete with inline confirmation
+        editor_pending_key = f"_pending_delete_editor_{persona_id}"
+        if st.button("🗑️ Delete", key=f"editor_del_{persona_id}"):
+            st.session_state[editor_pending_key] = True
+            st.rerun()
+
+    editor_pending_key = f"_pending_delete_editor_{persona_id}"
+    if st.session_state.get(editor_pending_key):
+        st.warning(
+            f"Delete this persona? This cannot be undone. "
+            "Any links to products will be removed."
+        )
+        confirm_col, cancel_col, _spacer = st.columns([1, 1, 3])
+        with confirm_col:
+            if st.button("Yes, delete", type="primary", key=f"editor_confirm_del_{persona_id}"):
+                try:
+                    deleted = service.delete_persona(UUID(persona_id))
+                    if deleted:
+                        st.success("Persona deleted.")
+                    else:
+                        st.error("Delete failed — persona may have already been removed.")
+                except Exception as e:
+                    st.error(f"Delete failed: {e}")
+                # Clear editor state and bounce back to the list
+                st.session_state.pop(editor_pending_key, None)
+                st.session_state.pop(f"_persona_md_{persona_id}", None)
+                st.session_state.selected_persona_id = None
+                st.rerun()
+        with cancel_col:
+            if st.button("Cancel", key=f"editor_cancel_del_{persona_id}"):
+                st.session_state.pop(editor_pending_key, None)
+                st.rerun()
 
     persona_md = st.session_state.get(f"_persona_md_{persona_id}")
     if persona_md:

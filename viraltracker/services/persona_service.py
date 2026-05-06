@@ -612,7 +612,20 @@ class PersonaService:
         return False
 
     def delete_persona(self, persona_id: UUID) -> bool:
-        """Delete a persona."""
+        """Delete a persona and its product link rows.
+
+        product_personas has no ON DELETE CASCADE on persona_id, so we
+        must remove link rows explicitly first to avoid orphan rows.
+        """
+        # Remove product links first (best-effort — don't fail the delete
+        # if there are no links or the cleanup hits an error).
+        try:
+            self.supabase.table("product_personas").delete().eq(
+                "persona_id", str(persona_id)
+            ).execute()
+        except Exception as e:
+            logger.warning(f"Failed to clean product_personas links for {persona_id}: {e}")
+
         result = self.supabase.table("personas_4d").delete().eq(
             "id", str(persona_id)
         ).execute()
