@@ -425,6 +425,26 @@ Return JSON with this exact structure:
     "family_status": "e.g., Married with adult children"
   }},
 
+  "behavior_habits": {{
+    "daily_routines": "e.g., Reads health blogs in morning",
+    "media_consumption": "e.g., Podcasts on long drives, IG reels at night",
+    "research_pattern": "e.g., Reads 3-5 sources before any health purchase"
+  }},
+  "digital_presence": {{
+    "primary_platforms": "e.g., Facebook health groups, IG, YouTube",
+    "search_behavior": "e.g., Googles symptoms before naming conditions"
+  }},
+  "purchase_drivers": {{
+    "primary_trigger": "e.g., A specific symptom getting worse",
+    "secondary_factors": "e.g., Recommendation from a trusted friend"
+  }},
+  "cultural_context": {{
+    "background": "Cultural / generational / regional context that shapes their worldview"
+  }},
+  "typology_profile": {{
+    "personality_hint": "e.g., Conscientious researcher (Big 5: high C), MBTI guess if confident"
+  }},
+
   "transformation_map": {{
     "before": ["Specific frustrations the copy implies they currently feel"],
     "after": ["Specific outcomes the copy promises"]
@@ -448,6 +468,10 @@ Return JSON with this exact structure:
   "current_self_image": "How they see themselves now",
   "desired_self_image": "How they want to be seen / who they want to become",
   "identity_artifacts": ["Brands, products, or signals associated with their desired identity"],
+  "past_failures": {{
+    "what_failed": "Specific past attempt the copy alludes to",
+    "who_they_blame": "Who/what they blame for the failure (doctor, industry, themselves)"
+  }},
 
   "social_relations": {{
     "want_to_impress": ["Specific people/groups they want approval from"],
@@ -456,7 +480,11 @@ Return JSON with this exact structure:
   }},
 
   "worldview": "Their general interpretation of how the world/their problem domain works",
+  "world_stories": "Heroes and villains in their story (e.g., 'Big Pharma is the villain, independent doctors are heroes')",
   "core_values": ["Value 1", "Value 2", "Value 3"],
+  "forces_of_good": ["What they're rooting for in their problem domain"],
+  "forces_of_evil": ["What they blame / push against"],
+  "cultural_zeitgeist": "The era or moment they believe they're in (e.g., 'post-pandemic immunity awareness')",
   "allergies": {{
     "marketing trope they distrust": "Why they distrust it"
   }},
@@ -474,6 +502,7 @@ Return JSON with this exact structure:
   }},
 
   "failed_solutions": ["What they've tried before that the copy implies didn't work"],
+  "desired_features": ["Specific features/attributes they want in a solution (often the copy promises these directly)"],
   "buying_objections": {{
     "emotional": ["What if it doesn't work for me?"],
     "social": ["What will people think?"],
@@ -481,7 +510,9 @@ Return JSON with this exact structure:
   }},
   "familiar_promises": ["Claims they've heard before from competitors and are skeptical of"],
 
+  "pain_symptoms": ["Observable / day-to-day signs of their pain points (specific complaints they'd voice)"],
   "activation_events": ["Triggers in their life that move them from 'researching' to 'buying NOW'"],
+  "purchasing_habits": "How they typically buy in this category (e.g., subscription, one-off, bulk)",
   "decision_process": "How they typically evaluate options and decide",
   "current_workarounds": ["What they're doing instead today"],
 
@@ -1798,6 +1829,28 @@ Return ONLY valid JSON, no other text."""
             if not any_content:
                 out.append("_None recorded._\n")
 
+        def kv_block(title: str, d: Dict[str, Any]) -> None:
+            """Render a flat dict as **key:** value lines (for behavior_habits etc.)."""
+            if not d:
+                return
+            h(title, level=3)
+            any_content = False
+            for k, v in d.items():
+                if v is None or v == "" or v == [] or v == {}:
+                    continue
+                any_content = True
+                pretty = k.replace("_", " ").title()
+                if isinstance(v, list):
+                    v_str = ", ".join(str(x) for x in v if x)
+                elif isinstance(v, dict):
+                    v_str = "; ".join(f"{kk}: {vv}" for kk, vv in v.items() if vv)
+                else:
+                    v_str = str(v)
+                out.append(f"- **{pretty}:** {v_str}")
+            if not any_content:
+                out.append("_None recorded._")
+            out.append("")
+
         # ─── Header ──────────────────────────────────────────────────────
         h(persona.name, level=1)
         if persona.snapshot:
@@ -1823,15 +1876,12 @@ Return ONLY valid JSON, no other text."""
             kv("Occupation", getattr(d, "occupation", None))
             kv("Family", getattr(d, "family_status", None))
             out.append("")
-        if persona.behavior_habits:
-            h("Behavior & habits", level=3)
-            bullets(persona.behavior_habits)
-        if persona.digital_presence:
-            h("Where they spend time online", level=3)
-            bullets(persona.digital_presence)
-        if persona.purchase_drivers:
-            h("What drives their purchases", level=3)
-            bullets(persona.purchase_drivers)
+        # behavior_habits / digital_presence / purchase_drivers are Dict[str, Any]
+        kv_block("Behavior & habits", persona.behavior_habits or {})
+        kv_block("Where they spend time online", persona.digital_presence or {})
+        kv_block("What drives their purchases", persona.purchase_drivers or {})
+        kv_block("Cultural context", getattr(persona, "cultural_context", None) or {})
+        kv_block("Typology profile (MBTI, Enneagram, etc.)", getattr(persona, "typology_profile", None) or {})
 
         # ─── 2. Psychographics ───────────────────────────────────────────
         h("What They Want", level=2)
@@ -1871,6 +1921,7 @@ Return ONLY valid JSON, no other text."""
         if persona.identity_artifacts:
             h("Identity artifacts (brands/products they associate with)", level=3)
             bullets(persona.identity_artifacts)
+        kv_block("Past failures (failed attempts and who they blame)", getattr(persona, "past_failures", None) or {})
 
         # ─── 4. Social ───────────────────────────────────────────────────
         h("Who's In Their World", level=2)
@@ -1893,9 +1944,21 @@ Return ONLY valid JSON, no other text."""
         h("How They See The World", level=2)
         if persona.worldview:
             p(persona.worldview)
+        if getattr(persona, "world_stories", None):
+            h("World stories (heroes/villains, cause/effect narratives)", level=3)
+            p(persona.world_stories)
         if persona.core_values:
             h("Core values", level=3)
             bullets(persona.core_values)
+        if getattr(persona, "forces_of_good", None):
+            h("Forces of good (what they're rooting for)", level=3)
+            bullets(persona.forces_of_good)
+        if getattr(persona, "forces_of_evil", None):
+            h("Forces of evil (what they blame / push against)", level=3)
+            bullets(persona.forces_of_evil)
+        if getattr(persona, "cultural_zeitgeist", None):
+            h("Cultural zeitgeist (the moment they believe they're in)", level=3)
+            p(persona.cultural_zeitgeist)
         if persona.allergies:
             h("Allergies (what they distrust / dismiss instantly)", level=3)
             for trope, why in (persona.allergies or {}).items():
@@ -1911,6 +1974,9 @@ Return ONLY valid JSON, no other text."""
         if persona.failed_solutions:
             h("Failed solutions (what they've tried that didn't work)", level=3)
             bullets(persona.failed_solutions)
+        if getattr(persona, "desired_features", None):
+            h("Desired features (what they wish a solution would have)", level=3)
+            bullets(persona.desired_features)
         if persona.buying_objections:
             section_dict("Buying objections", persona.buying_objections.model_dump() if hasattr(persona.buying_objections, "model_dump") else dict(persona.buying_objections))
         if persona.familiar_promises:
@@ -1919,6 +1985,9 @@ Return ONLY valid JSON, no other text."""
 
         # ─── 7. Purchase behavior ────────────────────────────────────────
         h("How They Buy", level=2)
+        if getattr(persona, "pain_symptoms", None):
+            h("Pain symptoms (observable signs of pain points)", level=3)
+            bullets(persona.pain_symptoms)
         if persona.activation_events:
             h("Activation events (what triggers them to buy NOW)", level=3)
             bullets(persona.activation_events)
