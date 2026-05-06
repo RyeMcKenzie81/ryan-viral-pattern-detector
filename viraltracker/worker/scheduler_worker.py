@@ -413,7 +413,16 @@ def update_job_run(run_id: str, updates: Dict):
                         pass
 
                 if status == "completed":
-                    metadata = updates.get('metadata') or {}
+                    raw_metadata = updates.get('metadata')
+                    # Defensive: a few callers historically passed json.dumps(d)
+                    # which writes a string-encoded JSON to the JSONB column.
+                    # Parse back so .get() works and the event still fires.
+                    if isinstance(raw_metadata, str):
+                        try:
+                            raw_metadata = json.loads(raw_metadata)
+                        except (ValueError, TypeError):
+                            raw_metadata = {}
+                    metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
                     event_details = {
                         'job_id': parent_job_id,
                         'run_id': run_id,
@@ -5552,7 +5561,7 @@ async def execute_seo_content_eval_job(job: Dict) -> Dict[str, Any]:
                 "status": "completed",
                 "completed_at": datetime.now(PST).isoformat(),
                 "logs": "\n".join(logs),
-                "metadata": json.dumps({"evaluated": 0, "passed": 0, "failed": 0}),
+                "metadata": {"evaluated": 0, "passed": 0, "failed": 0},
             })
             _update_job_next_run(job, job_id)
             return {"success": True, "evaluated": 0}
@@ -5663,7 +5672,7 @@ async def execute_seo_content_eval_job(job: Dict) -> Dict[str, Any]:
             "status": "completed",
             "completed_at": datetime.now(PST).isoformat(),
             "logs": "\n".join(logs),
-            "metadata": json.dumps(metadata),
+            "metadata": metadata,
         })
         _update_job_next_run(job, job_id)
 
@@ -5726,7 +5735,7 @@ async def execute_seo_publish_job(job: Dict) -> Dict[str, Any]:
                 "status": "completed",
                 "completed_at": datetime.now(PST).isoformat(),
                 "logs": "\n".join(logs),
-                "metadata": json.dumps({"published": 0}),
+                "metadata": {"published": 0},
             })
             _update_job_next_run(job, job_id)
             return {"success": True, "published": 0}
@@ -5813,7 +5822,7 @@ async def execute_seo_publish_job(job: Dict) -> Dict[str, Any]:
             "status": "completed",
             "completed_at": datetime.now(PST).isoformat(),
             "logs": "\n".join(logs),
-            "metadata": json.dumps(metadata),
+            "metadata": metadata,
         })
         _update_job_next_run(job, job_id)
 
@@ -5987,7 +5996,7 @@ async def execute_seo_auto_interlink_job(job: Dict) -> Dict[str, Any]:
             "status": "completed",
             "completed_at": datetime.now(PST).isoformat(),
             "logs": "\n".join(logs),
-            "metadata": json.dumps(metadata),
+            "metadata": metadata,
         })
 
         # One-time job, no reschedule needed
@@ -6177,7 +6186,7 @@ async def execute_seo_opportunity_scan_job(job: Dict) -> Dict[str, Any]:
             "status": "completed",
             "completed_at": datetime.now(PST).isoformat(),
             "logs": "\n".join(logs),
-            "metadata": json.dumps(metadata),
+            "metadata": metadata,
         })
         _update_job_next_run(job, job_id)
 
@@ -6230,7 +6239,7 @@ async def execute_token_refresh_job(job: Dict) -> Dict[str, Any]:
                 "status": "completed",
                 "completed_at": datetime.now(PST).isoformat(),
                 "logs": "\n".join(logs),
-                "metadata": json.dumps({"refreshed": 0, "failed": 0, "checked": 0}),
+                "metadata": {"refreshed": 0, "failed": 0, "checked": 0},
             })
             return {"success": True, "refreshed": 0, "failed": 0}
 
@@ -6270,7 +6279,7 @@ async def execute_token_refresh_job(job: Dict) -> Dict[str, Any]:
             "status": status,
             "completed_at": datetime.now(PST).isoformat(),
             "logs": "\n".join(logs),
-            "metadata": json.dumps(metadata),
+            "metadata": metadata,
         })
         _update_job_next_run(job, job_id)
         return {"success": True, **metadata}
