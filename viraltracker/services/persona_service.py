@@ -341,8 +341,11 @@ Return JSON with this structure:
 
   "social_relations": {{
     "want_to_impress": ["Their vet", "Other pet owners"],
-    "fear_judged_by": ["Other pet parents"],
-    "influence_decisions": ["Pet influencers", "Facebook groups"]
+    "fear_judged_by": ["Other pet parents who'd judge a wrong choice"],
+    "influence_decisions": ["Pet influencers", "Facebook groups"],
+    "admire": ["A specific kind of person they look up to in this domain"],
+    "envy": ["People who have the outcome the avatar wants"],
+    "want_to_belong": ["Communities or tribes the avatar wants to be part of"]
   }},
 
   "worldview": "Their general interpretation of reality",
@@ -499,8 +502,11 @@ Return JSON with this exact structure:
 
   "social_relations": {{
     "want_to_impress": ["Specific people/groups they want approval from"],
-    "fear_judged_by": ["Who they don't want catching them"],
-    "influence_decisions": ["Who they listen to when buying"]
+    "fear_judged_by": ["Who they don't want catching them slacking or struggling"],
+    "influence_decisions": ["Who they listen to when researching or buying in this category"],
+    "admire": ["People/figures they look up to and want to emulate"],
+    "envy": ["People who already have the outcome the avatar wants"],
+    "want_to_belong": ["Communities, tribes, or identity groups they want to be part of"]
   }},
 
   "worldview": "Their general interpretation of how the world/their problem domain works",
@@ -1279,7 +1285,10 @@ Return JSON with this structure:
   "social_relations": {{
     "want_to_impress": ["Who they want to impress"],
     "fear_judged_by": ["Who they fear judgment from"],
-    "influence_decisions": ["Who influences their decisions"]
+    "influence_decisions": ["Who influences their decisions"],
+    "admire": ["People/figures they look up to and want to emulate"],
+    "envy": ["People who already have the outcome they want"],
+    "want_to_belong": ["Communities, tribes, or identity groups they want to be part of"]
   }},
 
   "worldview": "Their general interpretation of reality",
