@@ -234,33 +234,43 @@ class CreativeGenomeService:
         if not brand_run_ids:
             return []
 
-        # Step 3: Get generated_ads with element_tags for these ad_runs (filtered at DB level)
-        gen_ads = self.supabase.table("generated_ads").select(
-            "id, element_tags, ad_run_id"
-        ).in_("ad_run_id", brand_run_ids).not_.is_("element_tags", "null").execute()
+        # Step 3: Get generated_ads with element_tags for these ad_runs.
+        # Batched .in_(...) — UUID lists for active brands can balloon past
+        # the proxy URL length limit (~8KB), which surfaces as a generic
+        # "JSON could not be generated / Bad Request" 400.
+        gen_ads_data = self._batched_in_select(
+            table="generated_ads",
+            select="id, element_tags, ad_run_id",
+            in_column="ad_run_id",
+            in_values=brand_run_ids,
+            extra=lambda q: q.not_.is_("element_tags", "null"),
+        )
 
         eligible_ads = {}
-        for ga in (gen_ads.data or []):
+        for ga in gen_ads_data:
             if ga["id"] not in existing_ids:
                 eligible_ads[ga["id"]] = ga
 
         if not eligible_ads:
             return []
 
-        # Step 4: Get meta_ad_mapping for these generated_ads (filtered at DB level)
+        # Step 4: Get meta_ad_mapping for these generated_ads (batched).
         eligible_ids = list(eligible_ads.keys())
-        mapped = self.supabase.table("meta_ad_mapping").select(
-            "generated_ad_id, meta_ad_id"
-        ).in_("generated_ad_id", eligible_ids).execute()
+        mapped_data = self._batched_in_select(
+            table="meta_ad_mapping",
+            select="generated_ad_id, meta_ad_id",
+            in_column="generated_ad_id",
+            in_values=eligible_ids,
+        )
 
-        if not mapped.data:
+        if not mapped_data:
             return []
 
         # Step 5: For each mapped ad, check maturation via meta_ads_performance
         matured = []
         cutoff_date = (datetime.now(timezone.utc) - timedelta(days=3)).strftime("%Y-%m-%d")
 
-        for mapping in mapped.data:
+        for mapping in mapped_data:
             gen_ad_id = mapping["generated_ad_id"]
             meta_ad_id = mapping["meta_ad_id"]
 
@@ -293,6 +303,33 @@ class CreativeGenomeService:
             })
 
         return matured
+
+    def _batched_in_select(
+        self,
+        table: str,
+        select: str,
+        in_column: str,
+        in_values: List[str],
+        extra=None,
+        batch_size: int = 100,
+    ) -> List[Dict]:
+        """Run a `.in_(col, values).execute()` lookup in batches and concatenate.
+
+        PostgREST + the Supabase proxy reject URLs longer than ~8KB with a
+        generic "Bad Request" body. UUID lists for active brands routinely
+        push past that on a single .in_(). Batching keeps each URL small.
+        """
+        if not in_values:
+            return []
+        out: List[Dict] = []
+        for i in range(0, len(in_values), batch_size):
+            chunk = in_values[i : i + batch_size]
+            q = self.supabase.table(table).select(select).in_(in_column, chunk)
+            if extra is not None:
+                q = extra(q)
+            res = q.execute()
+            out.extend(res.data or [])
+        return out
 
     def _weighted_avg(
         self,
@@ -370,12 +407,15 @@ class CreativeGenomeService:
         if not rewards.data:
             return {"elements_updated": 0, "events_inserted": 0}
 
-        # 2. Fetch ads with element_tags + is_imported
+        # 2. Fetch ads with element_tags + is_imported (batched for URL length)
         reward_ad_ids = list({r["generated_ad_id"] for r in rewards.data})
-        ads_data = self.supabase.table("generated_ads").select(
-            "id, element_tags, is_imported"
-        ).in_("id", reward_ad_ids).execute()
-        ads_map = {ad["id"]: ad for ad in (ads_data.data or [])}
+        ads_data_rows = self._batched_in_select(
+            table="generated_ads",
+            select="id, element_tags, is_imported",
+            in_column="id",
+            in_values=reward_ad_ids,
+        )
+        ads_map = {ad["id"]: ad for ad in ads_data_rows}
 
         # 3. Insert score events (idempotent via UNIQUE constraint)
         now = datetime.now(timezone.utc).isoformat()
