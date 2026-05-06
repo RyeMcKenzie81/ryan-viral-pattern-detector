@@ -345,7 +345,11 @@ Return JSON with this structure:
     "influence_decisions": ["Pet influencers", "Facebook groups"],
     "admire": ["A specific kind of person they look up to in this domain"],
     "envy": ["People who have the outcome the avatar wants"],
-    "want_to_belong": ["Communities or tribes the avatar wants to be part of"]
+    "want_to_belong": ["Communities or tribes the avatar wants to be part of"],
+    "love_loyalty": ["People/brands they're devoted to"],
+    "dislike_animosity": ["People/brands they resent or dislike"],
+    "compared_to": ["Who they measure themselves against"],
+    "distance_from": ["Who they're trying NOT to become"]
   }},
 
   "worldview": "Their general interpretation of reality",
@@ -506,7 +510,11 @@ Return JSON with this exact structure:
     "influence_decisions": ["Who they listen to when researching or buying in this category"],
     "admire": ["People/figures they look up to and want to emulate"],
     "envy": ["People who already have the outcome the avatar wants"],
-    "want_to_belong": ["Communities, tribes, or identity groups they want to be part of"]
+    "want_to_belong": ["Communities, tribes, or identity groups they want to be part of"],
+    "love_loyalty": ["People or brands they're devoted to / would defend"],
+    "dislike_animosity": ["People or brands they actively dislike or resent (often Big Pharma, Big Food, mainstream institutions)"],
+    "compared_to": ["Who they measure themselves against (peers, siblings, idealized self)"],
+    "distance_from": ["Who they're trying NOT to become — the cautionary tale"]
   }},
 
   "worldview": "Their general interpretation of how the world/their problem domain works",
@@ -1288,7 +1296,11 @@ Return JSON with this structure:
     "influence_decisions": ["Who influences their decisions"],
     "admire": ["People/figures they look up to and want to emulate"],
     "envy": ["People who already have the outcome they want"],
-    "want_to_belong": ["Communities, tribes, or identity groups they want to be part of"]
+    "want_to_belong": ["Communities, tribes, or identity groups they want to be part of"],
+    "love_loyalty": ["People/brands they're devoted to"],
+    "dislike_animosity": ["People/brands they resent or dislike"],
+    "compared_to": ["Who they measure themselves against"],
+    "distance_from": ["Who they're trying NOT to become"]
   }},
 
   "worldview": "Their general interpretation of reality",
@@ -1995,6 +2007,10 @@ Return ONLY valid JSON, no other text."""
                 ("Admire", "admire"),
                 ("Envy", "envy"),
                 ("Want to belong with", "want_to_belong"),
+                ("Love / loyal to", "love_loyalty"),
+                ("Dislike / resent", "dislike_animosity"),
+                ("Compare themselves against", "compared_to"),
+                ("Want to distance from", "distance_from"),
             ]:
                 vals = getattr(sr, attr, None) or []
                 if vals:
