@@ -2028,6 +2028,51 @@ Return ONLY valid JSON, no other text."""
 
         return "\n".join(out)
 
+    def export_as_html(self, persona_id: UUID) -> str:
+        """Render a 4D persona as a self-contained HTML document.
+
+        Designed to paste cleanly into Google Docs / Word: the browser's
+        copy operation preserves headers, bold, bullets, and blockquotes
+        as proper styled text rather than raw markdown syntax. Also
+        importable directly via Google Docs' File → Open.
+        """
+        from markdown_it import MarkdownIt
+
+        md_text = self.export_as_markdown(persona_id)
+        body = MarkdownIt("commonmark").render(md_text)
+
+        persona = self.get_persona(persona_id)
+        title = (persona.name if persona else "Persona") if persona else "Persona"
+
+        # Minimal inline styles so Google Docs / Word receive a usable
+        # default look. Doc apps drop most of this on paste but keep
+        # the structure (h1/h2/h3/p/ul/blockquote).
+        return (
+            "<!DOCTYPE html>\n"
+            "<html lang=\"en\">\n"
+            "<head>\n"
+            "  <meta charset=\"utf-8\">\n"
+            f"  <title>{title}</title>\n"
+            "  <style>\n"
+            "    body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; "
+            "max-width: 760px; margin: 2em auto; padding: 0 1em; line-height: 1.55; color: #222; }\n"
+            "    h1 { font-size: 2em; border-bottom: 2px solid #eee; padding-bottom: .3em; }\n"
+            "    h2 { font-size: 1.4em; margin-top: 2em; color: #1a1a1a; }\n"
+            "    h3 { font-size: 1.1em; margin-top: 1.4em; color: #444; }\n"
+            "    blockquote { margin: 1em 0; padding: .6em 1em; "
+            "border-left: 4px solid #d0d0d0; background: #fafafa; color: #333; }\n"
+            "    ul { padding-left: 1.4em; }\n"
+            "    li { margin: .25em 0; }\n"
+            "    hr { border: none; border-top: 1px solid #eee; margin: 2em 0; }\n"
+            "    code { background: #f4f4f4; padding: 0 .3em; border-radius: 3px; }\n"
+            "  </style>\n"
+            "</head>\n"
+            "<body>\n"
+            f"{body}\n"
+            "</body>\n"
+            "</html>\n"
+        )
+
     def export_for_copy_brief_dict(self, persona_id: UUID) -> Dict[str, Any]:
         """Export persona as dict for ad copy generation (for tools)."""
         brief = self.export_for_copy_brief(persona_id)
