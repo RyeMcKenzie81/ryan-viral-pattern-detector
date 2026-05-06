@@ -371,6 +371,130 @@ Return JSON with this structure:
 IMPORTANT: Return ONLY valid JSON, no markdown code blocks, no other text."""
 
 
+# ============================================================================
+# Landing-Page Persona Synthesis Prompt
+# ============================================================================
+LANDING_PAGE_PERSONA_SYNTHESIS_PROMPT = """You are an expert customer persona synthesizer for direct-response copywriting.
+
+You have been given the FULL CONTENT of {page_count} landing page(s) that all
+target the SAME customer avatar. Your job is to reverse-engineer that avatar
+from the copy: the words, claims, objections handled, social proof chosen,
+risk reversals, founder voice, and emotional triggers all reveal who the
+copywriter believes is reading. Synthesize a single unified 4D persona —
+do NOT produce multiple personas, even if the pages cover different angles.
+Use overlap across pages as the strongest signal.
+
+BRAND CONTEXT:
+- Brand name: {brand_name}
+- Brand voice/tone: {brand_voice}
+
+PRODUCT CONTEXT:
+- Product name: {product_name}
+- Product description: {product_description}
+- Existing target audience (if any — may be vague): {existing_target_audience}
+
+LANDING PAGES (combined source content):
+{landing_pages}
+
+Read every page in full. Triangulate the persona from:
+- Headlines and pre-headlines (the avatar's most pressing pain or desire)
+- Subheads and bullet stacks (specific objections being defused)
+- Social proof selection (who the avatar wants to be like)
+- Founder/origin story framing (how the avatar narratively bonds with the brand)
+- Risk reversals and guarantees (what the avatar fears losing)
+- FAQ and objections section (literal buying objections)
+- Visual/emotional cues described (lifestyle and identity signals)
+- Vocabulary and reading level (demographic and psychographic clues)
+
+Generate a comprehensive 4D persona with EVERY field below populated. Be
+specific, use the avatar's own language where possible (quote phrases the
+copy uses), and ground every claim in evidence from the source pages.
+
+Return JSON with this exact structure:
+{{
+  "name": "Descriptive persona name (e.g., 'Worried First-Time Dog Mom')",
+  "snapshot": "2-3 sentence big-picture description of who this avatar is and what they're trying to escape/achieve",
+
+  "demographics": {{
+    "age_range": "e.g., 35-55",
+    "gender": "male/female/any",
+    "location": "e.g., Suburban North America",
+    "income_level": "e.g., Middle to upper-middle class",
+    "education": "e.g., College educated",
+    "occupation": "e.g., Professional or homemaker",
+    "family_status": "e.g., Married with adult children"
+  }},
+
+  "transformation_map": {{
+    "before": ["Specific frustrations the copy implies they currently feel"],
+    "after": ["Specific outcomes the copy promises"]
+  }},
+
+  "desires": {{
+    "care_protection": [
+      {{"text": "I want to protect myself/my loved ones from X", "source": "ai_generated"}}
+    ],
+    "social_approval": [
+      {{"text": "I want to be seen as someone who Y", "source": "ai_generated"}}
+    ],
+    "freedom_from_fear": [
+      {{"text": "I don't want to worry about Z anymore", "source": "ai_generated"}}
+    ]
+  }},
+
+  "self_narratives": [
+    "Because I am [identity], I [action] (sentences they tell themselves)"
+  ],
+  "current_self_image": "How they see themselves now",
+  "desired_self_image": "How they want to be seen / who they want to become",
+  "identity_artifacts": ["Brands, products, or signals associated with their desired identity"],
+
+  "social_relations": {{
+    "want_to_impress": ["Specific people/groups they want approval from"],
+    "fear_judged_by": ["Who they don't want catching them"],
+    "influence_decisions": ["Who they listen to when buying"]
+  }},
+
+  "worldview": "Their general interpretation of how the world/their problem domain works",
+  "core_values": ["Value 1", "Value 2", "Value 3"],
+  "allergies": {{
+    "marketing trope they distrust": "Why they distrust it"
+  }},
+
+  "pain_points": {{
+    "emotional": ["Specific emotional pains the copy addresses"],
+    "social": ["Specific social pains"],
+    "functional": ["Specific functional/practical pains"]
+  }},
+
+  "outcomes_jtbd": {{
+    "emotional": ["Emotional jobs the product is hired for"],
+    "social": ["Social jobs"],
+    "functional": ["Functional jobs"]
+  }},
+
+  "failed_solutions": ["What they've tried before that the copy implies didn't work"],
+  "buying_objections": {{
+    "emotional": ["What if it doesn't work for me?"],
+    "social": ["What will people think?"],
+    "functional": ["Will I actually use this?"]
+  }},
+  "familiar_promises": ["Claims they've heard before from competitors and are skeptical of"],
+
+  "activation_events": ["Triggers in their life that move them from 'researching' to 'buying NOW'"],
+  "decision_process": "How they typically evaluate options and decide",
+  "current_workarounds": ["What they're doing instead today"],
+
+  "emotional_risks": ["Specific feelings they fear (wasted money, embarrassment, regret)"],
+  "barriers_to_behavior": ["Specific practical or emotional barriers to buying/using"]
+}}
+
+IMPORTANT: Return ONLY valid JSON, no markdown code blocks, no other text.
+If a field cannot be inferred from the source pages, return an empty array
+or empty string for that field — do NOT invent details unsupported by the
+copy."""
+
+
 class PersonaService:
     """Service for 4D persona management."""
 
@@ -1146,6 +1270,169 @@ Return ONLY valid JSON, no other text."""
         level_desc = f"product {competitor_product_id}" if competitor_product_id else f"competitor {competitor_id}"
         logger.info(f"Synthesized competitor persona for {level_desc}: {persona.name}")
         return persona
+
+    async def synthesize_persona_from_landing_pages(
+        self,
+        urls: List[str],
+        brand_id: UUID,
+        product_id: UUID,
+        *,
+        max_urls: int = 10,
+        max_chars_per_page: int = 30_000,
+    ) -> tuple[Persona4D, List[str]]:
+        """Synthesize a 4D persona from N landing pages that target the same avatar.
+
+        Scrapes each URL concurrently, caps per-page content for token budget,
+        and runs ONE Claude synthesis call producing a full Persona4D (all 8
+        dimensions). Lenient on individual URL failures: if at least one URL
+        scrapes successfully, proceeds and returns the failed URLs so the UI
+        can surface a warning.
+
+        Args:
+            urls: 1..max_urls landing page URLs that all target the same avatar.
+            brand_id: Brand UUID this persona belongs to.
+            product_id: Product UUID to attach this persona to (required).
+            max_urls: Hard cap on URL count to bound cost/runtime.
+            max_chars_per_page: Per-page markdown cap (truncate from end).
+
+        Returns:
+            (Persona4D, failed_urls). Persona is unsaved — caller reviews/saves.
+
+        Raises:
+            ValueError: empty URL list, too many URLs, or all URLs failed to scrape.
+        """
+        # Input validation
+        if not urls:
+            raise ValueError("At least one landing page URL is required")
+        if len(urls) > max_urls:
+            raise ValueError(
+                f"Too many URLs ({len(urls)}). Cap is {max_urls} to bound cost."
+            )
+
+        # Concurrent scrape with lenient failure
+        successes, failed_urls = await self._scrape_urls_concurrent(
+            urls, max_chars_per_page=max_chars_per_page
+        )
+        if not successes:
+            raise ValueError(
+                f"All {len(urls)} URL(s) failed to scrape. "
+                f"Failed: {', '.join(failed_urls)}"
+            )
+
+        # Brand context (helps the LLM ground in the right product/voice)
+        brand_row = self.supabase.table("brands").select(
+            "name, brand_voice_tone"
+        ).eq("id", str(brand_id)).limit(1).execute()
+        brand_ctx = brand_row.data[0] if brand_row.data else {}
+
+        product_row = self.supabase.table("products").select(
+            "name, description, target_audience, benefits"
+        ).eq("id", str(product_id)).limit(1).execute()
+        product_ctx = product_row.data[0] if product_row.data else {}
+
+        # Build prompt from scraped pages
+        landing_pages_payload = [
+            {"url": s["url"], "markdown": s["markdown"]} for s in successes
+        ]
+        prompt = LANDING_PAGE_PERSONA_SYNTHESIS_PROMPT.format(
+            brand_name=brand_ctx.get("name") or "Unknown",
+            brand_voice=brand_ctx.get("brand_voice_tone") or "Not specified",
+            product_name=product_ctx.get("name") or "Unknown",
+            product_description=product_ctx.get("description") or "Not specified",
+            existing_target_audience=product_ctx.get("target_audience") or "Not specified",
+            landing_pages=json.dumps(landing_pages_payload, indent=2, ensure_ascii=False),
+            page_count=len(successes),
+        )
+
+        agent = Agent(
+            model=Config.get_model("persona"),
+            system_prompt="You are an expert persona synthesizer. Return ONLY valid JSON.",
+        )
+
+        result = await run_agent_with_tracking(
+            agent,
+            prompt,
+            model_settings=ModelSettings(max_tokens=16384),
+            tracker=self._tracker,
+            user_id=self._user_id,
+            organization_id=self._org_id,
+            tool_name="persona_service",
+            operation="synthesize_persona_from_landing_pages",
+        )
+
+        persona_data = parse_llm_json(result.output)
+        persona = self._build_persona_from_ai_response(
+            persona_data,
+            product_id=product_id,
+            brand_id=brand_id,
+            raw_response=result.output,
+        )
+
+        # Stamp provenance into snapshot/notes so reviewer sees source URLs.
+        # _build_persona_from_ai_response uses fields the LLM returned; we add
+        # a source-URL line to whatever the LLM produced for snapshot.
+        source_line = (
+            "Synthesized from "
+            f"{len(successes)} landing page(s): "
+            + ", ".join(s["url"] for s in successes)
+        )
+        if persona.snapshot:
+            persona.snapshot = f"{persona.snapshot}\n\n_{source_line}_"
+        else:
+            persona.snapshot = source_line
+
+        logger.info(
+            f"Synthesized persona from {len(successes)} landing pages for "
+            f"product {product_id}: {persona.name} "
+            f"({len(failed_urls)} failed URL(s))"
+        )
+        return persona, failed_urls
+
+    async def _scrape_urls_concurrent(
+        self,
+        urls: List[str],
+        *,
+        max_chars_per_page: int = 30_000,
+    ) -> tuple[List[Dict[str, str]], List[str]]:
+        """Scrape urls concurrently. Returns (successes, failed_urls).
+
+        Each success is {"url": str, "markdown": str (truncated to max_chars)}.
+        Failures are surfaced as the URL string so the caller can warn.
+        """
+        from .web_scraping_service import WebScrapingService
+
+        web_service = WebScrapingService()
+
+        async def _scrape_one(url: str) -> Dict[str, Any]:
+            result = await web_service.scrape_url_async(url, formats=["markdown"])
+            if not result.success or not result.markdown:
+                raise ValueError(result.error or "no markdown returned")
+            return {"url": url, "markdown": result.markdown}
+
+        outcomes = await asyncio.gather(
+            *(_scrape_one(u) for u in urls), return_exceptions=True
+        )
+
+        successes: List[Dict[str, str]] = []
+        failed_urls: List[str] = []
+        for url, outcome in zip(urls, outcomes):
+            if isinstance(outcome, Exception):
+                logger.warning(f"Landing page scrape failed for {url}: {outcome}")
+                failed_urls.append(url)
+                continue
+            md = outcome["markdown"]
+            if len(md) > max_chars_per_page:
+                logger.info(
+                    f"Truncating {url} from {len(md):,} → {max_chars_per_page:,} chars"
+                )
+                md = md[:max_chars_per_page]
+            if len(md) < 2_000:
+                logger.warning(
+                    f"Short content from {url} ({len(md)} chars) — "
+                    "weak signal for persona synthesis"
+                )
+            successes.append({"url": url, "markdown": md})
+        return successes, failed_urls
 
     def _build_persona_from_structured_response(
         self,

@@ -37,6 +37,8 @@ if 'editing_persona' not in st.session_state:
     st.session_state.editing_persona = None
 if 'generating_persona' not in st.session_state:
     st.session_state.generating_persona = False
+if 'building_persona_from_lp' not in st.session_state:
+    st.session_state.building_persona_from_lp = False
 
 def get_supabase_client():
     """Get Supabase client."""
@@ -750,6 +752,12 @@ def render_persona_list():
             st.session_state.selected_product_id = selected_product_id
             st.rerun()
 
+    with col3:
+        if selected_product_id and st.button("Build from Landing Pages"):
+            st.session_state.building_persona_from_lp = True
+            st.session_state.selected_product_id = selected_product_id
+            st.rerun()
+
     # Show personas
     st.subheader("Personas")
 
@@ -943,9 +951,126 @@ def render_ai_generation():
                     st.session_state._generating = False
                     st.error(f"Generation failed: {e}")
 
+def render_landing_page_synthesis():
+    """Render the 'Build Persona from Landing Pages' interface."""
+    st.title("Build Persona from Landing Pages")
+    st.caption(
+        "Paste landing-page URLs that all target the SAME avatar (e.g., a "
+        "specific funnel a brand built for one customer type). Claude reads "
+        "each page and reverse-engineers the avatar from the copy, social "
+        "proof, objections handled, and tone."
+    )
+
+    if st.button("< Cancel", key="lp_synth_cancel"):
+        st.session_state.building_persona_from_lp = False
+        st.session_state.pop("_generated_persona", None)
+        st.rerun()
+
+    product_id = st.session_state.selected_product_id
+    brand_id = st.session_state.selected_brand_id
+
+    if not product_id or not brand_id:
+        st.error("Please select a product first.")
+        return
+
+    db = get_supabase_client()
+    product = db.table("products").select("name").eq("id", product_id).execute()
+    if product.data:
+        st.info(f"Building persona for **{product.data[0].get('name')}**")
+
+    # If we already have a generated persona waiting, show review/save block
+    if st.session_state.get("_generated_persona"):
+        persona = st.session_state._generated_persona
+
+        failed = st.session_state.get("_lp_synth_failed_urls") or []
+        if failed:
+            st.warning(
+                "Some URLs failed to scrape and were skipped:\n"
+                + "\n".join(f"- {u}" for u in failed)
+            )
+
+        st.success(f"Generated: **{persona.name}**")
+        st.markdown(f"*{persona.snapshot}*")
+
+        with st.expander("Preview Generated Persona"):
+            st.json(persona.model_dump(mode="json", exclude_none=True))
+
+        col_save, col_discard = st.columns(2)
+        with col_save:
+            if st.button("Save & Edit", type="primary", key="lp_synth_save"):
+                service = get_persona_service()
+                persona_id = service.create_persona(persona)
+                service.link_persona_to_product(persona_id, UUID(product_id), is_primary=True)
+                st.session_state.pop("_generated_persona", None)
+                st.session_state.pop("_lp_synth_failed_urls", None)
+                st.session_state.building_persona_from_lp = False
+                st.session_state.selected_persona_id = str(persona_id)
+                st.rerun()
+        with col_discard:
+            if st.button("Discard", key="lp_synth_discard"):
+                st.session_state.pop("_generated_persona", None)
+                st.session_state.pop("_lp_synth_failed_urls", None)
+                st.session_state.building_persona_from_lp = False
+                st.rerun()
+        return
+
+    # Input form
+    st.markdown("### Landing Page URLs")
+    urls_raw = st.text_area(
+        "Paste 1–10 URLs, one per line",
+        height=160,
+        placeholder=(
+            "https://us.martinclinic.com/funnel/avatar-a-page-1\n"
+            "https://us.martinclinic.com/funnel/avatar-a-page-2\n"
+            "https://us.martinclinic.com/funnel/avatar-a-page-3"
+        ),
+        help="All URLs should target the same customer avatar. Mixing avatars dilutes the synthesis.",
+        key="lp_synth_urls",
+    )
+
+    if st.button(
+        "Synthesize Persona",
+        type="primary",
+        disabled=st.session_state.get("_lp_synth_running", False),
+        key="lp_synth_run",
+    ):
+        urls = [u.strip() for u in (urls_raw or "").splitlines() if u.strip()]
+        if not urls:
+            st.error("Paste at least one URL.")
+            return
+        if len(urls) > 10:
+            st.error(f"Too many URLs ({len(urls)}). Max is 10.")
+            return
+
+        st.session_state._lp_synth_running = True
+        with st.spinner(
+            f"Scraping {len(urls)} page(s) and synthesizing 4D persona... "
+            "(this takes 30-60 seconds)"
+        ):
+            try:
+                service = get_persona_service()
+                # PersonaService.synthesize_persona_from_landing_pages is async
+                persona, failed_urls = asyncio.run(
+                    service.synthesize_persona_from_landing_pages(
+                        urls=urls,
+                        brand_id=UUID(brand_id),
+                        product_id=UUID(product_id),
+                    )
+                )
+                st.session_state._generated_persona = persona
+                st.session_state._lp_synth_failed_urls = failed_urls
+                st.session_state._lp_synth_running = False
+                st.rerun()
+            except Exception as e:
+                st.session_state._lp_synth_running = False
+                st.error(f"Synthesis failed: {e}")
+
+
 # Main routing
 if st.session_state.generating_persona:
     render_ai_generation()
+elif st.session_state.building_persona_from_lp:
+    render_landing_page_synthesis()
 elif st.session_state.selected_persona_id:
     render_persona_editor(st.session_state.selected_persona_id)
 elif st.session_state.editing_persona == "new":
