@@ -317,6 +317,18 @@ Return JSON with this structure:
     ],
     "freedom_from_fear": [
       {{"text": "I don't want to worry about my pet's health", "source": "ai_generated"}}
+    ],
+    "superiority_status": [
+      {{"text": "I want to be seen as the most informed pet parent in my circle", "source": "ai_generated"}}
+    ],
+    "self_actualization": [
+      {{"text": "I want to be the best version of a pet parent I can be", "source": "ai_generated"}}
+    ],
+    "comfortable_living": [
+      {{"text": "I want a calm home where my pet thrives without constant vet trips", "source": "ai_generated"}}
+    ],
+    "survival_life_extension": [
+      {{"text": "I want my pet to live a long, healthy life", "source": "ai_generated"}}
     ]
   }},
 
@@ -459,6 +471,18 @@ Return JSON with this exact structure:
     ],
     "freedom_from_fear": [
       {{"text": "I don't want to worry about Z anymore", "source": "ai_generated"}}
+    ],
+    "superiority_status": [
+      {{"text": "I want to be the one who figured this out before anyone else", "source": "ai_generated"}}
+    ],
+    "self_actualization": [
+      {{"text": "I want to live up to who I know I could be", "source": "ai_generated"}}
+    ],
+    "comfortable_living": [
+      {{"text": "I want my daily life to feel easier and less of a struggle", "source": "ai_generated"}}
+    ],
+    "survival_life_extension": [
+      {{"text": "I want to live longer and feel like myself well into old age", "source": "ai_generated"}}
     ]
   }},
 
@@ -519,6 +543,21 @@ Return JSON with this exact structure:
   "emotional_risks": ["Specific feelings they fear (wasted money, embarrassment, regret)"],
   "barriers_to_behavior": ["Specific practical or emotional barriers to buying/using"]
 }}
+
+DESIRE CATEGORIES (fill all 7 — these map to Cashvertising's "Life-Force" framework):
+- care_protection: protecting self / loved ones from harm or loss
+- social_approval: being seen, respected, included by others
+- freedom_from_fear: relief from pain, anxiety, worry, embarrassment
+- superiority_status: being ahead of others, being the smart one, dominance
+- self_actualization: becoming a fuller version of oneself, growth, mastery
+- comfortable_living: ease, simplicity, less daily struggle, restoration
+- survival_life_extension: living longer, feeling young, vitality, mortality salience
+
+Map specific copy claims onto each desire (e.g., "live 10 years longer"
+→ survival_life_extension; "the doctors don't want you to know"
+→ superiority_status; "feel like yourself again" → comfortable_living).
+If the source pages don't emphasize a category at all, return an empty
+array `[]` for it — do NOT invent.
 
 IMPORTANT: Return ONLY valid JSON, no markdown code blocks, no other text.
 If a field cannot be inferred from the source pages, return an empty array
