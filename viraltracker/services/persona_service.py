@@ -2070,7 +2070,7 @@ Return ONLY valid JSON, no other text."""
             bullets(persona.activation_events)
         if persona.purchasing_habits:
             h("Purchasing habits", level=3)
-            bullets(persona.purchasing_habits)
+            p(persona.purchasing_habits)
         if persona.decision_process:
             h("Decision process", level=3)
             p(persona.decision_process)
