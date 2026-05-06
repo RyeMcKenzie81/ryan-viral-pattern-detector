@@ -13,6 +13,7 @@ Part of the Brand Research Pipeline (Phase 2B: Template Queue).
 import logging
 import base64
 import json
+import re
 from typing import List, Dict, Optional, Any
 from uuid import UUID
 from datetime import datetime
@@ -35,11 +36,26 @@ Brand Info:
 - Page Name: {page_name}
 - Landing Page: {link_url}
 
+NAMING CONSTRAINT (IMPORTANT): The `suggested_name` and `suggested_description`
+will be passed back into LLMs downstream (vision analysis, ad generation),
+so they MUST use AI-safe, neutral, professional language only. Do NOT use
+words that could trigger content-safety filters, even if the source ad uses
+them. Always describe the *format/structure* of the template, not provocative
+content. Use neutral substitutions:
+  - "Sensual" / "Sexy" / "Seductive" → "Romantic" / "Lifestyle"
+  - "Naked" / "Nude" → "Minimalist" / "Bare-Style"
+  - "Killer" / "Killing" → "Top" / "Standout"
+  - "Addiction" → "Daily Habit"
+  - "Crazy" / "Insane" → "Bold" / "Striking"
+  - "Hot" (when about a person) → "Featured"
+Example: A Valentine's Day product ad with romantic imagery →
+"Romantic Holiday Promo Card", not "Sensual Valentine's Promo".
+
 Analyze the visual content and return a JSON response with the following structure:
 
 {{
-  "suggested_name": "Short descriptive name for this template (3-6 words, e.g., 'Dog Owner Testimonial Card')",
-  "suggested_description": "1-2 sentence description of the template style, layout, and ideal use case",
+  "suggested_name": "Short descriptive name for this template (3-6 words, e.g., 'Dog Owner Testimonial Card'). MUST be AI-safe per the constraint above.",
+  "suggested_description": "1-2 sentence description of the template style, layout, and ideal use case. MUST be AI-safe.",
   "format_type": "Choose ONE: testimonial | quote_card | before_after | product_showcase | ugc_style | meme | carousel_frame | story_format | other",
   "industry_niche": "Choose ONE: supplements | pets | skincare | fitness | fashion | tech | food_beverage | home_garden | finance | health_wellness | beauty | automotive | travel | education | other",
   "target_sex": "Choose ONE: male | female | unisex",
@@ -59,6 +75,54 @@ AWARENESS LEVEL GUIDE:
 KEY DISTINCTION: Before/after photos showing transformation WITHOUT naming the specific product = Level 3 (differentiating a solution type). Before/after WITH product name and "I used [Brand X]" = Level 4 (building trust for known product).
 
 Return ONLY valid JSON, no additional text."""
+
+
+# Defensive substitutions if the LLM slips a flagged word through.
+# Order matters — multi-word phrases first so they win over single-word matches.
+# Replacements are applied case-insensitively but preserve title-case where
+# the original was capitalized.
+_AI_SAFE_SUBSTITUTIONS: List[tuple] = [
+    ("seductive", "romantic"),
+    ("sensual", "romantic"),
+    ("sexy", "lifestyle"),
+    ("naked", "minimalist"),
+    ("nude", "bare-style"),
+    ("killer", "top"),
+    ("killing", "leading"),
+    ("kill", "stop"),
+    ("addiction", "daily habit"),
+    ("addicted", "loyal"),
+    ("crazy", "bold"),
+    ("insane", "striking"),
+    ("badass", "standout"),
+    ("hot girl", "featured model"),
+    ("hot guy", "featured model"),
+    ("explosive", "powerful"),
+    ("exploding", "growing fast"),
+]
+
+
+def _sanitize_for_downstream_llms(text: Optional[str]) -> Optional[str]:
+    """Replace words that commonly trip Gemini/OpenAI safety filters.
+
+    Used on AI-generated template names/descriptions so they're safe to
+    embed in downstream LLM prompts (vision analysis, ad generation).
+    """
+    if not text:
+        return text
+    out = text
+    for needle, replacement in _AI_SAFE_SUBSTITUTIONS:
+        # Case-insensitive whole-ish word replace, preserving capitalization.
+        pattern = re.compile(rf"\b{re.escape(needle)}\b", re.IGNORECASE)
+
+        def _replace(match):
+            original = match.group(0)
+            if original[0].isupper():
+                return replacement[0].upper() + replacement[1:]
+            return replacement
+
+        out = pattern.sub(_replace, out)
+    return out
 
 
 class TemplateQueueService:
@@ -269,6 +333,10 @@ class TemplateQueueService:
 
         queue_item = queue_result.data[0]
         asset = queue_item.get("scraped_ad_assets", {})
+
+        # Sanitize for downstream LLM safety (Gemini/OpenAI safety filters).
+        name = _sanitize_for_downstream_llms(name) or name
+        description = _sanitize_for_downstream_llms(description)
 
         # Update queue status
         self.supabase.table("template_queue").update({
@@ -755,6 +823,17 @@ class TemplateQueueService:
                 "visual_notes": ""
             }
 
+        # Defensive sanitization: even with explicit instructions, the LLM
+        # occasionally echoes flagged source-ad words into the suggested
+        # name/description (e.g. "Sensual Valentine's Promo"). These names
+        # are passed back into Gemini downstream and trigger safety blocks.
+        suggestions["suggested_name"] = _sanitize_for_downstream_llms(
+            suggestions.get("suggested_name")
+        )
+        suggestions["suggested_description"] = _sanitize_for_downstream_llms(
+            suggestions.get("suggested_description")
+        )
+
         # Add source data
         suggestions["source_brand"] = page_name
         suggestions["source_landing_page"] = link_url
@@ -834,6 +913,10 @@ class TemplateQueueService:
         queue_item = queue_result.data[0]
         asset = queue_item.get("scraped_ad_assets", {})
         ai_suggestions = queue_item.get("ai_suggestions", {})
+
+        # Sanitize for downstream LLM safety
+        name = _sanitize_for_downstream_llms(name) or name
+        description = _sanitize_for_downstream_llms(description)
 
         # Update queue status
         self.supabase.table("template_queue").update({
