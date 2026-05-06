@@ -729,8 +729,14 @@ def render_persona_editor(persona_id: str):
     if persona_md:
         with col4:
             # Filename: lowercase persona name + date
+            # `updated_persona` is a dict (form values), not a Persona4D
+            # object. Fall back through name → slug → "persona".
+            _name = (
+                (updated_persona.get("name") if isinstance(updated_persona, dict) else None)
+                or "persona"
+            )
             persona_name_slug = (
-                "".join(c if c.isalnum() else "-" for c in (updated_persona.name or "persona"))
+                "".join(c if c.isalnum() else "-" for c in _name)
                 .strip("-")
                 .lower()
                 or "persona"
