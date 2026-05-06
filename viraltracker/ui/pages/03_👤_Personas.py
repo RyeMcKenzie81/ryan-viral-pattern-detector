@@ -694,7 +694,7 @@ def render_persona_editor(persona_id: str):
 
     # Save button
     st.divider()
-    col1, col2, col3 = st.columns([1, 1, 2])
+    col1, col2, col3, col4 = st.columns([1, 1, 1, 1])
 
     with col1:
         if st.button("Save Changes", type="primary"):
@@ -713,6 +713,39 @@ def render_persona_editor(persona_id: str):
                 st.json(brief.model_dump())
             except Exception as e:
                 st.error(f"Failed to export: {e}")
+
+    with col3:
+        # Generate the markdown once on first click and cache so the
+        # download_button can render. Streamlit's download_button
+        # accepts a callable too, but the simpler pattern is two-step.
+        if st.button("📄 Generate Document"):
+            try:
+                md = service.export_as_markdown(UUID(persona_id))
+                st.session_state[f"_persona_md_{persona_id}"] = md
+            except Exception as e:
+                st.error(f"Failed to generate: {e}")
+
+    persona_md = st.session_state.get(f"_persona_md_{persona_id}")
+    if persona_md:
+        with col4:
+            # Filename: lowercase persona name + date
+            persona_name_slug = (
+                "".join(c if c.isalnum() else "-" for c in (updated_persona.name or "persona"))
+                .strip("-")
+                .lower()
+                or "persona"
+            )
+            from datetime import date as _date
+            filename = f"persona-{persona_name_slug}-{_date.today().isoformat()}.md"
+            st.download_button(
+                label="⬇️ Download .md",
+                data=persona_md.encode("utf-8"),
+                file_name=filename,
+                mime="text/markdown",
+                key=f"dl_persona_md_{persona_id}",
+            )
+        with st.expander("Preview document"):
+            st.markdown(persona_md)
 
 def render_persona_list():
     """Render the main persona list view."""

@@ -1738,6 +1738,227 @@ Return ONLY valid JSON, no other text."""
             allergies=persona.allergies
         )
 
+    def export_as_markdown(self, persona_id: UUID) -> str:
+        """Render a 4D persona as a readable Markdown document.
+
+        Designed for sharing with non-technical stakeholders (clients,
+        copywriters, designers). Walks through all 8 dimensions in prose
+        form with section headers, bulleted lists, and quoted self-talk.
+        """
+        persona = self.get_persona(persona_id)
+        if not persona:
+            raise ValueError(f"Persona not found: {persona_id}")
+
+        out: List[str] = []
+
+        def h(text: str, level: int = 2) -> None:
+            out.append(f"{'#' * level} {text}\n")
+
+        def p(text: str) -> None:
+            if text:
+                out.append(f"{text}\n")
+
+        def bullets(items: List[str], empty: str = "_None recorded._") -> None:
+            items = [str(i).strip() for i in (items or []) if str(i).strip()]
+            if not items:
+                out.append(f"{empty}\n")
+            else:
+                for item in items:
+                    out.append(f"- {item}")
+                out.append("")
+
+        def kv(label: str, value: Any) -> None:
+            if value is None or value == "" or value == []:
+                return
+            if isinstance(value, list):
+                value = ", ".join(str(v) for v in value if v)
+                if not value:
+                    return
+            out.append(f"- **{label}:** {value}")
+
+        def section_dict(title: str, d: Dict[str, List[str]]) -> None:
+            """Render a dict of {category: [items]} as subsections."""
+            if not d:
+                return
+            h(title, level=3)
+            any_content = False
+            for category, items in d.items():
+                items = [i for i in (items or []) if i]
+                if not items:
+                    continue
+                any_content = True
+                pretty = category.replace("_", " ").title()
+                out.append(f"**{pretty}**")
+                for item in items:
+                    if isinstance(item, dict):
+                        out.append(f"- {item.get('text', str(item))}")
+                    else:
+                        out.append(f"- {item}")
+                out.append("")
+            if not any_content:
+                out.append("_None recorded._\n")
+
+        # ─── Header ──────────────────────────────────────────────────────
+        h(persona.name, level=1)
+        if persona.snapshot:
+            out.append(f"> {persona.snapshot}\n")
+        meta_bits = []
+        if persona.persona_type:
+            meta_bits.append(f"**Type:** {persona.persona_type}")
+        if persona.source_type:
+            meta_bits.append(f"**Source:** {persona.source_type}")
+        if meta_bits:
+            out.append(" • ".join(meta_bits) + "\n")
+        out.append("---\n")
+
+        # ─── 1. Demographics ─────────────────────────────────────────────
+        h("Who They Are", level=2)
+        if persona.demographics:
+            d = persona.demographics
+            kv("Age range", getattr(d, "age_range", None))
+            kv("Gender", getattr(d, "gender", None))
+            kv("Location", getattr(d, "location", None))
+            kv("Income", getattr(d, "income_level", None))
+            kv("Education", getattr(d, "education", None))
+            kv("Occupation", getattr(d, "occupation", None))
+            kv("Family", getattr(d, "family_status", None))
+            out.append("")
+        if persona.behavior_habits:
+            h("Behavior & habits", level=3)
+            bullets(persona.behavior_habits)
+        if persona.digital_presence:
+            h("Where they spend time online", level=3)
+            bullets(persona.digital_presence)
+        if persona.purchase_drivers:
+            h("What drives their purchases", level=3)
+            bullets(persona.purchase_drivers)
+
+        # ─── 2. Psychographics ───────────────────────────────────────────
+        h("What They Want", level=2)
+        if persona.transformation_map:
+            tm = persona.transformation_map
+            before = getattr(tm, "before", None) or []
+            after = getattr(tm, "after", None) or []
+            if before or after:
+                h("Transformation: from → to", level=3)
+                if before:
+                    out.append("**Before (where they are now):**")
+                    bullets(before)
+                if after:
+                    out.append("**After (where they want to be):**")
+                    bullets(after)
+        if persona.desires:
+            desires_dict = {
+                k: [
+                    (i.text if hasattr(i, "text") else (i.get("text", str(i)) if isinstance(i, dict) else str(i)))
+                    for i in (v or [])
+                ]
+                for k, v in persona.desires.items()
+            }
+            section_dict("Core desires", desires_dict)
+
+        # ─── 3. Identity ─────────────────────────────────────────────────
+        h("Who They See Themselves As", level=2)
+        if persona.self_narratives:
+            h("Self-narratives (stories they tell themselves)", level=3)
+            for n in persona.self_narratives:
+                out.append(f"> *\"{n}\"*\n")
+        kv_lines: List[str] = []
+        if persona.current_self_image:
+            out.append(f"**Current self-image:** {persona.current_self_image}\n")
+        if persona.desired_self_image:
+            out.append(f"**Desired self-image:** {persona.desired_self_image}\n")
+        if persona.identity_artifacts:
+            h("Identity artifacts (brands/products they associate with)", level=3)
+            bullets(persona.identity_artifacts)
+
+        # ─── 4. Social ───────────────────────────────────────────────────
+        h("Who's In Their World", level=2)
+        if persona.social_relations:
+            sr = persona.social_relations
+            for label, attr in [
+                ("Want to impress", "want_to_impress"),
+                ("Fear judgment from", "fear_judged_by"),
+                ("Influences their decisions", "influence_decisions"),
+                ("Admire", "admire"),
+                ("Envy", "envy"),
+                ("Want to belong with", "want_to_belong"),
+            ]:
+                vals = getattr(sr, attr, None) or []
+                if vals:
+                    h(label, level=3)
+                    bullets(vals)
+
+        # ─── 5. Worldview ────────────────────────────────────────────────
+        h("How They See The World", level=2)
+        if persona.worldview:
+            p(persona.worldview)
+        if persona.core_values:
+            h("Core values", level=3)
+            bullets(persona.core_values)
+        if persona.allergies:
+            h("Allergies (what they distrust / dismiss instantly)", level=3)
+            for trope, why in (persona.allergies or {}).items():
+                out.append(f"- **{trope}:** {why}")
+            out.append("")
+
+        # ─── 6. Domain (pain & jobs) ─────────────────────────────────────
+        h("What's Painful & What They're Trying To Do", level=2)
+        if persona.pain_points:
+            section_dict("Pain points", persona.pain_points.model_dump() if hasattr(persona.pain_points, "model_dump") else dict(persona.pain_points))
+        if persona.outcomes_jtbd:
+            section_dict("Outcomes / Jobs to be Done", persona.outcomes_jtbd.model_dump() if hasattr(persona.outcomes_jtbd, "model_dump") else dict(persona.outcomes_jtbd))
+        if persona.failed_solutions:
+            h("Failed solutions (what they've tried that didn't work)", level=3)
+            bullets(persona.failed_solutions)
+        if persona.buying_objections:
+            section_dict("Buying objections", persona.buying_objections.model_dump() if hasattr(persona.buying_objections, "model_dump") else dict(persona.buying_objections))
+        if persona.familiar_promises:
+            h("Familiar promises (claims they've heard before — stay original)", level=3)
+            bullets(persona.familiar_promises)
+
+        # ─── 7. Purchase behavior ────────────────────────────────────────
+        h("How They Buy", level=2)
+        if persona.activation_events:
+            h("Activation events (what triggers them to buy NOW)", level=3)
+            bullets(persona.activation_events)
+        if persona.purchasing_habits:
+            h("Purchasing habits", level=3)
+            bullets(persona.purchasing_habits)
+        if persona.decision_process:
+            h("Decision process", level=3)
+            p(persona.decision_process)
+        if persona.current_workarounds:
+            h("Current workarounds", level=3)
+            bullets(persona.current_workarounds)
+
+        # ─── 8. 3D objections ────────────────────────────────────────────
+        h("What Stops Them", level=2)
+        if persona.emotional_risks:
+            h("Emotional risks", level=3)
+            bullets(persona.emotional_risks)
+        if persona.barriers_to_behavior:
+            h("Barriers to action", level=3)
+            bullets(persona.barriers_to_behavior)
+
+        # ─── Footer ──────────────────────────────────────────────────────
+        out.append("---\n")
+        footer = []
+        if getattr(persona, "confidence_score", None) is not None:
+            footer.append(f"Confidence: {persona.confidence_score:.2f}")
+        if getattr(persona, "created_at", None):
+            try:
+                ts = persona.created_at
+                if hasattr(ts, "isoformat"):
+                    ts = ts.isoformat()
+                footer.append(f"Created: {ts}")
+            except Exception:
+                pass
+        if footer:
+            out.append("_" + " • ".join(footer) + "_")
+
+        return "\n".join(out)
+
     def export_for_copy_brief_dict(self, persona_id: UUID) -> Dict[str, Any]:
         """Export persona as dict for ad copy generation (for tools)."""
         brief = self.export_for_copy_brief(persona_id)
