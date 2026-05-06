@@ -119,6 +119,8 @@ class Config:
         "models/gemini-2.5-pro": (1.25, 5.00),
         "models/gemini-3-pro-image-preview": (1.25, 5.00),
         "models/gemini-3-flash-preview": (0.15, 0.60),
+        "gemini-pro-latest": (1.25, 5.00),  # alias to latest stable Gemini Pro
+        "models/gemini-pro-latest": (1.25, 5.00),
     }
 
     # Unit costs for non-token APIs
@@ -195,8 +197,10 @@ class Config:
     # BUT standard google-genai client fails with it.
     CREATIVE_MODEL = "claude-opus-4-7"  # Opus 4.7 for copy/creative writing
     AD_AGENT_MODEL = "google-gla:models/gemini-3-pro-image-preview"  # Gemini 3 Pro for main ad agent
-    # Using widely available model for vision to fix 404 error
-    VISION_MODEL = "google-gla:models/gemini-3-pro-image-preview"
+    # Vision analysis (image → JSON) uses gemini-pro-latest. The Nano Banana 3
+    # variant (gemini-3-pro-image-preview) is for image GENERATION only and
+    # was returning malformed/empty responses for vision-analysis prompts.
+    VISION_MODEL = "google-gla:models/gemini-pro-latest"
     VISION_BACKUP_MODEL = "openai:gpt-5.2-2025-12-11"
     BASIC_MODEL = "google-gla:models/gemini-3-flash-preview"
 
