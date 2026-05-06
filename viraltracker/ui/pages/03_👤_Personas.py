@@ -727,30 +727,50 @@ def render_persona_editor(persona_id: str):
 
     persona_md = st.session_state.get(f"_persona_md_{persona_id}")
     if persona_md:
+        # Filename: lowercase persona name + date
+        # `updated_persona` is a dict (form values), not a Persona4D
+        # object. Fall back through name → slug → "persona".
+        _name = (
+            (updated_persona.get("name") if isinstance(updated_persona, dict) else None)
+            or "persona"
+        )
+        persona_name_slug = (
+            "".join(c if c.isalnum() else "-" for c in _name)
+            .strip("-")
+            .lower()
+            or "persona"
+        )
+        from datetime import date as _date
+        base_filename = f"persona-{persona_name_slug}-{_date.today().isoformat()}"
+
         with col4:
-            # Filename: lowercase persona name + date
-            # `updated_persona` is a dict (form values), not a Persona4D
-            # object. Fall back through name → slug → "persona".
-            _name = (
-                (updated_persona.get("name") if isinstance(updated_persona, dict) else None)
-                or "persona"
-            )
-            persona_name_slug = (
-                "".join(c if c.isalnum() else "-" for c in _name)
-                .strip("-")
-                .lower()
-                or "persona"
-            )
-            from datetime import date as _date
-            filename = f"persona-{persona_name_slug}-{_date.today().isoformat()}.md"
             st.download_button(
-                label="⬇️ Download .md",
+                label="⬇️ .md",
                 data=persona_md.encode("utf-8"),
-                file_name=filename,
+                file_name=f"{base_filename}.md",
                 mime="text/markdown",
                 key=f"dl_persona_md_{persona_id}",
+                help="Markdown — open in any text/markdown viewer",
             )
-        with st.expander("Preview document"):
+
+        # HTML download — pastes/imports cleanly into Google Docs / Word
+        try:
+            persona_html = service.export_as_html(UUID(persona_id))
+            st.download_button(
+                label="⬇️ Download .html (best for Google Docs / Word)",
+                data=persona_html.encode("utf-8"),
+                file_name=f"{base_filename}.html",
+                mime="text/html",
+                key=f"dl_persona_html_{persona_id}",
+                help=(
+                    "HTML — Google Docs imports cleanly via File → Open. "
+                    "Or just copy from the preview below and paste into Docs."
+                ),
+            )
+        except Exception as e:
+            st.caption(f"HTML export unavailable: {e}")
+
+        with st.expander("Preview document (select-all + copy → paste into Google Docs preserves formatting)"):
             st.markdown(persona_md)
 
 def render_persona_list():
