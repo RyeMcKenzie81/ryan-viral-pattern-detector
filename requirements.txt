@@ -71,7 +71,7 @@ tzdata==2025.2
 uritemplate==4.2.0
 urllib3==2.5.0
 websockets==15.0.1
-yt-dlp>=2026.4.0
+yt-dlp>=2026.3.17
 
 # Pydantic AI Agent Dependencies
 pydantic-ai-slim==1.18.0
