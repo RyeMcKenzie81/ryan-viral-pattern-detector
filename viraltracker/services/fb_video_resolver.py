@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT_SECONDS = 180.0
 DEFAULT_SIZE_CAP_MB = 100
-DEFAULT_ACTOR_ID = "bytepulselabs/facebook-video-downloader"
+DEFAULT_ACTOR_ID = "igview-owner/facebook-media-downloader"
 DOWNLOAD_TIMEOUT_SECONDS = 60.0
 
 # UX guard only — "looks like a Facebook URL". NOT a guarantee Apify will
@@ -121,7 +121,12 @@ def _extract_with_apify(url: str, size_cap_mb: int) -> Tuple[bytes, str]:
     actor_id = os.environ.get("APIFY_FB_VIDEO_ACTOR", DEFAULT_ACTOR_ID)
     client = ApifyClient(token)
 
-    actor_input = {"urls": [{"url": url}]}
+    # igview-owner/facebook-media-downloader uses an array of strings (not objects).
+    # Other actors using {"url": "..."} object form fall through to the legacy path.
+    if actor_id == DEFAULT_ACTOR_ID:
+        actor_input = {"urls": [url]}
+    else:
+        actor_input = {"urls": [{"url": url}]}
     logger.info(f"Calling Apify actor {actor_id} with URL: {url}")
 
     try:
@@ -144,13 +149,24 @@ def _extract_with_apify(url: str, size_cap_mb: int) -> Tuple[bytes, str]:
         )
 
     item = items[0]
-    # Actor docs reference videoUrl; check a few common alternate keys defensively.
+    # Different actors use different field names for the resulting MP4 URL.
+    # Try common variants in order of likelihood.
     video_url = (
-        item.get("videoUrl")
+        item.get("downloadUrl")          # igview-owner/facebook-media-downloader
+        or item.get("videoUrl")          # bytepulselabs and others
         or item.get("download_url")
-        or item.get("downloadUrl")
         or item.get("url")
     )
+    # Some actors return downloadLinks: [{quality, url}, ...] — pick the first.
+    if not video_url:
+        download_links = item.get("downloadLinks") or item.get("download_links") or []
+        if download_links and isinstance(download_links, list):
+            first = download_links[0]
+            if isinstance(first, dict):
+                video_url = first.get("url") or first.get("downloadUrl")
+            elif isinstance(first, str):
+                video_url = first
+
     if not video_url:
         raise ResolverError(
             f"Apify result has no video URL. Available keys: {list(item.keys())}"

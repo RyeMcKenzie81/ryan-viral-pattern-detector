@@ -176,7 +176,7 @@ def _build_mock_httpx(content=b"video-bytes", content_type="video/mp4", content_
 def test_resolve_fb_video_happy_path(monkeypatch):
     monkeypatch.setenv("APIFY_TOKEN", "test-token")
     client = _build_mock_apify_client(
-        items=[{"videoUrl": "https://api.apify.com/v2/key-value-stores/abc/records/video"}]
+        items=[{"downloadUrl": "https://media.fb.com/video.mp4"}]
     )
     http = _build_mock_httpx(content=b"x" * 1024, content_type="video/mp4")
 
@@ -191,9 +191,25 @@ def test_resolve_fb_video_happy_path(monkeypatch):
     client.actor.assert_called_once()
     actor_call = client.actor.return_value.call
     actor_call.assert_called_once()
-    # Verify URL passed via urls field (matches actor's expected input schema)
+    # Default actor (igview-owner/facebook-media-downloader) takes urls as
+    # an array of strings, not array of {url: ...} objects.
     assert actor_call.call_args.kwargs["run_input"] == {
-        "urls": [{"url": "https://www.facebook.com/61586/posts/123/"}]
+        "urls": ["https://www.facebook.com/61586/posts/123/"]
+    }
+
+
+def test_resolve_fb_video_uses_object_input_for_non_default_actor(monkeypatch):
+    """Other actors that take urls: [{url: ...}] should still work via override."""
+    monkeypatch.setenv("APIFY_TOKEN", "test-token")
+    monkeypatch.setenv("APIFY_FB_VIDEO_ACTOR", "bytepulselabs/facebook-video-downloader")
+    client = _build_mock_apify_client(items=[{"videoUrl": "https://x"}])
+    http = _build_mock_httpx(content=b"x")
+    with patch("apify_client.ApifyClient", return_value=client), \
+         patch("httpx.Client", return_value=http):
+        resolve_fb_video("https://www.facebook.com/61586/posts/1", timeout=10)
+    actor_call = client.actor.return_value.call
+    assert actor_call.call_args.kwargs["run_input"] == {
+        "urls": [{"url": "https://www.facebook.com/61586/posts/1"}]
     }
 
 
@@ -256,9 +272,9 @@ def test_resolve_fb_video_size_cap_via_head(monkeypatch):
 
 
 def test_resolve_fb_video_alternate_url_field_keys(monkeypatch):
-    """Defensive: actor sometimes returns 'downloadUrl' or 'url' instead of 'videoUrl'."""
+    """Defensive: actors use different top-level URL field names."""
     monkeypatch.setenv("APIFY_TOKEN", "test-token")
-    for key in ("downloadUrl", "download_url", "url"):
+    for key in ("downloadUrl", "videoUrl", "download_url", "url"):
         client = _build_mock_apify_client(items=[{key: "https://x"}])
         http = _build_mock_httpx(content=b"x" * 100)
         with patch("apify_client.ApifyClient", return_value=client), \
@@ -267,3 +283,21 @@ def test_resolve_fb_video_alternate_url_field_keys(monkeypatch):
                 "https://www.facebook.com/x/posts/1", timeout=10
             )
             assert bytes_out == b"x" * 100
+
+
+def test_resolve_fb_video_download_links_array(monkeypatch):
+    """igview-owner returns downloadLinks: [{quality, url}, ...] when downloadUrl is absent."""
+    monkeypatch.setenv("APIFY_TOKEN", "test-token")
+    client = _build_mock_apify_client(items=[{
+        "downloadLinks": [
+            {"quality": "HD", "url": "https://media.fb.com/hd.mp4"},
+            {"quality": "SD", "url": "https://media.fb.com/sd.mp4"},
+        ]
+    }])
+    http = _build_mock_httpx(content=b"x" * 100)
+    with patch("apify_client.ApifyClient", return_value=client), \
+         patch("httpx.Client", return_value=http):
+        bytes_out, _ = resolve_fb_video(
+            "https://www.facebook.com/reel/123", timeout=10
+        )
+        assert bytes_out == b"x" * 100
