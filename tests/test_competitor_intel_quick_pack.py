@@ -180,8 +180,10 @@ def test_create_quick_pack_from_url_canonicalizes_and_resolves(service):
         ))
 
     assert pack_id == "new-pack-id"
-    # URL was canonicalized before being passed to the resolver and persisted
-    expected_canonical = "https://facebook.com/61586/posts/12345"
+    # URL was canonicalized before being passed to the resolver and persisted.
+    # Canonical form preserves the www. subdomain so the Apify actor's URL
+    # validator accepts it.
+    expected_canonical = "https://www.facebook.com/61586/posts/12345"
     mock_resolve.assert_called_once_with(expected_canonical)
     assert captured["source_url"] == expected_canonical
     assert captured["source_type"] == "quick_url"

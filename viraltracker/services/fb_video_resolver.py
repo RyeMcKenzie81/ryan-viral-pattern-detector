@@ -48,20 +48,25 @@ def looks_like_fb_url(url: str) -> bool:
 def canonicalize_fb_url(url: str) -> str:
     """Normalize an FB URL for dedupe.
 
-    Strips: m./www. subdomains, fragments, tracking query params (keeps only
-    v= and id=), trailing slash. Lowercases the host.
+    Always normalizes to `www.facebook.com` (the Apify actor's URL validator
+    rejects bare `facebook.com`). Strips: m. subdomain (mobile → www),
+    fragments, tracking query params (keeps only v= and id=), trailing slash.
 
     Examples:
-        m.facebook.com/61586/posts/12345/?ref=share  → facebook.com/61586/posts/12345
-        www.facebook.com/watch/?v=99&ref=copy        → facebook.com/watch?v=99
-        facebook.com/61586/posts/12345#comment       → facebook.com/61586/posts/12345
+        m.facebook.com/61586/posts/12345/?ref=share  → www.facebook.com/61586/posts/12345
+        www.facebook.com/watch/?v=99&ref=copy        → www.facebook.com/watch?v=99
+        facebook.com/61586/posts/12345#comment       → www.facebook.com/61586/posts/12345
     """
     parsed = urlparse(url.strip())
     host = (parsed.hostname or "").lower()
+    # Strip mobile / www subdomain, then re-prefix www. so dedup is stable
+    # and the Apify actor's URL validator is happy.
     if host.startswith("m."):
         host = host[2:]
     if host.startswith("www."):
         host = host[4:]
+    if host:
+        host = "www." + host
 
     path = parsed.path.rstrip("/")
 

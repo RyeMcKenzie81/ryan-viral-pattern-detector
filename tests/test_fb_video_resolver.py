@@ -57,40 +57,40 @@ def test_looks_like_fb_url_rejects_non_fb(url):
 
 
 @pytest.mark.parametrize("input_url,expected", [
-    # Trailing slash stripped
+    # Trailing slash stripped, www preserved
     (
         "https://www.facebook.com/61586/posts/12345/",
-        "https://facebook.com/61586/posts/12345",
+        "https://www.facebook.com/61586/posts/12345",
     ),
-    # m. subdomain stripped
+    # m. → www. normalization
     (
         "https://m.facebook.com/61586/posts/12345/",
-        "https://facebook.com/61586/posts/12345",
-    ),
-    # www. stripped
-    (
         "https://www.facebook.com/61586/posts/12345",
+    ),
+    # Bare facebook.com gets www. prefix added
+    (
         "https://facebook.com/61586/posts/12345",
+        "https://www.facebook.com/61586/posts/12345",
     ),
     # Tracking query params stripped, v= preserved
     (
         "https://www.facebook.com/watch/?v=99&ref=copy&fbclid=abc",
-        "https://facebook.com/watch?v=99",
+        "https://www.facebook.com/watch?v=99",
     ),
     # id= preserved on ad library URLs
     (
         "https://www.facebook.com/ads/library/?id=12345&active=true",
-        "https://facebook.com/ads/library?id=12345",
+        "https://www.facebook.com/ads/library?id=12345",
     ),
     # Fragment stripped
     (
         "https://www.facebook.com/61586/posts/12345#comment-1",
-        "https://facebook.com/61586/posts/12345",
+        "https://www.facebook.com/61586/posts/12345",
     ),
     # Mixed case host normalized
     (
         "https://WWW.Facebook.COM/61586/posts/12345",
-        "https://facebook.com/61586/posts/12345",
+        "https://www.facebook.com/61586/posts/12345",
     ),
 ])
 def test_canonicalize_fb_url_normalizes(input_url, expected):
@@ -99,7 +99,7 @@ def test_canonicalize_fb_url_normalizes(input_url, expected):
 
 def test_canonicalize_idempotent():
     """Canonicalizing an already-canonical URL is a no-op."""
-    canonical = "https://facebook.com/61586/posts/12345"
+    canonical = "https://www.facebook.com/61586/posts/12345"
     assert canonicalize_fb_url(canonical) == canonical
 
 
