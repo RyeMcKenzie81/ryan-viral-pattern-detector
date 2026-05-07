@@ -1244,6 +1244,7 @@ class CandidateSourceType(str, Enum):
     COMPETITOR_RESEARCH = "competitor_research"
     BRAND_RESEARCH = "brand_research"
     COMPETITOR_INTEL = "competitor_intel"
+    QUICK_INTEL = "quick_intel"
 
 
 class CandidateStatus(str, Enum):
