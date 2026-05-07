@@ -731,6 +731,337 @@ class CompetitorIntelService:
         )
         return resp.data[0] if resp.data else None
 
+    # --- Quick URL mode (single FB video URL or upload, no competitor required) ---
+
+    QUICK_INTEL_BUCKET = "scraped-assets"
+    QUICK_INTEL_PATH_PREFIX = "quick-intel"
+
+    def get_quick_packs_for_org(self, organization_id: str, limit: int = 50) -> List[Dict]:
+        """List quick packs for an organization, newest first.
+
+        Returns packs with source_type IN ('quick_url', 'quick_upload').
+        """
+        query = (
+            self.supabase.table("competitor_intel_packs")
+            .select("*")
+            .in_("source_type", ["quick_url", "quick_upload"])
+        )
+        if organization_id != "all":
+            query = query.eq("organization_id", organization_id)
+        resp = query.order("created_at", desc=True).limit(limit).execute()
+        return resp.data or []
+
+    def _find_existing_quick_pack(
+        self,
+        canonical_url: str,
+        organization_id: str,
+    ) -> Optional[Dict]:
+        """Look up an existing quick pack with the same canonicalized URL in
+        the same org. Returns the most recent match (any status), or None.
+        """
+        query = (
+            self.supabase.table("competitor_intel_packs")
+            .select("*")
+            .eq("source_url", canonical_url)
+        )
+        if organization_id != "all":
+            query = query.eq("organization_id", organization_id)
+        resp = query.order("created_at", desc=True).limit(1).execute()
+        return resp.data[0] if resp.data else None
+
+    def _upload_quick_video(
+        self,
+        video_bytes: bytes,
+        mime_type: str,
+        organization_id: str,
+        pack_uuid: str,
+    ) -> str:
+        """Upload a single video blob to Supabase storage. Returns the full
+        storage path (`scraped-assets/quick-intel/{org}/{pack}/video.mp4`).
+        Raises on upload failure — caller is responsible for not having yet
+        written a DB row.
+        """
+        ext = "mp4"
+        if mime_type == "video/quicktime":
+            ext = "mov"
+        elif mime_type == "video/webm":
+            ext = "webm"
+        elif mime_type == "video/x-matroska":
+            ext = "mkv"
+
+        rel_path = f"{self.QUICK_INTEL_PATH_PREFIX}/{organization_id}/{pack_uuid}/video.{ext}"
+
+        self.supabase.storage.from_(self.QUICK_INTEL_BUCKET).upload(
+            rel_path,
+            video_bytes,
+            {"content-type": mime_type, "upsert": "true"},
+        )
+
+        full_path = f"{self.QUICK_INTEL_BUCKET}/{rel_path}"
+        logger.info(f"Uploaded quick-intel video to {full_path} ({len(video_bytes)} bytes)")
+        return full_path
+
+    def _enqueue_quick_intel_job(
+        self,
+        pack_id: str,
+        brand_id: str,
+        product_id: str,
+        organization_id: str,
+    ) -> None:
+        """Enqueue a quick_intel_analysis job. Raises on failure — caller
+        will mark the pack 'failed' if so.
+        """
+        from datetime import timedelta
+        now = datetime.now(timezone.utc)
+        self.supabase.table("scheduled_jobs").insert({
+            "job_type": "quick_intel_analysis",
+            "brand_id": brand_id,
+            "product_id": product_id,
+            "name": f"Quick intel analysis (pack {pack_id[:8]})",
+            "status": "active",
+            "schedule_type": "one_time",
+            "next_run_at": (now + timedelta(minutes=1)).isoformat(),
+            "trigger_source": "manual",
+            "parameters": {
+                "pack_id": pack_id,
+                "organization_id": organization_id,
+            },
+        }).execute()
+
+    async def _create_quick_pack(
+        self,
+        video_bytes: bytes,
+        mime_type: str,
+        source_type: str,                   # 'quick_url' | 'quick_upload'
+        source_url: Optional[str],          # canonicalized FB URL (or None)
+        brand_id: str,
+        product_id: str,
+        organization_id: str,
+    ) -> str:
+        """Shared private helper for both quick paths.
+
+        Order: resolve org → upload → insert → enqueue.
+
+        - Upload before insert: if upload fails there is no DB row to clean up.
+        - Insert before enqueue: if enqueue fails we mark the pack 'failed' so
+          the UI doesn't show a perma-pending pack.
+        """
+        if source_type not in ("quick_url", "quick_upload"):
+            raise ValueError(f"Invalid source_type for quick pack: {source_type}")
+
+        org_id = self._resolve_org_id(organization_id, brand_id)
+        pack_uuid = str(uuid.uuid4())
+
+        # 1. Upload first — orphan-safe.
+        try:
+            storage_path = self._upload_quick_video(
+                video_bytes, mime_type, org_id, pack_uuid
+            )
+        except Exception as exc:
+            logger.error(f"Quick-intel upload failed: {exc}")
+            raise
+
+        # 2. Insert pack row.
+        try:
+            self.supabase.table("competitor_intel_packs").insert({
+                "id": pack_uuid,
+                "competitor_id": None,
+                "organization_id": org_id,
+                "product_id": product_id,
+                "source_type": source_type,
+                "source_url": source_url,
+                "source_video_storage_path": storage_path,
+                "video_count": 1,
+                "videos_completed": 0,
+                "status": "pending",
+                "prompt_version": PROMPT_VERSION,
+                "model_version": MODEL_VERSION,
+            }).execute()
+        except Exception as exc:
+            logger.error(
+                f"Quick-intel pack insert failed (orphan blob: {storage_path}): {exc}"
+            )
+            raise
+
+        # 3. Enqueue worker job. On failure, mark pack 'failed' so it doesn't
+        # show as perma-pending.
+        try:
+            self._enqueue_quick_intel_job(pack_uuid, brand_id, product_id, org_id)
+        except Exception as exc:
+            logger.error(f"Quick-intel job enqueue failed for pack {pack_uuid}: {exc}")
+            try:
+                self.supabase.table("competitor_intel_packs").update({
+                    "status": "failed",
+                    "error_summary": f"enqueue failed: {exc}",
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }).eq("id", pack_uuid).execute()
+            except Exception:
+                pass
+            raise
+
+        return pack_uuid
+
+    async def create_quick_pack_from_url(
+        self,
+        url: str,
+        brand_id: str,
+        product_id: str,
+        organization_id: str,
+    ) -> str:
+        """Resolve a public FB video URL via yt-dlp and create a fresh quick pack.
+
+        The caller (UI) is responsible for the dup-URL check before calling
+        this method. This method always runs the resolver. Returns NEW pack_id.
+
+        Raises:
+            ResolverError: yt-dlp could not extract the video.
+            ValueError: URL is not a recognised FB pattern.
+        """
+        from viraltracker.services.fb_video_resolver import (
+            resolve_fb_video,
+            canonicalize_fb_url,
+            looks_like_fb_url,
+        )
+
+        if not looks_like_fb_url(url):
+            raise ValueError("URL does not look like a Facebook URL")
+
+        canonical = canonicalize_fb_url(url)
+        video_bytes, mime_type = resolve_fb_video(canonical)
+
+        return await self._create_quick_pack(
+            video_bytes=video_bytes,
+            mime_type=mime_type,
+            source_type="quick_url",
+            source_url=canonical,
+            brand_id=brand_id,
+            product_id=product_id,
+            organization_id=organization_id,
+        )
+
+    async def create_quick_pack_from_upload(
+        self,
+        file_bytes: bytes,
+        mime_type: str,
+        brand_id: str,
+        product_id: str,
+        organization_id: str,
+    ) -> str:
+        """Create a quick pack from an uploaded video file. Returns NEW pack_id."""
+        if not file_bytes:
+            raise ValueError("Empty file")
+        return await self._create_quick_pack(
+            video_bytes=file_bytes,
+            mime_type=mime_type or "video/mp4",
+            source_type="quick_upload",
+            source_url=None,
+            brand_id=brand_id,
+            product_id=product_id,
+            organization_id=organization_id,
+        )
+
+    async def copy_existing_pack(
+        self,
+        source_pack_id: str,
+        brand_id: str,
+        product_id: str,
+        organization_id: str,
+    ) -> str:
+        """Create a new pack pointing at an existing pack's storage_path,
+        with video_analyses + pack_data copied. status='complete' immediately,
+        no resolver, no Gemini, no worker job.
+
+        Used by the dup-URL modal's "Use existing extraction (free)" action.
+        """
+        source = self.get_pack(source_pack_id)
+        if not source:
+            raise ValueError(f"Source pack {source_pack_id} not found")
+        if source.get("status") != "complete":
+            raise ValueError(
+                f"Source pack {source_pack_id} is not complete (status={source.get('status')})"
+            )
+
+        org_id = self._resolve_org_id(organization_id, brand_id)
+        new_pack_id = str(uuid.uuid4())
+
+        self.supabase.table("competitor_intel_packs").insert({
+            "id": new_pack_id,
+            "competitor_id": None,
+            "organization_id": org_id,
+            "product_id": product_id,
+            "source_type": source.get("source_type", "quick_url"),
+            "source_url": source.get("source_url"),
+            "source_video_storage_path": source.get("source_video_storage_path"),
+            "video_count": 1,
+            "videos_completed": 1,
+            "status": "complete",
+            "video_analyses": source.get("video_analyses") or [],
+            "pack_data": source.get("pack_data") or {},
+            "field_coverage": source.get("field_coverage") or {},
+            "prompt_version": source.get("prompt_version") or PROMPT_VERSION,
+            "model_version": source.get("model_version") or MODEL_VERSION,
+        }).execute()
+
+        logger.info(
+            f"Copied quick pack {source_pack_id} → {new_pack_id} "
+            f"(brand={brand_id}, product={product_id})"
+        )
+        return new_pack_id
+
+    async def re_run_extraction(
+        self,
+        source_pack_id: str,
+        brand_id: str,
+        product_id: str,
+        organization_id: str,
+    ) -> str:
+        """Create a new pack pointing at an existing pack's storage_path,
+        status='pending', and enqueue a fresh quick_intel_analysis job.
+
+        Skips the yt-dlp download (file already in storage) but DOES re-run
+        Gemini extraction. Used by the dup-URL modal's "Re-run extraction"
+        action.
+        """
+        source = self.get_pack(source_pack_id)
+        if not source:
+            raise ValueError(f"Source pack {source_pack_id} not found")
+        storage_path = source.get("source_video_storage_path")
+        if not storage_path:
+            raise ValueError(
+                f"Source pack {source_pack_id} has no source_video_storage_path"
+            )
+
+        org_id = self._resolve_org_id(organization_id, brand_id)
+        new_pack_id = str(uuid.uuid4())
+
+        self.supabase.table("competitor_intel_packs").insert({
+            "id": new_pack_id,
+            "competitor_id": None,
+            "organization_id": org_id,
+            "product_id": product_id,
+            "source_type": source.get("source_type", "quick_url"),
+            "source_url": source.get("source_url"),
+            "source_video_storage_path": storage_path,
+            "video_count": 1,
+            "videos_completed": 0,
+            "status": "pending",
+            "prompt_version": PROMPT_VERSION,
+            "model_version": MODEL_VERSION,
+        }).execute()
+
+        try:
+            self._enqueue_quick_intel_job(new_pack_id, brand_id, product_id, org_id)
+        except Exception as exc:
+            logger.error(f"Re-run enqueue failed for pack {new_pack_id}: {exc}")
+            self.supabase.table("competitor_intel_packs").update({
+                "status": "failed",
+                "error_summary": f"enqueue failed: {exc}",
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }).eq("id", new_pack_id).execute()
+            raise
+
+        return new_pack_id
+
     # --- Save to angle pipeline ---
 
     def save_to_angle_pipeline(
@@ -756,16 +1087,24 @@ class CompetitorIntelService:
         service = AngleCandidateService()
         counts = {"hooks": 0, "angles": 0, "pain_points": 0, "jtbds": 0}
 
+        # Provenance: quick packs get QUICK_INTEL, competitor packs keep COMPETITOR_INTEL.
+        candidate_source = (
+            CandidateSourceType.QUICK_INTEL.value
+            if pack.get("source_type") in ("quick_url", "quick_upload")
+            else CandidateSourceType.COMPETITOR_INTEL.value
+        )
+        source_label = "quick intel" if candidate_source == CandidateSourceType.QUICK_INTEL.value else "competitor intel"
+
         # Top hooks -> candidates
         for hook in (pack_data.get("hooks") or [])[:5]:
             try:
                 service.create_candidate(
                     product_id=product_id,
-                    name=(hook.get("text", "")[:50] or "Competitor hook"),
+                    name=(hook.get("text", "")[:50] or f"Hook ({source_label})"),
                     belief_statement=hook.get("text", ""),
-                    source_type=CandidateSourceType.COMPETITOR_INTEL.value,
+                    source_type=candidate_source,
                     candidate_type="ad_hypothesis",
-                    explanation=f"Hook type: {hook.get('type', 'unknown')} (from competitor intel pack)",
+                    explanation=f"Hook type: {hook.get('type', 'unknown')} (from {source_label} pack)",
                     organization_id=org_id,
                 )
                 counts["hooks"] += 1
@@ -777,11 +1116,11 @@ class CompetitorIntelService:
             try:
                 service.create_candidate(
                     product_id=product_id,
-                    name=(angle.get("belief_statement", "")[:50] or "Competitor angle"),
+                    name=(angle.get("belief_statement", "")[:50] or f"Angle ({source_label})"),
                     belief_statement=angle.get("belief_statement", ""),
-                    source_type=CandidateSourceType.COMPETITOR_INTEL.value,
+                    source_type=candidate_source,
                     candidate_type="ad_hypothesis",
-                    explanation=angle.get("evidence", "From competitor intel pack"),
+                    explanation=angle.get("evidence", f"From {source_label} pack"),
                     organization_id=org_id,
                 )
                 counts["angles"] += 1
@@ -798,9 +1137,9 @@ class CompetitorIntelService:
                     product_id=product_id,
                     name=text[:50],
                     belief_statement=text,
-                    source_type=CandidateSourceType.COMPETITOR_INTEL.value,
+                    source_type=candidate_source,
                     candidate_type="pain_signal",
-                    explanation="Pain point from competitor intel pack",
+                    explanation=f"Pain point from {source_label} pack",
                     organization_id=org_id,
                 )
                 counts["pain_points"] += 1
@@ -817,9 +1156,9 @@ class CompetitorIntelService:
                     product_id=product_id,
                     name=text[:50],
                     belief_statement=text,
-                    source_type=CandidateSourceType.COMPETITOR_INTEL.value,
+                    source_type=candidate_source,
                     candidate_type="jtbd",
-                    explanation="JTBD from competitor intel pack",
+                    explanation=f"JTBD from {source_label} pack",
                     organization_id=org_id,
                 )
                 counts["jtbds"] += 1

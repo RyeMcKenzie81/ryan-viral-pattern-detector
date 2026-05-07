@@ -1003,6 +1003,8 @@ async def execute_job(job: Dict) -> Dict[str, Any]:
         return await execute_token_refresh_job(job)
     elif job_type == 'competitor_intel_analysis':
         return await execute_competitor_intel_analysis_job(job)
+    elif job_type == 'quick_intel_analysis':
+        return await execute_quick_intel_analysis_job(job)
     else:
         # Hard-fail on unknown job types — never silently fall through to V1
         logger.error(f"Unknown job_type '{job_type}' for job {job_id} ({job_name}). "
@@ -6475,6 +6477,124 @@ async def execute_competitor_intel_analysis_job(job: Dict) -> Dict[str, Any]:
         error_msg = str(e)[:500]
         logs.append(f"Job failed: {error_msg}")
         logger.error(f"Competitor intel analysis job failed: {error_msg}")
+        update_job_run(run_id, {
+            "status": "failed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "error_message": error_msg,
+            "logs": "\n".join(logs),
+        })
+        _reschedule_after_failure(job, job_id, get_run_attempt_number(run_id))
+        return {"success": False, "error": error_msg}
+
+
+async def execute_quick_intel_analysis_job(job: Dict) -> Dict[str, Any]:
+    """Execute a Quick URL / Quick Upload intel analysis job.
+
+    Unlike competitor_intel_analysis, the pack row is already created by the
+    UI service method (create_quick_pack_from_url / from_upload). This worker
+    only runs Gemini extraction over the single video referenced by
+    pack.source_video_storage_path and finalizes the pack.
+
+    Parameters (from job['parameters']):
+        pack_id: str          - Pre-created competitor_intel_packs.id
+        organization_id: str  - Organization UUID
+    """
+    import uuid as _uuid
+
+    job_id = job['id']
+    job_name = job['name']
+    params = job.get('parameters') or {}
+    if isinstance(params, str):
+        import json as _json
+        params = _json.loads(params)
+
+    logger.info(f"Starting quick intel analysis job: {job_name}")
+
+    update_job(job_id, {"next_run_at": None})
+
+    run_id = create_job_run(job_id, job)
+    if not run_id:
+        logger.error(f"Failed to create run record for job {job_id}")
+        return {"success": False, "error": "Failed to create run record"}
+
+    logs = []
+
+    try:
+        from viraltracker.services.competitor_intel_service import CompetitorIntelService
+
+        service = CompetitorIntelService()
+
+        pack_id = params.get('pack_id')
+        organization_id = params.get('organization_id')
+
+        if not pack_id:
+            raise ValueError("pack_id is required for quick_intel_analysis")
+
+        pack = service.get_pack(pack_id)
+        if not pack:
+            raise ValueError(f"Pack {pack_id} not found")
+
+        storage_path = pack.get("source_video_storage_path")
+        if not storage_path:
+            raise ValueError(f"Pack {pack_id} has no source_video_storage_path")
+
+        logs.append(f"Analyzing quick pack {pack_id} (source_type={pack.get('source_type')})")
+        logs.append(f"Storage path: {storage_path}")
+
+        # Synthetic asset_id keeps the analyze_single_video signature happy.
+        # Quick packs cache via storage_path reuse (copy_existing_pack /
+        # re_run_extraction), not via the per-asset video cache.
+        synth_asset_id = str(_uuid.uuid4())
+
+        try:
+            extraction = await service.analyze_single_video(
+                asset_id=synth_asset_id,
+                storage_path=storage_path,
+            )
+        except Exception as e:
+            logs.append(f"Gemini extraction failed: {str(e)[:200]}")
+            raise
+
+        logs.append("Gemini extraction completed")
+
+        service.update_pack_progress(
+            pack_id=pack_id,
+            videos_completed=1,
+            video_analysis={
+                "asset_id": synth_asset_id,
+                "storage_path": storage_path,
+                "source_type": pack.get("source_type"),
+                "source_url": pack.get("source_url"),
+                "extraction": extraction,
+            },
+        )
+
+        result = service.finalize_pack(
+            pack_id=pack_id,
+            extractions=[extraction],
+            video_scores=[1.0],
+            failed_count=0,
+            total_count=1,
+        )
+        logs.append(f"Pack finalized with status: {result['status']}")
+
+        update_job_run(run_id, {
+            "status": "completed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "logs": "\n".join(logs),
+            "metadata": {
+                "pack_id": pack_id,
+                "status": result["status"],
+            },
+        })
+
+        _update_job_next_run(job, job_id)
+        return {"success": True, "pack_id": pack_id, "status": result["status"]}
+
+    except Exception as e:
+        error_msg = str(e)[:500]
+        logs.append(f"Job failed: {error_msg}")
+        logger.error(f"Quick intel analysis job failed: {error_msg}")
         update_job_run(run_id, {
             "status": "failed",
             "completed_at": datetime.now(PST).isoformat(),

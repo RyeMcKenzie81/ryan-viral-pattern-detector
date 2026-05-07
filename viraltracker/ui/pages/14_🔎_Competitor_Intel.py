@@ -349,14 +349,22 @@ def render_pack_data(pack: Dict):
 # TAB 2: VIDEO DETAILS
 # ============================================
 
-def render_video_details_tab(competitor_id: str):
-    """Render the Video Details drill-down tab."""
+def render_video_details_tab(competitor_id: Optional[str]):
+    """Render the Video Details drill-down tab.
+
+    Pack source: prefers st.session_state.ci_selected_pack_id; falls back to
+    most-recent complete pack for the competitor, OR (when competitor_id is
+    None — Quick URL mode) the most-recent complete quick pack for the org.
+    """
     org_id = get_organization_id()
     service = get_competitor_intel_service()
 
     pack_id = st.session_state.ci_selected_pack_id
     if not pack_id:
-        packs = service.get_packs_for_competitor(competitor_id, org_id)
+        if competitor_id is None:
+            packs = service.get_quick_packs_for_org(org_id)
+        else:
+            packs = service.get_packs_for_competitor(competitor_id, org_id)
         for p in packs:
             if p["status"] in ("complete", "partial"):
                 pack_id = p["id"]
@@ -564,14 +572,17 @@ def render_single_extraction(video_analysis: Dict):
 # TAB 3: REMIX & SAVE
 # ============================================
 
-def render_remix_tab(brand_id: str, competitor_id: str):
+def render_remix_tab(brand_id: str, competitor_id: Optional[str]):
     """Render the Remix & Save tab."""
     org_id = get_organization_id()
     service = get_competitor_intel_service()
 
     pack_id = st.session_state.ci_selected_pack_id
     if not pack_id:
-        packs = service.get_packs_for_competitor(competitor_id, org_id)
+        if competitor_id is None:
+            packs = service.get_quick_packs_for_org(org_id)
+        else:
+            packs = service.get_packs_for_competitor(competitor_id, org_id)
         for p in packs:
             if p["status"] in ("complete", "partial"):
                 pack_id = p["id"]
@@ -977,6 +988,327 @@ def render_remix_tab(brand_id: str, competitor_id: str):
 
 
 # ============================================
+# QUICK URL TAB (Quick mode — single FB video URL or upload)
+# ============================================
+
+QUICK_URL_RESOLVER_ENABLED_DEFAULT = "true"
+
+
+def _looks_like_fb_for_ui(url: str) -> bool:
+    from viraltracker.services.fb_video_resolver import looks_like_fb_url
+    return looks_like_fb_url(url)
+
+
+def _canonicalize_for_ui(url: str) -> str:
+    from viraltracker.services.fb_video_resolver import canonicalize_fb_url
+    return canonicalize_fb_url(url)
+
+
+def render_quick_url_tab(brand_id: str):
+    """Render the Quick URL pack creation tab.
+
+    Flow:
+        1. Pick product (required for save_to_angle_pipeline downstream).
+        2. Paste FB URL OR upload .mp4.
+        3. On Analyze: dup-check, modal if hit, else resolver+pack creation.
+        4. Show recent quick packs in a sidebar list.
+    """
+    import os
+
+    org_id = get_organization_id()
+    service = get_competitor_intel_service()
+
+    resolver_enabled = (
+        os.getenv("QUICK_URL_RESOLVER_ENABLED", QUICK_URL_RESOLVER_ENABLED_DEFAULT).lower()
+        == "true"
+    )
+
+    col_input, col_packs = st.columns([2, 1])
+
+    with col_input:
+        st.markdown("### Quick URL — single FB video → ingredient pack")
+
+        # Product selector (required for save_to_angle_pipeline)
+        products = get_products_for_brand(brand_id)
+        if not products:
+            st.warning("This brand has no products. Add a product on the Products page first.")
+            return
+        product_options = {p["name"]: p["id"] for p in products}
+        product_name = st.selectbox(
+            "Product",
+            options=list(product_options.keys()),
+            key="ci_quick_product_selector",
+        )
+        product_id = product_options[product_name]
+
+        st.markdown("#### Paste a Facebook video URL")
+        if not resolver_enabled:
+            st.info(
+                "URL resolver is temporarily disabled. Use the file upload below."
+            )
+
+        url_disabled = not resolver_enabled
+        url_input = st.text_input(
+            "FB Video URL",
+            placeholder="https://www.facebook.com/{page}/posts/{id}/",
+            key="ci_quick_url_input",
+            disabled=url_disabled,
+            help="Supports posts, reels, watch, and ad library URLs.",
+        )
+
+        analyze_url = st.button(
+            "Analyze URL",
+            type="primary",
+            disabled=url_disabled or not url_input,
+            key="ci_quick_url_analyze",
+        )
+
+        st.markdown("#### Or upload a video file")
+        uploaded = st.file_uploader(
+            "Drop a .mp4 here (≤ 100MB)",
+            type=["mp4", "mov", "webm", "mkv"],
+            key="ci_quick_upload",
+        )
+        analyze_upload = st.button(
+            "Analyze upload",
+            type="primary",
+            disabled=uploaded is None,
+            key="ci_quick_upload_analyze",
+        )
+
+        # Handle URL submission
+        if analyze_url and url_input:
+            _handle_quick_url_submission(
+                service=service,
+                url=url_input.strip(),
+                brand_id=brand_id,
+                product_id=product_id,
+                organization_id=org_id,
+            )
+
+        # Handle upload submission
+        if analyze_upload and uploaded is not None:
+            file_bytes = uploaded.getvalue()
+            size_mb = len(file_bytes) / (1024 * 1024)
+            if size_mb > 100:
+                st.error(f"File is {size_mb:.0f}MB — exceeds 100MB cap.")
+            elif size_mb == 0:
+                st.error("File is empty.")
+            else:
+                _handle_quick_upload_submission(
+                    service=service,
+                    file_bytes=file_bytes,
+                    mime_type=uploaded.type or "video/mp4",
+                    brand_id=brand_id,
+                    product_id=product_id,
+                    organization_id=org_id,
+                )
+
+        # Render any pending dup-modal decision
+        _render_dup_modal_if_pending(service, brand_id, product_id, org_id)
+
+    with col_packs:
+        st.markdown("### Your quick packs")
+        packs = service.get_quick_packs_for_org(org_id)
+        if not packs:
+            st.caption("No quick packs yet.")
+        for pack in packs[:25]:
+            status_emoji = {
+                "complete": "✅",
+                "partial": "⚠️",
+                "failed": "❌",
+                "processing": "⏳",
+                "pending": "🔄",
+            }.get(pack.get("status"), "❓")
+            label_main = _quick_pack_label(pack)
+            label = f"{status_emoji} {pack['created_at'][:16]} — {label_main}"
+            if st.button(label, key=f"ci_quick_pack_{pack['id']}"):
+                st.session_state.ci_selected_pack_id = pack["id"]
+                st.rerun()
+
+        # Show selected pack preview
+        selected_pack_id = st.session_state.ci_selected_pack_id
+        if selected_pack_id:
+            pack = service.get_pack(selected_pack_id)
+            if pack and pack.get("source_type") in ("quick_url", "quick_upload"):
+                st.divider()
+                st.caption(f"Selected: {pack['id'][:8]}…")
+                st.caption(f"Status: {pack.get('status')}")
+                if pack.get("status") in ("pending", "processing"):
+                    st.info(f"Analysis in progress: {pack.get('videos_completed', 0)}/{pack.get('video_count', 1)}")
+                elif pack.get("status") == "complete":
+                    st.success("Pack ready — open Video Details / Remix & Save tabs.")
+
+
+def _quick_pack_label(pack: Dict) -> str:
+    if pack.get("source_type") == "quick_url" and pack.get("source_url"):
+        return f"URL: {pack['source_url'][:40]}…"
+    return "uploaded video"
+
+
+def _handle_quick_url_submission(
+    service,
+    url: str,
+    brand_id: str,
+    product_id: str,
+    organization_id: str,
+):
+    """Validate URL, run dup-check, either show modal or kick off resolver."""
+    if not _looks_like_fb_for_ui(url):
+        st.error("That doesn't look like a Facebook URL.")
+        return
+
+    canonical = _canonicalize_for_ui(url)
+    existing = service._find_existing_quick_pack(canonical, organization_id)
+
+    if existing and existing.get("status") == "complete":
+        # Stash decision context and trigger modal on next render
+        st.session_state["ci_quick_dup_pack"] = existing
+        st.session_state["ci_quick_pending_url"] = canonical
+        st.rerun()
+        return
+
+    if existing and existing.get("status") == "pending":
+        st.warning(
+            f"This URL is already being analyzed (pack {existing['id'][:8]}…). "
+            "Wait for it to complete or open it from the list."
+        )
+        st.session_state.ci_selected_pack_id = existing["id"]
+        return
+
+    # No usable cache — run fresh resolver path
+    _run_url_resolver_and_create_pack(
+        service, canonical, brand_id, product_id, organization_id
+    )
+
+
+def _run_url_resolver_and_create_pack(
+    service,
+    canonical_url: str,
+    brand_id: str,
+    product_id: str,
+    organization_id: str,
+):
+    from viraltracker.services.fb_video_resolver import ResolverError
+
+    with st.spinner("Resolving video…"):
+        try:
+            new_pack_id = asyncio.run(
+                service.create_quick_pack_from_url(
+                    url=canonical_url,
+                    brand_id=brand_id,
+                    product_id=product_id,
+                    organization_id=organization_id,
+                )
+            )
+        except ResolverError as exc:
+            st.error(f"Couldn't fetch from URL: {exc}")
+            st.info("Drop the .mp4 below to analyze the file directly.")
+            st.session_state["ci_quick_url_failed"] = canonical_url
+            return
+        except Exception as exc:
+            st.error(f"Unexpected error: {exc}")
+            return
+
+    st.session_state.ci_selected_pack_id = new_pack_id
+    st.success(f"Pack created ({new_pack_id[:8]}…). Analysis runs in the background — refresh in ~30s.")
+    st.rerun()
+
+
+def _handle_quick_upload_submission(
+    service,
+    file_bytes: bytes,
+    mime_type: str,
+    brand_id: str,
+    product_id: str,
+    organization_id: str,
+):
+    with st.spinner("Uploading and queueing analysis…"):
+        try:
+            new_pack_id = asyncio.run(
+                service.create_quick_pack_from_upload(
+                    file_bytes=file_bytes,
+                    mime_type=mime_type,
+                    brand_id=brand_id,
+                    product_id=product_id,
+                    organization_id=organization_id,
+                )
+            )
+        except Exception as exc:
+            st.error(f"Upload failed: {exc}")
+            return
+
+    st.session_state.ci_selected_pack_id = new_pack_id
+    st.success(f"Pack created ({new_pack_id[:8]}…). Analysis runs in the background — refresh in ~30s.")
+    st.rerun()
+
+
+def _render_dup_modal_if_pending(service, brand_id, product_id, organization_id):
+    existing = st.session_state.get("ci_quick_dup_pack")
+    if not existing:
+        return
+
+    st.divider()
+    st.markdown(f"### Duplicate URL detected")
+    st.info(
+        f"You analyzed this URL on {existing.get('created_at', '')[:16]} "
+        f"(pack {existing['id'][:8]}…). Choose an action:"
+    )
+
+    cols = st.columns(3)
+    with cols[0]:
+        if st.button("View existing pack", key="ci_quick_dup_view"):
+            st.session_state.ci_selected_pack_id = existing["id"]
+            del st.session_state["ci_quick_dup_pack"]
+            st.session_state.pop("ci_quick_pending_url", None)
+            st.rerun()
+    with cols[1]:
+        if st.button(
+            "Use existing extraction (free)",
+            help="Copies the existing analysis — no Gemini call.",
+            key="ci_quick_dup_copy",
+        ):
+            try:
+                new_id = asyncio.run(
+                    service.copy_existing_pack(
+                        source_pack_id=existing["id"],
+                        brand_id=brand_id,
+                        product_id=product_id,
+                        organization_id=organization_id,
+                    )
+                )
+                st.session_state.ci_selected_pack_id = new_id
+                st.success(f"Copied to new pack {new_id[:8]}…")
+            except Exception as exc:
+                st.error(f"Copy failed: {exc}")
+            del st.session_state["ci_quick_dup_pack"]
+            st.session_state.pop("ci_quick_pending_url", None)
+            st.rerun()
+    with cols[2]:
+        if st.button(
+            "Re-run extraction",
+            help="Re-runs Gemini on the cached video file (skips re-download).",
+            key="ci_quick_dup_rerun",
+        ):
+            try:
+                new_id = asyncio.run(
+                    service.re_run_extraction(
+                        source_pack_id=existing["id"],
+                        brand_id=brand_id,
+                        product_id=product_id,
+                        organization_id=organization_id,
+                    )
+                )
+                st.session_state.ci_selected_pack_id = new_id
+                st.success(f"Re-running extraction in new pack {new_id[:8]}… (refresh in ~30s).")
+            except Exception as exc:
+                st.error(f"Re-run failed: {exc}")
+            del st.session_state["ci_quick_dup_pack"]
+            st.session_state.pop("ci_quick_pending_url", None)
+            st.rerun()
+
+
+# ============================================
 # MAIN PAGE
 # ============================================
 
@@ -988,26 +1320,54 @@ brand_id = render_brand_selector(key="ci_brand_selector")
 if not brand_id:
     st.stop()
 
-# Competitor selector
-competitors = get_competitors_for_brand(brand_id)
-if not competitors:
-    st.warning("No competitors found. Add competitors on the Competitors page first.")
-    st.stop()
-
-competitor_options = {c["name"]: c["id"] for c in competitors}
-competitor_name = st.selectbox("Competitor", options=list(competitor_options.keys()), key="ci_competitor_selector")
-competitor_id = competitor_options[competitor_name]
+# Mode toggle: Competitor (existing) vs Quick URL (no competitor required)
+mode = st.radio(
+    "Mode",
+    ["Competitor", "Quick URL"],
+    horizontal=True,
+    key="ci_mode",
+    help="Competitor mode requires a configured competitor with scraped Facebook ads. "
+         "Quick URL takes a single FB video URL or upload — no setup needed.",
+)
 
 st.divider()
 
-# Tabs
-tab_generate, tab_videos, tab_remix = st.tabs(["Generate Pack", "Video Details", "Remix & Save"])
+if mode == "Competitor":
+    # Competitor selector (existing flow)
+    competitors = get_competitors_for_brand(brand_id)
+    if not competitors:
+        st.warning("No competitors found. Add competitors on the Competitors page first, or switch to Quick URL mode above.")
+        st.stop()
 
-with tab_generate:
-    render_generate_tab(brand_id, competitor_id, competitor_name)
+    competitor_options = {c["name"]: c["id"] for c in competitors}
+    competitor_name = st.selectbox("Competitor", options=list(competitor_options.keys()), key="ci_competitor_selector")
+    competitor_id = competitor_options[competitor_name]
 
-with tab_videos:
-    render_video_details_tab(competitor_id)
+    st.divider()
 
-with tab_remix:
-    render_remix_tab(brand_id, competitor_id)
+    tab_generate, tab_videos, tab_remix = st.tabs(["Generate Pack", "Video Details", "Remix & Save"])
+
+    with tab_generate:
+        render_generate_tab(brand_id, competitor_id, competitor_name)
+
+    with tab_videos:
+        render_video_details_tab(competitor_id)
+
+    with tab_remix:
+        render_remix_tab(brand_id, competitor_id)
+
+else:
+    # Quick URL mode — single FB video URL or upload, no competitor required.
+    tab_generate, tab_videos, tab_remix = st.tabs(["Quick URL", "Video Details", "Remix & Save"])
+
+    with tab_generate:
+        render_quick_url_tab(brand_id)
+
+    with tab_videos:
+        # Tabs 2 + 3 read st.session_state.ci_selected_pack_id; competitor_id
+        # is only used by the fallback path which we skip by always setting
+        # the pack id from the Quick URL tab.
+        render_video_details_tab(competitor_id=None)
+
+    with tab_remix:
+        render_remix_tab(brand_id, competitor_id=None)
