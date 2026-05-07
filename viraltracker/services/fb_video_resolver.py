@@ -1,9 +1,13 @@
 """Facebook video URL resolver.
 
-Self-contained module. No DB or service dependencies.
 Resolves a public Facebook video URL (post / reel / watch / ad library) to
-a video file via yt-dlp, with a true wall-clock timeout, size cap, and
-non-video content rejection.
+a video file via the Apify `bytepulselabs/facebook-video-downloader` actor,
+with a true wall-clock timeout, size cap, and clean error handling.
+
+Why Apify (not yt-dlp): Facebook progressively gates video content to
+logged-in users even on public Pages. yt-dlp without cookies fails on most
+real-world Page URLs. Apify handles the auth/headers/proxy complexity on
+their side; we pay ~$0.07-0.30 per video at typical sizes.
 """
 
 from __future__ import annotations
@@ -11,20 +15,19 @@ from __future__ import annotations
 import logging
 import os
 import re
-import tempfile
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
-from typing import Optional, Tuple
+from typing import Tuple
 from urllib.parse import urlparse, urlunparse, parse_qsl, urlencode
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_TIMEOUT_SECONDS = 90.0
+DEFAULT_TIMEOUT_SECONDS = 180.0
 DEFAULT_SIZE_CAP_MB = 100
+DEFAULT_ACTOR_ID = "bytepulselabs/facebook-video-downloader"
+DOWNLOAD_TIMEOUT_SECONDS = 60.0
 
-# UX guard only — "looks like a Facebook URL". NOT a guarantee yt-dlp will
-# succeed. yt-dlp explicitly states URL support cannot be reliably pre-detected;
-# the resolver itself is the source of truth. This regex catches obvious typos
-# before the user waits for a yt-dlp round-trip.
+# UX guard only — "looks like a Facebook URL". NOT a guarantee Apify will
+# extract it. The actor itself is the source of truth.
 _LOOKS_LIKE_FB = re.compile(r"(?:^|//)(?:[a-z0-9-]+\.)?facebook\.com/", re.I)
 
 # Query params we keep when canonicalizing — these identify the video.
@@ -32,14 +35,11 @@ _KEEP_QUERY_KEYS = {"v", "id"}
 
 
 class ResolverError(Exception):
-    """yt-dlp could not extract the video, or the result violated a constraint."""
+    """Apify actor could not extract the video, or the result violated a constraint."""
 
 
 def looks_like_fb_url(url: str) -> bool:
-    """UX typo guard. Returns True if the URL plausibly points at Facebook.
-
-    Does NOT guarantee yt-dlp will extract it.
-    """
+    """UX typo guard. Returns True if the URL plausibly points at Facebook."""
     if not url or not isinstance(url, str):
         return False
     return bool(_LOOKS_LIKE_FB.search(url.strip()))
@@ -79,129 +79,113 @@ def resolve_fb_video(
     """Download a public Facebook video. Returns (video_bytes, mime_type).
 
     Wall-clock timeout enforced via concurrent.futures.ThreadPoolExecutor.
-    yt-dlp's own socket_timeout is per-socket, not end-to-end — many sequential
-    requests can blow past it.
+    Defaults to 180s since Apify actor cold-start + scrape + download can
+    easily take 30-90s for a single video.
 
-    Raises ResolverError on: timeout, private/login-required video, non-video
-    content (photo post / story), 404, geoblock, size > size_cap_mb, ffmpeg
-    missing if a merge is required.
+    Raises ResolverError on: timeout, actor failure, no video found in
+    response, missing download URL, oversized video, or download failure.
     """
     if not looks_like_fb_url(url):
         raise ResolverError("URL does not look like a Facebook URL")
 
     with ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(_extract_with_ytdlp, url, size_cap_mb)
+        future = executor.submit(_extract_with_apify, url, size_cap_mb)
         try:
             return future.result(timeout=timeout)
         except FuturesTimeout:
-            # Best-effort cancel; the worker thread may continue in the
-            # background but we raise immediately to release the caller.
             future.cancel()
             raise ResolverError(f"timed out after {timeout:.0f}s")
 
 
-def _extract_with_ytdlp(url: str, size_cap_mb: int) -> Tuple[bytes, str]:
-    """Run yt-dlp synchronously inside the worker thread."""
+def _extract_with_apify(url: str, size_cap_mb: int) -> Tuple[bytes, str]:
+    """Run the Apify actor synchronously and return (bytes, mime_type)."""
     try:
-        import yt_dlp
+        from apify_client import ApifyClient
     except ImportError as exc:
-        raise ResolverError(f"yt-dlp not installed: {exc}") from exc
+        raise ResolverError(f"apify-client not installed: {exc}") from exc
+
+    try:
+        import httpx
+    except ImportError as exc:
+        raise ResolverError(f"httpx not installed: {exc}") from exc
+
+    token = os.environ.get("APIFY_TOKEN")
+    if not token:
+        raise ResolverError("APIFY_TOKEN environment variable is not set")
+
+    actor_id = os.environ.get("APIFY_FB_VIDEO_ACTOR", DEFAULT_ACTOR_ID)
+    client = ApifyClient(token)
+
+    actor_input = {"startUrls": [{"url": url}]}
+    logger.info(f"Calling Apify actor {actor_id} with URL: {url}")
+
+    try:
+        run = client.actor(actor_id).call(run_input=actor_input)
+    except Exception as exc:
+        raise ResolverError(f"Apify actor call failed: {exc}") from exc
+
+    if not run or not run.get("defaultDatasetId"):
+        raise ResolverError("Apify run returned no dataset id")
+
+    if run.get("status") != "SUCCEEDED":
+        raise ResolverError(
+            f"Apify actor finished with status: {run.get('status', 'unknown')}"
+        )
+
+    items = list(client.dataset(run["defaultDatasetId"]).iterate_items())
+    if not items:
+        raise ResolverError(
+            "Apify actor returned no items (video not found, private, or geoblocked)"
+        )
+
+    item = items[0]
+    # Actor docs reference videoUrl; check a few common alternate keys defensively.
+    video_url = (
+        item.get("videoUrl")
+        or item.get("download_url")
+        or item.get("downloadUrl")
+        or item.get("url")
+    )
+    if not video_url:
+        raise ResolverError(
+            f"Apify result has no video URL. Available keys: {list(item.keys())}"
+        )
 
     size_cap_bytes = size_cap_mb * 1024 * 1024
 
-    with tempfile.TemporaryDirectory(prefix="quick-intel-") as tmpdir:
-        out_template = os.path.join(tmpdir, "%(id)s.%(ext)s")
+    try:
+        with httpx.Client(timeout=DOWNLOAD_TIMEOUT_SECONDS, follow_redirects=True) as http:
+            head = http.head(video_url)
+            head_content_length = int(head.headers.get("content-length", 0) or 0)
+            if head_content_length and head_content_length > size_cap_bytes:
+                raise ResolverError(
+                    f"video is {head_content_length / 1024 / 1024:.0f}MB, "
+                    f"exceeds {size_cap_mb}MB cap"
+                )
 
-        ydl_opts = {
-            "outtmpl": out_template,
-            "format": "best[ext=mp4]/best[filesize<?100M]/best",
-            "max_filesize": size_cap_bytes,
-            "noplaylist": True,
-            "quiet": True,
-            "no_warnings": True,
-            "skip_download": False,
-            "socket_timeout": 30,
-            "retries": 2,
-            "fragment_retries": 2,
-        }
-
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=True)
-        except yt_dlp.utils.DownloadError as exc:
-            msg = str(exc).lower()
-            if "private" in msg or "login" in msg:
-                raise ResolverError("video is private or requires login") from exc
-            if "not available" in msg or "removed" in msg:
-                raise ResolverError("video is not available (removed or geoblocked)") from exc
-            raise ResolverError(f"download failed: {exc}") from exc
-        except Exception as exc:
-            raise ResolverError(f"unexpected resolver error: {exc}") from exc
-
-        if info is None:
-            raise ResolverError("yt-dlp returned no info for this URL")
-
-        if info.get("_type") == "playlist":
-            raise ResolverError("URL points to a playlist, not a single video")
-
-        if not _looks_like_video(info):
-            raise ResolverError("URL does not point to a video (photo or story?)")
-
-        # Locate the downloaded file. yt-dlp writes one file per requested
-        # download; we grab the first non-info-json file in tmpdir.
-        downloaded = _find_downloaded_file(tmpdir)
-        if downloaded is None:
-            raise ResolverError("yt-dlp reported success but no file was downloaded")
-
-        size = os.path.getsize(downloaded)
-        if size > size_cap_bytes:
-            raise ResolverError(
-                f"video is {size / 1024 / 1024:.0f}MB, exceeds {size_cap_mb}MB cap"
+            response = http.get(video_url)
+            response.raise_for_status()
+            video_bytes = response.content
+            mime_type = (
+                response.headers.get("content-type", "video/mp4").split(";")[0].strip()
             )
-        if size == 0:
-            raise ResolverError("downloaded file is empty")
+    except ResolverError:
+        raise
+    except Exception as exc:
+        raise ResolverError(f"failed to download video: {exc}") from exc
 
-        with open(downloaded, "rb") as fh:
-            video_bytes = fh.read()
+    if len(video_bytes) == 0:
+        raise ResolverError("downloaded video is empty")
 
-        mime_type = _guess_mime_from_path(downloaded)
-        logger.info("Resolved %s → %s bytes (%s)", url, size, mime_type)
-        return video_bytes, mime_type
+    if len(video_bytes) > size_cap_bytes:
+        raise ResolverError(
+            f"video is {len(video_bytes) / 1024 / 1024:.0f}MB, exceeds {size_cap_mb}MB cap"
+        )
 
+    if not mime_type.startswith("video/"):
+        mime_type = "video/mp4"
 
-def _looks_like_video(info: dict) -> bool:
-    """Heuristic: treat as video if yt-dlp reports a non-zero duration or
-    the format list contains a video stream."""
-    if info.get("duration") and info["duration"] > 0:
-        return True
-    formats = info.get("formats") or []
-    for fmt in formats:
-        if fmt.get("vcodec") and fmt["vcodec"] != "none":
-            return True
-    # Single-format extractions populate vcodec at the top level
-    if info.get("vcodec") and info["vcodec"] != "none":
-        return True
-    return False
-
-
-def _find_downloaded_file(directory: str) -> Optional[str]:
-    for name in os.listdir(directory):
-        if name.endswith((".info.json", ".description", ".part")):
-            continue
-        full = os.path.join(directory, name)
-        if os.path.isfile(full):
-            return full
-    return None
-
-
-def _guess_mime_from_path(path: str) -> str:
-    ext = os.path.splitext(path)[1].lower().lstrip(".")
-    if ext == "mp4":
-        return "video/mp4"
-    if ext in ("mov", "qt"):
-        return "video/quicktime"
-    if ext == "webm":
-        return "video/webm"
-    if ext == "mkv":
-        return "video/x-matroska"
-    return "application/octet-stream"
+    logger.info(
+        f"Apify resolved {url} → {len(video_bytes)} bytes ({mime_type})"
+    )
+    return video_bytes, mime_type
