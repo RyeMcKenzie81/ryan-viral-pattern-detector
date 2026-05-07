@@ -116,7 +116,7 @@ def _extract_with_apify(url: str, size_cap_mb: int) -> Tuple[bytes, str]:
     actor_id = os.environ.get("APIFY_FB_VIDEO_ACTOR", DEFAULT_ACTOR_ID)
     client = ApifyClient(token)
 
-    actor_input = {"startUrls": [{"url": url}]}
+    actor_input = {"urls": [{"url": url}]}
     logger.info(f"Calling Apify actor {actor_id} with URL: {url}")
 
     try:

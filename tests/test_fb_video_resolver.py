@@ -191,9 +191,9 @@ def test_resolve_fb_video_happy_path(monkeypatch):
     client.actor.assert_called_once()
     actor_call = client.actor.return_value.call
     actor_call.assert_called_once()
-    # Verify URL passed via startUrls
+    # Verify URL passed via urls field (matches actor's expected input schema)
     assert actor_call.call_args.kwargs["run_input"] == {
-        "startUrls": [{"url": "https://www.facebook.com/61586/posts/123/"}]
+        "urls": [{"url": "https://www.facebook.com/61586/posts/123/"}]
     }
 
 

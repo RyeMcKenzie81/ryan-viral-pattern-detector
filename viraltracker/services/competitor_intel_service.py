@@ -812,6 +812,7 @@ class CompetitorIntelService:
         will mark the pack 'failed' if so.
         """
         from datetime import timedelta
+        import json as _json
         now = datetime.now(timezone.utc)
         self.supabase.table("scheduled_jobs").insert({
             "job_type": "quick_intel_analysis",
@@ -822,10 +823,10 @@ class CompetitorIntelService:
             "schedule_type": "one_time",
             "next_run_at": (now + timedelta(minutes=1)).isoformat(),
             "trigger_source": "manual",
-            "parameters": {
+            "parameters": _json.dumps({
                 "pack_id": pack_id,
                 "organization_id": organization_id,
-            },
+            }),
         }).execute()
 
     async def _create_quick_pack(
