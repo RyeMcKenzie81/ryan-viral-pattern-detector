@@ -98,6 +98,7 @@ class SelectContentNode(BaseNode[AdCreationPipelineState]):
                     docs_service=docs_service,
                     offer_variant_data=offer_variant_data,
                     current_offer=ctx.state.product_dict.get('current_offer') if ctx.state.product_dict else None,
+                    lp_hero_data=ctx.state.lp_hero_data if ctx.state.match_lp_voice else None,
                 )
                 ctx.state.selected_hooks = selected_hooks
                 if len(selected_hooks) < ctx.state.num_variations:

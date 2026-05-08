@@ -1326,6 +1326,7 @@ async def execute_ad_creation_v2_job(job: Dict) -> Dict[str, Any]:
                     additional_instructions=combined_instructions,
                     creative_direction=params.get('creative_direction'),
                     image_resolution=params.get('image_resolution', '2K'),
+                    match_lp_voice=params.get('match_lp_voice', True),
                     # Phase 8B: selection transport
                     selection_weights_used=_sel_weights,
                     selection_scorer_breakdown=_sel_scores,
