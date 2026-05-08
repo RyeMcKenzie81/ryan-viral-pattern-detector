@@ -79,7 +79,7 @@ class GenerateAdsNode(BaseNode[AdCreationPipelineState]):
     """
 
     metadata: ClassVar[NodeMetadata] = NodeMetadata(
-        inputs=["selected_hooks", "product_dict", "ad_analysis", "ad_brief_instructions",
+        inputs=["selected_hooks", "product_dict", "persona_data", "ad_analysis", "ad_brief_instructions",
                 "reference_ad_path", "selected_images", "canvas_sizes", "color_modes",
                 "brand_colors", "brand_fonts", "num_variations", "ad_run_id", "prompt_version"],
         outputs=["generated_ads", "ads_generated"],
@@ -173,6 +173,7 @@ class GenerateAdsNode(BaseNode[AdCreationPipelineState]):
                             performance_context=ctx.state.performance_context,
                             logo_image_base64=logo_b64_override,
                             blueprint_context=ctx.state.blueprint_context,
+                            persona_data=ctx.state.persona_data,
                         )
 
                         # Pass skip_template_reference flag from state

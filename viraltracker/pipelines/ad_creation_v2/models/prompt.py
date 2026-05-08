@@ -53,6 +53,29 @@ class ProductContext(BaseModel):
     guarantee: Optional[str] = None
 
 
+class PersonaContext(BaseModel):
+    """Target persona for the ad — drives who appears in the image.
+
+    When present, the image model MUST depict any humans matching the
+    gender / age_range fields. Image generation models default to male
+    when gender is unspecified, so this field carries the gender signal
+    that would otherwise be lost.
+    """
+    name: Optional[str] = None
+    snapshot: Optional[str] = None
+    gender: Optional[str] = Field(None, description="male, female, or any")
+    age_range: Optional[str] = None
+    location: Optional[str] = None
+    occupation: Optional[str] = None
+    family_status: Optional[str] = None
+    current_self_image: Optional[str] = None
+    desired_self_image: Optional[str] = None
+    depiction_instruction: Optional[str] = Field(
+        None,
+        description="Plain-language instruction telling the image model who to render"
+    )
+
+
 class HeadlineConfig(BaseModel):
     """Headline content configuration."""
     text: Optional[str] = None
@@ -291,6 +314,7 @@ class AdGenerationPrompt(BaseModel):
     task: TaskConfig
     special_instructions: Optional[SpecialInstructions] = None
     product: ProductContext
+    persona: Optional[PersonaContext] = None
     content: ContentConfig
     style: StyleConfig
     images: ImageConfig

@@ -128,9 +128,13 @@ class AdContentService:
 
         persona_section = ""
         if persona_data:
+            demographics = persona_data.get('demographics') or {}
             persona_section = f"""
         **TARGET PERSONA: {persona_data.get('persona_name', 'Unknown')}**
         {persona_data.get('snapshot', '')}
+
+        **Demographics (the ad must speak to THIS audience):**
+        {_json_dumps(demographics, indent=2)}
 
         **Pain Points (prioritize hooks addressing these):**
         {_json_dumps(persona_data.get('pain_points', [])[:5], indent=2)}
@@ -151,7 +155,8 @@ class AdContentService:
         1. Prioritize hooks that directly address the persona's pain points
         2. Adapt hook language to match how this persona talks (their_language)
         3. Select hooks that resonate with their emotional triggers
-        4. Use phrases from Amazon testimonials when adapting hooks
+        4. Match the persona's gender / life stage when the hook references a person (e.g., "as a mom of two", "guys, listen up", "for women over 40"). REJECT or rewrite any hook whose voice or subject contradicts the persona's gender or demographics.
+        5. Use phrases from Amazon testimonials when adapting hooks
         """
 
         offer_variant_section = ""
@@ -536,6 +541,9 @@ class AdContentService:
         {f'''**TARGET PERSONA: {persona_data.get('persona_name', 'Unknown')}**
         {persona_data.get('snapshot', '')}
 
+        **Demographics (headlines must fit this audience — gender, age, life stage):**
+        {_json_dumps(persona_data.get('demographics') or {}, indent=2)}
+
         **Persona Pain Points (address these in headlines):**
         {_json_dumps(persona_data.get('pain_points', [])[:5], indent=2)}
 
@@ -556,8 +564,9 @@ class AdContentService:
         1. Frame headlines around the persona's specific pain points
         2. Use the transformation language (before → after) for emotional impact
         3. Match the persona's speaking style from "Their Language"
-        4. If Amazon testimonials are available, borrow phrases for authenticity
-        5. Address their objections implicitly in the headline when possible
+        4. Match the persona's gender / life stage in any first-person voice or addressed audience. Do NOT write "as a dad" for a female persona, or "ladies, listen" for a male persona.
+        5. If Amazon testimonials are available, borrow phrases for authenticity
+        6. Address their objections implicitly in the headline when possible
         ''' if persona_data else (f'''**OFFER VARIANT: {offer_variant_label}**
 
         THIS IS THE ONLY TOPIC YOU CAN WRITE ABOUT. Everything else is off-limits.

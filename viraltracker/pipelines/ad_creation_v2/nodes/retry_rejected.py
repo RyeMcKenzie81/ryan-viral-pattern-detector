@@ -46,7 +46,7 @@ class RetryRejectedNode(BaseNode[AdCreationPipelineState]):
 
     metadata: ClassVar[NodeMetadata] = NodeMetadata(
         inputs=["reviewed_ads", "auto_retry_rejected", "max_retry_attempts",
-                "product_dict", "ad_analysis", "ad_run_id", "congruence_results"],
+                "product_dict", "persona_data", "ad_analysis", "ad_run_id", "congruence_results"],
         outputs=["reviewed_ads"],
         services=["generation_service.generate_prompt", "generation_service.execute_generation",
                    "defect_scan_service.scan_for_defects",
@@ -178,6 +178,7 @@ class RetryRejectedNode(BaseNode[AdCreationPipelineState]):
                     performance_context=ctx.state.performance_context,
                     logo_image_base64=ctx.state.logo_image_base64,
                     blueprint_context=ctx.state.blueprint_context,
+                    persona_data=ctx.state.persona_data,
                 )
 
                 # Pass skip_template_reference flag from state
