@@ -2157,17 +2157,11 @@ Return ONLY valid JSON, no other text."""
 
     def export_for_ad_generation(self, persona_id: UUID) -> Dict[str, Any]:
         """
-        Export persona in simplified format for ad image generation prompts.
+        Export persona for ad creation pipelines (image gen + hook selection).
 
-        Returns key persona traits useful for generating relevant ad imagery.
-        This is lighter than export_for_copy_brief - meant for image generation,
-        not copy writing.
-
-        Args:
-            persona_id: UUID of the persona
-
-        Returns:
-            Dict with name, snapshot, demographics, key traits
+        Includes demographics (gender, age) so the image model can render the
+        right person, plus flattened pain_points / desires / their_language /
+        objections / transformation used by hook selection prompts.
 
         Raises:
             ValueError: If persona not found
@@ -2176,16 +2170,52 @@ Return ONLY valid JSON, no other text."""
         if not persona:
             raise ValueError(f"Persona not found: {persona_id}")
 
+        demographics = persona.demographics.model_dump() if persona.demographics else {}
+
+        pain_points: List[str] = []
+        if persona.pain_points:
+            pain_points = [
+                *persona.pain_points.emotional,
+                *persona.pain_points.functional,
+                *persona.pain_points.social,
+            ]
+
+        desires_flat: List[str] = []
+        for category, instances in (persona.desires or {}).items():
+            for instance in instances:
+                if isinstance(instance, DesireInstance):
+                    desires_flat.append(f"[{category}] {instance.text}")
+                elif isinstance(instance, dict):
+                    desires_flat.append(f"[{category}] {instance.get('text', '')}")
+                else:
+                    desires_flat.append(f"[{category}] {instance}")
+
+        objections: List[str] = []
+        if persona.buying_objections:
+            objections = [
+                *persona.buying_objections.emotional,
+                *persona.buying_objections.functional,
+                *persona.buying_objections.social,
+            ]
+
+        transformation = persona.transformation_map.model_dump() if persona.transformation_map else {}
+
         return {
             "id": str(persona_id),
             "name": persona.name,
+            "persona_name": persona.name,  # alias consumed by hook selection prompts
             "snapshot": persona.snapshot or "",
-            "demographics": persona.demographics.model_dump() if persona.demographics else {},
+            "demographics": demographics,
             "current_self_image": persona.current_self_image or "",
             "desired_self_image": persona.desired_self_image or "",
             "worldview": persona.worldview or "",
             "activation_events": persona.activation_events or [],
             "pain_symptoms": persona.pain_symptoms or [],
+            "pain_points": pain_points,
+            "desires": desires_flat,
+            "their_language": persona.self_narratives or [],
+            "objections": objections,
+            "transformation": transformation,
         }
 
     # =========================================================================

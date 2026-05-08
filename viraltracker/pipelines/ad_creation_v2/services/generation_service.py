@@ -17,6 +17,7 @@ from ..models.prompt import (
     TaskConfig,
     SpecialInstructions,
     ProductContext,
+    PersonaContext,
     ContentConfig,
     HeadlineConfig,
     SubheadlineConfig,
@@ -76,6 +77,8 @@ class AdGenerationService:
         logo_image_base64: Optional[str] = None,
         # Blueprint context
         blueprint_context: Optional[Dict[str, Any]] = None,
+        # Persona for image gen (gender, demographics)
+        persona_data: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Generate structured JSON prompt for Gemini image generation using Pydantic models.
@@ -201,11 +204,71 @@ class AdGenerationService:
                 secondary_usage="contents, inset view, or background element",
             )
 
+        # Build PersonaContext (gender/demographics → who appears in the image)
+        persona_context_model: Optional[PersonaContext] = None
+        persona_depiction_instruction: Optional[str] = None
+        if persona_data:
+            demographics = persona_data.get('demographics') or {}
+            gender = (demographics.get('gender') or '').strip().lower() or None
+            age_range = demographics.get('age_range') or None
+            location = demographics.get('location') or None
+            occupation = demographics.get('occupation') or None
+            family_status = demographics.get('family_status') or None
+            persona_name = persona_data.get('persona_name') or persona_data.get('name')
+
+            # Build a plain-language depiction instruction. Image models default
+            # to male when gender is unspecified — be explicit.
+            depiction_parts: List[str] = []
+            if gender and gender != 'any':
+                depiction_parts.append(f"a {gender}")
+            else:
+                depiction_parts.append("a person")
+            if age_range:
+                depiction_parts.append(f"aged {age_range}")
+            if family_status:
+                depiction_parts.append(f"({family_status})")
+            persona_depiction_instruction = (
+                "Any humans depicted in this ad MUST be " + " ".join(depiction_parts) + "."
+                + (f" This is the target persona ('{persona_name}') — match their demographics exactly."
+                   if persona_name else "")
+            )
+
+            persona_context_model = PersonaContext(
+                name=persona_name,
+                snapshot=persona_data.get('snapshot') or None,
+                gender=gender,
+                age_range=age_range,
+                location=location,
+                occupation=occupation,
+                family_status=family_status,
+                current_self_image=persona_data.get('current_self_image') or None,
+                desired_self_image=persona_data.get('desired_self_image') or None,
+                depiction_instruction=persona_depiction_instruction,
+            )
+
+            # Push the same signal into target_audience so older prompt consumers
+            # that only read product.target_audience still see the gender.
+            audience_prefix_bits: List[str] = []
+            if gender and gender != 'any':
+                audience_prefix_bits.append(gender.capitalize())
+            if age_range:
+                audience_prefix_bits.append(age_range)
+            if audience_prefix_bits:
+                prefix = "[" + ", ".join(audience_prefix_bits) + "] "
+                if not target_audience_for_prompt.startswith(prefix):
+                    target_audience_for_prompt = prefix + target_audience_for_prompt
+
         # Build special instructions
+        combined_instructions = product.get('combined_instructions') or ''
+        if persona_depiction_instruction:
+            combined_instructions = (
+                (combined_instructions + "\n\n" if combined_instructions else "")
+                + persona_depiction_instruction
+            )
         special_instructions = None
-        if product.get('combined_instructions'):
+        if combined_instructions:
             special_instructions = SpecialInstructions(
-                text=product['combined_instructions'],
+                text=combined_instructions,
             )
 
         # Phase 3: Build AssetContext when template_elements is not None
@@ -277,6 +340,7 @@ class AdGenerationService:
                 offer_pain_points=product.get('offer_pain_points', []) if using_offer_variant else None,
                 guarantee=product.get('guarantee'),
             ),
+            persona=persona_context_model,
             content=ContentConfig(
                 headline=HeadlineConfig(
                     text=selected_hook.get('adapted_text'),
