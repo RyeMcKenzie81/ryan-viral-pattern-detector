@@ -62,6 +62,7 @@ class AdCreationPipelineState:
     skip_template_reference: bool = False  # When True, omit template image from Gemini reference_images
     pre_selected_hooks: Optional[List[Dict[str, Any]]] = None  # Bypass SelectContentNode
     generation_temperature: Optional[float] = None  # Override default Gemini temperature (0.4)
+    match_lp_voice: bool = True  # When True, inject LP hero copy into hook selection prompt
 
     # === POPULATED BY NODES ===
 

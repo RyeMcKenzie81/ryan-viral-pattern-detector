@@ -53,6 +53,8 @@ if 'v2_templates_visible' not in st.session_state:
     st.session_state.v2_templates_visible = 30
 if 'v2_offer_variant_id' not in st.session_state:
     st.session_state.v2_offer_variant_id = None
+if 'v2_match_lp_voice' not in st.session_state:
+    st.session_state.v2_match_lp_voice = True
 if 'v2_current_offer_override' not in st.session_state:
     st.session_state.v2_current_offer_override = ""
 if 'v2_creative_direction' not in st.session_state:
@@ -759,6 +761,17 @@ def render_offer_context(product: dict, product_id: str):
             if preview_parts:
                 st.caption("  \n".join(preview_parts))
 
+        st.checkbox(
+            "Match landing page voice",
+            value=st.session_state.get('v2_match_lp_voice', True),
+            key="v2_match_lp_voice",
+            help=(
+                "When on, the landing page hero copy is injected into hook selection so "
+                "ads echo the LP's phrasing. Turn off when running ads against a third-party "
+                "LP whose copy you don't want the hooks to anchor on."
+            ),
+        )
+
     # --- Current Offer Display + Override ---
     col1, col2 = st.columns([1, 1])
     with col1:
@@ -1297,6 +1310,7 @@ def _handle_submit():
         'user_selected_image_ids': st.session_state.get('v2_user_selected_image_ids') or None,
         'offer_variant_id': st.session_state.get('v2_offer_variant_id'),
         'blueprint_id': st.session_state.get('v2_blueprint_id'),
+        'match_lp_voice': st.session_state.get('v2_match_lp_voice', True),
     }
 
     # Normalize current_offer_override — strip whitespace, treat empty/blank as None

@@ -66,6 +66,7 @@ class AdContentService:
         docs_service: Optional[Any] = None,
         offer_variant_data: Optional[Dict[str, Any]] = None,
         current_offer: Optional[str] = None,
+        lp_hero_data: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
         """
         Select diverse hooks using AI to maximize persuasive variety.
@@ -159,6 +160,25 @@ class AdContentService:
         5. Use phrases from Amazon testimonials when adapting hooks
         """
 
+        lp_voice_section = ""
+        if lp_hero_data:
+            hero_headline = lp_hero_data.get('hero_headline') or ''
+            hero_subheadline = lp_hero_data.get('hero_subheadline') or ''
+            key_claims = lp_hero_data.get('key_claims') or []
+            if hero_headline or hero_subheadline or key_claims:
+                lp_voice_section = f"""
+        **LANDING PAGE VOICE (the user will SEE this immediately after clicking the ad):**
+        - Hero headline: {hero_headline or 'N/A'}
+        - Hero subheadline: {hero_subheadline or 'N/A'}
+        - Key claims: {_json_dumps(key_claims) if key_claims else 'N/A'}
+
+        CONGRUENCE RULES:
+        1. Prefer hooks whose adapted text echoes the LP's phrasing, terminology, and promise
+        2. The ad-to-LP transition should feel seamless — the same voice continues
+        3. Do NOT make claims the LP doesn't make
+        4. If a hook's natural language conflicts with the LP voice, adapt it toward the LP
+        """
+
         offer_variant_section = ""
         if offer_variant_data:
             ov_pain_points = offer_variant_data.get('pain_points', [])
@@ -215,6 +235,7 @@ class AdContentService:
         {knowledge_section}
         {persona_section}
         {offer_variant_section}
+        {lp_voice_section}
 
         **Available Hooks** ({len(shuffled_hooks)} total):
         {_json_dumps(shuffled_hooks, indent=2)}
