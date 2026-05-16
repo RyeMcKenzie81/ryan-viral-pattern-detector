@@ -1125,7 +1125,7 @@ async def execute_ad_creation_v2_job(job: Dict) -> Dict[str, Any]:
                 select_templates_with_fallback, SelectionContext,
                 fetch_brand_min_asset_score,
                 ROLL_THE_DICE_WEIGHTS, SMART_SELECT_WEIGHTS,
-                PHASE_8_SCORERS,
+                PHASE_10_SCORERS,
             )
             from uuid import UUID as _UUID
 
@@ -1192,14 +1192,16 @@ async def execute_ad_creation_v2_job(job: Dict) -> Dict[str, Any]:
             elif asset_strictness == 'default' and brand_id:
                 min_asset_score = fetch_brand_min_asset_score(brand_id)
 
-            # Select templates with fallback (Phase 8B: use PHASE_8_SCORERS)
+            # Select templates with fallback. PHASE_10 includes impression rank,
+            # impression velocity, and creative-variant scorers so SMART_SELECT_WEIGHTS
+            # for those scorers actually contributes to composite scores.
             selection = select_templates_with_fallback(
                 candidates=candidates,
                 context=context,
                 weights=weights,
                 count=template_count,
                 min_asset_score=min_asset_score,
-                scorers=PHASE_8_SCORERS,
+                scorers=PHASE_10_SCORERS,
             )
 
             if selection.empty:

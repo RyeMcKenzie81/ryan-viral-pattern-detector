@@ -183,14 +183,49 @@ class AssetMatchScorer(TemplateScorer):
 
 
 class UnusedBonusScorer(TemplateScorer):
-    """Score based on whether template has been used for this product.
+    """Score based on how recently the template was used for this product.
 
-    Returns 1.0 if unused, 0.3 if previously used.
+    Never used → 1.0. Just used → 0.3. Recovers toward 1.0 with a 14-day
+    half-life so previously-used templates can be rotated back in instead
+    of being permanently suppressed.
+
+    Formula: 1.0 - 0.7 * exp(-RECOVERY_LAMBDA * days_since_last_use)
+        days=0  → 0.30
+        days=14 → 0.65
+        days=28 → 0.83
+        days→∞  → 1.0
+
+    Falls back to 0.3 if last_used_at is missing on a used template.
     """
     name = "unused_bonus"
 
+    RECOVERY_LAMBDA = 0.05  # ~14-day half-life toward 1.0
+    JUST_USED_FLOOR = 0.3
+
     def score(self, template: dict, context: SelectionContext) -> float:
-        return 1.0 if template.get("is_unused", True) else 0.3
+        from datetime import datetime, timezone
+
+        if template.get("is_unused", True):
+            return 1.0
+
+        last_used_str = template.get("product_last_used_at")
+        if not last_used_str:
+            return self.JUST_USED_FLOOR
+
+        try:
+            last_used = datetime.fromisoformat(
+                last_used_str.replace("Z", "+00:00")
+            )
+        except (ValueError, AttributeError):
+            return self.JUST_USED_FLOOR
+
+        days = max(
+            (datetime.now(timezone.utc) - last_used).total_seconds() / 86400.0,
+            0.0,
+        )
+        return 1.0 - (1.0 - self.JUST_USED_FLOOR) * math.exp(
+            -self.RECOVERY_LAMBDA * days
+        )
 
 
 class CategoryMatchScorer(TemplateScorer):
@@ -806,12 +841,17 @@ async def fetch_template_candidates(
 
     # Query 2: Usage for this product
     usage_result = db.table("product_template_usage").select(
-        "template_id"
+        "template_id, last_used_at"
     ).eq("product_id", product_id).execute()
 
-    used_template_ids = {
-        r["template_id"] for r in (usage_result.data or []) if r.get("template_id")
-    }
+    used_template_ids: Set[str] = set()
+    last_used_by_template: Dict[str, Optional[str]] = {}
+    for r in (usage_result.data or []):
+        tid = r.get("template_id")
+        if not tid:
+            continue
+        used_template_ids.add(tid)
+        last_used_by_template[tid] = r.get("last_used_at")
 
     # Query 3: Template evaluations for all scraped templates.
     # Filter by template_source only (not .in_(template_ids)) to avoid
@@ -833,6 +873,7 @@ async def fetch_template_candidates(
     # Merge: add is_unused, has_detection, and evaluation data to each template
     for template in templates:
         template["is_unused"] = template["id"] not in used_template_ids
+        template["product_last_used_at"] = last_used_by_template.get(template["id"])
         template["has_detection"] = template.get("element_detection_version") is not None
 
         eval_row = eval_by_template.get(template["id"])
