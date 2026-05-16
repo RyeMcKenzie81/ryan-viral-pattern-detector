@@ -594,7 +594,7 @@ def _run_template_preview(mode, count, category, asset_strictness, awareness_sta
             select_templates_with_fallback, SelectionContext,
             fetch_brand_min_asset_score,
             ROLL_THE_DICE_WEIGHTS, SMART_SELECT_WEIGHTS,
-            PHASE_8_SCORERS,
+            PHASE_10_SCORERS,
         )
         from uuid import UUID
 
@@ -664,7 +664,7 @@ def _run_template_preview(mode, count, category, asset_strictness, awareness_sta
             weights=weights,
             count=count,
             min_asset_score=min_asset_score,
-            scorers=PHASE_8_SCORERS,
+            scorers=PHASE_10_SCORERS,
         )
 
         loop.close()
