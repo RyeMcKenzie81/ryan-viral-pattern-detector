@@ -531,6 +531,11 @@ class ProductOfferVariantService:
             - desires_goals: List of desires/goals targeted
             - benefits: List of benefits highlighted
             - target_audience: Inferred target audience
+            - mechanism_name: Name of the page's unique mechanism, if any
+            - mechanism_problem: Unique Mechanism of Problem (UMP)
+            - mechanism_solution: Unique Mechanism of Solution (UMS)
+            - sample_hooks: Headlines / opening hooks pulled from the page
+            - required_disclaimers: Disclaimers / fine print from the page
             - raw_analysis: Full extraction for reference
             - success: Whether extraction succeeded
             - error: Error message if failed
@@ -561,8 +566,49 @@ class ProductOfferVariantService:
 
         6. "headline": The main headline or value proposition from the page.
 
+        7. "mechanism_name": A short branded name for the unique mechanism, formula, protocol,
+           or system the page positions as its differentiator. Empty string if the page does not
+           name a specific mechanism.
+           Examples: "The Adaptogen Triple Stack", "3-Phase Cortisol Reset", "PrimeBiome Blend"
+
+        8. "mechanism_problem": The Unique Mechanism of Problem (UMP) — the specific root cause
+           the page blames for the customer's pain. This is the "why" behind the symptoms, framed
+           as the page's worldview. Empty string if not stated.
+           Examples: "chronic cortisol dysregulation", "shrinking hair follicles from DHT buildup",
+           "estrobolome imbalance"
+
+        9. "mechanism_solution": The Unique Mechanism of Solution (UMS) — the specific HOW the
+           product solves the problem above, the differentiator vs. generic alternatives.
+           Empty string if not stated.
+           Examples: "adaptogen + magnesium synergy that re-regulates the HPA axis",
+           "topical peptide that re-activates dormant follicles"
+
+        10. "sample_hooks": Array of 3-6 attention-grabbing headlines, sub-heads, or opening hooks
+            actually used on the page (verbatim or near-verbatim).
+            Examples: "The #1 reason women over 40 can't lose weight",
+            "If you've tried everything and nothing works, read this"
+
+        11. "required_disclaimers": A string containing any required legal disclaimers, fine print,
+            FDA statements, or "results not typical" notices found on the page. Empty string if none.
+            Combine multiple disclaimers with newlines.
+
         Be specific and extract actual language/themes from the page, not generic descriptions.
+        For mechanism fields, only populate them if the page genuinely positions a unique mechanism —
+        do not fabricate one.
         """
+
+        empty_payload = {
+            "name": "",
+            "pain_points": [],
+            "desires_goals": [],
+            "benefits": [],
+            "target_audience": "",
+            "mechanism_name": "",
+            "mechanism_problem": "",
+            "mechanism_solution": "",
+            "sample_hooks": [],
+            "required_disclaimers": "",
+        }
 
         try:
             scraper = WebScrapingService()
@@ -573,11 +619,7 @@ class ProductOfferVariantService:
                 return {
                     "success": False,
                     "error": result.error or "Extraction failed",
-                    "name": "",
-                    "pain_points": [],
-                    "desires_goals": [],
-                    "benefits": [],
-                    "target_audience": "",
+                    **empty_payload,
                 }
 
             # Map extraction to offer variant fields
@@ -590,6 +632,11 @@ class ProductOfferVariantService:
                 "desires_goals": data.get("desires_goals", []),
                 "benefits": data.get("benefits", []),
                 "target_audience": data.get("target_audience", ""),
+                "mechanism_name": data.get("mechanism_name", "") or "",
+                "mechanism_problem": data.get("mechanism_problem", "") or "",
+                "mechanism_solution": data.get("mechanism_solution", "") or "",
+                "sample_hooks": data.get("sample_hooks", []) or [],
+                "required_disclaimers": data.get("required_disclaimers", "") or "",
                 "raw_analysis": data,
             }
 
@@ -598,11 +645,7 @@ class ProductOfferVariantService:
             return {
                 "success": False,
                 "error": str(e),
-                "name": "",
-                "pain_points": [],
-                "desires_goals": [],
-                "benefits": [],
-                "target_audience": "",
+                **empty_payload,
             }
 
     # ============================================
