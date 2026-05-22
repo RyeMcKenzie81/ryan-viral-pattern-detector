@@ -14,6 +14,7 @@ from google import genai
 from google.genai import types
 
 from ..core.config import Config
+from ..core.genai_client import make_genai_client
 from .models import HookAnalysis
 
 logger = logging.getLogger(__name__)
@@ -81,8 +82,9 @@ class GeminiService:
 
         self.model_name = model
 
-        # Configure Gemini client
-        self.client = genai.Client(api_key=self.api_key)
+        # Configure Gemini client. make_genai_client applies an HTTP timeout
+        # so a hung request can't freeze the scheduler.
+        self.client = make_genai_client(self.api_key)
 
         # Rate limiting
         self._last_call_time = 0.0
@@ -104,7 +106,7 @@ class GeminiService:
         iterations) to avoid 'TCPTransport closed' errors from stale
         connections left over after a previous event loop was destroyed.
         """
-        self.client = genai.Client(api_key=self.api_key)
+        self.client = make_genai_client(self.api_key)
         logger.debug("GeminiService client reset (fresh HTTP connection pool)")
 
     def set_tracking_context(

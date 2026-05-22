@@ -74,7 +74,7 @@ class VeoService:
         if not self.api_key:
             raise ValueError("GEMINI_API_KEY not found in environment")
 
-        self.client = genai.Client(api_key=self.api_key)
+        self.client = make_genai_client(self.api_key)
         self.supabase = get_supabase_client()
 
         # Usage tracking (optional)

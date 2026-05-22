@@ -313,7 +313,7 @@ class ContentBucketService:
         if not api_key:
             return {"error": "GEMINI_API_KEY not set"}
 
-        client = genai.Client(api_key=api_key)
+        client = make_genai_client(api_key)
         gemini_file = None
         temp_path = None
 
@@ -407,7 +407,7 @@ class ContentBucketService:
             return {"error": f"Image too large ({size_mb:.1f}MB). Max is 20MB."}
 
         try:
-            client = genai.Client(api_key=api_key)
+            client = make_genai_client(api_key)
             image_part = genai_types.Part.from_bytes(
                 data=file_bytes, mime_type=mime_type
             )
@@ -545,7 +545,7 @@ class ContentBucketService:
         )
 
         try:
-            client = genai.Client(api_key=api_key)
+            client = make_genai_client(api_key)
             response = client.models.generate_content(
                 model=GEMINI_MODEL,
                 contents=[prompt],

@@ -202,7 +202,7 @@ class ImageAnalysisService:
                     error_message="GEMINI_API_KEY not set",
                 )
 
-            client = genai.Client(api_key=api_key)
+            client = make_genai_client(api_key)
             prompt = IMAGE_ANALYSIS_PROMPT.format(
                 ad_copy=ad_copy or "(no copy available)"
             )

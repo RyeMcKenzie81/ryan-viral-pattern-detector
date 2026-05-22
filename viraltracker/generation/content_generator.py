@@ -22,6 +22,7 @@ from google import genai
 from google.genai import types
 
 from ..core.config import Config
+from ..core.genai_client import make_genai_client
 
 
 logger = logging.getLogger(__name__)
@@ -87,7 +88,7 @@ class ContentGenerator:
         if not api_key:
             raise ValueError("GEMINI_API_KEY not found in environment")
 
-        self.client = genai.Client(api_key=api_key)
+        self.client = make_genai_client(api_key)
 
         logger.info(f"ContentGenerator initialized with model: {model}")
 

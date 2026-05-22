@@ -533,7 +533,7 @@ class VideoAnalysisService:
                     error_message="GEMINI_API_KEY not set",
                 )
 
-            client = genai.Client(api_key=api_key)
+            client = make_genai_client(api_key)
             logger.info(f"Uploading video to Gemini Files API ({meta_ad_id})")
             gemini_file = client.files.upload(file=str(temp_path))
             logger.info(f"Uploaded to Gemini: {gemini_file.uri}")
