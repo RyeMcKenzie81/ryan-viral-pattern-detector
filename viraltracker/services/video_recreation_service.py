@@ -793,7 +793,7 @@ class VideoRecreationService:
             logger.error("GEMINI_API_KEY not set")
             return None
 
-        client = genai.Client(api_key=api_key)
+        client = make_genai_client(api_key)
         response = client.models.generate_content(
             model=ADAPTATION_MODEL,
             contents=[prompt],

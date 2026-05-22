@@ -59,7 +59,7 @@ class Embedder:
             raise ValueError("GEMINI_API_KEY environment variable not set")
 
         # Create Gemini client
-        self.client = genai.Client(api_key=self.api_key)
+        self.client = make_genai_client(self.api_key)
 
         # Ensure cache directory exists
         Path(self.cache_dir).mkdir(parents=True, exist_ok=True)

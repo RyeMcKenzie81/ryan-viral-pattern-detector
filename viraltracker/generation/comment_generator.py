@@ -122,7 +122,7 @@ class CommentGenerator:
             raise ValueError("GEMINI_API_KEY environment variable not set")
 
         # Configure Gemini client
-        self.client = genai.Client(api_key=self.api_key)
+        self.client = make_genai_client(self.api_key)
 
         # Load prompts
         self.prompts = self._load_prompts()

@@ -65,7 +65,7 @@ class VideoAnalyzer:
         if not api_key:
             raise ValueError("GEMINI_API_KEY must be set in environment or passed to constructor")
 
-        self.client = genai.Client(api_key=api_key)
+        self.client = make_genai_client(api_key)
         # Use explicit model for video analysis - Gemini 2.5 Pro
         self.model_name = gemini_model or Config.GEMINI_VIDEO_MODEL
         self.analysis_version = "vid-1.2.0"  # Hook Intelligence upgrade

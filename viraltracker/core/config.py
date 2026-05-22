@@ -321,7 +321,7 @@ def _generate_exemplars(description: str, count: int = 5) -> List[str]:
         return []
 
     # Create client
-    client = genai.Client(api_key=api_key)
+    client = make_genai_client(api_key)
 
     prompt = f"""Generate {count} tweet-length exemplars (15-25 words each) that discuss: {description}
 

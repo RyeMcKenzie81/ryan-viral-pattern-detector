@@ -124,7 +124,7 @@ class HookAnalyzer:
         if not api_key:
             raise ValueError("GEMINI_API_KEY not found in environment")
 
-        self.client = genai.Client(api_key=api_key)
+        self.client = make_genai_client(api_key)
 
         logger.info(f"HookAnalyzer initialized with model: {model}")
 

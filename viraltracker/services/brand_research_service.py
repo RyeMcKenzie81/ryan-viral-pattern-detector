@@ -590,7 +590,7 @@ class BrandResearchService:
 
         try:
             # Initialize Gemini client
-            client = genai.Client(api_key=api_key)
+            client = make_genai_client(api_key)
             # Use dynamically configured model if possible, else default
             model_name = Config.get_model("vision")
             # Strip provider prefix if present (e.g., "google-gla:" for PydanticAI)
@@ -775,7 +775,7 @@ class BrandResearchService:
 
         try:
             # Initialize Gemini client
-            client = genai.Client(api_key=api_key)
+            client = make_genai_client(api_key)
             
             # Video analysis uses gemini-3-pro-preview (not image-preview)
             model_name = "gemini-3-pro-preview"
@@ -1767,7 +1767,7 @@ class BrandResearchService:
             temp_path = temp_file.name
 
             # Initialize Gemini client
-            client = genai.Client(api_key=api_key)
+            client = make_genai_client(api_key)
             model_name = Config.GEMINI_VIDEO_MODEL
 
             logger.info(f"Uploading video to Gemini: {temp_path}")
