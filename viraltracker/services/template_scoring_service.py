@@ -839,9 +839,11 @@ async def fetch_template_candidates(
     if not templates:
         return []
 
-    # Query 2: Usage for this product
+    # Query 2: Usage for this product. product_template_usage stores one row
+    # per use (column: used_at), so reduce to the most recent used_at per
+    # template_id in Python.
     usage_result = db.table("product_template_usage").select(
-        "template_id, last_used_at"
+        "template_id, used_at"
     ).eq("product_id", product_id).execute()
 
     used_template_ids: Set[str] = set()
@@ -851,7 +853,12 @@ async def fetch_template_candidates(
         if not tid:
             continue
         used_template_ids.add(tid)
-        last_used_by_template[tid] = r.get("last_used_at")
+        used_at = r.get("used_at")
+        if not used_at:
+            continue
+        prev = last_used_by_template.get(tid)
+        if prev is None or used_at > prev:
+            last_used_by_template[tid] = used_at
 
     # Query 3: Template evaluations for all scraped templates.
     # Filter by template_source only (not .in_(template_ids)) to avoid
