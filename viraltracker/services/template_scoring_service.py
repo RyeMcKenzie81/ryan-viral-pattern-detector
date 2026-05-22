@@ -457,86 +457,72 @@ class PerformanceScorer(TemplateScorer):
 class FatigueScorer(TemplateScorer):
     """Hybrid fatigue scorer: template decay + element combo modifier.
 
-    Base decay: e^(-lambda * days_since_template_last_used)
-    Combo modifier: adjusts decay based on element combo staleness
-    Final score: clamp(base_decay * combo_modifier, 0.2, 1.0)
+    Recently-used templates and recently-used element combos depress the
+    score (high fatigue). The score recovers toward 1.0 as time passes so
+    rested templates can rotate back in.
 
-    Falls back to 1.0 (no fatigue) for never-used templates.
-    Falls back to base_decay only when combo data is sparse.
+    Template decay:  1.0 - exp(-DECAY_LAMBDA * days_since_template_last_used)
+        days=0  → 0.00 (clamped to FLOOR)
+        days=14 → 0.50
+        days=28 → 0.75
+        days→∞  → 1.0
+
+    Combo modifier:  1.0 - exp(-COMBO_DECAY_LAMBDA * days_since_combo_last_used)
+        Returns 1.0 (neutral) when combo data is sparse (< MIN_COMBO_OBSERVATIONS).
+
+    Final score: clamp(base_decay * combo_modifier, FLOOR, 1.0).
+
+    Never-used templates with no combo history score 1.0 (no fatigue).
     """
     name = "fatigue"
 
-    DECAY_LAMBDA = 0.05  # ~14-day half-life
-    COMBO_DECAY_LAMBDA = 0.03  # Slower combo decay (~23-day half-life)
-    MIN_COMBO_OBSERVATIONS = 3  # Minimum uses before combo modifier applies
+    DECAY_LAMBDA = 0.05         # ~14-day half-life toward 1.0
+    COMBO_DECAY_LAMBDA = 0.03   # ~23-day half-life toward 1.0
+    MIN_COMBO_OBSERVATIONS = 3
+    FLOOR = 0.2
 
     def score(self, template: dict, context: SelectionContext) -> float:
-        """Score a template based on fatigue (recency of use).
-
-        Args:
-            template: Template row dict.
-            context: Selection context with brand/product info.
-
-        Returns:
-            Float score in [0.2, 1.0]. 1.0 = never used (no fatigue).
-        """
-        from datetime import datetime, timezone
-
-        # Base score: template-level decay from product_template_usage
         base_decay = self._compute_template_decay(template, context)
-
-        # Combo modifier: element combo staleness
         combo_modifier = self._compute_combo_modifier(template, context)
-
-        # Final score: clamped product
-        final = max(0.2, min(1.0, base_decay * combo_modifier))
-        return final
+        return max(self.FLOOR, min(1.0, base_decay * combo_modifier))
 
     def _compute_template_decay(
         self, template: dict, context: SelectionContext
     ) -> float:
-        """Compute template-level decay from last use date.
+        """Recover from FLOOR toward 1.0 as days since last use grow.
 
-        Returns 1.0 for never-used templates.
+        Reads product_last_used_at prefetched onto the candidate by
+        fetch_template_candidates so this is a pure in-memory computation.
         """
         from datetime import datetime, timezone
 
-        # Check if template has been used (from prefetched data)
         if template.get("is_unused", True):
             return 1.0  # Never used = no fatigue
 
-        # Try to get last_used_at from product_template_usage
+        last_used_str = template.get("product_last_used_at")
+        if not last_used_str:
+            return self.FLOOR  # Used but date missing → assume max fatigue
+
         try:
-            from viraltracker.core.database import get_supabase_client
-            db = get_supabase_client()
+            last_used = datetime.fromisoformat(
+                last_used_str.replace("Z", "+00:00")
+            )
+        except (ValueError, AttributeError):
+            return self.FLOOR
 
-            result = db.table("product_template_usage").select(
-                "last_used_at"
-            ).eq(
-                "product_id", str(context.product_id)
-            ).eq(
-                "template_id", template.get("id", "")
-            ).limit(1).execute()
-
-            if result.data and result.data[0].get("last_used_at"):
-                last_used_str = result.data[0]["last_used_at"]
-                last_used = datetime.fromisoformat(
-                    last_used_str.replace("Z", "+00:00")
-                )
-                now = datetime.now(timezone.utc)
-                days = (now - last_used).total_seconds() / 86400.0
-                return math.exp(-self.DECAY_LAMBDA * days)
-        except Exception as e:
-            logger.warning(f"FatigueScorer template decay failed: {e}")
-
-        return 0.5  # Fallback when data unavailable
+        days = max(
+            (datetime.now(timezone.utc) - last_used).total_seconds() / 86400.0,
+            0.0,
+        )
+        return 1.0 - math.exp(-self.DECAY_LAMBDA * days)
 
     def _compute_combo_modifier(
         self, template: dict, context: SelectionContext
     ) -> float:
-        """Compute element combo modifier from element_combo_usage.
+        """Penalize templates sharing an element combo with recently-used templates.
 
-        Returns 1.0 (neutral) when combo data is sparse.
+        Returns 1.0 (neutral) when combo data is sparse, missing, or stale enough
+        to have fully recovered.
         """
         from datetime import datetime, timezone
 
@@ -553,7 +539,6 @@ class FatigueScorer(TemplateScorer):
         if not combo_parts:
             return 1.0  # No combo data → neutral
 
-        # Build canonical combo key
         combo_key = "|".join(
             f"{k}={v}" for k, v in sorted(combo_parts.items())
         )
@@ -580,9 +565,11 @@ class FatigueScorer(TemplateScorer):
                     last_used = datetime.fromisoformat(
                         last_used_str.replace("Z", "+00:00")
                     )
-                    now = datetime.now(timezone.utc)
-                    days = (now - last_used).total_seconds() / 86400.0
-                    return math.exp(-self.COMBO_DECAY_LAMBDA * days)
+                    days = max(
+                        (datetime.now(timezone.utc) - last_used).total_seconds() / 86400.0,
+                        0.0,
+                    )
+                    return 1.0 - math.exp(-self.COMBO_DECAY_LAMBDA * days)
         except Exception as e:
             logger.warning(f"FatigueScorer combo modifier failed: {e}")
 
