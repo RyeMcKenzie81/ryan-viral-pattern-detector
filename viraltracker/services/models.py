@@ -2548,6 +2548,26 @@ class ToolReadinessReport(BaseModel):
     generated_at: datetime
 
 
+class AdCreatorReadinessCheck(BaseModel):
+    """A single Ad Creator V2 readiness check result."""
+    key: str
+    label: str
+    status: ReadinessStatus
+    summary: str = ""
+    fix_hint: Optional[str] = None
+    fix_page: Optional[str] = None
+
+
+class AdCreatorReadinessReport(BaseModel):
+    """Pre-flight readiness report for an (brand, product, offer_variant) selection."""
+    brand_id: str
+    product_id: str
+    offer_variant_id: Optional[str] = None
+    overall: ReadinessStatus
+    checks: List[AdCreatorReadinessCheck] = Field(default_factory=list)
+    generated_at: datetime
+
+
 # ============================================================================
 # Klaviyo Models
 # ============================================================================
