@@ -398,6 +398,60 @@ There are 70+ `model_dump()` calls across the codebase. Any that feed into JSONB
 
 ---
 
+### 29. Scheduler — Per-Job Wall-Clock Watchdog
+
+**Priority**: Medium
+**Complexity**: Medium
+**Added**: 2026-05-22
+
+**Context**: PR #180 added an HTTP timeout to every `genai.Client` so a hung Gemini call can't freeze the worker indefinitely. That covers the most common hang source but not every possibility — a stuck DB transaction, a Supabase storage download that never completes, or any future external call without its own timeout could still wedge the scheduler.
+
+`recover_stuck_runs()` (in `scheduler_worker.py:485`) fires at the *top* of each poll cycle, so it can only act after the previous `await execute_job(...)` has returned. While the worker is stuck inside that await, recovery cannot run.
+
+**Proposed approach**: spawn `execute_job(...)` as a task and run it under `asyncio.wait_for(...)` with a per-job-type timeout. On timeout, cancel the task, mark the `scheduled_job_runs` row failed, and let the next poll proceed. True wall-clock kill switch, independent of which external call hung.
+
+**Related files**:
+- `viraltracker/worker/scheduler_worker.py` — `run_scheduler()`, `execute_job()`, `recover_stuck_runs()`, `LONG_RUNNING_JOB_TYPES`
+
+---
+
+### 30. Scheduler — Bounded Parallel Job Execution
+
+**Priority**: Low / nice-to-have
+**Complexity**: High
+**Added**: 2026-05-22
+
+**Context**: The current scheduler loop iterates `due_jobs` sequentially: `for job in due_jobs: await execute_job(job)`. One slow job blocks every other job behind it. During the 2026-05-22 incident, a hung Ad Creator V2 run delayed a separate queued V2 run by 9+ minutes even though they were independent.
+
+**Proposed approach**: bounded `asyncio.gather` (or a semaphore-controlled task pool) so N jobs can run concurrently. Need to think about:
+- Per-job-type concurrency caps (e.g., max 1 `template_approval` at a time but several `ad_creation_v2` in parallel)
+- Shared resource contention (Gemini quota, Supabase rate limits, Anthropic rate limits)
+- Logfire trace clarity with overlapping spans
+
+Worth doing only after the watchdog (#29) is in place — otherwise concurrency just multiplies hang-blast-radius.
+
+**Related files**:
+- `viraltracker/worker/scheduler_worker.py` — `run_scheduler()`
+
+---
+
+### 31. Gemini — Tighter Timeout for Fast Text Calls
+
+**Priority**: Low
+**Complexity**: Low
+**Added**: 2026-05-22
+
+**Context**: PR #180 sets a default 10-minute timeout on every `genai.Client` because image/video generation can legitimately take several minutes. But text-only Gemini chats (e.g., the `gemini-2.5-flash` calls in `gemini_service.py` analysis paths) almost never legitimately exceed 1-2 minutes — yet they currently get the same 10-minute slack.
+
+**Proposed approach**: pass `timeout_ms=120_000` (2 min) explicitly in `make_genai_client(...)` for fast-path services that only run text generation. Catches hangs ~5× faster on those paths without affecting image/video gen.
+
+**Related files**:
+- `viraltracker/core/genai_client.py` — `make_genai_client(api_key, timeout_ms=...)` already supports per-call override
+- `viraltracker/services/gemini_service.py` — text-only call sites (`generate_content` with text models)
+- `viraltracker/services/brand_research_service.py`, `viraltracker/services/ad_intelligence/classifier_service.py` — text-heavy analyzers
+
+---
+
 ## Completed
 
 ### ~~8~~. Fix CPC Baseline Per-Row Inflation

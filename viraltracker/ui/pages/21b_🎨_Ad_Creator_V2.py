@@ -10,6 +10,7 @@ V2 runs in parallel with V1 (V1 is NOT modified). Key differences:
 
 import streamlit as st
 from datetime import datetime, timedelta
+from typing import Dict, Optional
 import pytz
 
 # Page config
@@ -296,6 +297,84 @@ def toggle_template_selection(template_info: dict):
     else:
         current.append(template_info)
     st.session_state.v2_selected_scraped_templates = current
+
+
+# ============================================================================
+# Readiness Panel
+# ============================================================================
+
+_READINESS_ICON = {
+    "ready": "✅",
+    "partial": "⚠️",
+    "blocked": "❌",
+    "n/a": "➖",
+}
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _compute_readiness_cached(
+    brand_id: str,
+    product_id: str,
+    offer_variant_id: Optional[str],
+) -> Dict:
+    """Compute the readiness report once per (brand, product, variant) per minute.
+
+    Returns a plain dict so streamlit's cache can serialize it without dragging
+    Pydantic models through the cache.
+    """
+    from viraltracker.services.ad_creator_readiness_service import AdCreatorReadinessService
+    svc = AdCreatorReadinessService()
+    report = svc.check(brand_id, product_id, offer_variant_id)
+    return report.model_dump(mode="json")
+
+
+def render_readiness_panel(
+    brand_id: str,
+    product_id: str,
+    offer_variant_id: Optional[str],
+):
+    """Render the pre-flight readiness expander for the current selection."""
+    if not brand_id or not product_id:
+        return
+
+    try:
+        data = _compute_readiness_cached(brand_id, product_id, offer_variant_id)
+    except Exception as e:
+        logger.warning(f"Readiness check failed: {e}")
+        return
+
+    checks = data.get("checks") or []
+    overall = data.get("overall", "ready")
+
+    issue_count = sum(
+        1 for c in checks if c.get("status") in ("partial", "blocked")
+    )
+    if overall == "ready":
+        label = "Readiness check — all clear ✅"
+    elif overall == "blocked":
+        label = f"Readiness check — {issue_count} issue(s) ❌"
+    else:
+        label = f"Readiness check — {issue_count} issue(s) ⚠️"
+
+    with st.expander(label, expanded=(overall != "ready")):
+        for c in checks:
+            icon = _READINESS_ICON.get(c.get("status", "n/a"), "?")
+            cols = st.columns([0.05, 0.35, 0.6])
+            with cols[0]:
+                st.markdown(f"### {icon}")
+            with cols[1]:
+                st.markdown(f"**{c.get('label','')}**")
+            with cols[2]:
+                st.markdown(c.get("summary", ""))
+                hint = c.get("fix_hint")
+                page = c.get("fix_page")
+                if hint:
+                    st.caption(hint)
+                if page:
+                    try:
+                        st.page_link(page, label="Open fix page", icon="🛠️")
+                    except Exception:
+                        pass
 
 
 # ============================================================================
@@ -2059,6 +2138,12 @@ else:
             f"📌 **Pre-filled from Strategic Leverage:** {_lp.get('move_title', 'Recommendation')}. "
             f"Smart Select is active with the recommended settings. Review and generate."
         )
+
+    render_readiness_panel(
+        brand_id=st.session_state.v2_brand_id,
+        product_id=product_id,
+        offer_variant_id=st.session_state.get("v2_offer_variant_id"),
+    )
 
     # Render sections
     render_template_selection()
