@@ -135,6 +135,7 @@ def _get_org_features_cached(org_id: str) -> Dict[str, bool]:
             FeatureKey.COMPETITOR_INTEL: True,
             # Ads pages
             FeatureKey.AD_CREATOR: True,
+            FeatureKey.GENERATE_ANGLES: True,
             FeatureKey.AD_HISTORY: True,
             FeatureKey.AD_PERFORMANCE: True,
             FeatureKey.AD_SCHEDULER: True,
@@ -291,6 +292,8 @@ def build_navigation_pages() -> Dict[str, List[st.Page]]:
         ads.append(st.Page("pages/23_🖼️_Ad_Gallery.py", title="Ad Gallery", icon="🖼️"))
     if visible(SK_ADS, "ad_creator"):
         ads.append(st.Page("pages/21b_🎨_Ad_Creator_V2.py", title="Ad Creator", icon="🎨"))
+    if visible(SK_ADS, "generate_angles"):
+        ads.append(st.Page("pages/21d_🎯_Generate_Angles.py", title="Generate Angles", icon="🎯"))
     if visible(SK_ADS, "ad_history"):
         ads.append(st.Page("pages/22_📊_Ad_History.py", title="Ad History", icon="📊"))
     if visible(SK_ADS, "ad_export"):

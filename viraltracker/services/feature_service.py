@@ -61,6 +61,7 @@ class FeatureKey:
     REDDIT_RESEARCH = "reddit_research"
     # Ads
     AD_CREATOR = "ad_creator"
+    GENERATE_ANGLES = "generate_angles"
     AD_HISTORY = "ad_history"
     AD_PERFORMANCE = "ad_performance"
     AD_INTELLIGENCE = "ad_intelligence"
@@ -256,6 +257,7 @@ class FeatureService:
             FeatureKey.REDDIT_RESEARCH,
             # Ads pages
             FeatureKey.AD_CREATOR,
+            FeatureKey.GENERATE_ANGLES,
             FeatureKey.AD_HISTORY,
             FeatureKey.AD_PERFORMANCE,
             FeatureKey.AD_INTELLIGENCE,
