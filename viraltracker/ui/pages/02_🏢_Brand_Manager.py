@@ -467,15 +467,26 @@ def save_product_details(product_id: str, updates: dict) -> bool:
         return False
 
 def save_image_analysis(image_id: str, analysis: dict):
-    """Save analysis to product_images table."""
+    """Save analysis to product_images table.
+
+    If the analysis output includes an asset_tags list, also write it to the
+    asset_tags column so it drives Ad Creator V2 template matching without a
+    separate manual tagging step.
+    """
     try:
         db = get_supabase_client()
-        db.table("product_images").update({
+        update = {
             "image_analysis": analysis,
             "analyzed_at": datetime.utcnow().isoformat(),
             "analysis_model": analysis.get("analysis_model"),
-            "analysis_version": analysis.get("analysis_version")
-        }).eq("id", image_id).execute()
+            "analysis_version": analysis.get("analysis_version"),
+        }
+        # Auto-populate asset_tags from Gemini output when present.
+        raw_tags = analysis.get("asset_tags")
+        if isinstance(raw_tags, list):
+            clean = sorted({(t or "").strip() for t in raw_tags if isinstance(t, str) and (t or "").strip()})
+            update["asset_tags"] = clean
+        db.table("product_images").update(update).eq("id", image_id).execute()
         return True
     except Exception as e:
         st.error(f"Failed to save analysis: {e}")
@@ -531,6 +542,81 @@ def save_image_asset_tags(image_id: str, tags: list[str]) -> bool:
     except Exception as e:
         st.error(f"Failed to save tags: {e}")
         return False
+
+
+async def gemini_infer_asset_tags(storage_path: str) -> list[str]:
+    """Use Gemini to infer asset tags for a single image.
+
+    Cheaper and faster than the full image analysis: only asks for the tags.
+    Returns an empty list on failure rather than raising, so a bad image in
+    a bulk run doesn't blow up the whole batch.
+    """
+    import json as _json
+    from viraltracker.services.gemini_service import GeminiService
+    from viraltracker.services.ad_creation_service import AdCreationService
+
+    prompt = """
+You are tagging a product image for an ad-template-matching system.
+
+Look at the image and choose tags from this exact vocabulary:
+
+Product form factor (pick what visibly appears):
+- "product:bottle" (bottle, jar with screw lid, dropper, spray)
+- "product:jar" (wide-mouth jar)
+- "product:bag" (pouch, stand-up bag, sachet)
+- "product:box" (carton, blister-pack box, retail packaging)
+- "product:tube" (squeeze tube)
+- "product:container" (other container)
+- "product:supplements" (loose capsules / tablets / softgels visible)
+- "product:capsules" (capsule form specifically)
+- "product:powder" (loose powder visible)
+
+People (only if person is clearly visible):
+- "person:man"
+- "person:woman"
+- "person:vet"
+- "person:athlete"
+- "person:expert"
+
+Other:
+- "logo" (pure logo / logo-dominant image)
+- "lifestyle" (in-use shot, real environment, not isolated packshot)
+- "packaging" (packaging-focused, label-readability or retail-shelf feel)
+- "ingredients" (raw ingredients visible)
+
+Rules:
+- Pick tags by what is VISIBLY in the image, not what you infer from context.
+- Return an empty array if nothing fits.
+- Do not invent tags outside this vocabulary.
+- Combine tags when both apply.
+
+Return STRICT JSON only, no markdown, in this exact shape:
+{"asset_tags": ["product:bottle", "product:capsules"]}
+""".strip()
+
+    try:
+        ad_svc = AdCreationService()
+        gemini = GeminiService()
+        image_b64 = await ad_svc.get_image_as_base64(storage_path)
+        response_text = await gemini.review_image(image_data=image_b64, prompt=prompt)
+        # Strip code fences if any
+        response_text = response_text.strip()
+        if response_text.startswith("```"):
+            lines = response_text.split("\n")
+            if lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            response_text = "\n".join(lines)
+        parsed = _json.loads(response_text)
+        tags = parsed.get("asset_tags") or []
+        if not isinstance(tags, list):
+            return []
+        return [str(t).strip() for t in tags if isinstance(t, str) and str(t).strip()]
+    except Exception as e:
+        logger = logging.getLogger(__name__)
+        logger.warning(f"gemini_infer_asset_tags failed for {storage_path}: {e}")
+        return []
 
 
 def bulk_save_image_asset_tags(
@@ -3692,8 +3778,54 @@ else:
                                             save_image_analysis(img['id'], analysis)
                                         except Exception as e:
                                             st.error(f"Failed to analyze {img['storage_path']}: {e}")
-                                    st.success("Analysis complete!")
+                                    st.success("Analysis complete (includes auto-tagging).")
                                     st.rerun()
+                        with col_actions2:
+                            # Auto-tag with Gemini (lightweight, tags-only call).
+                            # Useful when images are already analyzed but were tagged before
+                            # the asset_tags-aware prompt landed, or when the user just wants
+                            # tags without a full re-analysis pass.
+                            tag_candidates = [
+                                i for i in analyzable_images
+                                if not (i.get('asset_tags') or [])
+                            ]
+                            if tag_candidates:
+                                if st.button(
+                                    f"🤖 Auto-tag with AI ({len(tag_candidates)} untagged)",
+                                    key=f"auto_tag_all_{product_id}",
+                                    help="Calls Gemini on each untagged image and writes asset_tags. Cheaper than full re-analysis.",
+                                ):
+                                    progress = st.progress(0.0, text="Asking Gemini for tags...")
+                                    tagged_count = 0
+                                    total = len(tag_candidates)
+                                    for idx, img in enumerate(tag_candidates):
+                                        try:
+                                            new_tags = asyncio.run(
+                                                gemini_infer_asset_tags(img['storage_path'])
+                                            )
+                                            if new_tags:
+                                                if save_image_asset_tags(img['id'], new_tags):
+                                                    tagged_count += 1
+                                        except Exception as e:
+                                            st.warning(f"Skipped {img['storage_path']}: {e}")
+                                        progress.progress(
+                                            (idx + 1) / total,
+                                            text=f"Tagged {idx + 1} / {total}",
+                                        )
+                                    progress.empty()
+                                    if tagged_count > 0:
+                                        st.success(
+                                            f"Auto-tagged {tagged_count} of {total} image"
+                                            f"{'s' if total != 1 else ''}."
+                                        )
+                                        st.cache_data.clear()
+                                        st.rerun()
+                                    else:
+                                        st.info(
+                                            "No tags inferred. The images may not match the "
+                                            "canonical vocabulary, or Gemini returned empty. "
+                                            "You can still tag them manually."
+                                        )
 
                         # Bulk asset tag editor: apply the same tags to many images at once
                         taggable_images = [

@@ -345,6 +345,8 @@ async def analyze_product_image(
 
             "best_use_cases": [<array of: "hero", "testimonial", "lifestyle", "detail", "comparison", "packaging", "social_proof", "minimal">],
 
+            "asset_tags": [<array of asset tag strings, see vocabulary below. Pick only tags that visibly describe the image. Pick zero tags if none fit.>],
+
             "dominant_colors": [<array of 3-5 hex color codes>],
             "color_mood": <one of: "warm", "cool", "neutral", "vibrant", "muted">,
 
@@ -360,6 +362,38 @@ async def analyze_product_image(
         - Professional appearance
         - Suitability for advertising
         - Color accuracy and balance
+
+        **ASSET TAG VOCABULARY** (use only these for asset_tags):
+
+        Product form factor (pick what visibly appears in the image):
+        - "product:bottle"      bottle, jar with screw lid, dropper, spray
+        - "product:jar"         wide-mouth jar (e.g. cream, powder jar)
+        - "product:bag"         pouch, stand-up bag, sachet
+        - "product:box"         carton, blister-pack box, retail packaging box
+        - "product:tube"        squeeze tube
+        - "product:container"   general container that doesn't fit above
+        - "product:supplements" loose capsules / tablets / softgels visible
+        - "product:capsules"    capsule-form supplement specifically
+        - "product:powder"      loose powder visible (in a scoop, spilled, etc.)
+
+        People (only if a person is clearly visible):
+        - "person:man"
+        - "person:woman"
+        - "person:vet"          person in vet attire / setting
+        - "person:athlete"      person in athletic / gym context
+        - "person:expert"       person in lab coat, professional setting
+
+        Other:
+        - "logo"                pure logo or logo-dominant image
+        - "lifestyle"           in-use shot, real environment, not isolated packshot
+        - "packaging"           packaging-focused image (label readability, retail-shelf feel)
+        - "ingredients"         raw ingredients visible (e.g. herbs, fruit, powder pile)
+
+        Rules for asset_tags:
+        - Pick tags by what is VISIBLY in the image, not what you guess from context.
+        - It is correct to return an empty array if nothing fits.
+        - Do not invent tags outside this vocabulary.
+        - Combine tags when both apply (e.g. a bottle with loose capsules around it: ["product:bottle", "product:capsules"]).
         """
 
         # Use Gemini Vision for analysis (handles larger files than Claude's 5MB limit)
@@ -382,10 +416,11 @@ async def analyze_product_image(
 
         # Add metadata
         analysis["analysis_model"] = "gemini-2.0-flash"
-        analysis["analysis_version"] = "v1"
+        analysis["analysis_version"] = "v2"
 
         logger.info(f"Image analysis complete. Quality: {analysis.get('quality_score')}, "
-                   f"Best for: {analysis.get('best_use_cases')}")
+                   f"Best for: {analysis.get('best_use_cases')}, "
+                   f"Asset tags: {analysis.get('asset_tags')}")
 
         return analysis
 
