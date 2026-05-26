@@ -1,5 +1,19 @@
 # TODOS
 
+## Ad History — Sort by angle
+**What:** In `viraltracker/ui/pages/22_📊_Ad_History.py`, add an "Angle" column / grouping option to the ad-run listing so the user can sort or filter to see all runs (and thus all generated ads) for a specific belief angle. Should pull `belief_angles.name` joined via `ad_runs.angle_id` (column added in `migrations/2026-05-26_ad_runs_angle_id.sql`).
+**Why:** With angle-driven generation as the primary flow, the natural unit of comparison is "how did all my ads testing angle X perform vs angle Y." Right now the page shows ads in flat chronological order with no way to roll up by strategic angle.
+**Context:** Schema is ready — `ad_runs.angle_id` (PR #196) + `generated_ads.angle_id` (already-existing column populated by PR #196's stamping path). Implementation is UI-only: add a filter selectbox at the top of Ad History showing all angles that have at least one ad_run, plus column showing angle name on each run row.
+**Depends on:** Nothing — schema and data are live in production.
+**Added:** 2026-05-26 from session post-Step-5c review.
+
+## Ad History — Date range filter
+**What:** Add a date range picker at the top of `viraltracker/ui/pages/22_📊_Ad_History.py` so the user can scope the run listing to a specific window (e.g. "last 7 days", "last 30 days", custom range). Should filter `ad_runs.created_at` server-side via Supabase query (not in-memory) so pagination still works correctly with large result sets.
+**Why:** Ad History grows unbounded over time. Today the only way to find recent runs is to manually paginate through the most-recent-first listing. A simple date filter would surface the relevant window immediately.
+**Context:** Streamlit has `st.date_input()` with range support — minimal UI work. Existing query in `get_ad_runs()` (around line 89) takes brand_id/org_id filters; add an optional `(start_date, end_date)` tuple that gets translated to `.gte("created_at", ...).lte("created_at", ...)` calls. Default to "last 30 days" to keep first load snappy.
+**Depends on:** Nothing — pure UI + query addition.
+**Added:** 2026-05-26 from session post-Step-5c review.
+
 ## PR 4b — Full in-batch hook-diversity-rejection refactor for angle-driven flow
 **What:** Refactor hook generation in `viraltracker/pipelines/ad_creation_v2/services/content_service.py` (`select_hooks()` and `generate_benefit_variations()`) from one-shot batch LLM calls to per-hook iteration that lets `HookDiversityChecker.generate_with_diversity()` actually intercept each hook with retry-and-best-of-N rejection. Then thread `hook_embedding` from the diversity check directly to `save_generated_ad()` so we skip the inline embedding pass (currently in PR 4a).
 **Why:** PR 4a (Step 4a, merged) populated `generated_ads.hook_embedding` + `ad_creation_run_id` so the falsifiability metric works end-to-end, but the actual in-batch diversity GUARDRAIL (the "wired but tired at 3am" rejection-and-retry behavior) is NOT yet active. Hooks generate in batches and the diversity check only stores embeddings after the fact.
