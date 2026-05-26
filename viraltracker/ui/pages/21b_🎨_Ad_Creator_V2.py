@@ -415,9 +415,9 @@ def render_readiness_panel(
 # Template Selection Section
 # ============================================================================
 
-def render_template_selection():
+def render_template_selection(section_number: int = 1):
     """Render template selection with 3 modes."""
-    st.subheader("1. Template Selection")
+    st.subheader(f"{section_number}. Template Selection")
 
     mode = st.radio(
         "How do you want to select templates?",
@@ -1174,9 +1174,9 @@ def render_reference_images(product_id: str):
 # Generation Config Section
 # ============================================================================
 
-def render_generation_config():
+def render_generation_config(section_number: int = 3):
     """Render generation configuration controls."""
-    st.subheader("3. Generation Config")
+    st.subheader(f"{section_number}. Generation Config")
 
     col1, col2 = st.columns(2)
 
@@ -1348,13 +1348,13 @@ def render_generation_config():
 # Batch Estimate Section
 # ============================================================================
 
-def render_batch_estimate():
+def render_batch_estimate(section_number: int = 4):
     """Show batch estimate with cost projection and tiered guardrails."""
     from viraltracker.pipelines.ad_creation_v2.services.cost_estimation import (
         estimate_run_cost, MAX_VARIATIONS_PER_RUN,
     )
 
-    st.subheader("4. Batch Estimate")
+    st.subheader(f"{section_number}. Batch Estimate")
 
     mode = st.session_state.v2_template_mode
     num_variations = st.session_state.get('v2_num_variations', 5)
@@ -2292,21 +2292,45 @@ else:
         offer_variant_id=st.session_state.get("v2_offer_variant_id"),
     )
 
-    # Render sections
-    render_template_selection()
-    st.divider()
+    # Render sections — order depends on content_source mode:
+    #   - 'angles' / 'plan': strategy-first. Generation Config (where the angle
+    #     gets picked) renders FIRST since the angle determines the rest of
+    #     the run. Then Template Selection, then Creative Brief.
+    #   - 'recreate_template' (legacy): template-first. Existing order
+    #     preserved (Template Selection → Creative Brief → Generation Config).
+    #
+    # The reorder matches how users think about each flow: angle-driven users
+    # are picking strategy first; template-first users are picking a template
+    # to recreate first. Content source default mirrors the existing UX.
+    _cs = st.session_state.get("v2_content_source", "recreate_template")
+    _angle_first = _cs in ("angles", "plan")
 
-    # 2. Creative Brief (offer context + creative direction + reference images)
-    st.subheader("2. Creative Brief")
-    if product:
-        render_offer_context(product, product_id)
-    render_blueprint_selector(product_id)
-    render_creative_direction()
-    render_reference_images(product_id)
+    if _angle_first:
+        render_generation_config(section_number=1)
+        st.divider()
+        render_template_selection(section_number=2)
+        st.divider()
+        st.subheader("3. Creative Brief")
+        if product:
+            render_offer_context(product, product_id)
+        render_blueprint_selector(product_id)
+        render_creative_direction()
+        render_reference_images(product_id)
+        st.divider()
+        render_batch_estimate(section_number=4)
+    else:
+        render_template_selection(section_number=1)
+        st.divider()
+        st.subheader("2. Creative Brief")
+        if product:
+            render_offer_context(product, product_id)
+        render_blueprint_selector(product_id)
+        render_creative_direction()
+        render_reference_images(product_id)
+        st.divider()
+        render_generation_config(section_number=3)
+        st.divider()
+        render_batch_estimate(section_number=4)
 
-    st.divider()
-    render_generation_config()
-    st.divider()
-    render_batch_estimate()
     st.divider()
     render_submit()
