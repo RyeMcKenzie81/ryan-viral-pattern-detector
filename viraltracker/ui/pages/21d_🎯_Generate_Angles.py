@@ -422,14 +422,26 @@ if st.session_state.ga_generated_angles:
 
     with cont_col:
         if st.session_state.ga_last_save:
-            # Hand off to the Ad Scheduler — that's where angle_ids actually flow
-            # into a scheduled ad-creation job today. (AC2 doesn't yet have an
-            # angle multiselect; that's a follow-up PR to surface the same
-            # angle-driven flow directly inside the V2 creator UI.)
-            if st.button("🚀 Continue to Ad Scheduler", type="primary"):
-                st.session_state["sched_selected_angle_ids"] = list(st.session_state.ga_last_save["angle_ids"])
-                # Hint to the scheduler page about the persona/offer context so
-                # the scheduler form auto-populates the right (persona, offer) pair.
+            saved_ids = st.session_state.ga_last_save["angle_ids"]
+            multi_saved = len(saved_ids) > 1
+
+            # Primary path: AC2 (one-shot immediate-ish run, ~1 min via scheduler).
+            # AC2 = one angle per run by design, so if multiple were saved we hand off
+            # only the first; user can repeat the AC2 launch for the others.
+            ac2_label = (
+                f"🚀 Run angle 1 of {len(saved_ids)} in Ad Creator V2"
+                if multi_saved else
+                "🚀 Continue to Ad Creator V2"
+            )
+            if st.button(ac2_label, type="primary"):
+                st.session_state["preselect_angle_ids"] = list(saved_ids)
+                st.session_state["v2_content_source"] = "angles"
+                st.switch_page("pages/21b_🎨_Ad_Creator_V2.py")
+
+            # Secondary path: Ad Scheduler for batch / recurring runs across all
+            # saved angles. Surfaced as a smaller secondary action.
+            if st.button("📅 Schedule all in Ad Scheduler", type="secondary"):
+                st.session_state["sched_selected_angle_ids"] = list(saved_ids)
                 st.session_state["sched_persona_id"] = st.session_state.ga_persona_id
                 st.session_state["sched_offer_variant_id"] = st.session_state.ga_offer_variant_id
                 st.switch_page("pages/24_📅_Ad_Scheduler.py")

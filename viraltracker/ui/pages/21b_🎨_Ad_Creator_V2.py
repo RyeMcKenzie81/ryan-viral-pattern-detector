@@ -230,6 +230,40 @@ def get_offer_variants_for_product(product_id: str):
         return []
 
 
+def get_angles_for_product(product_id: str):
+    """
+    Get saved belief_angles for this product, sorted newest first.
+
+    Filters via source_offer_variant_id → product_offer_variants → product_id.
+    Excludes angles with status='loser' so the dropdown stays useful over time.
+    Each row includes source_persona_id + source_offer_variant_id so the AC2
+    angle selector can derive persona/offer downstream (decision from session
+    chat: angle is self-contained; user picks one, persona/offer auto-derive).
+    """
+    try:
+        db = get_supabase_client()
+        # First get the offer variant IDs for this product
+        variants = db.table("product_offer_variants").select("id").eq("product_id", product_id).execute()
+        variant_ids = [v["id"] for v in (variants.data or [])]
+        if not variant_ids:
+            return []
+        # Then fetch angles tied to any of those offer variants
+        result = (
+            db.table("belief_angles")
+            .select("id, name, belief_statement, status, source_persona_id, source_offer_variant_id, created_at")
+            .in_("source_offer_variant_id", variant_ids)
+            .neq("status", "loser")
+            .order("created_at", desc=True)
+            .limit(100)
+            .execute()
+        )
+        return result.data or []
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"Could not load angles for product {product_id}: {e}")
+        return []
+
+
 def get_blueprints_for_product(product_id: str):
     """Get completed landing page blueprints for a product."""
     try:
@@ -1168,6 +1202,69 @@ def render_generation_config():
             help="'Strategic Angles' is the angle-driven flow — generate angles on the Generate Angles page first.",
         )
 
+        # Step 5c (2026-05-25): when content_source='angles', surface a single-select
+        # angle dropdown. One AC2 run = one angle (decision per session chat: angle
+        # is self-contained; if you want N angles, you run AC2 N times — keeps the
+        # one-shot semantics clean). When an angle is selected, persona_id +
+        # offer_variant_id auto-derive from the angle's source_* fields below.
+        if content_source == "angles":
+            angles = get_angles_for_product(product_id)
+            if not angles:
+                st.warning(
+                    "No saved angles for this product yet. "
+                    "Generate some on the 🎯 Generate Angles page first."
+                )
+                st.session_state["v2_selected_angle_id"] = None
+            else:
+                # Honor the preselect_angle_ids handoff from the Generate Angles page
+                # (set when the user clicked "Continue to Ad Creator V2" after save).
+                preselect = st.session_state.pop("preselect_angle_ids", None)
+                if preselect:
+                    # AC2 = one angle per run; if multiple were passed, take the first
+                    first_id = preselect[0] if isinstance(preselect, (list, tuple)) else preselect
+                    if any(a["id"] == first_id for a in angles):
+                        st.session_state["v2_selected_angle_id"] = first_id
+
+                angle_id_options = [a["id"] for a in angles]
+                if st.session_state.get("v2_selected_angle_id") not in angle_id_options:
+                    st.session_state["v2_selected_angle_id"] = angle_id_options[0]
+
+                angle_by_id = {a["id"]: a for a in angles}
+
+                def _fmt_angle(aid):
+                    a = angle_by_id[aid]
+                    name = a["name"]
+                    status = a.get("status") or "untested"
+                    return f"{name}  ·  [{status}]"
+
+                st.selectbox(
+                    "Angle",
+                    options=angle_id_options,
+                    format_func=_fmt_angle,
+                    key="v2_selected_angle_id",
+                    help="Picks the strategic angle this batch tests. Persona and offer variant "
+                         "are auto-derived from the angle below — the angle is the unit of "
+                         "strategic intent.",
+                )
+
+                # Override persona + offer based on the selected angle. The angle
+                # carries its source_persona_id and source_offer_variant_id; those
+                # become the run's persona/offer regardless of any earlier manual
+                # selection. The downstream persona/offer selectors will still
+                # render but should reflect the angle's values.
+                selected = angle_by_id[st.session_state["v2_selected_angle_id"]]
+                if selected.get("source_persona_id"):
+                    st.session_state["v2_persona_id"] = selected["source_persona_id"]
+                if selected.get("source_offer_variant_id"):
+                    st.session_state["v2_offer_variant_id"] = selected["source_offer_variant_id"]
+
+                with st.expander("Angle preview", expanded=False):
+                    st.markdown(f"**Belief:** {selected.get('belief_statement', '')}")
+                    st.caption(
+                        f"Status: `{selected.get('status', 'untested')}` · "
+                        f"Persona + offer below are derived from this angle."
+                    )
+
         num_variations = st.slider(
             "Variations (hooks) per template",
             min_value=1, max_value=50, value=5,
@@ -1400,6 +1497,15 @@ def _handle_submit():
         'blueprint_id': st.session_state.get('v2_blueprint_id'),
         'match_lp_voice': st.session_state.get('v2_match_lp_voice', True),
     }
+
+    # Step 5c: when content_source='angles', pass the chosen angle through to
+    # the scheduler worker, which loops it through templates × variations and
+    # populates generated_ads.angle_id on every produced row (PR #187).
+    # AC2 = one angle per run, so the list always has 0 or 1 entry.
+    if parameters['content_source'] == 'angles':
+        selected_angle_id = st.session_state.get('v2_selected_angle_id')
+        if selected_angle_id:
+            parameters['angle_ids'] = [selected_angle_id]
 
     # Normalize current_offer_override — strip whitespace, treat empty/blank as None
     raw_override = st.session_state.get('v2_current_offer_override', '')
