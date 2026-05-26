@@ -63,6 +63,7 @@ class AdCreationPipelineState:
     pre_selected_hooks: Optional[List[Dict[str, Any]]] = None  # Bypass SelectContentNode
     generation_temperature: Optional[float] = None  # Override default Gemini temperature (0.4)
     match_lp_voice: bool = True  # When True, inject LP hero copy into hook selection prompt
+    ad_creation_run_id: Optional[str] = None  # Scheduler job UUID; stamped on ad_run by InitializeNode for angle-driven cross-angle similarity report (PR #184)
 
     # === POPULATED BY NODES ===
 

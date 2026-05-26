@@ -46,7 +46,17 @@ EMBEDDING_MODEL = "text-embedding-3-small"
 EMBEDDING_DIMENSIONS = 1536
 
 # Diversity threshold defaults (decision 2A.1)
-INTRA_ANGLE_THRESHOLD_DEFAULT = 0.85
+#
+# Calibrated 2026-05-25 from BASELINE_SIMILARITY.csv (Step 1a baseline measurement):
+# current AC2 intra-run hook similarity has median 0.60, p75 0.68. A threshold
+# of 0.65 (slightly above median, slightly below p75) means the diversity check
+# triggers on hooks that are MORE similar than a typical current AC2 batch
+# without triggering on the median — sets the new flow's bar at "at least as
+# diverse as the typical existing batch."
+#
+# Override via system_settings.angle_pipeline.intra_angle_threshold for runtime
+# tuning without redeploy.
+INTRA_ANGLE_THRESHOLD_DEFAULT = 0.65
 SYSTEM_SETTINGS_KEY = "angle_pipeline.intra_angle_threshold"
 
 # Embedding batch size (decision 1B — amortize round-trips)
