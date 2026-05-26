@@ -133,6 +133,47 @@ class AngleGeneratorService:
 
     NO_LP_PLACEHOLDER = "NO LANDING PAGE PROVIDED — generate without LP grounding"
 
+    @staticmethod
+    def _format_existing_angles_section(existing_angles: Optional[List[Dict[str, Any]]]) -> str:
+        """
+        Render the prompt's "existing angles to avoid" section.
+
+        When the user has already saved angles for this (persona, offer)
+        combination, we tell Opus NOT to duplicate them and to explore
+        psychographic territory that hasn't been tested yet. Without this
+        guardrail, the LLM tends to converge on the same beliefs every run
+        (same persona + same offer → same answers), which is what users
+        perceive as "the generator just gives me the same angles."
+
+        Returns an empty string when there are no existing angles (no extra
+        prompt text — Opus generates freely).
+        """
+        if not existing_angles:
+            return ""
+
+        lines = [
+            "═" * 79,
+            f"ANGLES ALREADY TESTED FOR THIS PERSONA + OFFER ({len(existing_angles)} existing)",
+            "═" * 79,
+            "",
+            "The user has previously generated and saved these angles for this combination.",
+            "DO NOT produce angles that overlap with them. Generate angles that explore",
+            "DIFFERENT psychographic territory — different desire category, different villain,",
+            "different identity arc, different objection. If you can only think of variations",
+            "on these existing angles, say so honestly in one angle's explanation rather than",
+            "padding the list with near-duplicates.",
+            "",
+        ]
+        for i, a in enumerate(existing_angles, 1):
+            name = a.get("name", "(unnamed)")
+            belief = (a.get("belief_statement") or "").strip()
+            register = a.get("emotional_register") or ""
+            status = a.get("status") or ""
+            lines.append(f"  {i}. {name}  [register: {register}, status: {status}]")
+            if belief:
+                lines.append(f"     belief: {belief}")
+        return "\n".join(lines)
+
     def _split_system_user(self, rendered_template: str) -> tuple[str, str]:
         """
         Split the rendered prompt template into (system_prompt, user_prompt).
@@ -162,6 +203,7 @@ class AngleGeneratorService:
         offer_variant: Dict[str, Any],
         landing_page_summary: Optional[str],
         brand_voice: str = "",
+        existing_angles: Optional[List[Dict[str, Any]]] = None,
     ) -> tuple[str, str]:
         """
         Render the prompt template with the supplied inputs.
@@ -179,6 +221,7 @@ class AngleGeneratorService:
             "offer_variant_json": json.dumps(offer_variant, indent=2, default=str),
             "landing_page_summary": lp_text,
             "brand_voice": brand_voice,
+            "existing_angles_section": self._format_existing_angles_section(existing_angles),
         }
         rendered = self._SLOT_PATTERN.sub(
             lambda m: slot_values.get(m.group(1), m.group(0)),
@@ -279,6 +322,7 @@ class AngleGeneratorService:
         landing_page_summary: Optional[str] = None,
         n: int = DEFAULT_N_ANGLES,
         brand_voice: str = "",
+        existing_angles: Optional[List[Dict[str, Any]]] = None,
     ) -> List[ProposedAngle]:
         """
         Generate N=5 strategic angles for (persona, offer_variant, optional LP).
@@ -316,12 +360,15 @@ class AngleGeneratorService:
             offer_variant=offer_variant,
             landing_page_summary=landing_page_summary,
             brand_voice=brand_voice,
+            existing_angles=existing_angles,
         )
 
         logger.info(
             f"AngleGeneratorService: generating {n} angles for "
             f"persona_id={persona_id} offer_variant_id={offer_variant_id} "
-            f"lp={'yes' if landing_page_summary else 'no'} model={self.get_model()}"
+            f"lp={'yes' if landing_page_summary else 'no'} "
+            f"existing_to_avoid={len(existing_angles) if existing_angles else 0} "
+            f"model={self.get_model()}"
         )
 
         response = self.anthropic_client.messages.create(
