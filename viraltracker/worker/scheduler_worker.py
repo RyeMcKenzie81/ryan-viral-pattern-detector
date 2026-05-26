@@ -1250,6 +1250,7 @@ async def execute_ad_creation_v2_job(job: Dict) -> Dict[str, Any]:
         # ── Import V2 pipeline and dependencies ─────────────────────────
         from viraltracker.pipelines.ad_creation_v2.orchestrator import run_ad_creation_v2
         from viraltracker.agent.dependencies import AgentDependencies
+        import uuid
 
         deps = AgentDependencies.create(project_name="scheduler_v2")
 
@@ -1257,6 +1258,57 @@ async def execute_ad_creation_v2_job(job: Dict) -> Dict[str, Any]:
         brand_colors_data = None
         if 'brand' in color_modes:
             brand_colors_data = brand_info.get('brand_colors')
+
+        # ── Angle-driven setup (Step 4a + Step 5c integration) ──────────
+        # Stable UUID for this scheduler job — every generated_ads row produced
+        # by this run inherits it via ad_runs.ad_creation_run_id → save_generated_ad
+        # → generated_ads.ad_creation_run_id. Required by the 30-day cross-angle
+        # hook similarity falsifiability report (PLAN.md decision 1C).
+        job_ad_creation_run_id = str(uuid.uuid4())
+
+        # When content_source='angles' (AC2 strategy-first flow), fetch the
+        # chosen angle and build the angle_data dict the V2 pipeline expects.
+        # AC2 = one angle per run, so we use the first angle_id. select_content.py
+        # raises 'angle_data is required' if we don't supply this.
+        scheduler_angle_data = None
+        if content_source == 'angles':
+            angle_ids = params.get('angle_ids') or []
+            if angle_ids:
+                try:
+                    db = get_supabase_client()
+                    row = (
+                        db.table("belief_angles")
+                        .select("id, name, belief_statement, explanation, jtbd_text, "
+                                "pain_points, desired_outcome, status")
+                        .eq("id", angle_ids[0])
+                        .limit(1)
+                        .execute()
+                    )
+                    if row.data:
+                        scheduler_angle_data = row.data[0]
+                        logs.append(f"Loaded angle: {scheduler_angle_data.get('name', '<unnamed>')}")
+                    else:
+                        logs.append(f"⚠️ angle_id {angle_ids[0]} not found in belief_angles")
+                except Exception as e:
+                    logger.error(f"Failed to fetch angle {angle_ids[0]}: {e}")
+                    logs.append(f"⚠️ Could not load angle: {e}")
+            else:
+                logs.append("⚠️ content_source='angles' but no angle_ids in parameters")
+        elif content_source == 'plan':
+            # Plan path: fetch the plan's first angle. Mirrors AC2's "one angle
+            # per run" semantic. Multi-angle plans get executed one angle at a time
+            # via separate scheduled job rows (or the V1 angle-loop path for batch).
+            plan_id = params.get('plan_id')
+            if plan_id:
+                plan = get_belief_plan(plan_id)
+                if plan and plan.get('angles'):
+                    first_angle = plan['angles'][0]
+                    scheduler_angle_data = {
+                        'id': first_angle.get('id'),
+                        'name': first_angle.get('name'),
+                        'belief_statement': first_angle.get('belief_statement'),
+                    }
+                    logs.append(f"Loaded plan '{plan.get('name')}' → angle: {scheduler_angle_data.get('name', '<unnamed>')}")
 
         # ── Template Loop ───────────────────────────────────────────────
         for idx, template in enumerate(templates):
@@ -1334,6 +1386,9 @@ async def execute_ad_creation_v2_job(job: Dict) -> Dict[str, Any]:
                     selection_scorer_breakdown=_sel_scores,
                     selection_composite_score=_sel_scores.get('composite') if _sel_scores else None,
                     selection_mode=_sel_mode,
+                    # Angle-driven flow (Steps 4a + 5c)
+                    angle_data=scheduler_angle_data,
+                    ad_creation_run_id=job_ad_creation_run_id,
                     deps=deps,
                 )
 
