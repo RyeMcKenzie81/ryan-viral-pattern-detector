@@ -92,6 +92,18 @@ class InitializeNode(BaseNode[AdCreationPipelineState]):
             source_template_uuid = UUID(ctx.state.template_id) if ctx.state.template_id else None
 
             ad_creation_run_uuid = UUID(ctx.state.ad_creation_run_id) if ctx.state.ad_creation_run_id else None
+
+            # angle_id stamped from the angle_data the scheduler passed in (PR #195).
+            # One ad_run = one angle in V2's content_source='angles' mode. NULL for
+            # non-angle runs. save_generated_ad() reads this back and stamps every
+            # generated_ads.angle_id under this run automatically.
+            angle_uuid = None
+            if ctx.state.angle_data and ctx.state.angle_data.get("id"):
+                try:
+                    angle_uuid = UUID(ctx.state.angle_data["id"])
+                except (ValueError, TypeError):
+                    pass  # angle_data has malformed id; proceed without stamping
+
             ad_run_id = await ctx.deps.ad_creation.create_ad_run(
                 product_id=product_uuid,
                 reference_ad_storage_path="temp",
@@ -100,6 +112,7 @@ class InitializeNode(BaseNode[AdCreationPipelineState]):
                 generation_config=generation_config,
                 source_scraped_template_id=source_template_uuid,
                 ad_creation_run_id=ad_creation_run_uuid,
+                angle_id=angle_uuid,
             )
             ctx.state.ad_run_id = str(ad_run_id)
 
