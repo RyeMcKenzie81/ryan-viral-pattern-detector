@@ -165,7 +165,7 @@ def get_products_for_brand(brand_id: str):
     try:
         db = get_supabase_client()
         result = db.table("products").select(
-            "*, product_images(id, storage_path, image_analysis, analyzed_at, notes, is_main), product_variants(id, name, slug, variant_type, description, is_default, is_active, display_order)"
+            "*, product_images(id, storage_path, image_analysis, analyzed_at, notes, is_main, asset_tags), product_variants(id, name, slug, variant_type, description, is_default, is_active, display_order)"
         ).eq("brand_id", brand_id).order("name").execute()
 
         # Supported image formats for Vision AI analysis
@@ -491,6 +491,45 @@ def save_image_notes(image_id: str, notes: str):
         return True
     except Exception as e:
         st.error(f"Failed to save notes: {e}")
+        return False
+
+
+# Canonical asset tag vocabulary used by Ad Creator V2 template matching.
+# See viraltracker/services/template_element_service.py for the source of truth.
+ASSET_TAG_OPTIONS = [
+    "product:bottle",
+    "product:jar",
+    "product:bag",
+    "product:box",
+    "product:tube",
+    "product:container",
+    "product:supplements",
+    "product:capsules",
+    "product:powder",
+    "person:man",
+    "person:woman",
+    "person:vet",
+    "person:athlete",
+    "person:expert",
+    "logo",
+    "lifestyle",
+    "packaging",
+    "ingredients",
+]
+
+
+def save_image_asset_tags(image_id: str, tags: list[str]) -> bool:
+    """Save asset tags for an image. Tags are written as a JSONB array."""
+    try:
+        db = get_supabase_client()
+        # Deduplicate and strip whitespace, drop empties
+        clean = sorted({(t or "").strip() for t in tags if (t or "").strip()})
+        db.table("product_images").update({
+            "asset_tags": clean
+        }).eq("id", image_id).execute()
+        return True
+    except Exception as e:
+        st.error(f"Failed to save tags: {e}")
         return False
 
 def resize_image_if_needed(file_bytes: bytes, max_size: int = 2000) -> tuple[bytes, str]:
@@ -3692,6 +3731,55 @@ else:
                                             save_image_notes(img['id'], new_notes)
                                             st.success("Saved!")
                                             st.rerun()
+
+                                # Asset tags editor (images only, not PDFs).
+                                # Drives Ad Creator V2 template matching (required_assets / optional_assets).
+                                if is_image and not is_pdf:
+                                    current_tags = img.get('asset_tags') or []
+                                    if not isinstance(current_tags, list):
+                                        current_tags = []
+                                    # Anything already on the image that isn't in the canonical list
+                                    # stays as an option so we don't drop it.
+                                    options = list(dict.fromkeys(ASSET_TAG_OPTIONS + list(current_tags)))
+                                    with st.expander(
+                                        f"🏷️ Tags ({len(current_tags)})",
+                                        expanded=False,
+                                    ):
+                                        st.caption(
+                                            "Drives ad template matching. "
+                                            "Use `product:bottle`, `product:capsules`, etc."
+                                        )
+                                        selected_tags = st.multiselect(
+                                            "Asset tags",
+                                            options=options,
+                                            default=list(current_tags),
+                                            key=f"tags_select_{img['id']}",
+                                            label_visibility="collapsed",
+                                        )
+                                        custom_tag = st.text_input(
+                                            "Custom tag (optional)",
+                                            value="",
+                                            key=f"tags_custom_{img['id']}",
+                                            placeholder="e.g. product:dropper",
+                                        )
+                                        new_tags = list(selected_tags)
+                                        if custom_tag.strip():
+                                            new_tags.append(custom_tag.strip())
+                                        # Normalize for comparison
+                                        new_set = sorted({t.strip() for t in new_tags if t.strip()})
+                                        current_set = sorted({t.strip() for t in current_tags if t.strip()})
+                                        if new_set != current_set:
+                                            if st.button(
+                                                "Save tags",
+                                                key=f"save_tags_{img['id']}",
+                                                type="primary",
+                                            ):
+                                                if save_image_asset_tags(img['id'], new_set):
+                                                    st.success("Tags saved!")
+                                                    # Invalidate readiness check cache so the
+                                                    # Ad Creator V2 readiness panel refreshes.
+                                                    st.cache_data.clear()
+                                                    st.rerun()
 
                 with tab_stats:
                     # Hooks count
