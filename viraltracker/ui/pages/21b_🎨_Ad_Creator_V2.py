@@ -1147,16 +1147,25 @@ def render_generation_config():
     col1, col2 = st.columns(2)
 
     with col1:
+        # UX-1 consolidation (2026-05-25): dropdown trimmed from 4 modes to 3.
+        # 'belief_first' deprecated and folded into 'angles' (the data migration
+        # in 2026-05-25_angle_driven_ads.sql rewrote in-flight scheduled_jobs
+        # rows). Any stale session-state pointing at 'belief_first' migrates
+        # forward to 'angles' here so the selectbox doesn't choke on a missing
+        # option value.
+        if st.session_state.get("v2_content_source") == "belief_first":
+            st.session_state["v2_content_source"] = "angles"
+
         content_source = st.selectbox(
             "Content source",
-            options=["recreate_template", "belief_first", "plan", "angles"],
+            options=["angles", "plan", "recreate_template"],
             format_func=lambda x: {
-                "recreate_template": "Recreate Template - benefits/USPs",
-                "belief_first": "Belief First - angle-driven",
-                "plan": "Plan - belief plan execution",
-                "angles": "Angles - direct angle injection",
+                "angles": "Strategic Angles (NEW)",
+                "plan": "Plan execution",
+                "recreate_template": "Recreate Template (legacy)",
             }[x],
             key="v2_content_source",
+            help="'Strategic Angles' is the angle-driven flow — generate angles on the Generate Angles page first.",
         )
 
         num_variations = st.slider(
