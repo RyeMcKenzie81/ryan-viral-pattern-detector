@@ -1208,8 +1208,14 @@ def render_generation_config():
         # one-shot semantics clean). When an angle is selected, persona_id +
         # offer_variant_id auto-derive from the angle's source_* fields below.
         if content_source == "angles":
-            angles = get_angles_for_product(product_id)
-            if not angles:
+            # product_id isn't a function param — pull from session state (matches
+            # the existing pattern at line ~714 elsewhere in this file).
+            _angle_product_id = st.session_state.get("v2_product_id")
+            angles = get_angles_for_product(_angle_product_id) if _angle_product_id else []
+            if not _angle_product_id:
+                st.warning("Select a product above before choosing an angle.")
+                st.session_state["v2_selected_angle_id"] = None
+            elif not angles:
                 st.warning(
                     "No saved angles for this product yet. "
                     "Generate some on the 🎯 Generate Angles page first."
