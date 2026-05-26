@@ -493,6 +493,7 @@ class AdCreationService:
         generation_config: Optional[Dict] = None,
         source_scraped_template_id: Optional[UUID] = None,
         ad_creation_run_id: Optional[UUID] = None,
+        angle_id: Optional[UUID] = None,
     ) -> UUID:
         """
         Create new ad run record.
@@ -532,6 +533,9 @@ class AdCreationService:
 
         if ad_creation_run_id:
             data["ad_creation_run_id"] = str(ad_creation_run_id)
+
+        if angle_id:
+            data["angle_id"] = str(angle_id)
 
         result = self.supabase.table("ad_runs").insert(data).execute()
         ad_run_id = UUID(result.data[0]["id"])
@@ -779,19 +783,31 @@ class AdCreationService:
         # avoid paying for embeddings on traffic that won't use them.
         # =====================================================================
 
-        # Pull ad_creation_run_id from the parent ad_run (single SELECT, cheap)
+        # Pull ad_creation_run_id + angle_id from the parent ad_run (single SELECT, cheap).
+        # angle_id is the source-of-truth path for stamping generated_ads.angle_id without
+        # threading the param through every save_generated_ad call site in the V2 nodes
+        # (review_ads, defect_scan, retry_rejected). Same pattern as ad_creation_run_id.
+        # Caller-provided angle_id wins if the call site explicitly passes it (rare —
+        # most V2 paths don't, hence this auto-derivation).
         try:
             ad_run_result = (
                 self.supabase.table("ad_runs")
-                .select("ad_creation_run_id")
+                .select("ad_creation_run_id, angle_id")
                 .eq("id", str(ad_run_id))
                 .limit(1)
                 .execute()
             )
-            if ad_run_result.data and ad_run_result.data[0].get("ad_creation_run_id"):
-                data["ad_creation_run_id"] = ad_run_result.data[0]["ad_creation_run_id"]
+            if ad_run_result.data:
+                ar = ad_run_result.data[0]
+                if ar.get("ad_creation_run_id"):
+                    data["ad_creation_run_id"] = ar["ad_creation_run_id"]
+                # Only override if the caller didn't already supply angle_id (line ~714
+                # in the angle_id-handling block above sets data["angle_id"] when caller
+                # passes it explicitly).
+                if ar.get("angle_id") and "angle_id" not in data:
+                    data["angle_id"] = ar["angle_id"]
         except Exception as e:
-            logger.warning(f"Failed to fetch ad_creation_run_id for ad_run {ad_run_id}: {e}")
+            logger.warning(f"Failed to fetch ad_run metadata for {ad_run_id}: {e}")
 
         # Embed hook_text inline if we're under the angle-driven flow and no
         # pre-computed embedding was passed. Best-effort: on embedding failure
