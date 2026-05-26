@@ -179,9 +179,34 @@ AC2 modification (`viraltracker/ui/pages/21b_🎨_Ad_Creator_V2.py:1150`):
 
 ### Step 6 — E2E test + final wiring
 
-**File:** `tests/e2e/test_angle_driven_flow.py` (NEW)
+**Status: not being built for V1 (decision 2026-05-26).**
 
-Happy path: open Generate Angles page → fill inputs → generate → save 3 of 5 → click Continue → AC2 opens with 3 pre-selected → run ads with M=3 each → assert 9 `generated_ads` rows with `angle_id` + `hook_embedding` + `ad_creation_run_id` populated.
+Original intent: `tests/e2e/test_angle_driven_flow.py` simulating the happy
+path — open Generate Angles → fill inputs → generate → save 3 of 5 → click
+Continue → AC2 opens with 3 pre-selected → run ads with M=3 each → assert
+9 `generated_ads` rows with `angle_id` + `hook_embedding` + `ad_creation_run_id`
+populated.
+
+**Why we're skipping:**
+- Streamlit E2E tests are expensive to build (need Playwright/browser driver),
+  slow to run, flaky in CI, and either hit real Opus (cost) or mock it (loses
+  most of the integration value).
+- All session-1 bugs (UnboundLocalError, LP schema mismatch, duplicate hooks,
+  missing angle_id stamping) were caught manually within ~5-15 min each. The
+  cost of NOT having E2E is "occasional manual debug sessions like 2026-05-26,"
+  which is acceptable for V1.
+- Two cheaper alternatives are documented as future options if regressions
+  become a real problem:
+  - **Option A (service-level integration test, ~10 sec runtime):** skip
+    Streamlit entirely, call AngleGeneratorService directly with a mocked
+    Opus, invoke the scheduler `content_source='angles'` path, assert on the
+    three new generated_ads columns. Covers the wiring bugs without the UI
+    test infrastructure.
+  - **Option B (nightly SQL smoke check):** single query that asserts "in
+    the last 24h, every ad with content_source='angles' has the three new
+    columns populated." Alerts via Slack/logfire on failure. ~20 lines.
+
+Revisit if production regressions start happening monthly or more.
 
 ---
 
