@@ -49,7 +49,17 @@ def get_supabase_client():
     return get_supabase_client()
 
 def _get_product_ids_for_org(db, org_id: str) -> list:
-    """Get all product IDs belonging to brands in an organization."""
+    """Get all product IDs belonging to brands in an organization.
+
+    Superuser-safe: when org_id is the literal string "all" (the superuser
+    "view everything" sentinel), skip the organization_id filter and return
+    every product in the system. Otherwise organization_id is a UUID column
+    and Postgres rejects the string "all" with a 22P02 invalid-syntax error.
+    """
+    if org_id == "all":
+        products = db.table("products").select("id").execute()
+        return [p['id'] for p in products.data]
+
     brands = db.table("brands").select("id").eq("organization_id", org_id).execute()
     brand_ids = [b['id'] for b in brands.data]
     if not brand_ids:
