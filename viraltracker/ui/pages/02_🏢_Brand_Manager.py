@@ -532,6 +532,59 @@ def save_image_asset_tags(image_id: str, tags: list[str]) -> bool:
         st.error(f"Failed to save tags: {e}")
         return False
 
+
+def bulk_save_image_asset_tags(
+    image_ids: list[str],
+    tags: list[str],
+    mode: str = "add",
+) -> int:
+    """Apply tags to multiple images at once.
+
+    Args:
+        image_ids: List of product_image UUIDs to tag.
+        tags: New tags to apply.
+        mode: "add" to union with existing tags, "replace" to overwrite.
+
+    Returns:
+        Number of image rows actually updated (skips no-op writes in add mode).
+    """
+    if not image_ids or not tags:
+        return 0
+
+    db = get_supabase_client()
+    clean_tags = sorted({(t or "").strip() for t in tags if (t or "").strip()})
+    if not clean_tags:
+        return 0
+
+    updated = 0
+    try:
+        if mode == "replace":
+            # Single batched update for all targeted images
+            db.table("product_images").update({
+                "asset_tags": clean_tags
+            }).in_("id", image_ids).execute()
+            updated = len(image_ids)
+        else:
+            # Add mode: read current tags, union, write back per image (only if changed)
+            result = db.table("product_images").select(
+                "id, asset_tags"
+            ).in_("id", image_ids).execute()
+            for row in (result.data or []):
+                existing = row.get("asset_tags") or []
+                if not isinstance(existing, list):
+                    existing = []
+                merged = sorted({*existing, *clean_tags})
+                if sorted(existing) != merged:
+                    db.table("product_images").update({
+                        "asset_tags": merged
+                    }).eq("id", row["id"]).execute()
+                    updated += 1
+    except Exception as e:
+        st.error(f"Failed to bulk-update tags: {e}")
+        return updated
+
+    return updated
+
 def resize_image_if_needed(file_bytes: bytes, max_size: int = 2000) -> tuple[bytes, str]:
     """
     Resize image if larger than max_size pixels on longest side.
@@ -3641,6 +3694,115 @@ else:
                                             st.error(f"Failed to analyze {img['storage_path']}: {e}")
                                     st.success("Analysis complete!")
                                     st.rerun()
+
+                        # Bulk asset tag editor: apply the same tags to many images at once
+                        taggable_images = [
+                            i for i in images
+                            if i.get('is_image', True) and not i.get('is_pdf', False)
+                        ]
+                        if taggable_images:
+                            with st.expander(
+                                f"🏷️ Tag all images ({len(taggable_images)})",
+                                expanded=False,
+                            ):
+                                st.caption(
+                                    "Apply the same tags to multiple images at once. "
+                                    "Useful when most photos show the same form factor "
+                                    "(e.g., all bottle shots get `product:bottle`)."
+                                )
+
+                                bulk_selected = st.multiselect(
+                                    "Tags to apply",
+                                    options=ASSET_TAG_OPTIONS,
+                                    key=f"bulk_tags_select_{product_id}",
+                                )
+                                bulk_custom = st.text_input(
+                                    "Custom tag (optional)",
+                                    value="",
+                                    key=f"bulk_tags_custom_{product_id}",
+                                    placeholder="e.g. product:dropper",
+                                )
+
+                                opt_col1, opt_col2 = st.columns(2)
+                                with opt_col1:
+                                    bulk_mode_label = st.radio(
+                                        "Mode",
+                                        options=["Add to existing", "Replace existing"],
+                                        index=0,
+                                        key=f"bulk_tags_mode_{product_id}",
+                                        help=(
+                                            "Add keeps current tags and unions the new ones. "
+                                            "Replace overwrites current tags entirely."
+                                        ),
+                                    )
+                                with opt_col2:
+                                    bulk_scope_label = st.radio(
+                                        "Apply to",
+                                        options=["All images", "Only untagged images"],
+                                        index=0,
+                                        key=f"bulk_tags_scope_{product_id}",
+                                    )
+
+                                bulk_tag_list = list(bulk_selected)
+                                if bulk_custom.strip():
+                                    bulk_tag_list.append(bulk_custom.strip())
+
+                                if bulk_tag_list:
+                                    if bulk_scope_label == "Only untagged images":
+                                        target_ids = [
+                                            i['id'] for i in taggable_images
+                                            if not (i.get('asset_tags') or [])
+                                        ]
+                                    else:
+                                        target_ids = [i['id'] for i in taggable_images]
+
+                                    if not target_ids:
+                                        st.info("No matching images for the selected scope.")
+                                    else:
+                                        mode_key = (
+                                            "replace"
+                                            if bulk_mode_label.startswith("Replace")
+                                            else "add"
+                                        )
+                                        is_replace = mode_key == "replace"
+
+                                        # Replace is destructive: require explicit confirmation
+                                        confirmed = True
+                                        if is_replace:
+                                            confirmed = st.checkbox(
+                                                "I understand this will overwrite existing tags on these images.",
+                                                value=False,
+                                                key=f"bulk_tags_confirm_{product_id}",
+                                            )
+
+                                        action = "Replace tags on" if is_replace else "Add tags to"
+                                        button_label = (
+                                            f"{action} {len(target_ids)} "
+                                            f"image{'s' if len(target_ids) != 1 else ''}"
+                                        )
+                                        button_disabled = is_replace and not confirmed
+
+                                        if st.button(
+                                            button_label,
+                                            key=f"bulk_tags_apply_{product_id}",
+                                            type="primary",
+                                            disabled=button_disabled,
+                                        ):
+                                            count = bulk_save_image_asset_tags(
+                                                target_ids, bulk_tag_list, mode=mode_key,
+                                            )
+                                            if count > 0:
+                                                st.success(
+                                                    f"Tagged {count} image"
+                                                    f"{'s' if count != 1 else ''}."
+                                                )
+                                                st.cache_data.clear()
+                                                st.rerun()
+                                            else:
+                                                st.info(
+                                                    "No changes needed. "
+                                                    "All targeted images already had these tags."
+                                                )
 
                         # Show main image indicator
                         main_image = next((i for i in images if i.get('is_main')), None)
