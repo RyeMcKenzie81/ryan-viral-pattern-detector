@@ -478,6 +478,7 @@ class AngleGeneratorService:
                     "jtbd_text": angle.jtbd_text,
                     "pain_points": angle.pain_points,
                     "desired_outcome": angle.desired_outcome,
+                    "emotional_register": angle.emotional_register,
                     "generation_method": prompt_version,
                     "source_persona_id": str(persona_id),
                     "source_offer_variant_id": str(offer_variant_id),
