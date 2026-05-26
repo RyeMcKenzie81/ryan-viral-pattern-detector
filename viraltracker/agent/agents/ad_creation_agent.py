@@ -415,7 +415,7 @@ async def analyze_product_image(
         analysis = json.loads(response_text)
 
         # Add metadata
-        analysis["analysis_model"] = "gemini-2.0-flash"
+        analysis["analysis_model"] = "gemini-flash-latest"
         analysis["analysis_version"] = "v2"
 
         logger.info(f"Image analysis complete. Quality: {analysis.get('quality_score')}, "

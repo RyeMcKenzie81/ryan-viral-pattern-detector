@@ -167,7 +167,7 @@ class VideoAnalysis(BaseModel):
     platform_specific_metrics: Optional[Dict[str, Any]] = None
 
     # Metadata
-    analysis_model: str = "gemini-2.5-flash"
+    analysis_model: str = "gemini-flash-latest"
     analysis_tokens_used: Optional[int] = None
     processing_time_sec: Optional[float] = None
     created_at: datetime
@@ -197,7 +197,7 @@ class ProductAdaptation(BaseModel):
     production_notes: Optional[str] = None
 
     # Metadata
-    ai_model: str = "gemini-2.5-flash"
+    ai_model: str = "gemini-flash-latest"
     ai_tokens_used: Optional[int] = None
     created_at: datetime
     updated_at: datetime

@@ -21,7 +21,7 @@ from viraltracker.core.database import get_supabase_client
 logger = logging.getLogger(__name__)
 
 # Gemini model for classification tasks (fast + cheap)
-GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_MODEL = "gemini-flash-latest"
 
 # Supported image extensions (Gemini-compatible — GIF not supported in 2.0+)
 IMAGE_EXTENSIONS = {"jpg", "jpeg", "png", "webp", "heic", "heif"}

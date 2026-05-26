@@ -86,7 +86,7 @@ class DefectScanService:
         from viraltracker.services.gemini_service import GeminiService
 
         start_time = time.time()
-        model_name = "gemini-2.0-flash"
+        model_name = "gemini-flash-latest"
 
         try:
             gemini = GeminiService()
@@ -133,7 +133,7 @@ class DefectScanService:
         from viraltracker.services.gemini_service import GeminiService
 
         start_time = time.time()
-        model_name = "gemini-2.0-flash"
+        model_name = "gemini-flash-latest"
 
         try:
             gemini = GeminiService()
