@@ -1253,22 +1253,23 @@ def render_generation_config():
                          "strategic intent.",
                 )
 
-                # Override persona + offer based on the selected angle. The angle
-                # carries its source_persona_id and source_offer_variant_id; those
-                # become the run's persona/offer regardless of any earlier manual
-                # selection. The downstream persona/offer selectors will still
-                # render but should reflect the angle's values.
+                # The angle carries its source_persona_id and source_offer_variant_id.
+                # Streamlit blocks writing to widget-bound session_state keys after
+                # those widgets have rendered (persona + offer selectboxes render
+                # higher up the page in earlier sections). So instead of overriding
+                # session_state here, the submit handler (build_parameters) reads
+                # the selected angle and overrides parameters['persona_id'] +
+                # parameters['offer_variant_id'] at job-submission time. UI shows
+                # what the user picked manually; the submitted job uses the angle's
+                # source values. The caption below makes that explicit.
                 selected = angle_by_id[st.session_state["v2_selected_angle_id"]]
-                if selected.get("source_persona_id"):
-                    st.session_state["v2_persona_id"] = selected["source_persona_id"]
-                if selected.get("source_offer_variant_id"):
-                    st.session_state["v2_offer_variant_id"] = selected["source_offer_variant_id"]
 
                 with st.expander("Angle preview", expanded=False):
                     st.markdown(f"**Belief:** {selected.get('belief_statement', '')}")
                     st.caption(
                         f"Status: `{selected.get('status', 'untested')}` · "
-                        f"Persona + offer below are derived from this angle."
+                        f"This angle's source persona and offer variant override "
+                        f"whatever's picked in the selectors above when the job submits."
                     )
 
         num_variations = st.slider(
@@ -1508,10 +1509,35 @@ def _handle_submit():
     # the scheduler worker, which loops it through templates × variations and
     # populates generated_ads.angle_id on every produced row (PR #187).
     # AC2 = one angle per run, so the list always has 0 or 1 entry.
+    #
+    # The angle's source_persona_id + source_offer_variant_id ALSO override the
+    # user-selected persona/offer at submit time. We can't override the widget
+    # values in session_state without crashing (Streamlit blocks post-render
+    # writes to widget-bound keys), so the override happens here in the
+    # parameters dict instead. The UI's selectors are decorative when an angle
+    # is picked; the angle is the source of truth.
     if parameters['content_source'] == 'angles':
         selected_angle_id = st.session_state.get('v2_selected_angle_id')
         if selected_angle_id:
             parameters['angle_ids'] = [selected_angle_id]
+            # Look up the angle row to derive persona + offer
+            try:
+                db = get_supabase_client()
+                angle_row = (
+                    db.table("belief_angles")
+                    .select("source_persona_id, source_offer_variant_id")
+                    .eq("id", selected_angle_id)
+                    .limit(1)
+                    .execute()
+                )
+                if angle_row.data:
+                    src = angle_row.data[0]
+                    if src.get("source_persona_id"):
+                        parameters['persona_id'] = src["source_persona_id"]
+                    if src.get("source_offer_variant_id"):
+                        parameters['offer_variant_id'] = src["source_offer_variant_id"]
+            except Exception as e:
+                logger.warning(f"Could not derive persona/offer from angle {selected_angle_id}: {e}")
 
     # Normalize current_offer_override — strip whitespace, treat empty/blank as None
     raw_override = st.session_state.get('v2_current_offer_override', '')
