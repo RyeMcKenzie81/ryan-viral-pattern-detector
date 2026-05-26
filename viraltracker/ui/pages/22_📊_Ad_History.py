@@ -244,6 +244,154 @@ def get_status_badge(status: str) -> str:
     color = colors.get(status, '#6c757d')
     return f"<span style='background:{color};color:white;padding:2px 8px;border-radius:4px;font-size:12px;'>{status}</span>"
 
+# =====================================================================
+# Review-detail rendering
+#
+# Two review schemas exist on generated_ads.claude_review / .gemini_review:
+#
+#   Legacy V1 shape:
+#       {overall_quality, status, notes, product_issues[], text_issues[], ai_artifacts[]}
+#
+#   V2 shape (current — all angle-driven ads land here):
+#       {final_status, weighted_score, auto_rejected_check,
+#        review_check_scores: {V1-V9, C1-C5, G1-G2},
+#        stage2_result: {scores, weighted}, stage3_result: {...} | null}
+#
+# The old renderer assumed V1, so V2 ads showed "Claude: N/A" with no
+# explanation. _render_review_details below dispatches on shape and shows
+# the right thing — weighted score, the auto-reject reason translated to
+# human language, and weak dimensions for V2; the original fields for V1.
+#
+# Check codes come from viraltracker/pipelines/ad_creation_v2/services/review_service.py:493-516
+# =====================================================================
+
+CHECK_LABELS = {
+    # Visual checks
+    "V1": "Product accuracy",
+    "V2": "Text readability",
+    "V3": "Layout accuracy",
+    "V4": "Color consistency",
+    "V5": "Spacing/alignment",
+    "V6": "Image resolution",
+    "V7": "Background quality",
+    "V8": "Font quality",
+    "V9": "AI artifacts (extra fingers, distortions)",
+    # Content checks
+    "C1": "Hook effectiveness",
+    "C2": "Brand consistency",
+    "C3": "CTA clarity",
+    "C4": "Message coherence",
+    "C5": "Offer accuracy (no hallucinated discounts)",
+    # Congruence checks
+    "G1": "Headline-offer alignment",
+    "G2": "Visual-message alignment",
+}
+
+WEAK_SCORE_THRESHOLD = 5.0
+
+
+def _is_v2_review(review: dict) -> bool:
+    """Detect the V2 staged-review schema by looking for its load-bearing keys."""
+    if not review:
+        return False
+    return (
+        review.get("weighted_score") is not None
+        or review.get("review_check_scores")
+        or review.get("stage2_result")
+    )
+
+
+def _review_score(review: dict) -> str:
+    """Single short display string for the review's headline score.
+
+    V2: 'weighted_score' (or stage2_result.weighted). V1: 'overall_quality'.
+    Returns '—' when no review, 'N/A' when neither shape resolves.
+    """
+    if not review:
+        return "—"
+    v2 = review.get("weighted_score")
+    if v2 is None:
+        v2 = (review.get("stage2_result") or {}).get("weighted")
+    if isinstance(v2, (int, float)):
+        return f"{v2:.1f}"
+    v1 = review.get("overall_quality")
+    if isinstance(v1, (int, float)):
+        return f"{v1:.1f}"
+    return str(v1) if v1 else "N/A"
+
+
+def _render_v2_review(label: str, review: dict) -> None:
+    """Render a V2 staged review with weighted score, auto-reject reason, weak dimensions."""
+    weighted = review.get("weighted_score")
+    if weighted is None:
+        weighted = (review.get("stage2_result") or {}).get("weighted")
+    scores = review.get("review_check_scores") or (review.get("stage2_result") or {}).get("scores", {})
+    auto_reject = review.get("auto_rejected_check")
+    final_status = review.get("final_status")
+
+    header = f"**{label}**"
+    if isinstance(weighted, (int, float)):
+        header += f": {weighted:.2f}/10"
+    if final_status:
+        header += f"  ·  status: `{final_status}`"
+    st.markdown(header)
+
+    if auto_reject:
+        reason = CHECK_LABELS.get(auto_reject, auto_reject)
+        score = scores.get(auto_reject)
+        score_str = f"(scored {score:.1f}/10)" if isinstance(score, (int, float)) else ""
+        st.error(f"🚫 Auto-rejected on **{auto_reject}** — {reason} {score_str}")
+
+    weak = sorted(
+        [(k, v) for k, v in (scores or {}).items()
+         if isinstance(v, (int, float)) and v < WEAK_SCORE_THRESHOLD],
+        key=lambda x: x[1],
+    )
+    if weak:
+        st.markdown(f"**Weak dimensions (scored < {WEAK_SCORE_THRESHOLD:.0f}/10):**")
+        for k, v in weak:
+            human = CHECK_LABELS.get(k, k)
+            st.markdown(f"- **{k}** — {human}: {v:.1f}/10")
+
+    stage3 = review.get("stage3_result")
+    if isinstance(stage3, dict):
+        notes = stage3.get("notes") or stage3.get("explanation") or stage3.get("analysis")
+        if notes:
+            st.markdown("**Detailed analysis:**")
+            st.caption(str(notes))
+
+
+def _render_v1_review(label: str, review: dict) -> None:
+    """Render the legacy V1 review shape (overall_quality + categorical issue lists)."""
+    rev_status = review.get("status", "N/A")
+    st.markdown(f"**{label}:** {rev_status}")
+    if review.get("notes"):
+        st.caption(review["notes"])
+    for key, heading in [("product_issues", "Product Issues"),
+                         ("text_issues", "Text Issues"),
+                         ("ai_artifacts", "AI Artifacts")]:
+        items = review.get(key, [])
+        if items:
+            st.markdown(f"_{heading}:_ " + ", ".join(items))
+
+
+def _render_review_details(claude_review: dict, gemini_review: dict) -> None:
+    """Render the body of the 'Review Details' expander.
+
+    Dispatches each review to the right renderer based on shape. Skips reviews
+    that are entirely empty (e.g. V2 doesn't use Gemini → gemini_review is null,
+    no point showing 'Gemini: nothing').
+    """
+    for label, rev in [("Claude", claude_review), ("Gemini", gemini_review)]:
+        if not rev:
+            continue
+        if _is_v2_review(rev):
+            _render_v2_review(label, rev)
+        else:
+            _render_v1_review(label, rev)
+        st.write("")  # vertical breathing room between reviewer blocks
+
+
 def get_ad_creation_service():
     """Get AdCreationService instance."""
     from viraltracker.services.ad_creation_service import AdCreationService
@@ -1263,32 +1411,26 @@ else:
                                         display_text = hook_text[:80] + "..." if len(hook_text) > 80 else hook_text
                                         st.caption(f"_{display_text}_")
 
-                                    # Review scores
+                                    # Review scores — shape-aware. V2 reviews (current pipeline)
+                                    # use weighted_score; legacy V1 uses overall_quality.
+                                    # _review_score / _render_review_details handle both.
+                                    # V2 has Claude only (no Gemini), so the summary line skips
+                                    # Gemini entirely when its review is empty to avoid noisy
+                                    # "Gemini: N/A" on every modern ad.
                                     claude_review = ad.get('claude_review') or {}
                                     gemini_review = ad.get('gemini_review') or {}
 
-                                    claude_score = claude_review.get('overall_quality', 'N/A')
-                                    gemini_score = gemini_review.get('overall_quality', 'N/A')
-
+                                    claude_str = _review_score(claude_review)
+                                    summary_parts = [f"Claude: {claude_str}"]
+                                    if gemini_review:
+                                        summary_parts.append(f"Gemini: {_review_score(gemini_review)}")
                                     agree_icon = "✅" if ad.get('reviewers_agree') else "⚠️"
-                                    st.caption(f"Claude: {claude_score} | Gemini: {gemini_score} {agree_icon}")
+                                    st.caption(" | ".join(summary_parts) + f" {agree_icon}")
 
                                     # Show rejection/flagged reasons
                                     if ad_status in ('rejected', 'flagged', 'needs_revision'):
                                         with st.expander("Review Details"):
-                                            for label, rev in [("Claude", claude_review), ("Gemini", gemini_review)]:
-                                                if not rev:
-                                                    continue
-                                                rev_status = rev.get('status', 'N/A')
-                                                st.markdown(f"**{label}:** {rev_status}")
-                                                if rev.get('notes'):
-                                                    st.caption(rev['notes'])
-                                                for key, heading in [('product_issues', 'Product Issues'),
-                                                                     ('text_issues', 'Text Issues'),
-                                                                     ('ai_artifacts', 'AI Artifacts')]:
-                                                    items = rev.get(key, [])
-                                                    if items:
-                                                        st.markdown(f"_{heading}:_ " + ", ".join(items))
+                                            _render_review_details(claude_review, gemini_review)
 
                                     # Rerun button for rejected/flagged non-variant ads
                                     if ad_status in ('rejected', 'flagged') and ad.get('id') and not ad.get('parent_ad_id'):
