@@ -814,6 +814,144 @@ Write the adapted headline:"""
         result = await agent.run(prompt)
         return _sanitize_dashes(result.output.strip().strip('"').strip("'"))
 
+    async def generate_belief_hook_variations(
+        self,
+        belief_statement: str,
+        angle_data: Dict[str, Any],
+        product: Dict[str, Any],
+        persona_data: Optional[Dict[str, Any]] = None,
+        n_variations: int = 5,
+    ) -> List[Dict[str, Any]]:
+        """
+        Generate N distinct ~15-word ad hooks from an angle's belief statement.
+
+        Bug fix (2026-05-26): the V2 angle-driven path in select_content was
+        copying the belief_statement verbatim into N variations, producing
+        N byte-identical ads. The belief is the underlying strategic claim
+        (~300+ chars); the hook is a 4-second scroll-stopper (~15 words / 50-100
+        chars). They're not the same thing. This method generates N actual
+        hooks from the belief context — different phrasings, same underlying
+        strategy.
+
+        Args:
+            belief_statement: The angle's core belief (the strategic claim).
+            angle_data: The full angle dict (name, jtbd_text, pain_points,
+                desired_outcome, emotional_register, explanation). Used as
+                additional context for hook generation.
+            product: Product dict for brand/category context.
+            persona_data: Optional persona for tone calibration.
+            n_variations: How many distinct hooks to produce.
+
+        Returns:
+            List of dicts: [{"text": "...", "rationale": "..."}, ...]
+            Length == n_variations on success.
+
+        Raises:
+            ValueError if Opus returns malformed JSON or wrong count.
+        """
+        from pydantic_ai import Agent
+        from viraltracker.core.config import Config
+
+        persona_blurb = ""
+        if persona_data:
+            persona_name = persona_data.get("name", "")
+            persona_blurb = f"\nPERSONA: {persona_name}"
+            if persona_data.get("desires"):
+                # Just first desire category, first item, to keep prompt tight
+                try:
+                    first_cat = next(iter(persona_data["desires"].values()))
+                    if first_cat and isinstance(first_cat, list):
+                        first_item = first_cat[0].get("text") if isinstance(first_cat[0], dict) else None
+                        if first_item:
+                            persona_blurb += f"\nPERSONA TOP DESIRE: {first_item}"
+                except (StopIteration, AttributeError, IndexError, TypeError):
+                    pass
+
+        prompt = f"""You are a direct response copywriter generating Facebook ad hooks.
+
+A HOOK is the first 4 seconds of an ad. It exists to STOP THE SCROLL — not to
+sell the product, not to make the offer. Hooks are 15 words or fewer (~50-100
+chars). They're punchy, specific, in the persona's voice, and ideally provoke
+curiosity or recognition.
+
+You're producing {n_variations} DISTINCT hook variations for the same underlying
+strategic angle. Each variation must:
+- Stand alone (no "see ad above" or "click below" — just the hook)
+- Be 4 seconds / ~15 words / 50-100 chars
+- Express the SAME underlying belief but with DIFFERENT phrasing, opening device,
+  or angle of attack (question vs statement, pain-led vs outcome-led, second
+  person vs third person, specificity vs reframe, etc.)
+- NOT use offers, discounts, percentages, or promotional language unless the
+  belief itself includes those
+- NEVER use em dashes (—). Use commas, periods, or hyphens (-) instead.
+
+UNDERLYING BELIEF (the strategic claim — do NOT copy verbatim):
+{belief_statement}
+
+ANGLE CONTEXT:
+- Name: {angle_data.get('name', '')}
+- JTBD: {angle_data.get('jtbd_text', '')}
+- Desired outcome: {angle_data.get('desired_outcome', '')}
+- Emotional register: {angle_data.get('emotional_register', '')}
+- Pain points: {', '.join(angle_data.get('pain_points', []) or [])}
+
+PRODUCT: {product.get('name', '')}
+{persona_blurb}
+
+Return ONLY a JSON array of {n_variations} objects, each with:
+  - "text": the hook copy (15 words max)
+  - "rationale": one sentence — what variation lever you pulled vs the others
+
+No markdown fences. No preamble. Just the JSON array."""
+
+        agent = Agent(
+            model=Config.get_model("CREATIVE"),
+            system_prompt="You are a direct response copywriter. Return only valid JSON.",
+        )
+
+        result = await agent.run(prompt)
+        raw = result.output.strip()
+
+        # Tolerate accidental markdown fences
+        if raw.startswith("```"):
+            raw = re.sub(r"^```(?:json)?\s*", "", raw)
+            raw = re.sub(r"\s*```$", "", raw)
+
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError as e:
+            raise ValueError(
+                f"generate_belief_hook_variations: LLM returned non-JSON. "
+                f"First 200 chars: {raw[:200]!r}"
+            ) from e
+
+        if not isinstance(parsed, list):
+            raise ValueError(
+                f"generate_belief_hook_variations: expected JSON array, got {type(parsed).__name__}"
+            )
+
+        # Defensive: sanitize each hook
+        hooks: List[Dict[str, Any]] = []
+        for i, item in enumerate(parsed):
+            if not isinstance(item, dict) or not item.get("text"):
+                logger.warning(f"Skipping malformed hook variation #{i+1}: {item!r}")
+                continue
+            hooks.append({
+                "text": _sanitize_dashes(str(item["text"]).strip()),
+                "rationale": str(item.get("rationale", "")).strip(),
+            })
+
+        if not hooks:
+            raise ValueError(
+                f"generate_belief_hook_variations: all {len(parsed)} variations failed validation"
+            )
+
+        logger.info(
+            f"Generated {len(hooks)} hook variations from belief "
+            f"(requested {n_variations})"
+        )
+        return hooks
+
     def select_product_images(
         self,
         product_image_paths: List[str],

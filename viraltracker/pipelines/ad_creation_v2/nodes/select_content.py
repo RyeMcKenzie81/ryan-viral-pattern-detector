@@ -171,32 +171,77 @@ class SelectContentNode(BaseNode[AdCreationPipelineState]):
                     ctx.state.template_angle = template_angle
 
                 # Build hook-like structures from angle data
-                selected_hooks = []
+                #
+                # BUG FIX (2026-05-26): the previous implementation copied
+                # belief_statement verbatim into all N variations, producing
+                # byte-identical hooks across every ad in the batch. The belief
+                # is the strategic claim (~300+ chars), the hook is a 15-word
+                # scroll-stopper — they're different things. Now we call
+                # generate_belief_hook_variations() to produce N distinct ~15-word
+                # hooks FROM the belief.
                 belief_text = angle_data.get("belief_statement", "")
 
-                for i in range(ctx.state.num_variations):
-                    if template_angle and ctx.state.match_template_structure:
+                if template_angle and ctx.state.match_template_structure:
+                    # Template-structure mode keeps the existing per-variation
+                    # adapt_belief_to_template loop. That function takes
+                    # variation_number and already produces variation-aware
+                    # output, so it doesn't have the dupe-hook bug.
+                    selected_hooks = []
+                    for i in range(ctx.state.num_variations):
                         adapted_text = await content_service.adapt_belief_to_template(
                             belief_statement=belief_text,
                             template_angle=template_angle,
                             product=ctx.state.product_dict,
                             variation_number=i + 1
                         )
-                        content_type = "belief_angle_templated"
-                    else:
+                        selected_hooks.append({
+                            "hook_id": angle_data.get("id", ""),
+                            "hook_text": adapted_text,            # <-- was belief_text (the bug)
+                            "adapted_text": adapted_text,
+                            "angle_name": angle_data.get("name", ""),
+                            "explanation": angle_data.get("explanation", ""),
+                            "variation_number": i + 1,
+                            "content_type": "belief_angle_templated"
+                        })
+                else:
+                    # Default angle-driven mode: generate N distinct hooks via
+                    # one LLM call. Each variation gets a different hook string;
+                    # hook_text on every variation is the variation's own hook
+                    # (not the underlying belief). Falls back gracefully if the
+                    # LLM call fails — we still produce N variations from the
+                    # belief text rather than blocking the whole job.
+                    try:
+                        hook_variations = await content_service.generate_belief_hook_variations(
+                            belief_statement=belief_text,
+                            angle_data=angle_data,
+                            product=ctx.state.product_dict,
+                            persona_data=ctx.state.persona_data,
+                            n_variations=ctx.state.num_variations,
+                        )
+                    except Exception as hook_err:
+                        logger.error(
+                            f"generate_belief_hook_variations failed ({hook_err}); "
+                            f"falling back to belief_text for all {ctx.state.num_variations} variations"
+                        )
                         from ..services.content_service import _sanitize_dashes
-                        adapted_text = _sanitize_dashes(belief_text)
-                        content_type = "belief_angle"
+                        fallback = _sanitize_dashes(belief_text)
+                        hook_variations = [
+                            {"text": fallback, "rationale": "fallback (hook generator failed)"}
+                            for _ in range(ctx.state.num_variations)
+                        ]
 
-                    selected_hooks.append({
-                        "hook_id": angle_data.get("id", ""),
-                        "hook_text": belief_text,
-                        "adapted_text": adapted_text,
-                        "angle_name": angle_data.get("name", ""),
-                        "explanation": angle_data.get("explanation", ""),
-                        "variation_number": i + 1,
-                        "content_type": content_type
-                    })
+                    selected_hooks = []
+                    for i, hv in enumerate(hook_variations[:ctx.state.num_variations]):
+                        selected_hooks.append({
+                            "hook_id": angle_data.get("id", ""),
+                            "hook_text": hv["text"],
+                            "adapted_text": hv["text"],
+                            "angle_name": angle_data.get("name", ""),
+                            "explanation": angle_data.get("explanation", ""),
+                            "rationale": hv.get("rationale", ""),
+                            "variation_number": i + 1,
+                            "content_type": "belief_angle",
+                        })
 
                 ctx.state.selected_hooks = selected_hooks
                 logger.info(f"Created {len(selected_hooks)} belief-based variations")
