@@ -29,7 +29,7 @@ st.set_page_config(
 from viraltracker.ui.auth import require_auth
 require_auth()
 from viraltracker.ui.utils import render_brand_selector, require_feature
-require_feature("ad_creator", "Generate Angles")
+require_feature("generate_angles", "Generate Angles")
 
 
 # ============================================
