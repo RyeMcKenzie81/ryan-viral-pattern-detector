@@ -65,13 +65,14 @@ class GeminiService:
     - Usage tracking for billing (optional)
     """
 
-    def __init__(self, api_key: Optional[str] = None, model: str = "gemini-2.5-flash"):
+    def __init__(self, api_key: Optional[str] = None, model: str = "gemini-flash-latest"):
         """
         Initialize Gemini service.
 
         Args:
             api_key: Gemini API key (if None, uses Config.GEMINI_API_KEY)
-            model: Gemini model to use (default: gemini-2.5-flash for speed/cost)
+            model: Gemini model to use (default: gemini-flash-latest, which is
+                Google's rolling alias to the latest stable Flash model).
 
         Raises:
             ValueError: If API key not found

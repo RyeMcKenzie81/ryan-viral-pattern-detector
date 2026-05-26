@@ -463,7 +463,7 @@ class MetaWinnerImportService:
         """
         from viraltracker.services.gemini_service import GeminiService
 
-        gemini = GeminiService(model="gemini-2.5-flash")
+        gemini = GeminiService(model="gemini-flash-latest")
 
         copy_context = ""
         if ad_copy:

@@ -121,6 +121,8 @@ class Config:
         "models/gemini-3-flash-preview": (0.15, 0.60),
         "gemini-pro-latest": (1.25, 5.00),  # alias to latest stable Gemini Pro
         "models/gemini-pro-latest": (1.25, 5.00),
+        "gemini-flash-latest": (0.15, 0.60),  # alias to latest stable Gemini Flash
+        "models/gemini-flash-latest": (0.15, 0.60),
     }
 
     # Unit costs for non-token APIs
@@ -334,7 +336,7 @@ Requirements:
 
     try:
         response = client.models.generate_content(
-            model='gemini-2.0-flash',
+            model='gemini-flash-latest',
             contents=[prompt],
             config=types.GenerateContentConfig(
                 temperature=0.7,

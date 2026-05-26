@@ -35,6 +35,7 @@ Welcome to the ViralTracker documentation! Choose your path:
 - [Hook Analysis Guide](HOOK_ANALYSIS_GUIDE.md) - Statistical analysis methods
 - [Facebook Ads Ingestion](workflows/facebook_ads_ingestion.md) - FB Ad Library scraping
 - [Content Buckets](CONTENT_BUCKETS.md) - Bulk image/video categorization, Drive import/export, upload tracking
+- [Asset Tagging](ASSET_TAGGING.md) - Tag product images so Ad Creator V2 template matching can find them (per-image, bulk, and AI auto-tag)
 
 ### Video Generation & Avatars
 - **Kling AI Integration**: Omni Video, avatar talking-head, lip-sync, multi-shot, custom elements

@@ -322,7 +322,7 @@ class TemplateElementService:
         image_base64 = base64.b64encode(image_bytes).decode('utf-8')
 
         # Analyze with Gemini Vision (use 2.5 flash for higher rate limits)
-        gemini = GeminiService(model="gemini-2.5-flash")
+        gemini = GeminiService(model="gemini-flash-latest")
         response = await gemini.analyze_image(image_base64, ELEMENT_DETECTION_PROMPT)
 
         # Parse JSON response
@@ -512,7 +512,7 @@ class TemplateElementService:
         image_base64 = base64.b64encode(image_bytes).decode('utf-8')
 
         # Analyze with Gemini (use 2.5 flash for higher rate limits)
-        gemini = GeminiService(model="gemini-2.5-flash")
+        gemini = GeminiService(model="gemini-flash-latest")
         response = await gemini.analyze_image(image_base64, IMAGE_TAGGING_PROMPT)
 
         # Parse JSON response (expecting an array)

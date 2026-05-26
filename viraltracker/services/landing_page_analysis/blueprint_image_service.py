@@ -1333,7 +1333,7 @@ class BlueprintImageService:
         success = await self.download_images_parallel(slots, progress_cb)
 
         # Create Vision service (Flash for cheap analysis)
-        vision_svc = GeminiService(model="gemini-2.5-flash")
+        vision_svc = GeminiService(model="gemini-flash-latest")
         if self._tracker:
             vision_svc.set_tracking_context(self._tracker, self._user_id, self._org_id)
 
@@ -1370,7 +1370,7 @@ class BlueprintImageService:
             )
         elif product_info:
             # Fallback: old Scene Director + Vision in parallel
-            scene_svc = GeminiService(model="gemini-2.5-flash")
+            scene_svc = GeminiService(model="gemini-flash-latest")
             if self._tracker:
                 scene_svc.set_tracking_context(
                     self._tracker, self._user_id, self._org_id
