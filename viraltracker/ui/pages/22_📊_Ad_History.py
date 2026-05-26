@@ -67,6 +67,7 @@ def get_ad_runs_count(
     org_id: str = None,
     angle_id: str = None,
     date_range: tuple = None,
+    product_id: str = None,
 ) -> int:
     """Get total count of ad runs for pagination.
 
@@ -76,12 +77,19 @@ def get_ad_runs_count(
         angle_id: Optional belief_angles.id to filter to runs testing one angle
         date_range: Optional (start_date, end_date) tuple of datetime.date
             objects to filter ad_runs.created_at server-side.
+        product_id: Optional product UUID to filter to runs for one specific
+            product. When set, takes precedence over the brand/org product scope.
     """
     try:
         db = get_supabase_client()
         query = db.table("ad_runs").select("id", count="exact")
 
-        if brand_id and brand_id != "all":
+        # Product filter wins over brand/org scope when set — it's the more
+        # specific constraint and Martin Clinic users picking "Big Three" don't
+        # also need their brand_id re-applied (it's a subset).
+        if product_id and product_id != "all":
+            query = query.eq("product_id", product_id)
+        elif brand_id and brand_id != "all":
             product_ids = _get_product_ids_for_brand(db, brand_id)
             if product_ids:
                 query = query.in_("product_id", product_ids)
@@ -115,6 +123,7 @@ def get_ad_runs(
     page_size: int = 25,
     angle_id: str = None,
     date_range: tuple = None,
+    product_id: str = None,
 ):
     """
     Fetch ad runs with product info and stats (paginated).
@@ -149,8 +158,11 @@ def get_ad_runs(
             "products(id, name, brand_id, product_code, brands(id, name, brand_code))"
         ).order("created_at", desc=True)
 
-        # Filter by brand if specified (do this in query for proper pagination)
-        if brand_id and brand_id != "all":
+        # Product filter wins over brand/org scope when set — same reasoning as
+        # in get_ad_runs_count above.
+        if product_id and product_id != "all":
+            query = query.eq("product_id", product_id)
+        elif brand_id and brand_id != "all":
             product_ids = _get_product_ids_for_brand(db, brand_id)
             if product_ids:
                 query = query.in_("product_id", product_ids)
@@ -195,6 +207,7 @@ def get_ad_runs(
 def get_angles_with_runs(
     org_id: str = None,
     brand_id: str = None,
+    product_id: str = None,
 ) -> list:
     """
     Return the distinct belief_angles that have at least one ad_run in the
@@ -203,14 +216,20 @@ def get_angles_with_runs(
     Sorted alphabetically by angle name. Excludes angles with no runs so the
     dropdown stays useful (no dead "angle exists but no ads tested it" entries).
 
+    Scope narrowing (most-specific wins): product_id > brand_id > org_id.
+
     Returns: List[{"id": str, "name": str, "status": str}]
     """
     try:
         db = get_supabase_client()
 
-        # Step 1: figure out the product_ids in scope (mirrors get_ad_runs)
+        # Step 1: figure out the product_ids in scope (mirrors get_ad_runs).
+        # Product_id takes precedence: when a specific product is selected, the
+        # angle dropdown should only show angles tested on that product.
         product_ids: list | None = None
-        if brand_id and brand_id != "all":
+        if product_id and product_id != "all":
+            product_ids = [product_id]
+        elif brand_id and brand_id != "all":
             product_ids = _get_product_ids_for_brand(db, brand_id)
             if not product_ids:
                 return []
@@ -1161,6 +1180,8 @@ if 'ad_history_angle_filter' not in st.session_state:
     st.session_state.ad_history_angle_filter = "all"
 if 'ad_history_date_range' not in st.session_state:
     st.session_state.ad_history_date_range = ()
+if 'ad_history_product_filter' not in st.session_state:
+    st.session_state.ad_history_product_filter = "all"
 
 # Size variant state
 if 'size_variant_ad_id' not in st.session_state:
@@ -1220,15 +1241,69 @@ brand_options = {"all": "All Brands"}
 for b in brands:
     brand_options[b['id']] = b['name']
 
-selected_brand = st.selectbox(
-    "Filter by Brand",
-    options=list(brand_options.keys()),
-    format_func=lambda x: brand_options[x],
-    key="brand_filter",
-    on_change=lambda: setattr(st.session_state, 'ad_history_page', 1)  # Reset to page 1 on filter change
-)
+# Brand + Product as primary scope (cascading: product list narrows by brand).
+# Filters apply server-side and AND together with the angle/date filters below.
+bcol, pcol = st.columns(2)
+
+with bcol:
+    selected_brand = st.selectbox(
+        "Filter by Brand",
+        options=list(brand_options.keys()),
+        format_func=lambda x: brand_options[x],
+        key="brand_filter",
+        on_change=lambda: (
+            setattr(st.session_state, 'ad_history_page', 1),
+            # Reset product selection when brand changes — old product may not
+            # belong to new brand
+            setattr(st.session_state, 'ad_history_product_filter', "all"),
+        )
+    )
 
 brand_filter = selected_brand if selected_brand != "all" else None
+
+with pcol:
+    # Product list scoped by selected brand. If no brand selected, list spans
+    # the whole org (could be long — same as the Ad Scheduler / AC2 pattern).
+    db_for_products = get_supabase_client()
+    if brand_filter:
+        product_ids_in_scope = _get_product_ids_for_brand(db_for_products, brand_filter)
+    else:
+        product_ids_in_scope = _get_product_ids_for_org(db_for_products, org_id)
+
+    product_rows = []
+    if product_ids_in_scope:
+        product_rows = (
+            db_for_products.table("products")
+            .select("id, name")
+            .in_("id", product_ids_in_scope)
+            .order("name")
+            .execute()
+            .data
+            or []
+        )
+
+    product_options = {"all": "All Products"}
+    for p in product_rows:
+        product_options[p["id"]] = p["name"]
+
+    # Guard stale selection (brand changed → product may not be in new scope)
+    if st.session_state.ad_history_product_filter not in product_options:
+        st.session_state.ad_history_product_filter = "all"
+
+    st.selectbox(
+        "Filter by Product",
+        options=list(product_options.keys()),
+        format_func=lambda x: product_options[x],
+        key="ad_history_product_filter",
+        help=f"{len(product_rows)} product(s) in scope. Pick one to narrow further.",
+        on_change=lambda: setattr(st.session_state, 'ad_history_page', 1),
+    )
+
+product_filter = (
+    st.session_state.ad_history_product_filter
+    if st.session_state.ad_history_product_filter != "all"
+    else None
+)
 
 # Advanced filters — angle + date range. Collapsed by default so the page
 # doesn't grow taller for users who don't need filtering. Both filters reset
@@ -1237,14 +1312,16 @@ with st.expander("🔍 Advanced filters", expanded=False):
     fcol1, fcol2 = st.columns(2)
     with fcol1:
         # Angle filter — populated from belief_angles that have at least one
-        # ad_run in the user's scope (no dead options)
-        angles_with_runs = get_angles_with_runs(org_id=org_id, brand_id=brand_filter)
+        # ad_run in the user's CURRENT scope (brand + product). Switching either
+        # narrows / widens the dropdown accordingly.
+        angles_with_runs = get_angles_with_runs(
+            org_id=org_id, brand_id=brand_filter, product_id=product_filter,
+        )
         angle_options = {"all": "All angles"}
         for a in angles_with_runs:
             angle_options[a["id"]] = a["name"]
 
-        # Guard stale selection when scope changes (e.g. switching brand drops
-        # angles that aren't in the new scope)
+        # Guard stale selection when scope changes
         if st.session_state.ad_history_angle_filter not in angle_options:
             st.session_state.ad_history_angle_filter = "all"
 
@@ -1279,7 +1356,11 @@ st.markdown("---")
 
 # Get total count and fetch paginated ad runs
 total_count = get_ad_runs_count(
-    brand_filter, org_id=org_id, angle_id=angle_filter, date_range=date_filter,
+    brand_filter,
+    org_id=org_id,
+    angle_id=angle_filter,
+    date_range=date_filter,
+    product_id=product_filter,
 )
 total_pages = max(1, (total_count + PAGE_SIZE - 1) // PAGE_SIZE)
 
@@ -1295,6 +1376,7 @@ with st.spinner("Loading ad runs..."):
         page_size=PAGE_SIZE,
         angle_id=angle_filter,
         date_range=date_filter,
+        product_id=product_filter,
     )
 
 if not ad_runs:
