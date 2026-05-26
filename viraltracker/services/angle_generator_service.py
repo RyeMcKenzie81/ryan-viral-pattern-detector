@@ -42,9 +42,13 @@ PROMPT_TEMPLATE_PATH = Path(__file__).parent / "prompts" / "angle_generation_v1.
 # Default N angles per generation
 DEFAULT_N_ANGLES = 5
 
-# Max tokens for Opus response. 5 angles × ~200 tokens of structured JSON each
-# plus headroom for variation = 2000 is comfortable.
-MAX_TOKENS = 2500
+# Max tokens for Opus response. Real-world calibration (2026-05-25 first
+# production run): Opus 4.7 produced ~600-800 tokens per angle when given
+# detailed prompts and rich persona context. For N=5 that's 3000-4000 tokens
+# of content plus JSON syntax overhead. 2500 was too tight — output truncated
+# mid-JSON, parser rejected as "non-JSON". Bumping to 8000 leaves headroom
+# for N up to ~10 with detailed angles. Opus context is huge so this is cheap.
+MAX_TOKENS = 8000
 
 
 class ProposedAngle(BaseModel):
@@ -328,6 +332,26 @@ class AngleGeneratorService:
         )
 
         raw_text = response.content[0].text
+        stop_reason = getattr(response, "stop_reason", None)
+        usage = getattr(response, "usage", None)
+        output_tokens = getattr(usage, "output_tokens", None) if usage else None
+
+        # If the LLM hit the token cap, the response is almost certainly truncated
+        # mid-JSON. Surface that as the actual cause rather than a confusing
+        # "non-JSON response" parse error downstream.
+        if stop_reason == "max_tokens":
+            raise ValueError(
+                f"AngleGeneratorService: LLM hit max_tokens={MAX_TOKENS} "
+                f"(used {output_tokens} output tokens) — response truncated. "
+                f"Lower N or raise MAX_TOKENS in angle_generator_service.py. "
+                f"Partial response started with: {raw_text[:300]!r}"
+            )
+
+        logger.info(
+            f"AngleGeneratorService: response received "
+            f"(stop_reason={stop_reason}, output_tokens={output_tokens})"
+        )
+
         angles = self._parse_llm_response(raw_text, expected_n=n)
 
         logger.info(
