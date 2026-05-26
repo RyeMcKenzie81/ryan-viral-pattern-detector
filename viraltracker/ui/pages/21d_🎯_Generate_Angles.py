@@ -89,9 +89,15 @@ def get_landing_page_summary(landing_page_url: Optional[str]) -> Optional[str]:
     analysis exists. The AngleGeneratorService treats None as "no LP grounding"
     and notes that in each angle's explanation.
 
-    V1 keeps this dumb: just grab whatever summary fields exist and join. A
-    smarter implementation would format the structured analysis output, but
-    that's a polish concern for later.
+    Uses the real columns on landing_page_analyses:
+      - awareness_level / market_sophistication / architecture_type / classification
+      - primary_content_pattern + content_patterns (JSONB)
+      - elements (JSONB array of analyzed sections — title, body, etc.)
+      - page_markdown (full LP text — truncated to ~3000 chars for prompt fit)
+
+    Page_markdown is the most useful single field for angle generation since it
+    contains the LP's actual copy. We include a truncated form (first ~3000 chars)
+    plus the structured classification fields as supporting context.
     """
     if not landing_page_url:
         return None
@@ -99,7 +105,11 @@ def get_landing_page_summary(landing_page_url: Optional[str]) -> Optional[str]:
         sb = get_supabase()
         result = (
             sb.table("landing_page_analyses")
-            .select("hero_data, primary_offer, key_benefits, mechanism_of_action")
+            .select(
+                "awareness_level, market_sophistication, architecture_type, "
+                "classification, primary_content_pattern, content_patterns, "
+                "elements, page_markdown, status"
+            )
             .eq("url", landing_page_url)
             .order("created_at", desc=True)
             .limit(1)
@@ -108,24 +118,33 @@ def get_landing_page_summary(landing_page_url: Optional[str]) -> Optional[str]:
         if not result.data:
             return None
         row = result.data[0]
+        # Skip rows where the analysis itself failed
+        if (row.get("status") or "").lower() == "failed":
+            return None
+
         parts = []
-        hero = row.get("hero_data")
-        if isinstance(hero, dict):
-            headline = hero.get("headline") or hero.get("h1")
-            if headline:
-                parts.append(f"Hero headline: {headline}")
-            subhead = hero.get("subheadline") or hero.get("subhead")
-            if subhead:
-                parts.append(f"Subheadline: {subhead}")
-        if row.get("primary_offer"):
-            parts.append(f"Primary offer: {row['primary_offer']}")
-        if row.get("mechanism_of_action"):
-            parts.append(f"Mechanism: {row['mechanism_of_action']}")
-        if row.get("key_benefits"):
-            benefits = row["key_benefits"]
-            if isinstance(benefits, list) and benefits:
-                parts.append("Key benefits: " + "; ".join(str(b) for b in benefits[:5]))
-        return "\n".join(parts) if parts else None
+        if row.get("classification"):
+            parts.append(f"Page type: {row['classification']}")
+        if row.get("architecture_type"):
+            parts.append(f"Architecture: {row['architecture_type']}")
+        if row.get("awareness_level"):
+            parts.append(f"Targets awareness level: {row['awareness_level']}")
+        if row.get("market_sophistication"):
+            parts.append(f"Market sophistication: {row['market_sophistication']}")
+        if row.get("primary_content_pattern"):
+            parts.append(f"Primary content pattern: {row['primary_content_pattern']}")
+
+        # Page markdown carries the actual LP copy — most strategic value per token.
+        # Truncate to keep the prompt fit comfortable (Opus context is huge but
+        # the generator prompt is already substantial; ~3000 chars of LP = ~750 tokens).
+        page_md = row.get("page_markdown")
+        if page_md:
+            md_snippet = page_md[:3000].strip()
+            if len(page_md) > 3000:
+                md_snippet += "\n[...LP truncated for prompt size...]"
+            parts.append(f"LP copy:\n{md_snippet}")
+
+        return "\n\n".join(parts) if parts else None
     except Exception as e:
         st.warning(f"Could not load LP analysis: {e}")
         return None
