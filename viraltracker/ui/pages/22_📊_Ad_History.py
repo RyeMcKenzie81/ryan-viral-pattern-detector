@@ -62,8 +62,21 @@ def _get_product_ids_for_brand(db, brand_id: str) -> list:
     products = db.table("products").select("id").eq("brand_id", brand_id).execute()
     return [p['id'] for p in products.data]
 
-def get_ad_runs_count(brand_id: str = None, org_id: str = None) -> int:
-    """Get total count of ad runs for pagination."""
+def get_ad_runs_count(
+    brand_id: str = None,
+    org_id: str = None,
+    angle_id: str = None,
+    date_range: tuple = None,
+) -> int:
+    """Get total count of ad runs for pagination.
+
+    Args:
+        brand_id: Optional brand UUID to scope (or 'all' / None for no scope)
+        org_id: Org UUID to scope when brand_id is 'all' / None
+        angle_id: Optional belief_angles.id to filter to runs testing one angle
+        date_range: Optional (start_date, end_date) tuple of datetime.date
+            objects to filter ad_runs.created_at server-side.
+    """
     try:
         db = get_supabase_client()
         query = db.table("ad_runs").select("id", count="exact")
@@ -81,12 +94,28 @@ def get_ad_runs_count(brand_id: str = None, org_id: str = None) -> int:
             else:
                 return 0
 
+        if angle_id:
+            query = query.eq("angle_id", angle_id)
+
+        if date_range and len(date_range) == 2 and all(date_range):
+            start, end = date_range
+            query = query.gte("created_at", start.isoformat()).lte(
+                "created_at", (end.isoformat() + "T23:59:59")
+            )
+
         result = query.execute()
         return result.count if result.count else 0
     except Exception as e:
         return 0
 
-def get_ad_runs(brand_id: str = None, org_id: str = None, page: int = 1, page_size: int = 25):
+def get_ad_runs(
+    brand_id: str = None,
+    org_id: str = None,
+    page: int = 1,
+    page_size: int = 25,
+    angle_id: str = None,
+    date_range: tuple = None,
+):
     """
     Fetch ad runs with product info and stats (paginated).
 
@@ -95,10 +124,14 @@ def get_ad_runs(brand_id: str = None, org_id: str = None, page: int = 1, page_si
         org_id: Organization ID to filter by (used when brand is "all")
         page: Page number (1-indexed)
         page_size: Number of records per page
+        angle_id: Optional belief_angles.id to filter to runs testing one angle
+        date_range: Optional (start_date, end_date) tuple of datetime.date
+            objects to filter ad_runs.created_at server-side.
 
     Returns list of ad runs with:
-    - run info (id, created_at, status, reference_ad_storage_path)
+    - run info (id, created_at, status, reference_ad_storage_path, angle_id)
     - product info (name, brand_id)
+    - angle info (id, name) — None when ad_run was not angle-driven
     - counts (total_ads, approved_ads)
     """
     try:
@@ -107,9 +140,12 @@ def get_ad_runs(brand_id: str = None, org_id: str = None, page: int = 1, page_si
         # Calculate offset
         offset = (page - 1) * page_size
 
-        # Build query for ad_runs with product join (including codes for structured naming)
+        # Build query for ad_runs with product + angle join.
+        # belief_angles join uses the angle_id FK added in PR #196 migration.
         query = db.table("ad_runs").select(
-            "id, created_at, status, error_message, reference_ad_storage_path, product_id, parameters, "
+            "id, created_at, status, error_message, reference_ad_storage_path, "
+            "product_id, parameters, angle_id, "
+            "belief_angles(id, name), "
             "products(id, name, brand_id, product_code, brands(id, name, brand_code))"
         ).order("created_at", desc=True)
 
@@ -126,6 +162,15 @@ def get_ad_runs(brand_id: str = None, org_id: str = None, page: int = 1, page_si
                 query = query.in_("product_id", product_ids)
             else:
                 return []
+
+        if angle_id:
+            query = query.eq("angle_id", angle_id)
+
+        if date_range and len(date_range) == 2 and all(date_range):
+            start, end = date_range
+            query = query.gte("created_at", start.isoformat()).lte(
+                "created_at", (end.isoformat() + "T23:59:59")
+            )
 
         # Apply pagination
         query = query.range(offset, offset + page_size - 1)
@@ -146,6 +191,59 @@ def get_ad_runs(brand_id: str = None, org_id: str = None, page: int = 1, page_si
     except Exception as e:
         st.error(f"Failed to fetch ad runs: {e}")
         return []
+
+def get_angles_with_runs(
+    org_id: str = None,
+    brand_id: str = None,
+) -> list:
+    """
+    Return the distinct belief_angles that have at least one ad_run in the
+    user's scope. Powers the "Filter by angle" dropdown on Ad History.
+
+    Sorted alphabetically by angle name. Excludes angles with no runs so the
+    dropdown stays useful (no dead "angle exists but no ads tested it" entries).
+
+    Returns: List[{"id": str, "name": str, "status": str}]
+    """
+    try:
+        db = get_supabase_client()
+
+        # Step 1: figure out the product_ids in scope (mirrors get_ad_runs)
+        product_ids: list | None = None
+        if brand_id and brand_id != "all":
+            product_ids = _get_product_ids_for_brand(db, brand_id)
+            if not product_ids:
+                return []
+        elif org_id and org_id != "all":
+            product_ids = _get_product_ids_for_org(db, org_id)
+            if not product_ids:
+                return []
+
+        # Step 2: pull distinct angle_ids from ad_runs in scope (NULL excluded).
+        # PostgREST doesn't expose DISTINCT, so we pull a bounded set and dedupe
+        # in Python — fine because most users have <100 angles.
+        runs_query = db.table("ad_runs").select("angle_id").not_.is_("angle_id", "null")
+        if product_ids is not None:
+            runs_query = runs_query.in_("product_id", product_ids)
+        runs_rows = runs_query.limit(5000).execute().data or []
+        angle_ids = sorted({r["angle_id"] for r in runs_rows if r.get("angle_id")})
+        if not angle_ids:
+            return []
+
+        # Step 3: hydrate the names from belief_angles
+        angles_rows = (
+            db.table("belief_angles")
+            .select("id, name, status")
+            .in_("id", angle_ids)
+            .execute()
+            .data
+            or []
+        )
+        return sorted(angles_rows, key=lambda a: (a.get("name") or "").lower())
+    except Exception as e:
+        st.warning(f"Could not load angle list: {e}")
+        return []
+
 
 def get_ads_for_run(ad_run_id: str):
     """Fetch all generated ads for a specific run."""
@@ -1054,11 +1152,15 @@ def create_zip_for_run(ads: list, product_name: str, run_id: str, reference_path
 # MAIN UI
 # ============================================
 
-# Initialize pagination state
+# Initialize pagination + filter state
 if 'ad_history_page' not in st.session_state:
     st.session_state.ad_history_page = 1
 if 'expanded_run_id' not in st.session_state:
     st.session_state.expanded_run_id = None
+if 'ad_history_angle_filter' not in st.session_state:
+    st.session_state.ad_history_angle_filter = "all"
+if 'ad_history_date_range' not in st.session_state:
+    st.session_state.ad_history_date_range = ()
 
 # Size variant state
 if 'size_variant_ad_id' not in st.session_state:
@@ -1126,11 +1228,59 @@ selected_brand = st.selectbox(
     on_change=lambda: setattr(st.session_state, 'ad_history_page', 1)  # Reset to page 1 on filter change
 )
 
+brand_filter = selected_brand if selected_brand != "all" else None
+
+# Advanced filters — angle + date range. Collapsed by default so the page
+# doesn't grow taller for users who don't need filtering. Both filters reset
+# pagination to page 1 on change to avoid landing on an empty page N.
+with st.expander("🔍 Advanced filters", expanded=False):
+    fcol1, fcol2 = st.columns(2)
+    with fcol1:
+        # Angle filter — populated from belief_angles that have at least one
+        # ad_run in the user's scope (no dead options)
+        angles_with_runs = get_angles_with_runs(org_id=org_id, brand_id=brand_filter)
+        angle_options = {"all": "All angles"}
+        for a in angles_with_runs:
+            angle_options[a["id"]] = a["name"]
+
+        # Guard stale selection when scope changes (e.g. switching brand drops
+        # angles that aren't in the new scope)
+        if st.session_state.ad_history_angle_filter not in angle_options:
+            st.session_state.ad_history_angle_filter = "all"
+
+        st.selectbox(
+            "Filter by angle",
+            options=list(angle_options.keys()),
+            format_func=lambda x: angle_options[x],
+            key="ad_history_angle_filter",
+            help=f"{len(angles_with_runs)} angle(s) have at least one ad_run in scope. "
+                 "Pick one to see only runs testing it.",
+            on_change=lambda: setattr(st.session_state, 'ad_history_page', 1),
+        )
+    with fcol2:
+        st.date_input(
+            "Filter by date range (optional)",
+            value=st.session_state.ad_history_date_range or (),
+            key="ad_history_date_range",
+            help="Pick start + end dates to scope runs to a window. Leave empty for all time.",
+            on_change=lambda: setattr(st.session_state, 'ad_history_page', 1),
+        )
+
+# Resolve filter values for the query (None = no filter)
+angle_filter = (
+    st.session_state.ad_history_angle_filter
+    if st.session_state.ad_history_angle_filter != "all"
+    else None
+)
+_dr = st.session_state.ad_history_date_range
+date_filter = _dr if isinstance(_dr, (tuple, list)) and len(_dr) == 2 and all(_dr) else None
+
 st.markdown("---")
 
 # Get total count and fetch paginated ad runs
-brand_filter = selected_brand if selected_brand != "all" else None
-total_count = get_ad_runs_count(brand_filter, org_id=org_id)
+total_count = get_ad_runs_count(
+    brand_filter, org_id=org_id, angle_id=angle_filter, date_range=date_filter,
+)
 total_pages = max(1, (total_count + PAGE_SIZE - 1) // PAGE_SIZE)
 
 # Ensure current page is valid
@@ -1138,7 +1288,14 @@ if st.session_state.ad_history_page > total_pages:
     st.session_state.ad_history_page = 1
 
 with st.spinner("Loading ad runs..."):
-    ad_runs = get_ad_runs(brand_filter, org_id=org_id, page=st.session_state.ad_history_page, page_size=PAGE_SIZE)
+    ad_runs = get_ad_runs(
+        brand_filter,
+        org_id=org_id,
+        page=st.session_state.ad_history_page,
+        page_size=PAGE_SIZE,
+        angle_id=angle_filter,
+        date_range=date_filter,
+    )
 
 if not ad_runs:
     st.info("No ad runs found. Create some ads in the Ad Creator page!")
@@ -1179,10 +1336,18 @@ else:
         with col_info:
             # Check if this run was from a scheduled job
             job_name = scheduled_job_mapping.get(run_id_full)
+            # Show belief angle name when run was angle-driven (PR #196 stamping)
+            angle_info = run.get("belief_angles") or {}
+            angle_name = angle_info.get("name") if isinstance(angle_info, dict) else None
+            angle_chip = f" | 🎯 _{angle_name}_" if angle_name else ""
+
             if job_name:
-                st.markdown(f"**{product_name}** | `{run_id_short}` | {date_str} | 📅 _{job_name}_")
+                st.markdown(
+                    f"**{product_name}** | `{run_id_short}` | {date_str} | "
+                    f"📅 _{job_name}_{angle_chip}"
+                )
             else:
-                st.markdown(f"**{product_name}** | `{run_id_short}` | {date_str}")
+                st.markdown(f"**{product_name}** | `{run_id_short}` | {date_str}{angle_chip}")
 
         with col_stats:
             approval_pct = int(approved_ads/total_ads*100) if total_ads > 0 else 0
