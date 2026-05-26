@@ -1563,11 +1563,22 @@ async def execute_ad_creation_job(job: Dict) -> Dict[str, Any]:
             raise Exception("No templates available for this job")
 
         # Import dependencies
-        from viraltracker.pipelines.ad_creation.orchestrator import run_ad_creation
+        # Angle-driven flows route through V2 pipeline (PR 4a, 2026-05-25) —
+        # V1 ad_creation is no longer used for content_source='angles' or 'plan'.
+        from viraltracker.pipelines.ad_creation_v2.orchestrator import run_ad_creation_v2
         from viraltracker.agent.dependencies import AgentDependencies
+        import uuid
 
         # Create dependencies
         deps = AgentDependencies.create(project_name="scheduler")
+
+        # ad_creation_run_id: stable UUID for this scheduler-job execution.
+        # Every ad produced by this job (across all angles × templates) inherits
+        # this ID via ad_runs.ad_creation_run_id → generated_ads.ad_creation_run_id.
+        # Required by the 30-day cross-angle hook similarity report (PR #184, PLAN.md
+        # decision 1C falsifiability metric).
+        job_ad_creation_run_id = str(uuid.uuid4())
+        logs.append(f"ad_creation_run_id={job_ad_creation_run_id}")
 
         # Get brand colors if using brand color mode
         brand_colors_data = None
@@ -1662,21 +1673,39 @@ async def execute_ad_creation_job(job: Dict) -> Dict[str, Any]:
                     if params.get('additional_instructions'):
                         full_instructions += f"\n\n{params['additional_instructions']}"
 
-                    # Run ad creation workflow with angle-specific content
+                    # Run V2 ad creation workflow with angle-specific context.
+                    #
+                    # The angle is injected via additional_instructions (angle_instructions
+                    # prefix). content_source='hooks' tells V2 to use the standard
+                    # hook-selection path, and the angle context steers it.
+                    #
+                    # V2-specific param translations from the V1 scheduler config:
+                    #   - color_mode (scalar) → color_modes (list-of-one)
+                    #   - canvas_sizes defaults to ['1080x1080px'] when not supplied
+                    #
+                    # ad_creation_run_id threads through state → InitializeNode →
+                    # create_ad_run() → ad_runs.ad_creation_run_id → save_generated_ad()
+                    # → generated_ads.ad_creation_run_id, giving us the audit trail
+                    # for the cross-angle hook similarity report (PLAN.md decision 1C).
                     try:
-                        result = await run_ad_creation(
+                        result = await run_ad_creation_v2(
                             product_id=product_id,
                             reference_ad_base64=template_base64,
                             reference_ad_filename=template_ref,
+                            template_id=template_id,
                             num_variations=params.get('num_variations', 5),
-                            content_source='hooks',  # Use hooks mode but with angle as context
-                            color_mode=params.get('color_mode', 'original'),
+                            content_source='hooks',  # Hook-selection path, steered by angle context
+                            color_modes=[params.get('color_mode', 'original')],
+                            canvas_sizes=params.get('canvas_sizes') or ['1080x1080px'],
                             brand_colors=brand_colors_data,
                             image_selection_mode=params.get('image_selection_mode', 'auto'),
                             persona_id=params.get('persona_id') or params.get('belief_persona_id'),
                             variant_id=params.get('variant_id'),
+                            offer_variant_id=params.get('offer_variant_id'),
                             additional_instructions=full_instructions,
                             image_resolution=params.get('image_resolution', '2K'),
+                            match_lp_voice=params.get('match_lp_voice', True),
+                            ad_creation_run_id=job_ad_creation_run_id,
                             deps=deps,
                         )
 

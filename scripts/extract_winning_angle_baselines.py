@@ -71,22 +71,37 @@ def resolve_brand_id(supabase, brand_name: str) -> str:
 def fetch_ad_performance(
     supabase,
     brand_id: str,
-    ad_name_prefix: str,
+    ad_name_filter: str,
+    match_mode: str,
     days: int,
 ):
     """
-    Pull meta_ads_performance rows for the brand + prefix + window.
+    Pull meta_ads_performance rows for the brand + name filter + window.
     Returns aggregated metrics per meta_ad_id.
 
-    Aggregation:
+    Args:
+        ad_name_filter: substring to search for in ad_name (case-insensitive).
+            Empty string disables the filter (returns all brand ads).
+        match_mode: how to apply the filter — one of 'prefix', 'contains', 'suffix'.
+            Ad ops teams often embed a creator tag (e.g. "_m5-") mid-name rather
+            than as a true prefix; default 'contains' handles both cases.
+
+    Aggregation per meta_ad_id:
         total_spend = sum(spend)
         total_purchase_value = sum(purchase_value)
         total_impressions = sum(impressions)
         total_purchases = sum(purchases)
-        weighted_roas = total_purchase_value / total_spend  (only valid if spend > 0)
+        weighted_roas = total_purchase_value / total_spend (only if spend > 0)
         ad_name = most recent non-null ad_name in the window
     """
     since = (datetime.now(timezone.utc) - timedelta(days=days)).date().isoformat()
+
+    if match_mode == "prefix":
+        pattern = f"{ad_name_filter}%"
+    elif match_mode == "suffix":
+        pattern = f"%{ad_name_filter}"
+    else:  # contains (default)
+        pattern = f"%{ad_name_filter}%"
 
     # Paginate to handle large result sets (Supabase default limit is 1000)
     all_rows = []
@@ -98,8 +113,8 @@ def fetch_ad_performance(
             .eq("brand_id", brand_id)
             .gte("date", since)
         )
-        if ad_name_prefix:
-            query = query.ilike("ad_name", f"{ad_name_prefix}%")
+        if ad_name_filter:
+            query = query.ilike("ad_name", pattern)
         rows = query.limit(1000).offset(offset).execute().data or []
         all_rows.extend(rows)
         if len(rows) < 1000:
@@ -108,7 +123,7 @@ def fetch_ad_performance(
 
     logger.info(
         f"Fetched {len(all_rows)} performance rows "
-        f"(brand_id={brand_id}, prefix={ad_name_prefix!r}, since={since})"
+        f"(brand_id={brand_id}, filter={ad_name_filter!r}, mode={match_mode}, since={since})"
     )
 
     # Aggregate per ad
@@ -316,8 +331,17 @@ def main():
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--brand-name", type=str, help="Brand name to look up (case-insensitive)")
     group.add_argument("--brand-id", type=str, help="Brand UUID (skip name lookup)")
-    parser.add_argument("--ad-name-prefix", type=str, default="",
-                        help="Filter to ads whose name starts with this prefix (e.g. 'm5-')")
+    parser.add_argument("--ad-name-filter", type=str, default="",
+                        help="Filter ads by ad_name substring (e.g. 'm5-'). Empty = all brand ads.")
+    parser.add_argument("--match-mode", type=str, default="contains",
+                        choices=["prefix", "contains", "suffix"],
+                        help="How to interpret --ad-name-filter (default: contains). "
+                             "Ad ops teams often embed creator tags mid-name (e.g. '_m5-' "
+                             "inside 'Ryan Antibiotics_m5-MC-XX-...'), so 'contains' is the "
+                             "safe default. Use 'prefix' only when the tag actually starts the name.")
+    # Back-compat alias for the original --ad-name-prefix flag (forces match-mode='prefix')
+    parser.add_argument("--ad-name-prefix", type=str, default=None,
+                        help="(Deprecated) Alias for --ad-name-filter with --match-mode prefix")
     parser.add_argument("--days", type=int, default=DEFAULT_DAYS, help=f"Look-back window in days (default: {DEFAULT_DAYS})")
     parser.add_argument("--top-n", type=int, default=DEFAULT_TOP_N, help=f"Top N to keep in each ranking (default: {DEFAULT_TOP_N})")
     parser.add_argument("--min-spend", type=float, default=DEFAULT_MIN_SPEND,
@@ -333,6 +357,11 @@ def main():
     if args.extract_angles:
         args.list_only = False
 
+    # Back-compat: if old --ad-name-prefix was used, route to filter+prefix mode
+    if args.ad_name_prefix is not None and not args.ad_name_filter:
+        args.ad_name_filter = args.ad_name_prefix
+        args.match_mode = "prefix"
+
     from viraltracker.core.database import get_supabase_client
     supabase = get_supabase_client()
 
@@ -341,7 +370,8 @@ def main():
     ads = fetch_ad_performance(
         supabase,
         brand_id=brand_id,
-        ad_name_prefix=args.ad_name_prefix,
+        ad_name_filter=args.ad_name_filter,
+        match_mode=args.match_mode,
         days=args.days,
     )
     if not ads:

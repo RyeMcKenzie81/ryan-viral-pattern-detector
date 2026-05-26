@@ -492,6 +492,7 @@ class AdCreationService:
         parameters: Optional[Dict] = None,
         generation_config: Optional[Dict] = None,
         source_scraped_template_id: Optional[UUID] = None,
+        ad_creation_run_id: Optional[UUID] = None,
     ) -> UUID:
         """
         Create new ad run record.
@@ -503,6 +504,10 @@ class AdCreationService:
             parameters: Optional generation parameters (num_variations, content_source, etc.)
             generation_config: Optional reproducibility snapshot (prompt_version, pipeline_version, etc.)
             source_scraped_template_id: Optional FK to scraped_templates for V2 pipeline
+            ad_creation_run_id: Optional scheduler-job UUID. When set, every generated_ads
+                row produced under this ad_run inherits it via save_generated_ad(). Used by
+                the cross-angle hook similarity report (PR #184, decision 1C). None for
+                ad_runs created outside the scheduler (manual, debug, legacy).
 
         Returns:
             UUID of created ad run
@@ -524,6 +529,9 @@ class AdCreationService:
 
         if source_scraped_template_id:
             data["source_scraped_template_id"] = str(source_scraped_template_id)
+
+        if ad_creation_run_id:
+            data["ad_creation_run_id"] = str(ad_creation_run_id)
 
         result = self.supabase.table("ad_runs").insert(data).execute()
         ad_run_id = UUID(result.data[0]["id"])
@@ -635,6 +643,8 @@ class AdCreationService:
         # Translation support
         language: Optional[str] = None,
         translation_parent_id: Optional[UUID] = None,
+        # Angle-driven ad creator V1 (PR #184 schema, Step 4a integration)
+        hook_embedding: Optional[List[float]] = None,
     ) -> UUID:
         """
         Save generated ad metadata to database.
@@ -756,6 +766,52 @@ class AdCreationService:
             data["language"] = language
         if translation_parent_id is not None:
             data["translation_parent_id"] = str(translation_parent_id)
+
+        # =====================================================================
+        # Angle-driven ad creator V1 — hook embedding + ad_creation_run_id
+        # (PR #184 schema, Step 4a)
+        #
+        # Two new columns get populated here so the 30-day cross-angle hook
+        # similarity report (the falsifiability metric for P4) has the data it
+        # needs without requiring the in-batch diversity guardrail refactor
+        # (that's PR 4b — see TODOS.md). For ads outside the angle-driven flow
+        # (no ad_creation_run_id on the parent ad_run), embedding is skipped to
+        # avoid paying for embeddings on traffic that won't use them.
+        # =====================================================================
+
+        # Pull ad_creation_run_id from the parent ad_run (single SELECT, cheap)
+        try:
+            ad_run_result = (
+                self.supabase.table("ad_runs")
+                .select("ad_creation_run_id")
+                .eq("id", str(ad_run_id))
+                .limit(1)
+                .execute()
+            )
+            if ad_run_result.data and ad_run_result.data[0].get("ad_creation_run_id"):
+                data["ad_creation_run_id"] = ad_run_result.data[0]["ad_creation_run_id"]
+        except Exception as e:
+            logger.warning(f"Failed to fetch ad_creation_run_id for ad_run {ad_run_id}: {e}")
+
+        # Embed hook_text inline if we're under the angle-driven flow and no
+        # pre-computed embedding was passed. Best-effort: on embedding failure
+        # we still INSERT the row, just without hook_embedding (the falsifiability
+        # report tolerates NULL embeddings — they just don't contribute to the
+        # cross-angle metric).
+        is_angle_driven = "ad_creation_run_id" in data
+        if is_angle_driven and hook_text and not hook_embedding:
+            try:
+                from viraltracker.services.hook_diversity_checker import HookDiversityChecker
+                checker = HookDiversityChecker()
+                hook_embedding = checker.embed_one(hook_text)
+            except Exception as e:
+                logger.warning(
+                    f"Inline hook_text embedding failed for ad_run {ad_run_id}; "
+                    f"INSERT will proceed with hook_embedding=NULL. Error: {e}"
+                )
+
+        if hook_embedding is not None:
+            data["hook_embedding"] = hook_embedding
 
         result = self.supabase.table("generated_ads").insert(data).execute()
         generated_ad_id = UUID(result.data[0]["id"])

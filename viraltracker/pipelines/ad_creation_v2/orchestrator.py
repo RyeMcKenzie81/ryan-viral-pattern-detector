@@ -101,6 +101,7 @@ async def run_ad_creation_v2(
     selection_scorer_breakdown: Optional[Dict[str, float]] = None,
     selection_composite_score: Optional[float] = None,
     selection_mode: Optional[str] = None,
+    ad_creation_run_id: Optional[str] = None,
     deps: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """
@@ -205,6 +206,8 @@ async def run_ad_creation_v2(
         selection_scorer_breakdown=selection_scorer_breakdown,
         selection_composite_score=selection_composite_score,
         selection_mode=selection_mode,
+        # Angle-driven ad creator V1 (PR #184, Step 4a)
+        ad_creation_run_id=ad_creation_run_id,
     )
 
     # Phase 8B: Derive experiment seed and check for active generation experiment
