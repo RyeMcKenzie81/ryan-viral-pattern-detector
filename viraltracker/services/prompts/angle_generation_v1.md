@@ -120,6 +120,8 @@ LANDING PAGE PROMISES (what the LP actually delivers)
 
 {landing_page_summary}
 
+{existing_angles_section}
+
 CRITICAL: Each angle must be DELIVERABLE by what this landing page promises.
 If the LP doesn't talk about a 90-day money-back guarantee, you cannot lean on
 risk reversal. If the LP doesn't mention dermatologist testing, you cannot

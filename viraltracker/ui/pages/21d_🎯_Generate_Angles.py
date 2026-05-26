@@ -81,6 +81,43 @@ def get_products_for_brand(brand_id: str) -> List[Dict[str, Any]]:
     return result.data or []
 
 
+def get_existing_angles_for_combo(persona_id: str, offer_variant_id: str) -> List[Dict[str, Any]]:
+    """
+    Return saved belief_angles for this (persona, offer) combination, newest first.
+
+    Used in two places on the Generate Angles page:
+      1. Visibility: show the user what they've already saved for this combo
+         so they know what they're working with before generating more
+      2. Dedupe: pass into AngleGeneratorService.generate_angles() as the
+         existing_angles list so the prompt tells Opus to avoid producing
+         angles that overlap with these
+
+    All statuses included (untested, testing, winner, loser) — even losers are
+    territory the user has already explored, so the generator shouldn't waste
+    a slot revisiting them.
+    """
+    if not persona_id or not offer_variant_id:
+        return []
+    try:
+        sb = get_supabase()
+        result = (
+            sb.table("belief_angles")
+            .select(
+                "id, name, belief_statement, jtbd_text, desired_outcome, "
+                "emotional_register, status, generation_method, created_at"
+            )
+            .eq("source_persona_id", persona_id)
+            .eq("source_offer_variant_id", offer_variant_id)
+            .order("created_at", desc=True)
+            .limit(50)
+            .execute()
+        )
+        return result.data or []
+    except Exception as e:
+        st.warning(f"Could not load existing angles: {e}")
+        return []
+
+
 def get_landing_page_summary(landing_page_url: Optional[str]) -> Optional[str]:
     """
     Pull the most recent landing_page_analyses summary for the given URL.
@@ -281,6 +318,38 @@ if not lp_url:
         "the offer variant (Brand Manager → Products → Offer Variants) and rerun."
     )
 
+# Existing angles for this combo — visibility + dedup input
+existing_for_combo: List[Dict[str, Any]] = []
+if st.session_state.ga_persona_id and offer_variant_id:
+    existing_for_combo = get_existing_angles_for_combo(
+        st.session_state.ga_persona_id, offer_variant_id
+    )
+
+if existing_for_combo:
+    with st.expander(
+        f"📚 {len(existing_for_combo)} angle(s) already saved for this persona + offer "
+        f"(will be excluded from generation)",
+        expanded=False,
+    ):
+        st.caption(
+            "Generating more angles will tell Opus to AVOID these and explore "
+            "different psychographic territory. To delete a stale angle, edit it "
+            "elsewhere (Research Insights) and set status to `loser` — losers are "
+            "still passed to the prompt as 'tried this, didn't work, don't repeat.'"
+        )
+        for a in existing_for_combo:
+            status = a.get("status") or "untested"
+            register = a.get("emotional_register") or ""
+            belief = (a.get("belief_statement") or "").strip()
+            created = (a.get("created_at") or "")[:10]
+            method = a.get("generation_method") or "—"
+            st.markdown(
+                f"**{a['name']}**  ·  _{register}_  ·  status: `{status}`  ·  "
+                f"created: {created}  ·  via: `{method}`"
+            )
+            if belief:
+                st.caption(belief[:300] + ("..." if len(belief) > 300 else ""))
+
 # N angles slider
 st.slider(
     "Number of angles to generate",
@@ -302,6 +371,7 @@ if st.button("✨ Generate Angles", type="primary", disabled=generate_disabled):
                 landing_page_url=lp_url,
                 landing_page_summary=lp_summary,
                 n=st.session_state.ga_n_angles,
+                existing_angles=existing_for_combo,
             )
             st.session_state.ga_generated_angles = [a.dict() for a in angles]
             st.session_state.ga_generation_inputs = {
