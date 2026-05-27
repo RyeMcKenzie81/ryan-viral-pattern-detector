@@ -78,6 +78,7 @@ def get_ad_runs_count(
     angle_id: str = None,
     date_range: tuple = None,
     product_id: str = None,
+    template_id: str = None,
 ) -> int:
     """Get total count of ad runs for pagination.
 
@@ -89,6 +90,8 @@ def get_ad_runs_count(
             objects to filter ad_runs.created_at server-side.
         product_id: Optional product UUID to filter to runs for one specific
             product. When set, takes precedence over the brand/org product scope.
+        template_id: Optional scraped_templates.id to filter to runs that
+            sourced from one specific template.
     """
     try:
         db = get_supabase_client()
@@ -115,6 +118,9 @@ def get_ad_runs_count(
         if angle_id:
             query = query.eq("angle_id", angle_id)
 
+        if template_id:
+            query = query.eq("source_scraped_template_id", template_id)
+
         if date_range and len(date_range) == 2 and all(date_range):
             start, end = date_range
             query = query.gte("created_at", start.isoformat()).lte(
@@ -134,6 +140,7 @@ def get_ad_runs(
     angle_id: str = None,
     date_range: tuple = None,
     product_id: str = None,
+    template_id: str = None,
 ):
     """
     Fetch ad runs with product info and stats (paginated).
@@ -146,6 +153,8 @@ def get_ad_runs(
         angle_id: Optional belief_angles.id to filter to runs testing one angle
         date_range: Optional (start_date, end_date) tuple of datetime.date
             objects to filter ad_runs.created_at server-side.
+        template_id: Optional scraped_templates.id to filter to runs that
+            sourced from one specific template.
 
     Returns list of ad runs with:
     - run info (id, created_at, status, reference_ad_storage_path, angle_id)
@@ -187,6 +196,9 @@ def get_ad_runs(
 
         if angle_id:
             query = query.eq("angle_id", angle_id)
+
+        if template_id:
+            query = query.eq("source_scraped_template_id", template_id)
 
         if date_range and len(date_range) == 2 and all(date_range):
             start, end = date_range
@@ -271,6 +283,169 @@ def get_angles_with_runs(
         return sorted(angles_rows, key=lambda a: (a.get("name") or "").lower())
     except Exception as e:
         st.warning(f"Could not load angle list: {e}")
+        return []
+
+
+def get_templates_with_runs(
+    org_id: str = None,
+    brand_id: str = None,
+    product_id: str = None,
+) -> list:
+    """
+    Return the distinct scraped_templates that have at least one ad_run in
+    the user's scope. Powers the "Filter by template" dropdown on Ad History.
+
+    Mirrors get_angles_with_runs — only templates with ad_runs appear, so the
+    dropdown stays useful.
+
+    Scope narrowing (most-specific wins): product_id > brand_id > org_id.
+
+    Returns: List[{"id": str, "name": str}]
+    """
+    try:
+        db = get_supabase_client()
+
+        product_ids: list | None = None
+        if product_id and product_id != "all":
+            product_ids = [product_id]
+        elif brand_id and brand_id != "all":
+            product_ids = _get_product_ids_for_brand(db, brand_id)
+            if not product_ids:
+                return []
+        elif org_id and org_id != "all":
+            product_ids = _get_product_ids_for_org(db, org_id)
+            if not product_ids:
+                return []
+
+        runs_query = db.table("ad_runs").select(
+            "source_scraped_template_id"
+        ).not_.is_("source_scraped_template_id", "null")
+        if product_ids is not None:
+            runs_query = runs_query.in_("product_id", product_ids)
+        runs_rows = runs_query.limit(5000).execute().data or []
+        template_ids = sorted({
+            r["source_scraped_template_id"]
+            for r in runs_rows
+            if r.get("source_scraped_template_id")
+        })
+        if not template_ids:
+            return []
+
+        tmpl_rows = (
+            db.table("scraped_templates")
+            .select("id, name")
+            .in_("id", template_ids)
+            .execute()
+            .data
+            or []
+        )
+        return sorted(tmpl_rows, key=lambda t: (t.get("name") or "").lower())
+    except Exception as e:
+        st.warning(f"Could not load template list: {e}")
+        return []
+
+
+def get_matching_ad_ids_for_export(
+    brand_id: str = None,
+    org_id: str = None,
+    angle_id: str = None,
+    date_range: tuple = None,
+    product_id: str = None,
+    template_id: str = None,
+    status_filter: str = "approved",
+) -> list:
+    """
+    Return all generated_ads matching the active Ad History filters, shaped
+    as entries ready to append to st.session_state.export_ads.
+
+    Mirrors the per-run "Add N to Export" flow at line ~1189 of this page —
+    same fields, same shape. The only difference is the scope: this collects
+    across ALL matching runs (no pagination), so the user can grab everything
+    visible in one click.
+
+    status_filter:
+        "approved" -> generated_ads.final_status == 'approved'
+        "failed"   -> generated_ads.final_status == 'rejected'
+        "all"      -> any status (must still have a storage_path)
+
+    Returns: List[dict] with keys (storage_path, brand_code, product_code,
+    run_id, ad_id, format_code, ext) — matches the existing export_ads schema.
+    """
+    try:
+        db = get_supabase_client()
+
+        # Step 1: pull all matching ad_runs (id + product/brand codes for the
+        # eventual export filenames). No pagination — bounded by .limit(10000).
+        runs_query = db.table("ad_runs").select(
+            "id, product_id, products(product_code, brands(brand_code))"
+        )
+
+        if product_id and product_id != "all":
+            runs_query = runs_query.eq("product_id", product_id)
+        elif brand_id and brand_id != "all":
+            product_ids = _get_product_ids_for_brand(db, brand_id)
+            if product_ids:
+                runs_query = runs_query.in_("product_id", product_ids)
+            else:
+                return []
+        elif org_id and org_id != "all":
+            product_ids = _get_product_ids_for_org(db, org_id)
+            if product_ids:
+                runs_query = runs_query.in_("product_id", product_ids)
+            else:
+                return []
+
+        if angle_id:
+            runs_query = runs_query.eq("angle_id", angle_id)
+        if template_id:
+            runs_query = runs_query.eq("source_scraped_template_id", template_id)
+        if date_range and len(date_range) == 2 and all(date_range):
+            start, end = date_range
+            runs_query = runs_query.gte("created_at", start.isoformat()).lte(
+                "created_at", (end.isoformat() + "T23:59:59")
+            )
+
+        runs = runs_query.limit(10000).execute().data or []
+        if not runs:
+            return []
+
+        run_lookup = {r["id"]: r for r in runs}
+        run_ids = list(run_lookup.keys())
+
+        # Step 2: bulk-fetch matching generated_ads. Status filter applies here.
+        ads_query = db.table("generated_ads").select(
+            "id, ad_run_id, storage_path, final_status, prompt_spec"
+        ).in_("ad_run_id", run_ids).not_.is_("storage_path", "null")
+
+        if status_filter == "approved":
+            ads_query = ads_query.eq("final_status", "approved")
+        elif status_filter == "failed":
+            ads_query = ads_query.eq("final_status", "rejected")
+        # "all" -> no status filter (storage_path still required)
+
+        ads = ads_query.execute().data or []
+
+        # Step 3: shape into export-list entries (matches the per-run flow).
+        from viraltracker.ui.export_utils import get_format_code_from_spec
+        entries = []
+        for ad in ads:
+            run = run_lookup.get(ad["ad_run_id"])
+            if not run:
+                continue
+            product = run.get("products", {}) or {}
+            brand = product.get("brands", {}) or {}
+            entries.append({
+                "storage_path": ad["storage_path"],
+                "brand_code": brand.get("brand_code", "XX"),
+                "product_code": product.get("product_code", "XX"),
+                "run_id": str(ad["ad_run_id"]),
+                "ad_id": str(ad["id"]),
+                "format_code": get_format_code_from_spec(ad.get("prompt_spec") or {}),
+                "ext": "png",
+            })
+        return entries
+    except Exception as e:
+        st.error(f"Could not fetch matching ads for export: {e}")
         return []
 
 
@@ -1192,6 +1367,10 @@ if 'ad_history_date_range' not in st.session_state:
     st.session_state.ad_history_date_range = ()
 if 'ad_history_product_filter' not in st.session_state:
     st.session_state.ad_history_product_filter = "all"
+if 'ad_history_template_filter' not in st.session_state:
+    st.session_state.ad_history_template_filter = "all"
+if 'ad_history_export_status' not in st.session_state:
+    st.session_state.ad_history_export_status = "approved"
 
 # Size variant state
 if 'size_variant_ad_id' not in st.session_state:
@@ -1315,11 +1494,41 @@ product_filter = (
     else None
 )
 
-# Advanced filters — angle + date range. Collapsed by default so the page
-# doesn't grow taller for users who don't need filtering. Both filters reset
-# pagination to page 1 on change to avoid landing on an empty page N.
+# Advanced filters — angle, template, date range. Collapsed by default so the
+# page doesn't grow taller for users who don't need filtering. Every filter
+# resets pagination to page 1 on change to avoid landing on an empty page N.
 with st.expander("🔍 Advanced filters", expanded=False):
-    fcol1, fcol2 = st.columns(2)
+    # Date quick-presets row. These mutate ad_history_date_range BEFORE the
+    # date_input below renders, so the widget picks up the new value.
+    qcol1, qcol2, qcol3, qcol4, _ = st.columns([1, 1, 1, 1, 4])
+    with qcol1:
+        if st.button("Today", key="date_qb_today", use_container_width=True):
+            from datetime import date
+            _t = date.today()
+            st.session_state.ad_history_date_range = (_t, _t)
+            st.session_state.ad_history_page = 1
+            st.rerun()
+    with qcol2:
+        if st.button("Last 7 days", key="date_qb_7d", use_container_width=True):
+            from datetime import date, timedelta
+            _t = date.today()
+            st.session_state.ad_history_date_range = (_t - timedelta(days=7), _t)
+            st.session_state.ad_history_page = 1
+            st.rerun()
+    with qcol3:
+        if st.button("Last 30 days", key="date_qb_30d", use_container_width=True):
+            from datetime import date, timedelta
+            _t = date.today()
+            st.session_state.ad_history_date_range = (_t - timedelta(days=30), _t)
+            st.session_state.ad_history_page = 1
+            st.rerun()
+    with qcol4:
+        if st.button("Clear date", key="date_qb_clear", use_container_width=True):
+            st.session_state.ad_history_date_range = ()
+            st.session_state.ad_history_page = 1
+            st.rerun()
+
+    fcol1, fcol2, fcol3 = st.columns(3)
     with fcol1:
         # Angle filter — populated from belief_angles that have at least one
         # ad_run in the user's CURRENT scope (brand + product). Switching either
@@ -1345,11 +1554,34 @@ with st.expander("🔍 Advanced filters", expanded=False):
             on_change=lambda: setattr(st.session_state, 'ad_history_page', 1),
         )
     with fcol2:
+        # Template filter — populated from scraped_templates that have at
+        # least one ad_run in scope. Same shape as the angle filter.
+        templates_with_runs = get_templates_with_runs(
+            org_id=org_id, brand_id=brand_filter, product_id=product_filter,
+        )
+        template_options = {"all": "All templates"}
+        for t in templates_with_runs:
+            template_options[t["id"]] = t["name"]
+
+        if st.session_state.ad_history_template_filter not in template_options:
+            st.session_state.ad_history_template_filter = "all"
+
+        st.selectbox(
+            "Filter by template",
+            options=list(template_options.keys()),
+            format_func=lambda x: template_options[x],
+            key="ad_history_template_filter",
+            help=f"{len(templates_with_runs)} template(s) used in scope. "
+                 "Pick one to see only runs sourced from it.",
+            on_change=lambda: setattr(st.session_state, 'ad_history_page', 1),
+        )
+    with fcol3:
         st.date_input(
             "Filter by date range (optional)",
             value=st.session_state.ad_history_date_range or (),
             key="ad_history_date_range",
-            help="Pick start + end dates to scope runs to a window. Leave empty for all time.",
+            help="Pick start + end dates to scope runs to a window. Leave empty "
+                 "for all time. Use the quick buttons above for common presets.",
             on_change=lambda: setattr(st.session_state, 'ad_history_page', 1),
         )
 
@@ -1357,6 +1589,11 @@ with st.expander("🔍 Advanced filters", expanded=False):
 angle_filter = (
     st.session_state.ad_history_angle_filter
     if st.session_state.ad_history_angle_filter != "all"
+    else None
+)
+template_filter = (
+    st.session_state.ad_history_template_filter
+    if st.session_state.ad_history_template_filter != "all"
     else None
 )
 _dr = st.session_state.ad_history_date_range
@@ -1371,12 +1608,93 @@ total_count = get_ad_runs_count(
     angle_id=angle_filter,
     date_range=date_filter,
     product_id=product_filter,
+    template_id=template_filter,
 )
 total_pages = max(1, (total_count + PAGE_SIZE - 1) // PAGE_SIZE)
 
 # Ensure current page is valid
 if st.session_state.ad_history_page > total_pages:
     st.session_state.ad_history_page = 1
+
+# Export All Matching — collects every ad in the current filter scope into
+# st.session_state.export_ads. The status sub-filter narrows by review state.
+# Date filter is intentionally NOT defaulted to "today" (so the page still
+# behaves as a general history view), but the scope caption below shows
+# exactly what's about to be exported so accidents are visible up-front.
+with st.container():
+    ecol1, ecol2, ecol3 = st.columns([2, 2, 3])
+    with ecol1:
+        st.radio(
+            "Export which ads",
+            options=["approved", "failed", "all"],
+            format_func=lambda x: {
+                "approved": "Approved only",
+                "failed": "Failed only",
+                "all": "All statuses",
+            }[x],
+            key="ad_history_export_status",
+            horizontal=True,
+            help="Approved = passed review. Failed = rejected on review. "
+                 "All = both, plus pending. Storage path required either way.",
+        )
+    with ecol2:
+        _export_disabled = total_count == 0
+        if st.button(
+            "📦 Export All Matching to List",
+            use_container_width=True,
+            disabled=_export_disabled,
+            help="Adds every matching ad to the export list. Download via the "
+                 "export list page when ready.",
+        ):
+            entries = get_matching_ad_ids_for_export(
+                brand_id=brand_filter,
+                org_id=org_id,
+                angle_id=angle_filter,
+                date_range=date_filter,
+                product_id=product_filter,
+                template_id=template_filter,
+                status_filter=st.session_state.ad_history_export_status,
+            )
+            existing_ad_ids = {e.get("ad_id") for e in st.session_state.export_ads}
+            new_entries = [e for e in entries if e["ad_id"] not in existing_ad_ids]
+            st.session_state.export_ads.extend(new_entries)
+
+            n_runs_affected = len({e["run_id"] for e in entries})
+            if new_entries:
+                _skipped = len(entries) - len(new_entries)
+                _msg = (
+                    f"✅ Added {len(new_entries)} ad(s) from {n_runs_affected} "
+                    f"run(s) to export list."
+                )
+                if _skipped:
+                    _msg += f" Skipped {_skipped} already-in-list."
+                st.success(_msg)
+            elif entries:
+                st.info(
+                    f"All {len(entries)} matching ads are already in your "
+                    "export list."
+                )
+            else:
+                st.warning("No matching ads found for the current filters.")
+            st.rerun()
+    with ecol3:
+        # Scope caption — shows the active scope at a glance so accidents
+        # (e.g., "I meant today only") are caught BEFORE clicking the button.
+        _scope_bits = []
+        if date_filter:
+            _start, _end = date_filter
+            _scope_bits.append(
+                f"📅 {_start.isoformat()} → {_end.isoformat()}"
+            )
+        else:
+            _scope_bits.append("📅 All time")
+        _scope_bits.append(f"📊 {total_count} run(s)")
+        _current_export_count = len(st.session_state.export_ads)
+        if _current_export_count > 0:
+            _scope_bits.append(f"📦 {_current_export_count} in list")
+        st.caption(" · ".join(_scope_bits))
+
+st.markdown("")  # Spacing
 
 with st.spinner("Loading ad runs..."):
     ad_runs = get_ad_runs(
@@ -1387,6 +1705,7 @@ with st.spinner("Loading ad runs..."):
         angle_id=angle_filter,
         date_range=date_filter,
         product_id=product_filter,
+        template_id=template_filter,
     )
 
 if not ad_runs:
