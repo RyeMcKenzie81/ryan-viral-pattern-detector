@@ -1114,10 +1114,20 @@ else:
                 st.session_state.selected_angle_id = None
                 st.session_state.selected_angle_data = None
             else:
+                # Decorate angle labels with "📦 N ads · 📅 created date" so
+                # users can scan for under-tested angles (0 ads) at a glance.
+                # See get_ad_counts_by_angle for the two-query batch approach.
+                from viraltracker.ui.utils import get_ad_counts_by_angle
+                _ad_counts = get_ad_counts_by_angle([str(a.id) for a in angles])
+
                 angle_options = {}
                 for a in angles:
                     belief_preview = a.belief_statement[:50] + "..." if len(a.belief_statement) > 50 else a.belief_statement
-                    label = f"{a.name}: {belief_preview}"
+                    _count = _ad_counts.get(str(a.id), 0)
+                    _created = a.created_at.strftime("%Y-%m-%d") if a.created_at else "—"
+                    label = (
+                        f"{a.name}: {belief_preview}  ·  📦 {_count} ads  ·  📅 {_created}"
+                    )
                     angle_options[label] = str(a.id)
 
                 # Find current selection or default to first

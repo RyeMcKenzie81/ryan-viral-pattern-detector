@@ -175,7 +175,7 @@ def get_angles_for_jtbd(jtbd_id: str):
     try:
         db = get_supabase_client()
         result = db.table("belief_angles").select(
-            "id, name, belief_statement, status"
+            "id, name, belief_statement, status, created_at"
         ).eq("jtbd_framed_id", jtbd_id).order("created_at", desc=True).execute()
         return result.data or []
     except Exception as e:
@@ -4843,6 +4843,14 @@ def render_create_schedule():
                             # Get existing angle selections
                             existing_angle_ids = existing_params.get('angle_ids', [])
 
+                            # Decorate each row with ad count + creation date so
+                            # users can spot under-tested angles (0 ads) without
+                            # having to dig into Ad History per angle.
+                            from viraltracker.ui.utils import get_ad_counts_by_angle
+                            _ad_counts = get_ad_counts_by_angle(
+                                [a['id'] for a in angles]
+                            )
+
                             # Multi-select angles with checkboxes
                             for angle in angles:
                                 is_selected = angle['id'] in existing_angle_ids or angle['id'] in st.session_state.sched_selected_angle_ids
@@ -4864,6 +4872,13 @@ def render_create_schedule():
                                 with col_info:
                                     st.markdown(f"**{angle['name']}**")
                                     st.caption(angle.get('belief_statement', '')[:80] + '...' if len(angle.get('belief_statement', '')) > 80 else angle.get('belief_statement', ''))
+                                    # Metadata caption: ad count + creation date.
+                                    # created_at is an ISO string from Postgres,
+                                    # safe to slice to YYYY-MM-DD.
+                                    _count = _ad_counts.get(angle['id'], 0)
+                                    _created_iso = angle.get('created_at') or ''
+                                    _created = _created_iso[:10] if _created_iso else '—'
+                                    st.caption(f"📦 {_count} ads · 📅 created {_created}")
 
                             # Update session state
                             st.session_state.sched_selected_angle_ids = selected_angle_ids
