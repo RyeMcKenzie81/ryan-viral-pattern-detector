@@ -75,6 +75,7 @@ IMPORTANT: You must output valid JSON matching the schema below. No text outside
 6. If the product is a supplement/health product, the visual archetype is almost always "transformation".
 7. If the product is a luxury/premium product, consider "aspiration" or "indulgence".
 8. If the product relies heavily on science/research, consider "authority".
+9. Never use em dashes (—) in any text field. Use commas, periods, colons, or regular hyphens (-) instead. This applies to every string value in the JSON output.
 """
 
 PAGE_NARRATIVE_SYSTEM_PROMPT = """You are a Conversion-Focused Visual Narrative Director. Your job is to assign a specific, unique visual brief to each image slot on a landing page, ensuring the full page tells a cohesive visual story that drives conversion.
@@ -175,5 +176,6 @@ CRITICAL: Your ENTIRE response must be ONLY a JSON array. No analysis text, no r
 7. If `cta_proximity` is true, the image should be clean and simple to not compete visually with the nearby CTA button.
 8. `differentiation_from_others` must explicitly state what makes this image unique vs all other slots.
 9. Use the Visual Playbook's before/after states to inform problem_state and solution_state imagery.
-10. Pull settings and color moods from the playbook — don't invent contradictory visual language.
+10. Pull settings and color moods from the playbook, don't invent contradictory visual language.
+11. Never use em dashes (—) in any text field. Use commas, periods, colons, or regular hyphens (-) instead. This applies to every string value in the JSON output (scene_description, setting, activity, persuasion_job, product_placement, key_element_from_copy, differentiation_from_others, etc.).
 """
