@@ -27,7 +27,9 @@ BUCKET_NAME = "seo-article-images"
 PHOTOGRAPHY_STYLE = (
     "Shot on iPhone, natural lighting, casual authentic feel, slightly candid, "
     "warm tones, real family moment, not overly staged or perfect, "
-    "realistic everyday photography"
+    "realistic everyday photography. "
+    "If any text appears in the image (signs, labels, captions), never use em dashes (—); "
+    "use commas, periods, colons, or regular hyphens (-) instead."
 )
 
 # Delay between image generations to avoid rate limits

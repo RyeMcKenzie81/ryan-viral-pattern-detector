@@ -24,7 +24,9 @@ TRASH_PANDA_ART_STYLE = (
     "Style similar to 'Cyanide and Happiness' or 'Brewstew'. "
     "Large, smooth, pill-shaped heads with soft 3D shading and gradients, "
     "simple rectangular bodies, and thick black stick-figure limbs. "
-    "Clean vector aesthetic. 2D, high contrast."
+    "Clean vector aesthetic. 2D, high contrast. "
+    "If any text appears in the image (signs, dialog, captions), never use em dashes (—); "
+    "use commas, periods, colons, or regular hyphens (-) instead."
 )
 
 # Legacy alias
