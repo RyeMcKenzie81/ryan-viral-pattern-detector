@@ -954,3 +954,83 @@ def job_type_badge(job_type: str):
         'smart_edit': ('✏️', 'Smart Edit'),
     }
     return badges.get(job_type, ('❓', job_type))
+
+
+# ============================================================================
+# ANGLE STATISTICS (used by Ad Creator + Ad Scheduler angle pickers)
+# ============================================================================
+
+def get_ad_counts_by_angle(angle_ids: list) -> dict:
+    """
+    Return {angle_id_str: ad_count} for the given angle IDs.
+
+    Counts the number of generated_ads (with a storage_path — actually
+    produced, not just stub rows) attributed to each angle via the
+    ad_runs.angle_id link. Used to decorate angle pickers so users can see
+    "this angle has 0 ads, prioritize it" at a glance.
+
+    Two-query design (one for ad_runs, one for generated_ads) to keep this
+    O(1) in the number of angles rather than O(N) — typical JTBDs have
+    10-50 angles, and per-angle queries would mean 50 round-trips.
+
+    Args:
+        angle_ids: List of belief_angle UUIDs (str or UUID). Empty list
+            returns {}.
+
+    Returns:
+        Dict mapping str(angle_id) -> ad count. Angles with no ads still
+        appear as {angle_id: 0} so callers can render "0 ads" without
+        a fallback dance.
+    """
+    from viraltracker.core.database import get_supabase_client
+
+    if not angle_ids:
+        return {}
+
+    # Normalize to strings — caller may pass UUID objects
+    str_ids = [str(a) for a in angle_ids]
+    counts = {aid: 0 for aid in str_ids}
+
+    try:
+        db = get_supabase_client()
+
+        # Step 1: every ad_run for the given angles. Keep (run_id, angle_id)
+        # so we can re-attribute ads back to angles after the join.
+        runs = (
+            db.table("ad_runs")
+            .select("id, angle_id")
+            .in_("angle_id", str_ids)
+            .limit(10000)
+            .execute()
+            .data
+            or []
+        )
+        if not runs:
+            return counts
+
+        run_to_angle = {r["id"]: r["angle_id"] for r in runs if r.get("angle_id")}
+        if not run_to_angle:
+            return counts
+
+        # Step 2: count generated_ads with a storage_path (filters out
+        # generation failures that left stub rows behind).
+        ads = (
+            db.table("generated_ads")
+            .select("ad_run_id")
+            .in_("ad_run_id", list(run_to_angle.keys()))
+            .not_.is_("storage_path", "null")
+            .limit(100000)
+            .execute()
+            .data
+            or []
+        )
+
+        for ad in ads:
+            angle_id = run_to_angle.get(ad["ad_run_id"])
+            if angle_id and angle_id in counts:
+                counts[angle_id] += 1
+
+        return counts
+    except Exception as e:
+        logger.warning(f"Failed to compute ad counts by angle: {e}")
+        return counts
