@@ -24,7 +24,17 @@ from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any, Union
 import pytz
 import base64
-from viraltracker.worker.scheduler_concurrency import register_job_handler
+from viraltracker.worker.scheduler_concurrency import (
+    DEFAULT_POOL_SIZE,
+    JOB_HANDLERS,
+    dispatch_job,
+    make_worker_id,
+    boot_id,
+    recovery_loop,
+    register_job_handler,
+    shutdown_requested as _concurrency_shutdown_event,
+    worker_loop,
+)
 
 # Configure logging
 logging.basicConfig(
@@ -298,6 +308,35 @@ def get_due_jobs() -> List[Dict]:
         return []
 
 
+def _emit_job_started_event(job: Dict, run_id: str, attempt_number: int) -> None:
+    """Emit a job_started activity event. Extracted from create_job_run so the
+    new claim path (which creates the run row atomically via the claim_next_job
+    RPC, not via create_job_run) can still emit the same event.
+
+    Fire-and-forget; failures are logged but never raise.
+    """
+    try:
+        job_type = job.get('job_type', 'ad_creation')
+        brand_id = _extract_brand_id_from_job(job)
+        _emit_activity_event(
+            event_type='job_started',
+            severity='info',
+            title=f"{_humanize_job_type(job_type)} started",
+            brand_id=brand_id,
+            details={
+                'job_id': job.get('id'),
+                'run_id': run_id,
+                'job_name': job.get('name', ''),
+                'attempt': attempt_number,
+            },
+            source_id=run_id,
+            link_page=JOB_TYPE_PAGE_SLUGS.get(job_type, 'ad_scheduler'),
+            link_params={'job_id': job.get('id')},
+        )
+    except Exception as e:
+        logger.warning(f"Failed to emit job_started event for run {run_id}: {e}")
+
+
 def create_job_run(job_id: str, job: Dict = None) -> Optional[str]:
     """Create a new job run record. Returns run ID.
 
@@ -306,6 +345,12 @@ def create_job_run(job_id: str, job: Dict = None) -> Optional[str]:
     - Otherwise, start at attempt_number=1
 
     If ``job`` dict is provided, emits a ``job_started`` activity event.
+
+    NOTE: As of the scheduler worker upgrade, the worker pool path uses the
+    claim_next_job RPC which creates the run row atomically (and emits the
+    job_started event via _emit_job_started_event). This function remains as a
+    public API for any external caller that wants to create a run row outside
+    the worker (e.g. manual "run now" buttons in the UI).
     """
     try:
         db = get_supabase_client()
@@ -333,25 +378,8 @@ def create_job_run(job_id: str, job: Dict = None) -> Optional[str]:
         run_data = result.data[0] if result.data else None
         if run_data:
             run_id = run_data['id']
-            # Emit job_started event
             if job:
-                job_type = job.get('job_type', 'ad_creation')
-                brand_id = _extract_brand_id_from_job(job)
-                _emit_activity_event(
-                    event_type='job_started',
-                    severity='info',
-                    title=f"{_humanize_job_type(job_type)} started",
-                    brand_id=brand_id,
-                    details={
-                        'job_id': job_id,
-                        'run_id': run_id,
-                        'job_name': job.get('name', ''),
-                        'attempt': attempt_number,
-                    },
-                    source_id=run_id,
-                    link_page=JOB_TYPE_PAGE_SLUGS.get(job_type, 'ad_scheduler'),
-                    link_params={'job_id': job_id},
-                )
+                _emit_job_started_event(job, run_id, attempt_number)
             return run_id
         return None
     except Exception as e:
@@ -934,83 +962,26 @@ def calculate_next_run(cron_expression: str) -> Optional[datetime]:
 # ============================================================================
 
 async def execute_job(job: Dict) -> Dict[str, Any]:
-    """Route and execute a scheduled job based on job_type."""
+    """Route and execute a scheduled job based on job_type.
+
+    Thin wrapper around dispatch_job() from the registry. PR 2 of the scheduler
+    worker upgrade replaced the legacy elif chain — every execute_*_job is
+    now self-registered via @register_job_handler at definition time. Adding
+    a job_type without registering its handler is a loud KeyError here
+    (naming the registered set) instead of a silent fallthrough.
+
+    Note: run_scheduler() does not call this function directly; it goes
+    through _dispatch_claimed_job() which also enriches the claim with
+    brand/product joins and emits the job_started activity event. This
+    function is kept as a public API for any external caller (e.g. UI
+    "run now" buttons) that hands in an already-shaped job dict.
+    """
     job_type = job.get('job_type', 'ad_creation')
-    job_id = job['id']
-    job_name = job['name']
-
+    job_id = job.get('id', '<unknown>')
+    job_name = job.get('name', '<unknown>')
     logger.info(f"Routing job: {job_name} (type: {job_type}, ID: {job_id})")
-
-    # Route to appropriate handler
-    if job_type == 'meta_sync':
-        return await execute_meta_sync_job(job)
-    elif job_type == 'scorecard':
-        return await execute_scorecard_job(job)
-    elif job_type == 'template_scrape':
-        return await execute_template_scrape_job(job)
-    elif job_type == 'template_approval':
-        return await execute_template_approval_job(job)
-    elif job_type == 'congruence_reanalysis':
-        return await execute_congruence_reanalysis_job(job)
-    elif job_type == 'ad_classification':
-        return await execute_ad_classification_job(job)
-    elif job_type == 'asset_download':
-        return await execute_asset_download_job(job)
-    elif job_type == 'competitor_scrape':
-        return await execute_competitor_scrape_job(job)
-    elif job_type == 'reddit_scrape':
-        return await execute_reddit_scrape_job(job)
-    elif job_type == 'amazon_review_scrape':
-        return await execute_amazon_review_scrape_job(job)
-    elif job_type == 'ad_creation_v2':
-        return await execute_ad_creation_v2_job(job)
-    elif job_type == 'ad_creation':
-        return await execute_ad_creation_job(job)
-    elif job_type == 'creative_genome_update':
-        return await execute_creative_genome_update_job(job)
-    elif job_type == 'creative_deep_analysis':
-        return await execute_creative_deep_analysis_job(job)
-    elif job_type == 'genome_validation':
-        return await execute_genome_validation_job(job)
-    elif job_type == 'winner_evolution':
-        return await execute_winner_evolution_job(job)
-    elif job_type == 'experiment_analysis':
-        return await execute_experiment_analysis_job(job)
-    elif job_type == 'quality_calibration':
-        return await execute_quality_calibration_job(job)
-    elif job_type == 'ad_intelligence_analysis':
-        return await execute_ad_intelligence_analysis_job(job)
-    elif job_type == 'analytics_sync':
-        return await execute_analytics_sync_job(job)
-    elif job_type == 'seo_status_sync':
-        return await execute_seo_status_sync_job(job)
-    elif job_type == 'iteration_auto_run':
-        return await execute_iteration_auto_run_job(job)
-    elif job_type == 'size_variant':
-        return await execute_size_variant_job(job)
-    elif job_type == 'smart_edit':
-        return await execute_smart_edit_job(job)
-    elif job_type == 'seo_content_eval':
-        return await execute_seo_content_eval_job(job)
-    elif job_type == 'seo_publish':
-        return await execute_seo_publish_job(job)
-    elif job_type == 'seo_auto_interlink':
-        return await execute_seo_auto_interlink_job(job)
-    elif job_type == 'demographic_backfill':
-        return await execute_demographic_backfill_job(job)
-    elif job_type == 'seo_opportunity_scan':
-        return await execute_seo_opportunity_scan_job(job)
-    elif job_type == 'token_refresh':
-        return await execute_token_refresh_job(job)
-    elif job_type == 'competitor_intel_analysis':
-        return await execute_competitor_intel_analysis_job(job)
-    elif job_type == 'quick_intel_analysis':
-        return await execute_quick_intel_analysis_job(job)
-    else:
-        # Hard-fail on unknown job types — never silently fall through to V1
-        logger.error(f"Unknown job_type '{job_type}' for job {job_id} ({job_name}). "
-                     f"No handler registered. Refusing to execute.")
-        raise ValueError(f"Unknown job_type: {job_type}")
+    handler = dispatch_job(job_type)  # raises KeyError naming registered keys
+    return await handler(job)
 
 
 @register_job_handler('ad_creation_v2')
@@ -1046,13 +1017,14 @@ async def execute_ad_creation_v2_job(job: Dict) -> Dict[str, Any]:
     logger.info(f"Starting V2 job: {job_name} (ID: {job_id})")
 
     # Immediately clear next_run_at to prevent re-pickup
-    update_job(job_id, {"next_run_at": None})
-
-    # Create job run record
-    run_id = create_job_run(job_id, job)
-    if not run_id:
-        logger.error(f"Failed to create run record for V2 job {job_id}")
-        return {"success": False, "error": "Failed to create run record"}
+    # Pickup state and run row are set atomically by claim_next_job.
+    # Assert we got here via the claim path; reuse the pre-claimed run_id.
+    assert job.get('_claimed'), (
+        "execute_*_job called outside the claim path "
+        "(job.get('_claimed') is falsy). This function expects a "
+        "pre-claimed run from claim_next_job()."
+    )
+    run_id = job['_run_id']
 
     logs = []
     ad_run_ids = []
@@ -1550,13 +1522,14 @@ async def execute_ad_creation_job(job: Dict) -> Dict[str, Any]:
 
     # Immediately clear next_run_at to prevent job being picked up again
     # This prevents race conditions if the job takes longer than the poll interval
-    update_job(job_id, {"next_run_at": None})
-
-    # Create job run record
-    run_id = create_job_run(job_id, job)
-    if not run_id:
-        logger.error(f"Failed to create run record for job {job_id}")
-        return {"success": False, "error": "Failed to create run record"}
+    # Pickup state and run row are set atomically by claim_next_job.
+    # Assert we got here via the claim path; reuse the pre-claimed run_id.
+    assert job.get('_claimed'), (
+        "execute_*_job called outside the claim path "
+        "(job.get('_claimed') is falsy). This function expects a "
+        "pre-claimed run from claim_next_job()."
+    )
+    run_id = job['_run_id']
 
     logs = []
     ad_run_ids = []
@@ -2130,13 +2103,14 @@ async def execute_meta_sync_job(job: Dict) -> Dict[str, Any]:
     logger.info(f"Starting Meta sync job: {job_name} for brand {brand_name}")
 
     # Immediately clear next_run_at to prevent duplicate execution
-    update_job(job_id, {"next_run_at": None})
-
-    # Create job run record
-    run_id = create_job_run(job_id, job)
-    if not run_id:
-        logger.error(f"Failed to create run record for job {job_id}")
-        return {"success": False, "error": "Failed to create run record"}
+    # Pickup state and run row are set atomically by claim_next_job.
+    # Assert we got here via the claim path; reuse the pre-claimed run_id.
+    assert job.get('_claimed'), (
+        "execute_*_job called outside the claim path "
+        "(job.get('_claimed') is falsy). This function expects a "
+        "pre-claimed run from claim_next_job()."
+    )
+    run_id = job['_run_id']
 
     # Dataset freshness tracking
     from viraltracker.services.dataset_freshness_service import DatasetFreshnessService
@@ -2385,12 +2359,14 @@ async def execute_demographic_backfill_job(job: Dict) -> Dict[str, Any]:
 
     logger.info(f"Starting demographic backfill job: {job_name} for brand {brand_name}")
 
-    update_job(job_id, {"next_run_at": None})
-
-    run_id = create_job_run(job_id, job)
-    if not run_id:
-        logger.error(f"Failed to create run record for job {job_id}")
-        return {"success": False, "error": "Failed to create run record"}
+    # Pickup state and run row are set atomically by claim_next_job.
+    # Assert we got here via the claim path; reuse the pre-claimed run_id.
+    assert job.get('_claimed'), (
+        "execute_*_job called outside the claim path "
+        "(job.get('_claimed') is falsy). This function expects a "
+        "pre-claimed run from claim_next_job()."
+    )
+    run_id = job['_run_id']
 
     logs = []
     target_days_back = params.get('target_days_back', 90)
@@ -2502,13 +2478,14 @@ async def execute_scorecard_job(job: Dict) -> Dict[str, Any]:
     logger.info(f"Starting scorecard job: {job_name} for brand {brand_name}")
 
     # Immediately clear next_run_at to prevent duplicate execution
-    update_job(job_id, {"next_run_at": None})
-
-    # Create job run record
-    run_id = create_job_run(job_id, job)
-    if not run_id:
-        logger.error(f"Failed to create run record for job {job_id}")
-        return {"success": False, "error": "Failed to create run record"}
+    # Pickup state and run row are set atomically by claim_next_job.
+    # Assert we got here via the claim path; reuse the pre-claimed run_id.
+    assert job.get('_claimed'), (
+        "execute_*_job called outside the claim path "
+        "(job.get('_claimed') is falsy). This function expects a "
+        "pre-claimed run from claim_next_job()."
+    )
+    run_id = job['_run_id']
 
     # Dataset freshness tracking
     from viraltracker.services.dataset_freshness_service import DatasetFreshnessService
@@ -2739,13 +2716,14 @@ async def execute_template_scrape_job(job: Dict) -> Dict[str, Any]:
     logger.info(f"Job parameters: {params}")
 
     # Immediately clear next_run_at to prevent duplicate execution
-    update_job(job_id, {"next_run_at": None})
-
-    # Create job run record
-    run_id = create_job_run(job_id, job)
-    if not run_id:
-        logger.error(f"Failed to create run record for job {job_id}")
-        return {"success": False, "error": "Failed to create run record"}
+    # Pickup state and run row are set atomically by claim_next_job.
+    # Assert we got here via the claim path; reuse the pre-claimed run_id.
+    assert job.get('_claimed'), (
+        "execute_*_job called outside the claim path "
+        "(job.get('_claimed') is falsy). This function expects a "
+        "pre-claimed run from claim_next_job()."
+    )
+    run_id = job['_run_id']
 
     # Dataset freshness tracking
     from viraltracker.services.dataset_freshness_service import DatasetFreshnessService
@@ -3195,13 +3173,14 @@ async def execute_template_approval_job(job: Dict) -> Dict[str, Any]:
     logger.info(f"Starting template approval job: {job_name} (ID: {job_id})")
 
     # Immediately clear next_run_at to prevent duplicate execution
-    update_job(job_id, {"next_run_at": None})
-
-    # Create job run record
-    run_id = create_job_run(job_id, job)
-    if not run_id:
-        logger.error(f"Failed to create run record for job {job_id}")
-        return {"success": False, "error": "Failed to create run record"}
+    # Pickup state and run row are set atomically by claim_next_job.
+    # Assert we got here via the claim path; reuse the pre-claimed run_id.
+    assert job.get('_claimed'), (
+        "execute_*_job called outside the claim path "
+        "(job.get('_claimed') is falsy). This function expects a "
+        "pre-claimed run from claim_next_job()."
+    )
+    run_id = job['_run_id']
 
     logs = []
 
@@ -3367,13 +3346,14 @@ async def execute_congruence_reanalysis_job(job: Dict) -> Dict[str, Any]:
     logger.info(f"Starting congruence re-analysis job: {job_name} (ID: {job_id})")
 
     # Immediately clear next_run_at to prevent duplicate execution
-    update_job(job_id, {"next_run_at": None})
-
-    # Create job run record
-    run_id = create_job_run(job_id, job)
-    if not run_id:
-        logger.error(f"Failed to create run record for job {job_id}")
-        return {"success": False, "error": "Failed to create run record"}
+    # Pickup state and run row are set atomically by claim_next_job.
+    # Assert we got here via the claim path; reuse the pre-claimed run_id.
+    assert job.get('_claimed'), (
+        "execute_*_job called outside the claim path "
+        "(job.get('_claimed') is falsy). This function expects a "
+        "pre-claimed run from claim_next_job()."
+    )
+    run_id = job['_run_id']
 
     # Dataset freshness tracking (only when brand-scoped)
     from viraltracker.services.dataset_freshness_service import DatasetFreshnessService
@@ -3696,13 +3676,14 @@ async def execute_ad_classification_job(job: Dict) -> Dict[str, Any]:
     logger.info(f"Starting ad classification job: {job_name} for brand {brand_name}")
 
     # Immediately clear next_run_at to prevent duplicate execution
-    update_job(job_id, {"next_run_at": None})
-
-    # Create job run record
-    run_id = create_job_run(job_id, job)
-    if not run_id:
-        logger.error(f"Failed to create run record for job {job_id}")
-        return {"success": False, "error": "Failed to create run record"}
+    # Pickup state and run row are set atomically by claim_next_job.
+    # Assert we got here via the claim path; reuse the pre-claimed run_id.
+    assert job.get('_claimed'), (
+        "execute_*_job called outside the claim path "
+        "(job.get('_claimed') is falsy). This function expects a "
+        "pre-claimed run from claim_next_job()."
+    )
+    run_id = job['_run_id']
 
     # Dataset freshness tracking
     from viraltracker.services.dataset_freshness_service import DatasetFreshnessService
@@ -3819,10 +3800,14 @@ async def execute_ad_intelligence_analysis_job(job: Dict) -> Dict[str, Any]:
 
     logger.info(f"Starting ad intelligence analysis job for brand {brand_name}")
 
-    update_job(job_id, {"next_run_at": None})
-    run_id = create_job_run(job_id, job)
-    if not run_id:
-        return {"success": False, "error": "Failed to create run record"}
+    # Pickup state and run row are set atomically by claim_next_job.
+    # Assert we got here via the claim path; reuse the pre-claimed run_id.
+    assert job.get('_claimed'), (
+        "execute_*_job called outside the claim path "
+        "(job.get('_claimed') is falsy). This function expects a "
+        "pre-claimed run from claim_next_job()."
+    )
+    run_id = job['_run_id']
 
     logs = []
     try:
@@ -3915,10 +3900,14 @@ async def execute_analytics_sync_job(job: Dict) -> Dict[str, Any]:
 
     logger.info(f"Starting analytics sync job for brand {brand_id}")
 
-    update_job(job_id, {"next_run_at": None})
-    run_id = create_job_run(job_id, job)
-    if not run_id:
-        return {"success": False, "error": "Failed to create run record"}
+    # Pickup state and run row are set atomically by claim_next_job.
+    # Assert we got here via the claim path; reuse the pre-claimed run_id.
+    assert job.get('_claimed'), (
+        "execute_*_job called outside the claim path "
+        "(job.get('_claimed') is falsy). This function expects a "
+        "pre-claimed run from claim_next_job()."
+    )
+    run_id = job['_run_id']
 
     logs = []
     results = {}
@@ -4018,10 +4007,14 @@ async def execute_seo_status_sync_job(job: Dict) -> Dict[str, Any]:
 
     logger.info(f"Starting SEO status sync job for brand {brand_name}")
 
-    update_job(job_id, {"next_run_at": None})
-    run_id = create_job_run(job_id, job)
-    if not run_id:
-        return {"success": False, "error": "Failed to create run record"}
+    # Pickup state and run row are set atomically by claim_next_job.
+    # Assert we got here via the claim path; reuse the pre-claimed run_id.
+    assert job.get('_claimed'), (
+        "execute_*_job called outside the claim path "
+        "(job.get('_claimed') is falsy). This function expects a "
+        "pre-claimed run from claim_next_job()."
+    )
+    run_id = job['_run_id']
 
     logs = []
 
@@ -4105,13 +4098,14 @@ async def execute_asset_download_job(job: Dict) -> Dict[str, Any]:
     logger.info(f"Starting asset download job: {job_name} for brand {brand_name}")
 
     # Immediately clear next_run_at to prevent duplicate execution
-    update_job(job_id, {"next_run_at": None})
-
-    # Create job run record
-    run_id = create_job_run(job_id, job)
-    if not run_id:
-        logger.error(f"Failed to create run record for job {job_id}")
-        return {"success": False, "error": "Failed to create run record"}
+    # Pickup state and run row are set atomically by claim_next_job.
+    # Assert we got here via the claim path; reuse the pre-claimed run_id.
+    assert job.get('_claimed'), (
+        "execute_*_job called outside the claim path "
+        "(job.get('_claimed') is falsy). This function expects a "
+        "pre-claimed run from claim_next_job()."
+    )
+    run_id = job['_run_id']
 
     # Dataset freshness tracking
     from viraltracker.services.dataset_freshness_service import DatasetFreshnessService
@@ -4208,13 +4202,14 @@ async def execute_competitor_scrape_job(job: Dict) -> Dict[str, Any]:
     logger.info(f"Starting competitor scrape job: {job_name} for brand {brand_name}")
 
     # Immediately clear next_run_at to prevent duplicate execution
-    update_job(job_id, {"next_run_at": None})
-
-    # Create job run record
-    run_id = create_job_run(job_id, job)
-    if not run_id:
-        logger.error(f"Failed to create run record for job {job_id}")
-        return {"success": False, "error": "Failed to create run record"}
+    # Pickup state and run row are set atomically by claim_next_job.
+    # Assert we got here via the claim path; reuse the pre-claimed run_id.
+    assert job.get('_claimed'), (
+        "execute_*_job called outside the claim path "
+        "(job.get('_claimed') is falsy). This function expects a "
+        "pre-claimed run from claim_next_job()."
+    )
+    run_id = job['_run_id']
 
     # Dataset freshness tracking
     from viraltracker.services.dataset_freshness_service import DatasetFreshnessService
@@ -4341,13 +4336,14 @@ async def execute_reddit_scrape_job(job: Dict) -> Dict[str, Any]:
     logger.info(f"Starting reddit scrape job: {job_name} for brand {brand_name}")
 
     # Immediately clear next_run_at to prevent duplicate execution
-    update_job(job_id, {"next_run_at": None})
-
-    # Create job run record
-    run_id = create_job_run(job_id, job)
-    if not run_id:
-        logger.error(f"Failed to create run record for job {job_id}")
-        return {"success": False, "error": "Failed to create run record"}
+    # Pickup state and run row are set atomically by claim_next_job.
+    # Assert we got here via the claim path; reuse the pre-claimed run_id.
+    assert job.get('_claimed'), (
+        "execute_*_job called outside the claim path "
+        "(job.get('_claimed') is falsy). This function expects a "
+        "pre-claimed run from claim_next_job()."
+    )
+    run_id = job['_run_id']
 
     # Dataset freshness tracking
     from viraltracker.services.dataset_freshness_service import DatasetFreshnessService
@@ -4476,13 +4472,14 @@ async def execute_amazon_review_scrape_job(job: Dict) -> Dict[str, Any]:
     logger.info(f"Starting amazon review scrape job: {job_name} for brand {brand_name}")
 
     # Immediately clear next_run_at to prevent duplicate execution
-    update_job(job_id, {"next_run_at": None})
-
-    # Create job run record
-    run_id = create_job_run(job_id, job)
-    if not run_id:
-        logger.error(f"Failed to create run record for job {job_id}")
-        return {"success": False, "error": "Failed to create run record"}
+    # Pickup state and run row are set atomically by claim_next_job.
+    # Assert we got here via the claim path; reuse the pre-claimed run_id.
+    assert job.get('_claimed'), (
+        "execute_*_job called outside the claim path "
+        "(job.get('_claimed') is falsy). This function expects a "
+        "pre-claimed run from claim_next_job()."
+    )
+    run_id = job['_run_id']
 
     # Dataset freshness tracking
     from viraltracker.services.dataset_freshness_service import DatasetFreshnessService
@@ -4571,40 +4568,167 @@ async def execute_amazon_review_scrape_job(job: Dict) -> Dict[str, Any]:
 # Main Loop
 # ============================================================================
 
-async def run_scheduler():
-    """Main scheduler loop."""
-    logger.info("Scheduler worker started")
-    logger.info(f"Polling interval: 60 seconds")
+def _fetch_full_job(db, job_id: str) -> Optional[Dict]:
+    """Fetch one scheduled_jobs row with the SAME joined shape that
+    get_due_jobs() produces. The swept execute_*_job handlers read fields like
+    job['products']['brands']['organization_id'], so the claim path must
+    re-hydrate the row after claim_next_job (which returns flat fields only).
+    """
+    try:
+        result = db.table("scheduled_jobs").select(
+            "*, products(id, name, brand_id, brands(id, name, brand_colors))"
+        ).eq("id", job_id).limit(1).execute()
+        rows = result.data or []
+        if not rows:
+            return None
+        job = rows[0]
+        # If no joined products row (e.g. brand-only jobs like meta_sync),
+        # fetch the brand info directly — matches get_due_jobs() behavior.
+        if not job.get('products') and job.get('brand_id'):
+            brand_result = db.table("brands").select(
+                "id, name, organization_id"
+            ).eq("id", job['brand_id']).limit(1).execute()
+            if brand_result.data:
+                job['brands'] = brand_result.data[0]
+        return job
+    except Exception as e:
+        logger.error(f"Failed to fetch full job {job_id}: {e}")
+        return None
 
-    while not shutdown_requested:
+
+async def _dispatch_claimed_job(db, claimed: Dict[str, Any]) -> None:
+    """Orchestrate a single claimed run.
+
+    Called by worker_loop via its `execute_fn` parameter. Steps:
+      1. Re-hydrate the full job dict (brand/product joins).
+      2. Thread claim markers (_claimed, _run_id, _attempt_number) so the
+         swept execute_*_job handlers can verify they were called through
+         the claim path and reuse the pre-claimed run_id.
+      3. Emit the job_started activity event (matches the legacy path).
+      4. Look up the handler via dispatch_job() and await it.
+      5. On dispatcher exception: mark the run failed and reschedule the
+         parent job. A single bad job MUST NOT take the worker down.
+    """
+    job_id = claimed['job_id']
+    run_id = claimed['run_id']
+    attempt = claimed['attempt_number']
+    job_type = claimed['job_type']
+
+    try:
+        job = _fetch_full_job(db, job_id)
+        if job is None:
+            logger.error(
+                f"Claimed run {run_id} for job {job_id} but job row not found "
+                "(deleted between queue insert and claim?). Marking run as failed."
+            )
+            update_job_run(run_id, {
+                "status": "failed",
+                "completed_at": datetime.now(PST).isoformat(),
+                "error_message": "parent scheduled_jobs row not found at dispatch time",
+            })
+            return
+
+        # Threading markers consumed by the swept execute_*_job functions.
+        job['_claimed'] = True
+        job['_run_id'] = run_id
+        job['_attempt_number'] = attempt
+
+        _emit_job_started_event(job, run_id, attempt)
+
+        handler = dispatch_job(job_type)
+        await handler(job)
+
+    except Exception:
+        logger.exception(
+            f"_dispatch_claimed_job error run_id={run_id} job_id={job_id} "
+            f"job_type={job_type}"
+        )
         try:
-            # Recover any stuck runs before checking for new work
-            recover_stuck_runs()
+            update_job_run(run_id, {
+                "status": "failed",
+                "completed_at": datetime.now(PST).isoformat(),
+                "error_message": "exception in scheduler dispatcher; see scheduler logs",
+            })
+            job_for_reschedule = _fetch_full_job(db, job_id)
+            if job_for_reschedule is not None:
+                _reschedule_after_failure(job_for_reschedule, job_id, attempt)
+        except Exception:
+            logger.exception("Cleanup after dispatcher exception also failed")
 
-            # Check for due jobs
-            due_jobs = get_due_jobs()
 
-            if due_jobs:
-                logger.info(f"Found {len(due_jobs)} due job(s)")
+async def run_scheduler():
+    """Main scheduler loop — concurrent worker pool + single recovery owner.
 
-                for job in due_jobs:
-                    if shutdown_requested:
-                        break
+    PR 2 of scheduler worker upgrade. Replaces the previous sequential
+    `for job in due_jobs: await execute_job(job)` pattern.
 
-                    try:
-                        await execute_job(job)
-                    except Exception as e:
-                        logger.error(f"Error executing job {job['id']}: {e}")
+    Architecture:
+      - N worker_loop tasks (N = SCHEDULER_POOL_SIZE env var; default 2).
+        Each loop: claim → dispatch via _dispatch_claimed_job → repeat.
+        Claim is atomic via the claim_next_job RPC (advisory-lock-protected).
+      - One recovery_loop task with 0-30s startup jitter, ticking every 60s
+        and calling recover_stuck_runs_v2 (per-job-type cutoffs from
+        job_runtime_limits).
+      - One watchdog task that bridges the legacy `shutdown_requested` bool
+        (set by the SIGTERM handler at module level) to the asyncio.Event
+        consumed by worker_loop / recovery_loop. The signal handler can't
+        safely touch asyncio objects, so the bridge runs as a regular task.
 
-            # Wait before next poll
-            for _ in range(60):  # Check shutdown flag every second
-                if shutdown_requested:
-                    break
-                await asyncio.sleep(1)
+    Graceful shutdown:
+      SIGTERM → bool set → bridge task sees it → asyncio.Event set → workers
+      stop claiming and finish in-flight work. Drain timeout = 25s (Railway
+      sends SIGKILL at 30s). Any work still running after timeout is left
+      to recover_stuck_runs_v2 on the next boot.
 
-        except Exception as e:
-            logger.error(f"Error in scheduler loop: {e}")
-            await asyncio.sleep(10)  # Brief pause on error
+    Reversibility: setting SCHEDULER_POOL_SIZE=1 produces single-worker
+    behavior (effectively the pre-upgrade serial loop, but via the new
+    claim path so fairness caps still apply).
+    """
+    db = get_supabase_client()
+    pool_size = DEFAULT_POOL_SIZE
+    logger.info(
+        f"Scheduler worker started: pool_size={pool_size} "
+        f"boot_id={boot_id()} registered_handlers={len(JOB_HANDLERS)}"
+    )
+
+    async def _watch_shutdown_bool():
+        """Propagate the bool flag set by handle_shutdown() to the asyncio
+        Event watched by the worker / recovery loops."""
+        while not shutdown_requested:
+            await asyncio.sleep(0.5)
+        logger.info("Bridge task: shutdown_requested bool observed; setting Event")
+        _concurrency_shutdown_event.set()
+
+    async def _execute_one(claimed: Dict[str, Any]) -> None:
+        await _dispatch_claimed_job(db, claimed)
+
+    tasks = [
+        asyncio.create_task(_watch_shutdown_bool(), name="watch_shutdown"),
+        asyncio.create_task(recovery_loop(db), name="recovery_loop"),
+    ]
+    for slot in range(pool_size):
+        tasks.append(asyncio.create_task(
+            worker_loop(db, slot, execute_fn=_execute_one),
+            name=f"worker_loop[{slot}]",
+        ))
+
+    await _concurrency_shutdown_event.wait()
+    logger.info("Scheduler shutdown event set; draining workers (max 25s)")
+
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(*tasks, return_exceptions=True),
+            timeout=25.0,
+        )
+    except asyncio.TimeoutError:
+        logger.warning(
+            "Workers did not drain in 25s; recover_stuck_runs_v2 will catch "
+            "any orphans on next boot."
+        )
+    finally:
+        for t in tasks:
+            if not t.done():
+                t.cancel()
 
     logger.info("Scheduler worker stopped")
 
@@ -4629,12 +4753,14 @@ async def execute_creative_genome_update_job(job: Dict) -> Dict[str, Any]:
 
     logger.info(f"Starting Creative Genome update: {job_name}")
 
-    update_job(job_id, {"next_run_at": None})
-
-    run_id = create_job_run(job_id, job)
-    if not run_id:
-        logger.error(f"Failed to create run record for genome update job {job_id}")
-        return {"success": False, "error": "Failed to create run record"}
+    # Pickup state and run row are set atomically by claim_next_job.
+    # Assert we got here via the claim path; reuse the pre-claimed run_id.
+    assert job.get('_claimed'), (
+        "execute_*_job called outside the claim path "
+        "(job.get('_claimed') is falsy). This function expects a "
+        "pre-claimed run from claim_next_job()."
+    )
+    run_id = job['_run_id']
 
     logs = []
 
@@ -4706,12 +4832,13 @@ async def execute_creative_deep_analysis_job(job: Dict) -> Dict[str, Any]:
 
     logger.info(f"Starting Creative Deep Analysis: {job_name}")
 
-    update_job(job_id, {"next_run_at": None})
-
-    run_id = create_job_run(job_id)
-    if not run_id:
-        logger.error(f"Failed to create run record for deep analysis job {job_id}")
-        return {"success": False, "error": "Failed to create run record"}
+    # Pickup state and run row are set atomically by claim_next_job.
+    # Assert we got here via the claim path; reuse the pre-claimed run_id.
+    assert job.get('_claimed'), (
+        "execute_creative_deep_analysis_job called outside the claim path "
+        "(job.get('_claimed') is falsy). Pre-claimed run from claim_next_job required."
+    )
+    run_id = job['_run_id']
 
     logs = []
 
@@ -4829,12 +4956,14 @@ async def execute_genome_validation_job(job: Dict) -> Dict[str, Any]:
 
     logger.info(f"Starting Genome validation: {job_name}")
 
-    update_job(job_id, {"next_run_at": None})
-
-    run_id = create_job_run(job_id, job)
-    if not run_id:
-        logger.error(f"Failed to create run record for genome validation job {job_id}")
-        return {"success": False, "error": "Failed to create run record"}
+    # Pickup state and run row are set atomically by claim_next_job.
+    # Assert we got here via the claim path; reuse the pre-claimed run_id.
+    assert job.get('_claimed'), (
+        "execute_*_job called outside the claim path "
+        "(job.get('_claimed') is falsy). This function expects a "
+        "pre-claimed run from claim_next_job()."
+    )
+    run_id = job['_run_id']
 
     logs = []
 
@@ -4970,12 +5099,14 @@ async def execute_winner_evolution_job(job: Dict) -> Dict[str, Any]:
 
     logger.info(f"Starting Winner Evolution job: {job_name} (ID: {job_id})")
 
-    update_job(job_id, {"next_run_at": None})
-
-    run_id = create_job_run(job_id, job)
-    if not run_id:
-        logger.error(f"Failed to create run record for evolution job {job_id}")
-        return {"success": False, "error": "Failed to create run record"}
+    # Pickup state and run row are set atomically by claim_next_job.
+    # Assert we got here via the claim path; reuse the pre-claimed run_id.
+    assert job.get('_claimed'), (
+        "execute_*_job called outside the claim path "
+        "(job.get('_claimed') is falsy). This function expects a "
+        "pre-claimed run from claim_next_job()."
+    )
+    run_id = job['_run_id']
 
     logs = []
 
@@ -5080,12 +5211,14 @@ async def execute_experiment_analysis_job(job: Dict) -> Dict[str, Any]:
 
     logger.info(f"Starting Experiment Analysis job: {job_name} (ID: {job_id})")
 
-    update_job(job_id, {"next_run_at": None})
-
-    run_id = create_job_run(job_id, job)
-    if not run_id:
-        logger.error(f"Failed to create run record for experiment analysis job {job_id}")
-        return {"success": False, "error": "Failed to create run record"}
+    # Pickup state and run row are set atomically by claim_next_job.
+    # Assert we got here via the claim path; reuse the pre-claimed run_id.
+    assert job.get('_claimed'), (
+        "execute_*_job called outside the claim path "
+        "(job.get('_claimed') is falsy). This function expects a "
+        "pre-claimed run from claim_next_job()."
+    )
+    run_id = job['_run_id']
 
     logs = []
 
@@ -5196,12 +5329,14 @@ async def execute_quality_calibration_job(job: Dict) -> Dict[str, Any]:
 
     logger.info(f"Starting Quality Calibration: {job_name}")
 
-    update_job(job_id, {"next_run_at": None})
-
-    run_id = create_job_run(job_id, job)
-    if not run_id:
-        logger.error(f"Failed to create run record for quality calibration job {job_id}")
-        return {"success": False, "error": "Failed to create run record"}
+    # Pickup state and run row are set atomically by claim_next_job.
+    # Assert we got here via the claim path; reuse the pre-claimed run_id.
+    assert job.get('_claimed'), (
+        "execute_*_job called outside the claim path "
+        "(job.get('_claimed') is falsy). This function expects a "
+        "pre-claimed run from claim_next_job()."
+    )
+    run_id = job['_run_id']
 
     logs = []
 
@@ -5294,13 +5429,14 @@ async def execute_iteration_auto_run_job(job: Dict) -> Dict[str, Any]:
     logger.info(f"Starting iteration_auto_run job: {job_name} for brand {brand_name}")
 
     # Prevent duplicate execution
-    update_job(job_id, {"next_run_at": None})
-
-    # Create job run record
-    run_id = create_job_run(job_id, job)
-    if not run_id:
-        logger.error(f"Failed to create run record for job {job_id}")
-        return {"success": False, "error": "Failed to create run record"}
+    # Pickup state and run row are set atomically by claim_next_job.
+    # Assert we got here via the claim path; reuse the pre-claimed run_id.
+    assert job.get('_claimed'), (
+        "execute_*_job called outside the claim path "
+        "(job.get('_claimed') is falsy). This function expects a "
+        "pre-claimed run from claim_next_job()."
+    )
+    run_id = job['_run_id']
 
     logs = []
 
@@ -5443,12 +5579,14 @@ async def execute_size_variant_job(job: Dict) -> Dict[str, Any]:
 
     logger.info(f"Starting Size Variant job: {job_name} (ID: {job_id})")
 
-    update_job(job_id, {"next_run_at": None})
-
-    run_id = create_job_run(job_id, job)
-    if not run_id:
-        logger.error(f"Failed to create run record for size variant job {job_id}")
-        return {"success": False, "error": "Failed to create run record"}
+    # Pickup state and run row are set atomically by claim_next_job.
+    # Assert we got here via the claim path; reuse the pre-claimed run_id.
+    assert job.get('_claimed'), (
+        "execute_*_job called outside the claim path "
+        "(job.get('_claimed') is falsy). This function expects a "
+        "pre-claimed run from claim_next_job()."
+    )
+    run_id = job['_run_id']
 
     logs = []
 
@@ -5531,12 +5669,14 @@ async def execute_smart_edit_job(job: Dict) -> Dict[str, Any]:
 
     logger.info(f"Starting Smart Edit job: {job_name} (ID: {job_id})")
 
-    update_job(job_id, {"next_run_at": None})
-
-    run_id = create_job_run(job_id, job)
-    if not run_id:
-        logger.error(f"Failed to create run record for smart edit job {job_id}")
-        return {"success": False, "error": "Failed to create run record"}
+    # Pickup state and run row are set atomically by claim_next_job.
+    # Assert we got here via the claim path; reuse the pre-claimed run_id.
+    assert job.get('_claimed'), (
+        "execute_*_job called outside the claim path "
+        "(job.get('_claimed') is falsy). This function expects a "
+        "pre-claimed run from claim_next_job()."
+    )
+    run_id = job['_run_id']
 
     logs = []
 
@@ -5651,10 +5791,13 @@ async def execute_seo_content_eval_job(job: Dict) -> Dict[str, Any]:
 
     logger.info(f"Starting seo_content_eval job: {job_name} (brand: {brand_name})")
 
-    update_job(job_id, {"next_run_at": None})
-    run_id = create_job_run(job_id)
-    if not run_id:
-        return {"success": False, "error": "Failed to create run record"}
+    # Pickup state and run row are set atomically by claim_next_job.
+    # Assert we got here via the claim path; reuse the pre-claimed run_id.
+    assert job.get('_claimed'), (
+        "execute_*_job called outside the claim path "
+        "(job.get('_claimed') is falsy). Pre-claimed run from claim_next_job required."
+    )
+    run_id = job['_run_id']
 
     logs = []
 
@@ -5828,10 +5971,13 @@ async def execute_seo_publish_job(job: Dict) -> Dict[str, Any]:
 
     logger.info(f"Starting seo_publish job: {job_name}")
 
-    update_job(job_id, {"next_run_at": None})
-    run_id = create_job_run(job_id)
-    if not run_id:
-        return {"success": False, "error": "Failed to create run record"}
+    # Pickup state and run row are set atomically by claim_next_job.
+    # Assert we got here via the claim path; reuse the pre-claimed run_id.
+    assert job.get('_claimed'), (
+        "execute_*_job called outside the claim path "
+        "(job.get('_claimed') is falsy). Pre-claimed run from claim_next_job required."
+    )
+    run_id = job['_run_id']
 
     logs = []
 
@@ -6014,10 +6160,13 @@ async def execute_seo_auto_interlink_job(job: Dict) -> Dict[str, Any]:
 
     logger.info(f"Starting seo_auto_interlink job: {job_name} (article: {article_id})")
 
-    update_job(job_id, {"next_run_at": None})
-    run_id = create_job_run(job_id)
-    if not run_id:
-        return {"success": False, "error": "Failed to create run record"}
+    # Pickup state and run row are set atomically by claim_next_job.
+    # Assert we got here via the claim path; reuse the pre-claimed run_id.
+    assert job.get('_claimed'), (
+        "execute_*_job called outside the claim path "
+        "(job.get('_claimed') is falsy). Pre-claimed run from claim_next_job required."
+    )
+    run_id = job['_run_id']
 
     logs = []
 
@@ -6155,10 +6304,13 @@ async def execute_seo_opportunity_scan_job(job: Dict) -> Dict[str, Any]:
 
     job_id = job["id"]
     job_name = job.get("name", "SEO Opportunity Scan")
-    update_job(job_id, {"next_run_at": None})  # Prevent duplicate pickup
-    run_id = create_job_run(job_id, job)
-    if not run_id:
-        return {"success": False, "error": "Failed to create job run"}
+    # Pickup state and run row are set atomically by claim_next_job.
+    # Assert we got here via the claim path; reuse the pre-claimed run_id.
+    assert job.get('_claimed'), (
+        "execute_seo_opportunity_scan_job called outside the claim path "
+        "(job.get('_claimed') is falsy). Pre-claimed run from claim_next_job required."
+    )
+    run_id = job['_run_id']
 
     logs = [f"Starting {job_name}"]
     start_time = _time.time()
@@ -6341,8 +6493,13 @@ async def execute_token_refresh_job(job: Dict) -> Dict[str, Any]:
     supabase = get_supabase_client()
     logs = []
 
-    update_job(job_id, {"next_run_at": None})  # Prevent duplicate pickup
-    run_id = create_job_run(job_id, job)
+    # Pickup state and run row are set atomically by claim_next_job.
+    # Assert we got here via the claim path; reuse the pre-claimed run_id.
+    assert job.get('_claimed'), (
+        "execute_token_refresh_job called outside the claim path "
+        "(job.get('_claimed') is falsy). Pre-claimed run from claim_next_job required."
+    )
+    run_id = job['_run_id']
 
     try:
         # Find OAuth tokens expiring within 7 days (but not already expired)
@@ -6442,13 +6599,14 @@ async def execute_competitor_intel_analysis_job(job: Dict) -> Dict[str, Any]:
     logger.info(f"Starting competitor intel analysis job: {job_name}")
 
     # Immediately clear next_run_at to prevent duplicate execution
-    update_job(job_id, {"next_run_at": None})
-
-    # Create job run record
-    run_id = create_job_run(job_id, job)
-    if not run_id:
-        logger.error(f"Failed to create run record for job {job_id}")
-        return {"success": False, "error": "Failed to create run record"}
+    # Pickup state and run row are set atomically by claim_next_job.
+    # Assert we got here via the claim path; reuse the pre-claimed run_id.
+    assert job.get('_claimed'), (
+        "execute_*_job called outside the claim path "
+        "(job.get('_claimed') is falsy). This function expects a "
+        "pre-claimed run from claim_next_job()."
+    )
+    run_id = job['_run_id']
 
     logs = []
 
@@ -6630,12 +6788,14 @@ async def execute_quick_intel_analysis_job(job: Dict) -> Dict[str, Any]:
 
     logger.info(f"Starting quick intel analysis job: {job_name}")
 
-    update_job(job_id, {"next_run_at": None})
-
-    run_id = create_job_run(job_id, job)
-    if not run_id:
-        logger.error(f"Failed to create run record for job {job_id}")
-        return {"success": False, "error": "Failed to create run record"}
+    # Pickup state and run row are set atomically by claim_next_job.
+    # Assert we got here via the claim path; reuse the pre-claimed run_id.
+    assert job.get('_claimed'), (
+        "execute_*_job called outside the claim path "
+        "(job.get('_claimed') is falsy). This function expects a "
+        "pre-claimed run from claim_next_job()."
+    )
+    run_id = job['_run_id']
 
     logs = []
 

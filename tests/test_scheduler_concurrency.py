@@ -227,11 +227,16 @@ class TestWorkerLoop:
     async def test_loop_exits_on_shutdown_request(self, mock_db):
         """worker_loop must exit promptly when shutdown_requested is set,
         even mid-idle-backoff."""
-        sc.shutdown_requested.set()
+        import sys
+        sys.modules[sc.__name__].shutdown_requested.set()
         executed = []
+
+        async def execute_fn(claimed):
+            executed.append(claimed)
+
         t0 = time.monotonic()
         await sc.worker_loop(
-            mock_db, slot=0, execute_fn=lambda c: executed.append(c),
+            mock_db, slot=0, execute_fn=execute_fn,
             poll_idle_seconds=10,  # would block 10s if shutdown weren't honored
         )
         elapsed = time.monotonic() - t0
@@ -241,6 +246,7 @@ class TestWorkerLoop:
 
     @pytest.mark.asyncio
     async def test_loop_dispatches_claimed_work_then_exits(self, mock_db):
+        import sys
         payload = _claim_payload(job_type="meta_sync")
         # First call returns a claim; second call returns nothing; then we shut down.
         mock_db.rpc.return_value.execute.side_effect = [
@@ -249,9 +255,9 @@ class TestWorkerLoop:
         ]
         executed = []
 
-        def execute_fn(claimed):
+        async def execute_fn(claimed):
             executed.append(claimed)
-            sc.shutdown_requested.set()  # stop the loop after the first job
+            sys.modules[sc.__name__].shutdown_requested.set()
 
         await sc.worker_loop(
             mock_db, slot=2, execute_fn=execute_fn,
@@ -264,15 +270,16 @@ class TestWorkerLoop:
     async def test_loop_swallows_execute_exceptions(self, mock_db):
         """If execute_fn raises, the worker logs and keeps going; a single
         broken job must not take the whole worker down."""
+        import sys
         payload = _claim_payload(job_type="meta_sync")
         mock_db.rpc.return_value.execute.return_value = MagicMock(data=[payload])
 
         call_count = {"n": 0}
 
-        def execute_fn(claimed):
+        async def execute_fn(claimed):
             call_count["n"] += 1
             if call_count["n"] >= 2:
-                sc.shutdown_requested.set()
+                sys.modules[sc.__name__].shutdown_requested.set()
             raise ValueError("simulated job failure")
 
         # Should NOT raise out of worker_loop.
