@@ -107,6 +107,12 @@ tab1, tab2 = st.tabs([
 ])
 
 with tab1:
+    # Deep-link support: when another page (e.g. Pipeline Status > Recent
+    # Evaluations) sends a user here via "Open in Exceptions →", it sets
+    # `exceptions_focus_article_id` in session state. Auto-expand the matching
+    # row and clear the key so subsequent reruns don't keep forcing it open.
+    focus_article_id = st.session_state.pop("exceptions_focus_article_id", None)
+
     if not failed_evals:
         st.info("No failed evaluations.")
     else:
@@ -115,11 +121,18 @@ with tab1:
             keyword = article_info.get("keyword", "Unknown")
             title = article_info.get("title", "")
 
+            is_focused = bool(
+                focus_article_id and eval_result.get("article_id") == focus_article_id
+            )
+            # If a specific article is focused, only it expands; otherwise fall
+            # back to the prior behaviour of expanding the first row.
+            should_expand = is_focused if focus_article_id else (i == 0)
+
             with st.expander(
                 f"{'🔴' if eval_result.get('failed_checks', 0) > 0 else '🟡'} "
                 f"{keyword} — {eval_result.get('failed_checks', 0)} errors, "
                 f"{eval_result.get('warning_count', 0)} warnings",
-                expanded=(i == 0),
+                expanded=should_expand,
             ):
                 st.caption(f"Evaluated: {eval_result.get('evaluated_at', 'Unknown')}")
 
