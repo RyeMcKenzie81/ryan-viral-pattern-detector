@@ -11,6 +11,7 @@ Includes:
 - Recent eval results
 """
 
+import json
 import logging
 from datetime import datetime, timezone
 
@@ -36,6 +37,16 @@ def get_db():
 def get_tracking_service():
     from viraltracker.services.seo_pipeline.services.article_tracking_service import ArticleTrackingService
     return ArticleTrackingService()
+
+
+def _parse_json_field(value):
+    """Parse a JSONB field that might come back as a string or already a dict."""
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+    return value or {}
 
 
 # Pipeline stages in order
@@ -118,11 +129,21 @@ def load_publish_queue(brand_id: str) -> list:
 
 
 def load_recent_evals(brand_id: str, limit: int = 20) -> list:
-    """Load recent content evaluation results."""
+    """Load recent content evaluation results.
+
+    Includes the full JSONB detail columns (`qa_result`, `checklist_result`,
+    `image_eval_result`) so failed rows can show *why* they failed inline,
+    instead of forcing the user over to the Exceptions page just to see
+    the explanation.
+    """
     db = get_db()
     resp = (
         db.table("seo_content_eval_results")
-        .select("id, article_id, verdict, total_checks, passed_checks, failed_checks, warning_count, evaluated_at")
+        .select(
+            "id, article_id, verdict, total_checks, passed_checks, "
+            "failed_checks, warning_count, evaluated_at, "
+            "qa_result, checklist_result, image_eval_result"
+        )
         .eq("brand_id", brand_id)
         .order("evaluated_at", desc=True)
         .limit(limit)
@@ -317,7 +338,13 @@ def render_publish_queue(brand_id: str, article_lookup: dict):
 
 
 def render_recent_evals(brand_id: str, article_lookup: dict):
-    """Render recent content evaluation results."""
+    """Render recent content evaluation results.
+
+    Passes render as compact one-liners; failures render as expanders with the
+    full check/rule detail (mirroring the Exceptions page) plus two inline
+    actions: Re-evaluate, and Open in Exceptions (which deep-links to the
+    matching expander on the Exceptions page via session state).
+    """
     st.subheader("Recent Evaluations")
 
     evals = load_recent_evals(brand_id)
@@ -325,15 +352,26 @@ def render_recent_evals(brand_id: str, article_lookup: dict):
         st.info("No evaluation results yet.")
         return
 
-    table_data = []
-    for ev in evals:
-        article_id = ev.get("article_id", "")
-        article_name = article_lookup.get(article_id, article_id[:8] if article_id else "—")
-        if len(article_name) > 50:
-            article_name = article_name[:47] + "..."
+    # Summary metrics across the loaded window
+    pass_count = sum(1 for e in evals if (e.get("verdict") or "").lower() == "passed")
+    fail_count = sum(1 for e in evals if (e.get("verdict") or "").lower() == "failed")
+    other_count = len(evals) - pass_count - fail_count
+    cols = st.columns(3)
+    cols[0].metric("Passed", pass_count)
+    cols[1].metric("Failed", fail_count)
+    cols[2].metric("Other", other_count)
+    st.caption(f"Showing the {len(evals)} most recent evaluations.")
 
-        verdict = ev.get("verdict", "—")
-        evaluated_at = ev.get("evaluated_at", "")
+    for ev in evals:
+        article_id = ev.get("article_id") or ""
+        article_name = article_lookup.get(article_id, (article_id[:8] if article_id else "—"))
+        verdict = (ev.get("verdict") or "").lower()
+        failed_checks = ev.get("failed_checks", 0) or 0
+        warning_count = ev.get("warning_count", 0) or 0
+        passed_checks = ev.get("passed_checks", 0) or 0
+        total_checks = ev.get("total_checks", 0) or 0
+
+        evaluated_at = ev.get("evaluated_at", "") or ""
         if evaluated_at:
             try:
                 dt = datetime.fromisoformat(evaluated_at.replace("Z", "+00:00"))
@@ -341,16 +379,108 @@ def render_recent_evals(brand_id: str, article_lookup: dict):
             except (ValueError, TypeError):
                 pass
 
-        table_data.append({
-            "Article": article_name,
-            "Verdict": verdict.upper() if verdict else "—",
-            "Passed": ev.get("passed_checks", 0),
-            "Failed": ev.get("failed_checks", 0),
-            "Warnings": ev.get("warning_count", 0),
-            "Evaluated": evaluated_at,
-        })
+        if verdict == "passed":
+            # Compact one-liner — passes don't need an expander or actions.
+            st.markdown(
+                f"✅ **{article_name}** — {passed_checks}/{total_checks} checks passed"
+                f"  · _{evaluated_at}_"
+            )
+            continue
 
-    st.dataframe(table_data, use_container_width=True, hide_index=True)
+        # Failed (or skipped / other non-pass) — render as expander with detail.
+        icon = "🔴" if verdict == "failed" else "🟡"
+        with st.expander(
+            f"{icon} {article_name} — {failed_checks} errors, {warning_count} warnings  ·  {evaluated_at}",
+            expanded=False,
+        ):
+            _render_eval_failure_detail(ev)
+
+            st.markdown("---")
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button(
+                    "Re-evaluate",
+                    key=f"pipe_recent_reeval_{ev['id']}",
+                    help="Mark this eval as superseded and re-run the eval against the current article content.",
+                ):
+                    db = get_db()
+                    db.table("seo_content_eval_results").update(
+                        {"superseded_by": ev["id"]}
+                    ).eq("id", ev["id"]).execute()
+                    db.table("seo_articles").update(
+                        {"status": "qa_passed"}
+                    ).eq("id", article_id).execute()
+                    st.success("Article queued for re-evaluation.")
+                    st.rerun()
+            with col2:
+                if st.button(
+                    "Open in Exceptions →",
+                    key=f"pipe_recent_open_exc_{ev['id']}",
+                    type="primary",
+                    help="Jump to the Exceptions page with this article expanded so you can override, skip, or re-evaluate.",
+                ):
+                    st.session_state["exceptions_focus_article_id"] = article_id
+                    st.switch_page("pages/55_⚠️_Exceptions.py")
+
+
+def _render_eval_failure_detail(ev: dict):
+    """Render the detailed QA / checklist / image-eval failures for one eval row.
+
+    Mirrors the rendering used on the Exceptions page so users see the same
+    explanation in both places.
+    """
+    qa_result = _parse_json_field(ev.get("qa_result"))
+    if qa_result:
+        qa_failures = qa_result.get("failures", []) or []
+        qa_warnings = qa_result.get("warnings", []) or []
+        if qa_failures or qa_warnings:
+            st.markdown("**QA Check Results:**")
+            for f in qa_failures:
+                st.error(f"❌ {f.get('name', 'unknown')}: {f.get('message', '')}")
+            for w in qa_warnings:
+                st.warning(f"⚠️ {w.get('name', 'unknown')}: {w.get('message', '')}")
+
+    checklist_result = _parse_json_field(ev.get("checklist_result"))
+    if checklist_result:
+        cl_failures = checklist_result.get("failures", []) or []
+        cl_warnings = checklist_result.get("warnings", []) or []
+        if cl_failures or cl_warnings:
+            st.markdown("**Pre-Publish Checklist:**")
+            for f in cl_failures:
+                st.error(f"❌ {f.get('name', 'unknown')}: {f.get('message', '')}")
+            for w in cl_warnings:
+                st.warning(f"⚠️ {w.get('name', 'unknown')}: {w.get('message', '')}")
+
+    image_result = _parse_json_field(ev.get("image_eval_result"))
+    if image_result and image_result.get("evaluations"):
+        st.markdown("**Image Evaluation:**")
+        for img_eval in image_result["evaluations"]:
+            img_status = "✅" if img_eval.get("passed") else ("❓" if img_eval.get("uncertain") else "❌")
+            st.markdown(f"{img_status} **{img_eval.get('image_type', 'image').title()}**")
+            if img_eval.get("image_url"):
+                try:
+                    st.image(img_eval["image_url"], width=300)
+                except Exception:
+                    st.caption(f"Image: {img_eval['image_url']}")
+            for rule in img_eval.get("rules", []) or []:
+                if not rule.get("passed"):
+                    confidence = rule.get("confidence", 0) or 0
+                    st.markdown(
+                        f"  - [{(rule.get('severity') or 'error').upper()}] "
+                        f"{rule.get('rule', '')} "
+                        f"(confidence: {confidence:.0%}): "
+                        f"_{rule.get('explanation', '')}_"
+                    )
+
+    # Graceful fallback if none of the JSONB blocks contained anything useful.
+    if not any([
+        _parse_json_field(ev.get("qa_result")).get("failures"),
+        _parse_json_field(ev.get("qa_result")).get("warnings"),
+        _parse_json_field(ev.get("checklist_result")).get("failures"),
+        _parse_json_field(ev.get("checklist_result")).get("warnings"),
+        (_parse_json_field(ev.get("image_eval_result")) or {}).get("evaluations"),
+    ]):
+        st.caption("No detailed failure data was recorded for this evaluation.")
 
 
 # =============================================================================
