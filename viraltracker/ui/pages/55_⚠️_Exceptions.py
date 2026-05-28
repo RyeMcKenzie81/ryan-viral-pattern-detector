@@ -34,6 +34,11 @@ def get_queue_service():
     return PublishQueueService()
 
 
+def get_workflow_service():
+    from viraltracker.services.seo_pipeline.services.seo_workflow_service import SEOWorkflowService
+    return SEOWorkflowService()
+
+
 def get_db():
     from viraltracker.core.database import get_supabase_client
     return get_supabase_client()
@@ -47,6 +52,61 @@ def _parse_json_field(value):
         except (json.JSONDecodeError, TypeError):
             return {}
     return value or {}
+
+
+def _suggest_fixes_for_eval(ev: dict) -> dict:
+    """Inspect a failed eval's JSONB and flag which fix actions are likely to help.
+
+    Returns a dict of booleans the UI uses to add a 💡 hint next to the most
+    relevant button. All buttons remain clickable regardless — the user can
+    pick anything; the hint is just a nudge.
+    """
+    qa = _parse_json_field(ev.get("qa_result"))
+    cl = _parse_json_field(ev.get("checklist_result"))
+    img = _parse_json_field(ev.get("image_eval_result"))
+
+    failure_names: list[str] = []
+    for src in (qa, cl):
+        for f in (src.get("failures") or []):
+            failure_names.append((f.get("name") or "").lower())
+
+    has_image_failures = any(
+        any(not r.get("passed") for r in (e.get("rules") or []))
+        for e in (img.get("evaluations") or [])
+    )
+    has_meta = any(("meta" in n) or ("description" in n) for n in failure_names)
+    has_first_para = any(("first_paragraph" in n) or ("first paragraph" in n) for n in failure_names)
+    has_other_content = any(
+        n
+        and "meta" not in n
+        and "description" not in n
+        and "first_paragraph" not in n
+        and "first paragraph" not in n
+        for n in failure_names
+    )
+
+    return {
+        "image": has_image_failures,
+        "meta_description": has_meta,
+        "first_paragraph": has_first_para,
+        "content": has_other_content,
+    }
+
+
+def _reset_for_re_evaluation(eval_id: str, article_id: str) -> None:
+    """Mark the current eval as superseded and reset article status so the
+    scheduler worker picks it up on its next pass (~60s) and re-evaluates.
+
+    Same shape as the existing Re-evaluate button so behaviour is consistent
+    across all the fix actions.
+    """
+    db = get_db()
+    db.table("seo_content_eval_results").update(
+        {"superseded_by": eval_id}
+    ).eq("id", eval_id).execute()
+    db.table("seo_articles").update(
+        {"status": "qa_passed"}
+    ).eq("id", article_id).execute()
 
 
 # =============================================================================
@@ -184,8 +244,120 @@ with tab1:
                                     f"_{rule.get('explanation', '')}_"
                                 )
 
-                # Actions
+                # ----- Fix the article: actually rebuild what's broken -----
+                # These buttons call the existing SEOWorkflowService re-run
+                # methods (`regenerate_images`, `rerun_phase_c`,
+                # `fix_meta_description`, `fix_first_paragraph`) and then reset
+                # the article so the scheduler worker re-evaluates it on its
+                # next pass.
                 st.markdown("---")
+                st.markdown("**Fix the article**")
+                st.caption(
+                    "Pick the action that matches the failure. Each one regenerates the "
+                    "broken piece and then queues the article for re-evaluation. 💡 marks "
+                    "the action most likely to address the failures shown above."
+                )
+
+                suggestions = _suggest_fixes_for_eval(eval_result)
+                article_id = eval_result["article_id"]
+                article_keyword = article_info.get("keyword", "") or ""
+                eval_brand_id = eval_result.get("brand_id") or brand_id
+                eval_org_id = eval_result.get("organization_id") or organization_id
+
+                fix_col1, fix_col2 = st.columns(2)
+                with fix_col1:
+                    img_label = "🎨 Regenerate Images" + (" 💡" if suggestions["image"] else "")
+                    if st.button(
+                        img_label,
+                        key=f"exc_fix_images_{eval_result['id']}",
+                        help="Re-run image generation. Use this when image evaluation failed (wrong subject, off-brand, low quality).",
+                        use_container_width=True,
+                    ):
+                        try:
+                            with st.spinner("Regenerating images..."):
+                                get_workflow_service().regenerate_images(
+                                    article_id=article_id,
+                                    brand_id=eval_brand_id,
+                                    organization_id=eval_org_id,
+                                )
+                            _reset_for_re_evaluation(eval_result["id"], article_id)
+                            st.success("Images regenerated. Article queued for re-evaluation.")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Image regeneration failed: {str(e)[:300]}")
+
+                    phasec_label = "✍️ Re-optimize Content" + (" 💡" if suggestions["content"] else "")
+                    if st.button(
+                        phasec_label,
+                        key=f"exc_fix_phasec_{eval_result['id']}",
+                        help="Re-run the optimize phase (Phase C). Use this when content quality, brand voice, structure, or general QA checks failed.",
+                        use_container_width=True,
+                    ):
+                        try:
+                            with st.spinner("Re-running optimize phase..."):
+                                get_workflow_service().rerun_phase_c(
+                                    article_id=article_id,
+                                    brand_id=eval_brand_id,
+                                    organization_id=eval_org_id,
+                                    republish=False,
+                                )
+                            _reset_for_re_evaluation(eval_result["id"], article_id)
+                            st.success("Content re-optimized. Article queued for re-evaluation.")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Re-optimize failed: {str(e)[:300]}")
+
+                with fix_col2:
+                    meta_label = "🏷️ Fix Meta Description" + (" 💡" if suggestions["meta_description"] else "")
+                    if st.button(
+                        meta_label,
+                        key=f"exc_fix_meta_{eval_result['id']}",
+                        help="Generate a new meta description that fits 150–160 chars and includes the target keyword.",
+                        use_container_width=True,
+                    ):
+                        try:
+                            with st.spinner("Fixing meta description..."):
+                                fix_result = get_workflow_service().fix_meta_description(
+                                    article_id=article_id,
+                                    keyword=article_keyword,
+                                )
+                            if fix_result.get("error"):
+                                st.error(f"Could not fix meta description: {fix_result['error']}")
+                            else:
+                                _reset_for_re_evaluation(eval_result["id"], article_id)
+                                st.success(
+                                    f"Meta description rewritten ({fix_result.get('length', '?')} chars). "
+                                    "Article queued for re-evaluation."
+                                )
+                                st.rerun()
+                        except Exception as e:
+                            st.error(f"Meta description fix failed: {str(e)[:300]}")
+
+                    fp_label = "📝 Fix First Paragraph" + (" 💡" if suggestions["first_paragraph"] else "")
+                    if st.button(
+                        fp_label,
+                        key=f"exc_fix_fp_{eval_result['id']}",
+                        help="Rewrite the opening paragraph so the target keyword appears naturally.",
+                        use_container_width=True,
+                    ):
+                        try:
+                            with st.spinner("Fixing first paragraph..."):
+                                fix_result = get_workflow_service().fix_first_paragraph(
+                                    article_id=article_id,
+                                    keyword=article_keyword,
+                                )
+                            if fix_result.get("error"):
+                                st.error(f"Could not fix first paragraph: {fix_result['error']}")
+                            else:
+                                _reset_for_re_evaluation(eval_result["id"], article_id)
+                                st.success("First paragraph rewritten. Article queued for re-evaluation.")
+                                st.rerun()
+                        except Exception as e:
+                            st.error(f"First paragraph fix failed: {str(e)[:300]}")
+
+                # ----- Decide what to do (existing flow) -----
+                st.markdown("---")
+                st.markdown("**Decide what to do**")
                 col1, col2, col3 = st.columns(3)
                 with col1:
                     override_reason = st.text_input(
@@ -216,18 +388,11 @@ with tab1:
 
                 with col3:
                     if st.button(
-                        "Re-evaluate",
+                        "Re-evaluate (no changes)",
                         key=f"exc_reeval_{eval_result['id']}",
+                        help="Re-run the eval against the current content without changing anything. Use this if you think the eval was wrong.",
                     ):
-                        article_id = eval_result["article_id"]
-                        # Mark current eval as superseded
-                        get_db().table("seo_content_eval_results").update(
-                            {"superseded_by": eval_result["id"]}
-                        ).eq("id", eval_result["id"]).execute()
-                        # Reset article status to trigger re-evaluation
-                        get_db().table("seo_articles").update(
-                            {"status": "qa_passed"}
-                        ).eq("id", article_id).execute()
+                        _reset_for_re_evaluation(eval_result["id"], eval_result["article_id"])
                         st.success("Article queued for re-evaluation.")
                         st.rerun()
 

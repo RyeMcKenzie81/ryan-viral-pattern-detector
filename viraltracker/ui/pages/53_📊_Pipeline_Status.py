@@ -414,10 +414,14 @@ def render_recent_evals(brand_id: str, article_lookup: dict):
                     st.rerun()
             with col2:
                 if st.button(
-                    "Open in Exceptions →",
+                    "Fix in Exceptions →",
                     key=f"pipe_recent_open_exc_{ev['id']}",
                     type="primary",
-                    help="Jump to the Exceptions page with this article expanded so you can override, skip, or re-evaluate.",
+                    help=(
+                        "Jump to the Exceptions page with this article expanded. From there you can "
+                        "regenerate images, re-optimize content, fix the meta description or first "
+                        "paragraph, override, skip, or re-evaluate."
+                    ),
                 ):
                     st.session_state["exceptions_focus_article_id"] = article_id
                     st.switch_page("pages/55_⚠️_Exceptions.py")
