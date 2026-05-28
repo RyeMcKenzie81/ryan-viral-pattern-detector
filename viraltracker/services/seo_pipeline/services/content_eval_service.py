@@ -194,7 +194,7 @@ class ContentEvalService:
         """Get failed evaluation results for the exceptions dashboard."""
         query = (
             self.supabase.table("seo_content_eval_results")
-            .select("*, seo_articles(keyword, title, seo_title)")
+            .select("*, seo_articles(keyword, title, seo_title, word_count)")
             .eq("verdict", "failed")
             .eq("manually_overridden", False)
             .is_("superseded_by", "null")
