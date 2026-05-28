@@ -28,7 +28,7 @@ import random
 import secrets
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Awaitable, Callable, Dict, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -37,9 +37,10 @@ logger = logging.getLogger(__name__)
 # Constants / config
 # ============================================================================
 
-# Defaults to 1 in PR 1 so this module's worker_loop is observationally
-# identical to the legacy run_scheduler when wired up. PR 2 bumps the default.
-DEFAULT_POOL_SIZE = int(os.environ.get("SCHEDULER_POOL_SIZE", "1"))
+# PR 2 default: 2 workers. User chose 2 as a conservative initial bump from 1;
+# can be raised via env var without redeploy. Setting to 1 restores
+# single-worker behavior identical to pre-upgrade.
+DEFAULT_POOL_SIZE = int(os.environ.get("SCHEDULER_POOL_SIZE", "2"))
 
 # How long the no-work / cap-hit backoff is. Lower = lower latency, higher
 # DB load when the queue is empty. 2s is a sane idle cadence.
@@ -267,21 +268,23 @@ async def worker_loop(
     db: Any,
     slot: int,
     *,
-    execute_fn: Callable[[Dict[str, Any]], Any],
+    execute_fn: Callable[[Dict[str, Any]], Awaitable[Any]],
     poll_idle_seconds: float = IDLE_BACKOFF_SECONDS,
     poll_caphit_seconds: float = CAP_HIT_BACKOFF_SECONDS,
 ) -> None:
-    """One worker task: claim → run → repeat until shutdown_requested.
+    """One worker task: claim → dispatch → repeat until shutdown_requested.
 
     Args:
         db: supabase client.
         slot: integer slot index, used to build worker_id.
-        execute_fn: a sync function `(claimed_row: Dict) -> Any`. The claimed
-                    row is the dict returned by the claim_next_job RPC. We
-                    run it via asyncio.to_thread so sync DB calls inside don't
-                    block the event loop.
+        execute_fn: async callable `(claimed_row: Dict) -> Awaitable`. The
+                    claimed row is the dict returned by the claim_next_job RPC.
+                    Called via plain `await` — the caller is responsible for
+                    threading sync DB calls (if any) off the event loop. PR 2
+                    handlers stay async; sync portions inside block briefly
+                    but explicit awaits release the loop for other workers.
 
-    Dormant in PR 1. PR 2 calls this from run_scheduler.
+    PR 2 callsite: viraltracker/worker/scheduler_worker.py::run_scheduler().
     """
     worker_id_text = make_worker_id(slot)
     logger.info(f"worker_loop start worker_id={worker_id_text}")
@@ -290,7 +293,15 @@ async def worker_loop(
         try:
             claimed = await claim_next_job(db, worker_id_text)
             if claimed is None:
-                await asyncio.sleep(poll_idle_seconds)
+                # Either no work or a cap was hit. Either way: sleep + retry.
+                # Use wait_for so a SIGTERM during idle exits promptly instead
+                # of waiting the full backoff.
+                try:
+                    await asyncio.wait_for(
+                        shutdown_requested.wait(), timeout=poll_idle_seconds
+                    )
+                except asyncio.TimeoutError:
+                    pass
                 continue
 
             logger.info(
@@ -304,9 +315,7 @@ async def worker_loop(
                 f"{claimed.get('cap_brand')}/{claimed.get('cap_brand_jt')}"
             )
 
-            # Hand off to a thread so sync Supabase calls in execute_fn don't
-            # block the event loop. The smoke test confirmed this works.
-            await asyncio.to_thread(execute_fn, claimed)
+            await execute_fn(claimed)
 
         except CapHit:
             await asyncio.sleep(poll_caphit_seconds)
