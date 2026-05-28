@@ -11,6 +11,9 @@ Each exception has actions: Override, Retry, Skip, etc.
 
 import json
 import logging
+import time
+from datetime import datetime, timedelta
+
 import streamlit as st
 from viraltracker.ui.auth import require_auth
 
@@ -140,10 +143,146 @@ failed_publishes = queue_service.get_failed_publishes(**filter_kwargs)
 
 eval_count = len(failed_evals)
 publish_count = len(failed_publishes)
+
+# ----- Recently kicked-off regeneration confirmations -----
+# When Regenerate-from-scratch is clicked, we stash a banner here so the user
+# has persistent confirmation even after the eval row is superseded and the
+# success toast fades.
+_recent_regens = st.session_state.get("exceptions_recent_regens", [])
+# Drop confirmations older than 10 minutes so the list stays useful.
+_recent_regens = [r for r in _recent_regens if (time.time() - r.get("ts", 0)) < 600]
+st.session_state["exceptions_recent_regens"] = _recent_regens
+
+if _recent_regens:
+    for r in reversed(_recent_regens):
+        ago_s = int(time.time() - r["ts"])
+        ago = f"{ago_s}s ago" if ago_s < 60 else f"{ago_s // 60}m ago"
+        st.success(
+            f"🔁 Regeneration started for **{r['keyword']}** ({ago}). "
+            f"Job `{r['job_id'][:8]}` is running in the background — see the "
+            "**Background jobs** panel below for live status."
+        )
+
+# ----- In-flight background jobs (Quick Write + Regenerate from scratch) -----
+# Querying directly instead of adding a service method — it's a single read
+# and only this page needs it today.
+_db = get_db()
+_active_query = (
+    _db.table("seo_workflow_jobs")
+    .select("id, job_type, status, config, progress, created_at, updated_at, error")
+    .in_("status", ["pending", "running", "paused"])
+    .order("created_at", desc=True)
+    .limit(20)
+)
+if brand_id and brand_id != "all":
+    _active_query = _active_query.eq("brand_id", brand_id)
+if organization_id and organization_id != "all":
+    _active_query = _active_query.eq("organization_id", organization_id)
+active_jobs = _active_query.execute().data or []
+
+# Also surface jobs that finished or failed in the last 2 minutes so the user
+# sees the transition from "running" to "done" without having to refresh on
+# exact timing. Anything older than that is on the SEO Workflow page already.
+_recent_query = (
+    _db.table("seo_workflow_jobs")
+    .select("id, job_type, status, config, progress, created_at, updated_at, error")
+    .in_("status", ["completed", "failed", "cancelled"])
+    .order("updated_at", desc=True)
+    .limit(10)
+)
+if brand_id and brand_id != "all":
+    _recent_query = _recent_query.eq("brand_id", brand_id)
+if organization_id and organization_id != "all":
+    _recent_query = _recent_query.eq("organization_id", organization_id)
+_recently_finished_raw = _recent_query.execute().data or []
+_now = datetime.now().astimezone()
+recently_finished = []
+for j in _recently_finished_raw:
+    upd = j.get("updated_at") or ""
+    try:
+        dt = datetime.fromisoformat(upd.replace("Z", "+00:00"))
+        if (_now - dt).total_seconds() < 120:
+            recently_finished.append(j)
+    except (ValueError, TypeError):
+        continue
+
+if active_jobs or recently_finished:
+    with st.container(border=True):
+        st.markdown("**Background jobs**")
+        st.caption(
+            "Regeneration and Quick Write jobs run in the background. This panel "
+            "shows what's in flight so you can confirm your click did something. "
+            "Auto-refreshes every 10 seconds while jobs are active."
+        )
+
+        for j in active_jobs:
+            cfg = j.get("config", {}) or {}
+            prog = j.get("progress", {}) or {}
+            keyword = cfg.get("keyword", "?")
+            is_regen = bool(cfg.get("existing_article_id"))
+            label = "🔁 Regenerating" if is_regen else "✍️ Writing"
+            step = prog.get("current_step_label") or prog.get("current_step") or "starting"
+            pct = prog.get("percent", 0) or 0
+            started = j.get("created_at", "")
+            try:
+                dt = datetime.fromisoformat(started.replace("Z", "+00:00"))
+                started_ago_s = int((_now - dt).total_seconds())
+                started_label = (
+                    f"{started_ago_s}s ago" if started_ago_s < 60
+                    else f"{started_ago_s // 60}m {started_ago_s % 60}s ago"
+                )
+            except (ValueError, TypeError):
+                started_label = "just now"
+            st.markdown(
+                f"- {label} `{keyword}` — **{step}** ({pct}%)  ·  "
+                f"started {started_label}  ·  job `{j['id'][:8]}`"
+            )
+
+        for j in recently_finished:
+            cfg = j.get("config", {}) or {}
+            keyword = cfg.get("keyword", "?")
+            is_regen = bool(cfg.get("existing_article_id"))
+            kind = "Regeneration" if is_regen else "Quick Write"
+            status = j.get("status", "?")
+            icon = {"completed": "✅", "failed": "❌", "cancelled": "⏹️"}.get(status, "•")
+            err = j.get("error") or ""
+            err_suffix = f" — {err[:120]}" if status == "failed" and err else ""
+            st.markdown(
+                f"- {icon} {kind} `{keyword}` — **{status}**{err_suffix}  ·  job `{j['id'][:8]}`"
+            )
+
+        # Manual refresh — explicit and never blocks the rest of the page.
+        if st.button("🔄 Refresh", key="exc_jobs_refresh"):
+            st.rerun()
+
+        # Non-blocking auto-refresh while jobs are active. Uses
+        # st.fragment(run_every=...) so the server thread is never blocked and
+        # the rest of the page (tabs, expanders) renders immediately.
+        if active_jobs:
+            @st.fragment(run_every=timedelta(seconds=10))
+            def _poll_active_jobs():
+                ts_key = "_exc_jobs_last_poll"
+                now = time.time()
+                last = st.session_state.get(ts_key, 0)
+                # Skip the initial render — only the timer-fired reruns
+                # should kick a full app rerun.
+                if last > 0 and (now - last) >= 8:
+                    st.session_state[ts_key] = now
+                    st.rerun(scope="app")
+                st.session_state[ts_key] = now
+
+            _poll_active_jobs()
+
 total = eval_count + publish_count
 
 if total == 0:
-    st.success("No exceptions! All content is passing evaluation and publishing successfully.")
+    if active_jobs:
+        st.info(
+            "No current exceptions — background jobs above are still running. "
+            "If any of them produce a new failure, it will appear here once they finish."
+        )
+    else:
+        st.success("No exceptions! All content is passing evaluation and publishing successfully.")
     st.stop()
 
 # Summary metrics
@@ -289,10 +428,14 @@ with tab1:
                                 organization_id=eval_org_id,
                             )
                             _reset_for_re_evaluation(eval_result["id"], article_id)
-                            st.success(
-                                f"Regeneration started (job `{job_id[:8]}`). Takes several minutes. "
-                                "Refresh in a bit; the article will be re-evaluated automatically once it finishes."
-                            )
+                            _recent = st.session_state.get("exceptions_recent_regens", [])
+                            _recent.append({
+                                "ts": time.time(),
+                                "job_id": job_id,
+                                "keyword": article_keyword or "article",
+                                "article_id": article_id,
+                            })
+                            st.session_state["exceptions_recent_regens"] = _recent
                             st.rerun()
                         except ValueError as e:
                             st.error(str(e))
@@ -411,10 +554,14 @@ with tab1:
                                 organization_id=eval_org_id,
                             )
                             _reset_for_re_evaluation(eval_result["id"], article_id)
-                            st.success(
-                                f"Regeneration started (job `{job_id[:8]}`). Takes several minutes. "
-                                "Refresh in a bit; the article will be re-evaluated automatically once it finishes."
-                            )
+                            _recent = st.session_state.get("exceptions_recent_regens", [])
+                            _recent.append({
+                                "ts": time.time(),
+                                "job_id": job_id,
+                                "keyword": article_keyword or "article",
+                                "article_id": article_id,
+                            })
+                            st.session_state["exceptions_recent_regens"] = _recent
                             st.rerun()
                         except ValueError as e:
                             st.error(str(e))
