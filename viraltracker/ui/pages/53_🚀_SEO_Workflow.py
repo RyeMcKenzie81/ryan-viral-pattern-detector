@@ -1155,11 +1155,13 @@ with tab_cluster:
 
     # ---- Batch Progress Panel (check for active batch job) ----
     batch_job_id = st.session_state.get("seo_wf_batch_job")
+    batch_is_running = False
     if batch_job_id:
         st.divider()
         batch_job = workflow_svc.get_job_status(batch_job_id)
         if batch_job:
             b_status = batch_job.get("status", "unknown")
+            batch_is_running = b_status == "running"
             b_progress = batch_job.get("progress", {})
             b_config = batch_job.get("config", {})
             b_pct = b_progress.get("percent", 0)
@@ -1459,7 +1461,7 @@ with tab_cluster:
                         f"Generate Cluster ({total_articles} articles)",
                         key=f"seo_wf_gen_cluster_{i}",
                         type="primary",
-                        disabled=batch_job_id is not None,
+                        disabled=batch_is_running,
                     ):
                         try:
                             cluster_id = workflow_svc.save_cluster_from_research(
