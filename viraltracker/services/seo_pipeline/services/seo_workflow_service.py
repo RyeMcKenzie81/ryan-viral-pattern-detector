@@ -153,6 +153,113 @@ class SEOWorkflowService:
         t.start()
         return job_id
 
+    def regenerate_article(
+        self,
+        article_id: str,
+        brand_id: str,
+        organization_id: str,
+    ) -> str:
+        """Re-run the full content pipeline against an existing article.
+
+        Use this when the article's body content is broken (empty / truncated /
+        wrong topic) and the surgical fixes (re-optimize, fix meta, fix first
+        paragraph, regenerate images) won't help because they operate on the
+        existing body. This reuses the article's keyword, project, author, and
+        tags but clears the generated outputs so Phase A / B / C run fresh.
+
+        Returns the spawned job_id. The job runs in a background thread; the
+        article will move to `qa_passed` on completion and the scheduler worker
+        will re-evaluate it on its next pass.
+        """
+        organization_id = self._resolve_org_id(organization_id, brand_id)
+
+        article = (
+            self.supabase.table("seo_articles")
+            .select("id, keyword, project_id, author_id, tags")
+            .eq("id", article_id)
+            .limit(1)
+            .execute()
+        )
+        if not article.data:
+            raise ValueError(f"Article not found: {article_id}")
+
+        a = article.data[0]
+        keyword = (a.get("keyword") or "").strip()
+        if not keyword:
+            raise ValueError(
+                "Article has no keyword stored — cannot regenerate. "
+                "Use the SEO Workflow > Quick Write flow to create a new article."
+            )
+
+        # Clear generated outputs so Phase A starts from a clean slate. The
+        # phase methods will overwrite their own fields, but we explicitly null
+        # the rest so half-stale state from the previous run can't bleed in.
+        self.supabase.table("seo_articles").update({
+            "status": "draft",
+            "phase": "a",
+            "phase_a_output": None,
+            "phase_b_output": None,
+            "phase_c_output": None,
+            "content_markdown": None,
+            "content_html": None,
+            "word_count": None,
+            "image_metadata": None,
+            "image_status": "none",
+            "seo_title": None,
+            "meta_description": None,
+            "schema_markup": None,
+        }).eq("id", article_id).execute()
+
+        config = {
+            "keyword": keyword,
+            "brand_id": brand_id,
+            "project_id": a.get("project_id"),
+            "author_id": a.get("author_id"),
+            "tags": a.get("tags"),
+            "step_through": False,
+            "competitor_urls": None,
+            "cluster_context": None,
+            "content_fingerprints": None,
+            "article_role": None,
+            # Flag the existing article so _execute_one_off skips creation.
+            "existing_article_id": article_id,
+        }
+
+        try:
+            result = self.supabase.table("seo_workflow_jobs").insert({
+                "brand_id": brand_id,
+                "organization_id": organization_id,
+                "job_type": "one_off",
+                "status": "pending",
+                "config": config,
+                "progress": {
+                    "current_step": "validate",
+                    "current_step_label": "Pending",
+                    "total_steps": len(ONE_OFF_STEPS),
+                    "steps_completed": [],
+                    "percent": 0,
+                },
+            }).execute()
+        except Exception as e:
+            if "duplicate" in str(e).lower() or "unique" in str(e).lower():
+                raise ValueError(
+                    f"A job for '{keyword}' is already running for this brand. "
+                    "Wait for it to finish before regenerating again."
+                )
+            raise
+
+        job_id = result.data[0]["id"]
+        logger.info(f"Created regenerate job {job_id} for article {article_id} (keyword '{keyword}')")
+
+        t = threading.Thread(
+            target=self._run_one_off_thread,
+            args=(job_id,),
+            daemon=True,
+            name=f"seo-regen-{job_id[:8]}",
+        )
+        t.start()
+        return job_id
+
     def _run_one_off_thread(self, job_id: str) -> None:
         """Background thread entry point — acquire semaphore then run async pipeline."""
         acquired = _job_semaphore.acquire(timeout=300)
@@ -227,41 +334,74 @@ class SEOWorkflowService:
             # Resolve author_id
             author_id = config.get("author_id") or brand_config.get("default_author_id")
 
-            # 1. Create keyword record
+            # 1. Create keyword record (or reuse if regenerating an existing article)
             self._advance_step(job_id, "create_keyword")
             if self._is_cancelled(job_id):
                 return
 
-            kw_record = await asyncio.to_thread(
-                keyword_svc.create_keyword, project_id, keyword
-            )
-            keyword_id = kw_record["id"]
+            existing_article_id = config.get("existing_article_id")
+            if existing_article_id:
+                # Regeneration path: reuse the keyword already linked to the article.
+                # If the article somehow lost its keyword_id, fall back to creating one.
+                existing_row = (
+                    sb.table("seo_articles")
+                    .select("keyword_id, project_id")
+                    .eq("id", existing_article_id)
+                    .limit(1)
+                    .execute()
+                )
+                existing_kw_id = (
+                    existing_row.data[0].get("keyword_id") if existing_row.data else None
+                )
+                if existing_kw_id:
+                    keyword_id = existing_kw_id
+                else:
+                    kw_record = await asyncio.to_thread(
+                        keyword_svc.create_keyword, project_id, keyword
+                    )
+                    keyword_id = kw_record["id"]
+            else:
+                kw_record = await asyncio.to_thread(
+                    keyword_svc.create_keyword, project_id, keyword
+                )
+                keyword_id = kw_record["id"]
 
-            # 2. Create article record
+            # 2. Create article record (or reuse the one passed in)
             self._advance_step(job_id, "create_article")
             if self._is_cancelled(job_id):
                 return
 
-            article_data = {
-                "project_id": project_id,
-                "brand_id": brand_id,
-                "organization_id": org_id,
-                "keyword": keyword,
-                "keyword_id": keyword_id,
-                "status": "draft",
-                "phase": "a",
-            }
-            if author_id:
-                article_data["author_id"] = author_id
+            if existing_article_id:
+                article_id = existing_article_id
+                # Make sure the existing row points at the resolved keyword and is
+                # in a clean state to be re-driven through the phases.
+                sb.table("seo_articles").update({
+                    "keyword_id": keyword_id,
+                    "project_id": project_id,
+                    "status": "draft",
+                    "phase": "a",
+                }).eq("id", article_id).execute()
+            else:
+                article_data = {
+                    "project_id": project_id,
+                    "brand_id": brand_id,
+                    "organization_id": org_id,
+                    "keyword": keyword,
+                    "keyword_id": keyword_id,
+                    "status": "draft",
+                    "phase": "a",
+                }
+                if author_id:
+                    article_data["author_id"] = author_id
 
-            article_result = sb.table("seo_articles").insert(article_data).execute()
-            article_id = article_result.data[0]["id"]
+                article_result = sb.table("seo_articles").insert(article_data).execute()
+                article_id = article_result.data[0]["id"]
 
-            # Link article to cluster spoke if keyword matches (non-fatal)
-            try:
-                cluster_svc.link_article_to_spoke(keyword_id, article_id)
-            except Exception as e:
-                logger.debug(f"Spoke link skipped: {e}")
+                # Link article to cluster spoke if keyword matches (non-fatal)
+                try:
+                    cluster_svc.link_article_to_spoke(keyword_id, article_id)
+                except Exception as e:
+                    logger.debug(f"Spoke link skipped: {e}")
 
             # Store article_id in job config for later reference
             self._update_job_config(job_id, {"article_id": article_id, "keyword_id": keyword_id, "project_id": project_id})

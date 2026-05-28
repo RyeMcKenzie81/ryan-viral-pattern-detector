@@ -261,8 +261,43 @@ with tab1:
                 suggestions = _suggest_fixes_for_eval(eval_result)
                 article_id = eval_result["article_id"]
                 article_keyword = article_info.get("keyword", "") or ""
+                article_word_count = article_info.get("word_count") or 0
                 eval_brand_id = eval_result.get("brand_id") or brand_id
                 eval_org_id = eval_result.get("organization_id") or organization_id
+
+                # If the article body is effectively empty, the surgical fixes
+                # below won't help — they all operate on the existing content.
+                # Surface "Regenerate from scratch" at the top with a warning.
+                is_empty_article = article_word_count < 50
+                if is_empty_article:
+                    st.warning(
+                        f"This article has only {article_word_count} word(s). The surgical "
+                        "fixes below operate on existing content and won't help here. "
+                        "Use **Regenerate from scratch** to re-run the full pipeline."
+                    )
+                    if st.button(
+                        "🔁 Regenerate from scratch (rewrite everything)",
+                        key=f"exc_fix_regen_top_{eval_result['id']}",
+                        type="primary",
+                        use_container_width=True,
+                        help="Re-runs Phase A → B → C → images against this article's keyword. Takes several minutes; runs in the background.",
+                    ):
+                        try:
+                            job_id = get_workflow_service().regenerate_article(
+                                article_id=article_id,
+                                brand_id=eval_brand_id,
+                                organization_id=eval_org_id,
+                            )
+                            _reset_for_re_evaluation(eval_result["id"], article_id)
+                            st.success(
+                                f"Regeneration started (job `{job_id[:8]}`). Takes several minutes. "
+                                "Refresh in a bit; the article will be re-evaluated automatically once it finishes."
+                            )
+                            st.rerun()
+                        except ValueError as e:
+                            st.error(str(e))
+                        except Exception as e:
+                            st.error(f"Could not start regeneration: {str(e)[:300]}")
 
                 fix_col1, fix_col2 = st.columns(2)
                 with fix_col1:
@@ -354,6 +389,37 @@ with tab1:
                                 st.rerun()
                         except Exception as e:
                             st.error(f"First paragraph fix failed: {str(e)[:300]}")
+
+                # Last-resort "rewrite everything" — always available, but only
+                # rendered down here when the article actually has content
+                # (otherwise the prominent top-of-panel version above is shown).
+                if not is_empty_article:
+                    st.caption(
+                        "If none of the surgical fixes match the failure (article is structurally "
+                        "wrong, off-topic, or you just want a fresh take), regenerate from scratch:"
+                    )
+                    if st.button(
+                        "🔁 Regenerate from scratch (rewrite everything)",
+                        key=f"exc_fix_regen_bottom_{eval_result['id']}",
+                        use_container_width=True,
+                        help="Re-runs Phase A → B → C → images against this article's keyword. Takes several minutes; runs in the background.",
+                    ):
+                        try:
+                            job_id = get_workflow_service().regenerate_article(
+                                article_id=article_id,
+                                brand_id=eval_brand_id,
+                                organization_id=eval_org_id,
+                            )
+                            _reset_for_re_evaluation(eval_result["id"], article_id)
+                            st.success(
+                                f"Regeneration started (job `{job_id[:8]}`). Takes several minutes. "
+                                "Refresh in a bit; the article will be re-evaluated automatically once it finishes."
+                            )
+                            st.rerun()
+                        except ValueError as e:
+                            st.error(str(e))
+                        except Exception as e:
+                            st.error(f"Could not start regeneration: {str(e)[:300]}")
 
                 # ----- Decide what to do (existing flow) -----
                 st.markdown("---")
