@@ -24,6 +24,7 @@ from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any, Union
 import pytz
 import base64
+from viraltracker.worker.scheduler_concurrency import register_job_handler
 
 # Configure logging
 logging.basicConfig(
@@ -1012,6 +1013,7 @@ async def execute_job(job: Dict) -> Dict[str, Any]:
         raise ValueError(f"Unknown job_type: {job_type}")
 
 
+@register_job_handler('ad_creation_v2')
 async def execute_ad_creation_v2_job(job: Dict) -> Dict[str, Any]:
     """Execute a V2 ad creation job with template scoring and Pydantic prompts.
 
@@ -1534,6 +1536,7 @@ async def execute_ad_creation_v2_job(job: Dict) -> Dict[str, Any]:
         return {"success": False, "error": error_msg}
 
 
+@register_job_handler('ad_creation')
 async def execute_ad_creation_job(job: Dict) -> Dict[str, Any]:
     """Execute an ad creation job with support for belief-first modes."""
     job_id = job['id']
@@ -2108,6 +2111,7 @@ async def handle_export(
 # Meta Sync Job Handler
 # ============================================================================
 
+@register_job_handler('meta_sync')
 async def execute_meta_sync_job(job: Dict) -> Dict[str, Any]:
     """
     Execute a Meta Ads sync job.
@@ -2364,6 +2368,7 @@ async def execute_meta_sync_job(job: Dict) -> Dict[str, Any]:
 # Demographic Backfill Job Handler
 # ============================================================================
 
+@register_job_handler('demographic_backfill')
 async def execute_demographic_backfill_job(job: Dict) -> Dict[str, Any]:
     """
     Backfill demographic breakdown data one day at a time.
@@ -2474,6 +2479,7 @@ async def execute_demographic_backfill_job(job: Dict) -> Dict[str, Any]:
 # Scorecard Job Handler
 # ============================================================================
 
+@register_job_handler('scorecard')
 async def execute_scorecard_job(job: Dict) -> Dict[str, Any]:
     """
     Execute a weekly performance scorecard job.
@@ -2702,6 +2708,7 @@ async def execute_scorecard_job(job: Dict) -> Dict[str, Any]:
 # Template Scrape Job Handler
 # ============================================================================
 
+@register_job_handler('template_scrape')
 async def execute_template_scrape_job(job: Dict) -> Dict[str, Any]:
     """
     Execute a template scraping job.
@@ -3168,6 +3175,7 @@ def _update_job_next_run(job: Dict, job_id: str):
 # Template Approval Job Handler
 # ============================================================================
 
+@register_job_handler('template_approval')
 async def execute_template_approval_job(job: Dict) -> Dict[str, Any]:
     """
     Execute a batch template approval job.
@@ -3338,6 +3346,7 @@ async def execute_template_approval_job(job: Dict) -> Dict[str, Any]:
 # Congruence Re-analysis Job Handler
 # ============================================================================
 
+@register_job_handler('congruence_reanalysis')
 async def execute_congruence_reanalysis_job(job: Dict) -> Dict[str, Any]:
     """
     Execute a congruence re-analysis job.
@@ -3664,6 +3673,7 @@ async def _run_classification_for_brand(
         raise
 
 
+@register_job_handler('ad_classification')
 async def execute_ad_classification_job(job: Dict) -> Dict[str, Any]:
     """Execute a standalone ad classification job.
 
@@ -3784,6 +3794,7 @@ async def execute_ad_classification_job(job: Dict) -> Dict[str, Any]:
         return {"success": False, "error": error_msg}
 
 
+@register_job_handler('ad_intelligence_analysis')
 async def execute_ad_intelligence_analysis_job(job: Dict) -> Dict[str, Any]:
     """Execute full 4-layer ad intelligence analysis in background.
 
@@ -3887,6 +3898,7 @@ async def execute_ad_intelligence_analysis_job(job: Dict) -> Dict[str, Any]:
         return {"success": False, "error": str(e)}
 
 
+@register_job_handler('analytics_sync')
 async def execute_analytics_sync_job(job: Dict) -> Dict[str, Any]:
     """Execute SEO analytics sync across GSC, GA4, and Shopify.
 
@@ -3990,6 +4002,7 @@ async def execute_analytics_sync_job(job: Dict) -> Dict[str, Any]:
     return {"success": True, "results": results}
 
 
+@register_job_handler('seo_status_sync')
 async def execute_seo_status_sync_job(job: Dict) -> Dict[str, Any]:
     """Sync article draft/live status from Shopify into seo_articles.
 
@@ -4071,6 +4084,7 @@ async def execute_seo_status_sync_job(job: Dict) -> Dict[str, Any]:
         return {"success": False, "error": error_msg}
 
 
+@register_job_handler('asset_download')
 async def execute_asset_download_job(job: Dict) -> Dict[str, Any]:
     """Execute a standalone asset download job.
 
@@ -4172,6 +4186,7 @@ async def execute_asset_download_job(job: Dict) -> Dict[str, Any]:
         return {"success": False, "error": error_msg}
 
 
+@register_job_handler('competitor_scrape')
 async def execute_competitor_scrape_job(job: Dict) -> Dict[str, Any]:
     """Execute a competitor ad scrape job.
 
@@ -4294,6 +4309,7 @@ async def execute_competitor_scrape_job(job: Dict) -> Dict[str, Any]:
         return {"success": False, "error": error_msg}
 
 
+@register_job_handler('reddit_scrape')
 async def execute_reddit_scrape_job(job: Dict) -> Dict[str, Any]:
     """Execute a Reddit sentiment analysis pipeline job.
 
@@ -4438,6 +4454,7 @@ async def execute_reddit_scrape_job(job: Dict) -> Dict[str, Any]:
         return {"success": False, "error": error_msg}
 
 
+@register_job_handler('amazon_review_scrape')
 async def execute_amazon_review_scrape_job(job: Dict) -> Dict[str, Any]:
     """Execute an Amazon review scrape job.
 
@@ -4597,6 +4614,7 @@ async def run_scheduler():
 # ============================================================================
 
 
+@register_job_handler('creative_genome_update')
 async def execute_creative_genome_update_job(job: Dict) -> Dict[str, Any]:
     """Execute a Creative Genome update job — compute rewards and update element scores.
 
@@ -4673,6 +4691,7 @@ async def execute_creative_genome_update_job(job: Dict) -> Dict[str, Any]:
         return {"success": False, "error": str(e)}
 
 
+@register_job_handler('creative_deep_analysis')
 async def execute_creative_deep_analysis_job(job: Dict) -> Dict[str, Any]:
     """Execute a Creative Deep Analysis job — Gemini analysis of image/video ads.
 
@@ -4796,6 +4815,7 @@ async def execute_creative_deep_analysis_job(job: Dict) -> Dict[str, Any]:
         return {"success": False, "error": str(e)}
 
 
+@register_job_handler('genome_validation')
 async def execute_genome_validation_job(job: Dict) -> Dict[str, Any]:
     """Execute a Genome validation job — check health metrics and create alerts.
 
@@ -4925,6 +4945,7 @@ async def execute_genome_validation_job(job: Dict) -> Dict[str, Any]:
         return {"success": False, "error": str(e)}
 
 
+@register_job_handler('winner_evolution')
 async def execute_winner_evolution_job(job: Dict) -> Dict[str, Any]:
     """Execute a Winner Evolution job — evolve winning ads into improved variants.
 
@@ -5042,6 +5063,7 @@ async def execute_winner_evolution_job(job: Dict) -> Dict[str, Any]:
         return {"success": False, "error": str(e)}
 
 
+@register_job_handler('experiment_analysis')
 async def execute_experiment_analysis_job(job: Dict) -> Dict[str, Any]:
     """Execute Bayesian analysis for running experiments.
 
@@ -5158,6 +5180,7 @@ async def execute_experiment_analysis_job(job: Dict) -> Dict[str, Any]:
         return {"success": False, "error": str(e)}
 
 
+@register_job_handler('quality_calibration')
 async def execute_quality_calibration_job(job: Dict) -> Dict[str, Any]:
     """Execute a Quality Calibration job — analyze overrides and propose threshold changes.
 
@@ -5250,6 +5273,7 @@ async def execute_quality_calibration_job(job: Dict) -> Dict[str, Any]:
         return {"success": False, "error": str(e)}
 
 
+@register_job_handler('iteration_auto_run')
 async def execute_iteration_auto_run_job(job: Dict) -> Dict[str, Any]:
     """Execute an iteration auto-run job: detect opportunities and iterate on image ads.
 
@@ -5405,6 +5429,7 @@ async def execute_iteration_auto_run_job(job: Dict) -> Dict[str, Any]:
         return {"success": False, "error": error_msg}
 
 
+@register_job_handler('size_variant')
 async def execute_size_variant_job(job: Dict) -> Dict[str, Any]:
     """Execute a Size Variant job — create size variants for an existing ad.
 
@@ -5488,6 +5513,7 @@ async def execute_size_variant_job(job: Dict) -> Dict[str, Any]:
         return {"success": False, "error": str(e)}
 
 
+@register_job_handler('smart_edit')
 async def execute_smart_edit_job(job: Dict) -> Dict[str, Any]:
     """Execute a Smart Edit job — edit an existing ad with specific instructions.
 
@@ -5604,6 +5630,7 @@ def main():
 # =============================================================================
 
 
+@register_job_handler('seo_content_eval')
 async def execute_seo_content_eval_job(job: Dict) -> Dict[str, Any]:
     """
     Evaluate pending SEO articles (QA + image eval) and enqueue passing ones.
@@ -5782,6 +5809,7 @@ async def execute_seo_content_eval_job(job: Dict) -> Dict[str, Any]:
         return {"success": False, "error": error_msg}
 
 
+@register_job_handler('seo_publish')
 async def execute_seo_publish_job(job: Dict) -> Dict[str, Any]:
     """
     Publish due articles from the publish queue to Shopify.
@@ -5955,6 +5983,7 @@ def _chain_interlink_job(article_id: str, brand_id: str, organization_id: str):
         logger.error(f"Failed to chain interlink job for {article_id}: {e}")
 
 
+@register_job_handler('seo_auto_interlink')
 async def execute_seo_auto_interlink_job(job: Dict) -> Dict[str, Any]:
     """
     Auto-interlink an article after it has been published.
@@ -6108,6 +6137,7 @@ async def execute_seo_auto_interlink_job(job: Dict) -> Dict[str, Any]:
         return {"success": False, "error": error_msg}
 
 
+@register_job_handler('seo_opportunity_scan')
 async def execute_seo_opportunity_scan_job(job: Dict) -> Dict[str, Any]:
     """Execute a global SEO opportunity scan across all brands with GSC connected.
 
@@ -6296,6 +6326,7 @@ async def execute_seo_opportunity_scan_job(job: Dict) -> Dict[str, Any]:
         return {"success": False, "error": error_msg}
 
 
+@register_job_handler('token_refresh')
 async def execute_token_refresh_job(job: Dict) -> Dict[str, Any]:
     """Check all OAuth tokens and extend those expiring within 7 days.
 
@@ -6387,6 +6418,7 @@ async def execute_token_refresh_job(job: Dict) -> Dict[str, Any]:
         return {"success": False, "error": error_msg}
 
 
+@register_job_handler('competitor_intel_analysis')
 async def execute_competitor_intel_analysis_job(job: Dict) -> Dict[str, Any]:
     """Execute a competitor intel pack generation job.
 
@@ -6574,6 +6606,7 @@ async def execute_competitor_intel_analysis_job(job: Dict) -> Dict[str, Any]:
         return {"success": False, "error": error_msg}
 
 
+@register_job_handler('quick_intel_analysis')
 async def execute_quick_intel_analysis_job(job: Dict) -> Dict[str, Any]:
     """Execute a Quick URL / Quick Upload intel analysis job.
 
