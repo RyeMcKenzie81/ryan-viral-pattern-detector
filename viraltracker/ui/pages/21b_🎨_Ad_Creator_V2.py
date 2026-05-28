@@ -1237,11 +1237,23 @@ def render_generation_config(section_number: int = 3):
 
                 angle_by_id = {a["id"]: a for a in angles}
 
+                # Decorate options with ad count + creation date so users can
+                # spot under-tested angles (📦 0 ads) at a glance. Same helper
+                # used on Ad Creator (page 21) and Ad Scheduler (page 24) — see
+                # PR #212.
+                from viraltracker.ui.utils import get_ad_counts_by_angle
+                _ad_counts = get_ad_counts_by_angle(angle_id_options)
+
                 def _fmt_angle(aid):
                     a = angle_by_id[aid]
                     name = a["name"]
                     status = a.get("status") or "untested"
-                    return f"{name}  ·  [{status}]"
+                    count = _ad_counts.get(aid, 0)
+                    created_iso = a.get("created_at") or ""
+                    created = created_iso[:10] if created_iso else "—"
+                    return (
+                        f"{name}  ·  [{status}]  ·  📦 {count} ads  ·  📅 {created}"
+                    )
 
                 st.selectbox(
                     "Angle",
