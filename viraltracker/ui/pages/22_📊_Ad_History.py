@@ -1694,6 +1694,90 @@ with st.container():
             _scope_bits.append(f"📦 {_current_export_count} in list")
         st.caption(" · ".join(_scope_bits))
 
+# Direct ZIP download — build a ZIP of every ad matching the current filters
+# right here, with the same filename-prefix convention as the Ad Export page,
+# WITHOUT round-tripping through the export list / Ad Export page. Reuses the
+# shared, prefix-aware export_utils zipper. Respects the same "approved / failed
+# / all" selection as the export bar above (ad_history_export_status).
+with st.container():
+    dcol1, dcol2, dcol3 = st.columns([2, 2, 3])
+    with dcol1:
+        st.text_input(
+            "Filename prefix (optional)",
+            key="ad_history_zip_prefix",
+            placeholder="e.g. m5-",
+            help="Prepended to every file inside the ZIP (sanitized: letters, "
+                 "digits, - and _ only; a trailing '-' is added if missing). "
+                 "Same convention as the Ad Export page.",
+        )
+    with dcol2:
+        st.text_input(
+            "ZIP file name",
+            value="ad_history_export",
+            key="ad_history_zip_name",
+            help="Name of the downloaded .zip (the .zip extension is added "
+                 "automatically).",
+        )
+    with dcol3:
+        _zip_disabled = total_count == 0
+        if st.button(
+            "⬇️ Build ZIP of all matching",
+            use_container_width=True,
+            disabled=_zip_disabled,
+            help="Zips every ad matching the current filters + status selection "
+                 "into one download. No need to visit the Ad Export page. "
+                 "Large sets take longer (each image is fetched from storage).",
+        ):
+            _zip_entries = get_matching_ad_ids_for_export(
+                brand_id=brand_filter,
+                org_id=org_id,
+                angle_id=angle_filter,
+                date_range=date_filter,
+                product_id=product_filter,
+                template_id=template_filter,
+                status_filter=st.session_state.ad_history_export_status,
+            )
+            if not _zip_entries:
+                st.session_state.ad_history_bulk_zip_bytes = None
+                st.warning("No matching ads found for the current filters.")
+            else:
+                from viraltracker.ui.export_utils import create_zip_from_export_list
+                if len(_zip_entries) > 200:
+                    st.info(
+                        f"Building a ZIP of {len(_zip_entries)} ads — this can "
+                        "take a minute since each image is downloaded from storage."
+                    )
+                with st.spinner(f"Building ZIP of {len(_zip_entries)} ad(s)..."):
+                    _zip_bytes = create_zip_from_export_list(
+                        _zip_entries,
+                        zip_name=(st.session_state.ad_history_zip_name or "ad_history_export"),
+                        name_prefix=(st.session_state.ad_history_zip_prefix or ""),
+                    )
+                _safe_zip_name = (
+                    (st.session_state.ad_history_zip_name or "").strip()
+                    or "ad_history_export"
+                )
+                st.session_state.ad_history_bulk_zip_bytes = _zip_bytes
+                st.session_state.ad_history_bulk_zip_filename = f"{_safe_zip_name}.zip"
+                st.success(
+                    f"ZIP ready — {len(_zip_entries)} ad(s). Click Download below."
+                )
+
+    # Render the download button once bytes are prepared. Stored in session
+    # state so it survives the rerun between "Build" and "Download" (Streamlit
+    # download_button needs the bytes ready at render time — it can't generate
+    # them on click). Rebuilding replaces the bytes; changing filters without
+    # rebuilding leaves the previously-built ZIP available until you rebuild.
+    if st.session_state.get("ad_history_bulk_zip_bytes"):
+        st.download_button(
+            label=f"💾 Download {st.session_state.get('ad_history_bulk_zip_filename', 'ad_history_export.zip')}",
+            data=st.session_state.ad_history_bulk_zip_bytes,
+            file_name=st.session_state.get("ad_history_bulk_zip_filename", "ad_history_export.zip"),
+            mime="application/zip",
+            key="ad_history_bulk_zip_download",
+            use_container_width=True,
+        )
+
 st.markdown("")  # Spacing
 
 with st.spinner("Loading ad runs..."):
