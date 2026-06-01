@@ -4999,9 +4999,11 @@ async def execute_creative_deep_analysis_job(job: Dict) -> Dict[str, Any]:
         # leaving them as zombie 'active' rows. The previous inline logic only
         # re-armed recurring jobs and silently left every one_time deep-analysis
         # (including the auto-chained ones) lingering as 'active' forever.
-        # NOTE: 3 other handlers share this same incomplete inline pattern
-        # (one_time jobs never marked complete) — out of scope here; flagged
-        # for a follow-up cleanup.
+        # NOTE: 5 other handlers share this same incomplete inline pattern
+        # (one_time jobs never marked complete, left as zombie 'active' rows):
+        # creative_genome_update, genome_validation, winner_evolution,
+        # experiment_analysis, quality_calibration. Out of scope here; flagged
+        # for a follow-up that migrates all of them to _update_job_next_run.
         _update_job_next_run(job, job_id)
 
         return {"success": True, **summary}

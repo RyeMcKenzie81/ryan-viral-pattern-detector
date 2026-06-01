@@ -165,3 +165,52 @@ class TestDeepAnalysisHandlerCompletesOneTimeJob:
         job_status_updates = [c.args[1] for c in upd_job.call_args_list if "status" in c.args[1]]
         assert job_status_updates, "expected update_job to set a status (zombie-row fix not wired)"
         assert any(u["status"] == "completed" for u in job_status_updates)
+
+    @pytest.mark.asyncio
+    async def test_recurring_job_rearms_and_not_completed(self):
+        """Guard the inline -> _update_job_next_run swap doesn't regress the
+        recurring path. A recurring deep-analysis job must get its next_run_at
+        re-armed from cron and must NOT be marked completed."""
+        from unittest.mock import AsyncMock
+        from viraltracker.worker import scheduler_worker as sw
+
+        job = {
+            "id": "11111111-1111-1111-1111-111111111111",
+            "name": "Recurring Deep Analysis",
+            "brand_id": "22222222-2222-2222-2222-222222222222",
+            "parameters": {"max_images": 50, "max_videos": 20, "days_back": 60},
+            "schedule_type": "recurring",
+            "cron_expression": "0 8 * * *",  # daily at 8am (a format calculate_next_run supports)
+            "trigger_source": "scheduled",
+            "runs_completed": 0,
+            "_claimed": True,
+            "_run_id": "33333333-3333-3333-3333-333333333333",
+        }
+
+        db = MagicMock()
+        db.table.return_value.select.return_value.eq.return_value.limit.return_value.execute.return_value = MagicMock(
+            data=[{"organization_id": "44444444-4444-4444-4444-444444444444"}]
+        )
+        img = MagicMock()
+        img.analyze_batch.return_value = {"analyzed": 1, "skipped": 0, "errors": 0}
+        vid = MagicMock()
+        vid.analyze_batch = AsyncMock(return_value={"analyzed": 0, "skipped": 0, "errors": 0})
+        corr = MagicMock()
+        corr.compute_correlations.return_value = {"correlations": 0}
+
+        with patch.object(sw, "get_supabase_client", return_value=db), \
+             patch("viraltracker.services.image_analysis_service.ImageAnalysisService", return_value=img), \
+             patch("viraltracker.services.video_analysis_service.VideoAnalysisService", return_value=vid), \
+             patch("viraltracker.services.creative_correlation_service.CreativeCorrelationService", return_value=corr), \
+             patch.object(sw, "update_job_run"), \
+             patch.object(sw, "update_job") as upd_job:
+            result = await sw.execute_creative_deep_analysis_job(job)
+
+        assert result["success"] is True
+        job_updates = [c.args[1] for c in upd_job.call_args_list]
+        assert job_updates, "expected update_job to be called"
+        # Recurring job: re-armed with a next_run_at, NOT marked completed.
+        assert any(u.get("next_run_at") for u in job_updates), \
+            "recurring job should have next_run_at re-armed from cron"
+        assert not any(u.get("status") == "completed" for u in job_updates), \
+            "recurring job must NOT be marked completed"
