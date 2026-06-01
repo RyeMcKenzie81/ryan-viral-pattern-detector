@@ -103,8 +103,9 @@ def get_existing_angles_for_combo(persona_id: str, offer_variant_id: str) -> Lis
         result = (
             sb.table("belief_angles")
             .select(
-                "id, name, belief_statement, jtbd_text, desired_outcome, "
-                "emotional_register, status, generation_method, created_at"
+                "id, name, belief_statement, jtbd_text, pain_points, "
+                "desired_outcome, emotional_register, explanation, status, "
+                "generation_method, created_at"
             )
             .eq("source_persona_id", persona_id)
             .eq("source_offer_variant_id", offer_variant_id)
@@ -326,29 +327,57 @@ if st.session_state.ga_persona_id and offer_variant_id:
     )
 
 if existing_for_combo:
-    with st.expander(
-        f"📚 {len(existing_for_combo)} angle(s) already saved for this persona + offer "
-        f"(will be excluded from generation)",
-        expanded=False,
-    ):
-        st.caption(
-            "Generating more angles will tell Opus to AVOID these and explore "
-            "different psychographic territory. To delete a stale angle, edit it "
-            "elsewhere (Research Insights) and set status to `loser` — losers are "
-            "still passed to the prompt as 'tried this, didn't work, don't repeat.'"
-        )
-        for a in existing_for_combo:
-            status = a.get("status") or "untested"
-            register = a.get("emotional_register") or ""
+    st.markdown(f"### 📚 {len(existing_for_combo)} angle(s) saved for this persona + offer")
+    st.caption(
+        "Each card below is the full strategic breakdown of a saved angle. "
+        "Generating more angles tells Opus to AVOID these and explore different "
+        "psychographic territory. To retire a stale angle, set its status to "
+        "`loser` in Research Insights — losers are still passed to the prompt "
+        "as 'tried this, didn't work, don't repeat.'"
+    )
+
+    for a in existing_for_combo:
+        status = a.get("status") or "untested"
+        register = a.get("emotional_register") or ""
+        created = (a.get("created_at") or "")[:10]
+        method = a.get("generation_method") or "—"
+
+        # Per-angle expander = the full ingredient breakdown. Collapsed by
+        # default so the list stays scannable; expand one to see the recipe.
+        header = f"**{a['name']}**"
+        if register:
+            header += f"  ·  _{register}_"
+        header += f"  ·  `{status}`"
+
+        with st.expander(header, expanded=False):
+            # Metadata line
+            st.caption(f"Created {created}  ·  via `{method}`  ·  id `{a['id'][:8]}`")
+
             belief = (a.get("belief_statement") or "").strip()
-            created = (a.get("created_at") or "")[:10]
-            method = a.get("generation_method") or "—"
-            st.markdown(
-                f"**{a['name']}**  ·  _{register}_  ·  status: `{status}`  ·  "
-                f"created: {created}  ·  via: `{method}`"
-            )
             if belief:
-                st.caption(belief[:300] + ("..." if len(belief) > 300 else ""))
+                st.markdown("**Belief statement**")
+                st.info(belief)
+
+            jtbd = (a.get("jtbd_text") or "").strip()
+            if jtbd:
+                st.markdown("**Job to be done**")
+                st.write(jtbd)
+
+            pain_points = a.get("pain_points") or []
+            if pain_points:
+                st.markdown("**Pain points**")
+                for pp in pain_points:
+                    st.markdown(f"- {pp}")
+
+            desired = (a.get("desired_outcome") or "").strip()
+            if desired:
+                st.markdown("**Desired outcome**")
+                st.write(desired)
+
+            explanation = (a.get("explanation") or "").strip()
+            if explanation:
+                st.markdown("**Why this angle works**")
+                st.caption(explanation)
 
 # N angles slider
 st.slider(
