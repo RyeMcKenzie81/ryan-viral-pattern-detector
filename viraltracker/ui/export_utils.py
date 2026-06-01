@@ -80,11 +80,38 @@ def get_format_code_from_spec(prompt_spec: dict) -> str:
         return "LS"
 
 
+def _sanitize_filename_prefix(prefix: str) -> str:
+    """
+    Strip prefix down to filesystem-safe characters.
+
+    Allows: alphanumerics, hyphen, underscore. Everything else (slashes,
+    nulls, spaces, dots, etc.) is dropped. Trailing prefix gets a hyphen
+    appended if absent so it visually separates from the structured part.
+    Empty input returns "". Idempotent on already-sanitized input.
+    """
+    if not prefix:
+        return ""
+    cleaned = "".join(c for c in prefix if c.isalnum() or c in ("-", "_"))
+    if not cleaned:
+        return ""
+    if not cleaned.endswith(("-", "_")):
+        cleaned = cleaned + "-"
+    return cleaned
+
+
 def generate_structured_filename(brand_code: str, product_code: str, run_id: str,
                                   ad_id: str, format_code: str, ext: str = "png",
-                                  language: str | None = None) -> str:
+                                  language: str | None = None,
+                                  name_prefix: str = "") -> str:
     """Generate structured filename like WP-C3-a1b2c3-d4e5f6-SQ.png
-    Non-English ads get a language suffix: WP-C3-a1b2c3-d4e5f6-SQ-ES.png"""
+
+    Non-English ads get a language suffix: WP-C3-a1b2c3-d4e5f6-SQ-ES.png
+
+    When name_prefix is supplied (e.g. "m5-"), it's sanitized and prepended:
+    m5-WP-C3-a1b2c3-d4e5f6-SQ.png. The prefix is the user's per-account naming
+    convention so downstream tools (Meta uploads, the
+    extract_winning_angle_baselines.py script) can attribute the ad correctly.
+    """
     run_short = run_id.replace("-", "")[:6]
     ad_short = ad_id.replace("-", "")[:6]
     bc = (brand_code or "XX").upper()
@@ -92,20 +119,25 @@ def generate_structured_filename(brand_code: str, product_code: str, run_id: str
     lang_suffix = ""
     if language and language.lower() not in ("en", "english"):
         lang_suffix = f"-{language.split('-')[0].upper()}"
-    return f"{bc}-{pc}-{run_short}-{ad_short}-{format_code}{lang_suffix}.{ext}"
+    prefix = _sanitize_filename_prefix(name_prefix)
+    return f"{prefix}{bc}-{pc}-{run_short}-{ad_short}-{format_code}{lang_suffix}.{ext}"
 
 
 # ---------------------------------------------------------------------------
 # ZIP creation from export list
 # ---------------------------------------------------------------------------
 
-def create_zip_from_export_list(items: list, zip_name: str = "export") -> bytes:
+def create_zip_from_export_list(items: list, zip_name: str = "export",
+                                  name_prefix: str = "") -> bytes:
     """
     Create a ZIP file from export list items.
 
     Each item is a dict with keys:
         storage_path, brand_code, product_code, run_id, ad_id,
         format_code, ext (all strings)
+
+    name_prefix is prepended to every filename inside the ZIP (sanitized).
+    See generate_structured_filename for prefix rules.
 
     Returns ZIP file bytes.
     """
@@ -142,6 +174,7 @@ def create_zip_from_export_list(items: list, zip_name: str = "export") -> bytes:
                     ad_id=item.get("ad_id", "000000"),
                     format_code=item.get("format_code", "SQ"),
                     ext=ext,
+                    name_prefix=name_prefix,
                 )
 
                 # Deduplicate filenames
