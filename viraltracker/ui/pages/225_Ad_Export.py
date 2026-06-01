@@ -119,6 +119,25 @@ if count == 0:
 if count > 0:
     st.subheader("Export List")
 
+    # Filename prefix — prepended to every file in the export list and inside
+    # the ZIP. Used for naming-convention tagging (e.g. "m5-") that downstream
+    # tools (Meta uploads, extract_winning_angle_baselines.py script) match on.
+    # Persisted across reruns in session_state so users don't retype it.
+    if "export_name_prefix" not in st.session_state:
+        st.session_state.export_name_prefix = ""
+
+    st.text_input(
+        "Filename prefix (optional)",
+        key="export_name_prefix",
+        placeholder="e.g. m5-",
+        help="Prepended to every file in the export. Non-alphanumeric characters "
+             "(other than - and _) are stripped. A trailing '-' is auto-added if "
+             "you don't include one.",
+    )
+    name_prefix = st.session_state.export_name_prefix
+
+    st.divider()
+
     # Table header
     tcol1, tcol2, tcol3, tcol4, tcol5 = st.columns([3, 1, 1, 1, 1])
     with tcol1:
@@ -146,6 +165,7 @@ if count > 0:
                 ad_id=item.get("ad_id", "000000"),
                 format_code=item.get("format_code", "SQ"),
                 ext=item.get("ext", "png"),
+                name_prefix=name_prefix,
             )
             st.text(filename)
         with rcol2:
@@ -189,7 +209,9 @@ if count > 0:
 
     if st.session_state.export_zip_ready:
         with st.spinner("Creating ZIP..."):
-            zip_bytes = create_zip_from_export_list(export_list, zip_name)
+            zip_bytes = create_zip_from_export_list(
+                export_list, zip_name, name_prefix=name_prefix,
+            )
 
         safe_name = "".join(c if c.isalnum() or c in ('-', '_') else '_' for c in zip_name)
         st.download_button(
