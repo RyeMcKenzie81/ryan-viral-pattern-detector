@@ -3653,6 +3653,87 @@ async def _run_classification_for_brand(
         raise
 
 
+def _enqueue_creative_deep_analysis_chain(brand_id: str, params: Optional[Dict] = None) -> bool:
+    """Enqueue a real one-time creative_deep_analysis scheduled job for a brand.
+
+    Replaces the long-broken inline auto-chain. The previous implementation built
+    a synthetic job dict with id="chain_<uuid>" and called the handler directly;
+    that id was never a valid UUID, so create_job_run() always failed and the
+    analysis never ran (dead since 2026-03-30). After the worker-pool upgrade it
+    instead tripped the claim-path assert. Either way: a no-op.
+
+    The correct pattern (matching how the Ad Scheduler UI and other worker chains
+    create brand-level jobs) is to INSERT a real scheduled_jobs row and let the
+    worker pool claim it through the normal path — giving it a real run row, run
+    tracking, activity events, and concurrency-cap fairness.
+
+    Dedup: if a creative_deep_analysis job is already PENDING (active +
+    next_run_at set) for this brand, skip — that pending job will pick up the
+    newly-classified ads when it runs. This collapses bursts of back-to-back
+    classifications into a single queued analysis. A deep-analysis that is
+    already RUNNING (claim cleared next_run_at) is intentionally NOT dedup'd —
+    a fresh classification's new ads warrant a fresh analysis, and pile-up is
+    bounded by the per-brand concurrency cap (default 3) + global cap (8).
+    analyze_batch is itself idempotent (skips already-analyzed ads), so a
+    redundant run is cheap. The chained one_time job self-completes (handler
+    calls _update_job_next_run), so it never lingers as an 'active' row.
+
+    Args:
+        brand_id: the brand to analyze. Required.
+        params: optional {max_images, max_videos, days_back}. Defaults applied.
+
+    Returns:
+        True if a job was enqueued, False if skipped (dedup) or on error.
+    """
+    if not brand_id:
+        return False
+    try:
+        db = get_supabase_client()
+
+        # Dedup: is there already a pending (unclaimed) deep-analysis for this brand?
+        existing = (
+            db.table("scheduled_jobs")
+            .select("id")
+            .eq("job_type", "creative_deep_analysis")
+            .eq("brand_id", brand_id)
+            .eq("status", "active")
+            .not_.is_("next_run_at", "null")
+            .limit(1)
+            .execute()
+        )
+        if existing.data:
+            logger.info(
+                f"Skipping creative_deep_analysis chain for brand {brand_id}: "
+                f"one is already pending ({existing.data[0]['id']})."
+            )
+            return False
+
+        merged_params = {"max_images": 50, "max_videos": 20, "days_back": 60}
+        if params:
+            merged_params.update(params)
+        # Marker for provenance. NOTE: we do NOT set trigger_source='auto_chain'
+        # — that column has a CHECK constraint (scheduled/manual/api only), so a
+        # custom value would fail the insert. Leave trigger_source to its
+        # 'scheduled' default and record provenance in parameters instead.
+        merged_params["chained_from"] = "ad_classification"
+
+        next_run = (datetime.now(PST) + timedelta(minutes=1)).isoformat()
+        db.table("scheduled_jobs").insert({
+            "name": f"Auto Deep Analysis — {brand_id[:8]}",
+            "job_type": "creative_deep_analysis",
+            "brand_id": brand_id,            # product_id omitted => NULL (column is nullable)
+            "status": "active",
+            "schedule_type": "one_time",
+            "next_run_at": next_run,
+            "parameters": merged_params,
+        }).execute()
+        logger.info(f"Enqueued creative_deep_analysis chain for brand {brand_id}")
+        return True
+    except Exception as e:
+        logger.warning(f"Failed to enqueue creative_deep_analysis chain for brand {brand_id} (non-fatal): {e}")
+        return False
+
+
 @register_job_handler('ad_classification')
 async def execute_ad_classification_job(job: Dict) -> Dict[str, Any]:
     """Execute a standalone ad classification job.
@@ -3738,20 +3819,12 @@ async def execute_ad_classification_job(job: Dict) -> Dict[str, Any]:
             f"{result['classified']} classified, {result['video']} video"
         )
 
-        # Auto-chain: trigger creative deep analysis after classification
-        try:
-            if brand_id and result.get('classified', 0) > 0:
-                logger.info(f"Auto-chaining creative deep analysis for brand {brand_id}")
-                chain_job = {
-                    'id': f"chain_{job_id}",
-                    'name': f"Auto Deep Analysis — {job_name}",
-                    'brand_id': brand_id,
-                    'parameters': {'max_images': 50, 'days_back': 60},
-                    'schedule_type': 'one_time',
-                }
-                await execute_creative_deep_analysis_job(chain_job)
-        except Exception as chain_err:
-            logger.warning(f"Auto-chain deep analysis failed (non-fatal): {chain_err}")
+        # Auto-chain: enqueue a real one-time creative_deep_analysis job so the
+        # worker pool runs it through the normal claim path. (The old inline
+        # call with a synthetic "chain_<uuid>" id never worked — see
+        # _enqueue_creative_deep_analysis_chain docstring.)
+        if brand_id and result.get('classified', 0) > 0:
+            _enqueue_creative_deep_analysis_chain(brand_id)
 
         return {"success": True, **result}
 
@@ -4921,11 +4994,17 @@ async def execute_creative_deep_analysis_job(job: Dict) -> Dict[str, Any]:
             "metadata": summary,
         })
 
-        # Reschedule for next run
-        if job.get('schedule_type') == 'recurring' and job.get('cron_expression'):
-            next_run = calculate_next_run(job['cron_expression'])
-            if next_run:
-                update_job(job_id, {"next_run_at": next_run.isoformat()})
+        # Update job scheduling via the shared helper. Critically this marks
+        # one_time jobs status='completed' (and archives manual ones) instead of
+        # leaving them as zombie 'active' rows. The previous inline logic only
+        # re-armed recurring jobs and silently left every one_time deep-analysis
+        # (including the auto-chained ones) lingering as 'active' forever.
+        # NOTE: 5 other handlers share this same incomplete inline pattern
+        # (one_time jobs never marked complete, left as zombie 'active' rows):
+        # creative_genome_update, genome_validation, winner_evolution,
+        # experiment_analysis, quality_calibration. Out of scope here; flagged
+        # for a follow-up that migrates all of them to _update_job_next_run.
+        _update_job_next_run(job, job_id)
 
         return {"success": True, **summary}
 
