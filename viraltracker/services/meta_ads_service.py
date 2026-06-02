@@ -2685,6 +2685,9 @@ class MetaAdsService:
             Dict with:
                 - matches: List of {meta_ad_id, destination_url, landing_page_id, landing_page_url}
                 - unmatched_count: Number of ads with no matching LP
+                - ambiguous: List of {canonical_url, product_ids, landing_page_ids}
+                  where two+ landing pages share a canonical but disagree on
+                  product — attributed to NONE (a human resolves these).
                 - total_destinations: Total destination URLs checked
         """
         from ..core.database import get_supabase_client
@@ -2701,32 +2704,53 @@ class MetaAdsService:
         destinations = destinations_result.data or []
 
         if not destinations:
-            return {"matches": [], "unmatched_count": 0, "total_destinations": 0}
+            return {"matches": [], "unmatched_count": 0, "ambiguous": [], "total_destinations": 0}
 
-        # Get all landing pages for this brand
+        # Get all landing pages for this brand (incl. product_id for tie-breaking)
         lps_result = supabase.table("brand_landing_pages").select(
-            "id, url, canonical_url"
+            "id, url, canonical_url, product_id"
         ).eq(
             "brand_id", str(brand_id)
         ).execute()
 
         landing_pages = lps_result.data or []
 
-        # Build lookup by canonical URL
-        lp_by_canonical: Dict[str, Dict] = {}
+        # Group landing pages by canonical URL (multiple rows can share one).
+        lps_by_canonical: Dict[str, List[Dict]] = {}
         for lp in landing_pages:
             canonical = lp.get("canonical_url")
             if canonical:
-                lp_by_canonical[canonical] = lp
+                lps_by_canonical.setdefault(canonical, []).append(lp)
 
-        # Match destinations to LPs
+        # Resolve each canonical to a single LP, or mark ambiguous. Never silently
+        # pick "the last row" — prefer a product-tagged row; if tagged rows
+        # disagree on product, the canonical is ambiguous and matches to none.
+        resolved: Dict[str, Dict] = {}          # canonical -> chosen LP
+        ambiguous_by_canonical: Dict[str, Dict] = {}
+        for canonical, rows in lps_by_canonical.items():
+            tagged = [r for r in rows if r.get("product_id")]
+            distinct_products = {r["product_id"] for r in tagged}
+            if len(distinct_products) > 1:
+                ambiguous_by_canonical[canonical] = {
+                    "canonical_url": canonical,
+                    "product_ids": sorted(distinct_products),
+                    "landing_page_ids": [r["id"] for r in tagged],
+                }
+            elif tagged:
+                resolved[canonical] = tagged[0]          # single product → use tagged row
+            else:
+                resolved[canonical] = rows[0]            # no product tag → still link the LP
+
         matches = []
         unmatched_count = 0
+        ambiguous_dest_count = 0
 
         for dest in destinations:
             canonical = dest.get("canonical_url")
-            matched_lp = lp_by_canonical.get(canonical) if canonical else None
-
+            if canonical and canonical in ambiguous_by_canonical:
+                ambiguous_dest_count += 1
+                continue
+            matched_lp = resolved.get(canonical) if canonical else None
             if matched_lp:
                 matches.append({
                     "meta_ad_id": dest["meta_ad_id"],
@@ -2738,15 +2762,23 @@ class MetaAdsService:
             else:
                 unmatched_count += 1
 
+        ambiguous = list(ambiguous_by_canonical.values())
+        if ambiguous:
+            logger.warning(
+                f"LP matching for brand {brand_id}: {len(ambiguous)} ambiguous canonicals "
+                f"(multiple products share one URL) affecting {ambiguous_dest_count} ads — "
+                f"attributed to none. Resolve in Offer Variants admin."
+            )
         logger.info(
             f"LP matching for brand {brand_id}: "
-            f"{len(matches)} matched, {unmatched_count} unmatched "
-            f"of {len(destinations)} total"
+            f"{len(matches)} matched, {unmatched_count} unmatched, "
+            f"{ambiguous_dest_count} ambiguous of {len(destinations)} total"
         )
 
         return {
             "matches": matches,
             "unmatched_count": unmatched_count,
+            "ambiguous": ambiguous,
             "total_destinations": len(destinations),
         }
 

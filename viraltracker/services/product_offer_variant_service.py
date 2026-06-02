@@ -174,6 +174,9 @@ class ProductOfferVariantService:
                 result = self.supabase.table("product_offer_variants").insert(data).execute()
                 variant_id = UUID(result.data[0]["id"])
                 logger.info(f"Created offer variant: {name} for product {product_id}")
+                # Self-heal attribution: tag the matching brand_landing_pages row
+                # with this product so destination-URL attribution resolves.
+                self.sync_landing_page_for_variant(product_id, landing_page_url)
                 return variant_id
             except APIError as e:
                 if "product_offer_variants_product_id_slug_key" in str(e):
@@ -182,6 +185,81 @@ class ProductOfferVariantService:
                 raise
 
         raise RuntimeError(f"Failed to create offer variant after {max_attempts} slug collision retries")
+
+    def sync_landing_page_for_variant(
+        self, product_id: UUID, landing_page_url: Optional[str]
+    ) -> bool:
+        """Ensure brand_landing_pages has a product-tagged row for this URL.
+
+        This is the bridge that makes attribution self-heal when an offer variant
+        is created/tagged: product-scoped ad attribution reads
+        ``brand_landing_pages.product_id`` via the
+        destination_url -> landing_page -> classification chain, NOT
+        ``product_offer_variants``. Without this, tagging an offer variant would
+        not move any spend.
+
+        Matches on CANONICAL url (not exact string) so a trailing-slash / query /
+        scheme difference updates the existing (e.g. scraped) row instead of
+        inserting a duplicate — which would create the canonical collision that
+        ``match_destinations_to_landing_pages`` then has to disambiguate. Never
+        overwrites a non-null product_id. Non-fatal.
+
+        Returns True on success (row tagged/created), False otherwise.
+        """
+        if not landing_page_url:
+            return False
+        try:
+            from .url_canonicalizer import canonicalize_url
+            canonical = canonicalize_url(landing_page_url)
+
+            prod = self.supabase.table("products").select("brand_id").eq(
+                "id", str(product_id)
+            ).limit(1).execute()
+            if not prod.data:
+                logger.warning(f"sync_landing_page_for_variant: product {product_id} not found")
+                return False
+            brand_id = prod.data[0]["brand_id"]
+
+            # Prefer matching by canonical_url; fall back to exact url for legacy
+            # rows that predate canonicalization.
+            existing = self.supabase.table("brand_landing_pages").select(
+                "id, product_id, canonical_url"
+            ).eq("brand_id", brand_id).eq("canonical_url", canonical).limit(1).execute()
+            if not existing.data:
+                existing = self.supabase.table("brand_landing_pages").select(
+                    "id, product_id, canonical_url"
+                ).eq("brand_id", brand_id).eq("url", landing_page_url).limit(1).execute()
+
+            if existing.data:
+                row = existing.data[0]
+                updates = {}
+                if not row.get("product_id"):
+                    updates["product_id"] = str(product_id)
+                if not row.get("canonical_url"):
+                    updates["canonical_url"] = canonical
+                if updates:
+                    self.supabase.table("brand_landing_pages").update(
+                        updates
+                    ).eq("id", row["id"]).execute()
+                    logger.info(
+                        f"Tagged brand_landing_pages {row['id']} with product {product_id} "
+                        f"(self-heal for {canonical})"
+                    )
+            else:
+                self.supabase.table("brand_landing_pages").insert({
+                    "brand_id": brand_id,
+                    "url": landing_page_url,
+                    "canonical_url": canonical,
+                    "product_id": str(product_id),
+                    "scrape_status": "pending",
+                }).execute()
+                logger.info(
+                    f"Created brand_landing_pages row for {canonical} tagged to product {product_id}"
+                )
+            return True
+        except Exception as e:
+            logger.warning(f"Failed to sync landing page for variant (product {product_id}): {e}")
+            return False
 
     def get_offer_variants(
         self,
@@ -691,6 +769,10 @@ class ProductOfferVariantService:
 
             if updates:
                 self.update_offer_variant(variant_id, updates)
+
+            # Self-heal attribution on update too (create path syncs via
+            # create_offer_variant). Idempotent — won't overwrite an existing tag.
+            self.sync_landing_page_for_variant(product_id, landing_page_url)
 
             logger.info(f"Updated existing offer variant: {variant_id} for URL {landing_page_url}")
             return variant_id, False

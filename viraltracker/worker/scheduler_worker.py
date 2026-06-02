@@ -2211,6 +2211,20 @@ async def execute_meta_sync_job(job: Dict) -> Dict[str, Any]:
                         f"no-url {dest_stats.get('no_url', 0)} / "
                         f"multi-url {dest_stats.get('multi_url', 0)}"
                     )
+                # Wire newly-captured URLs into classifications so product
+                # attribution can consume them (resolve_product_ad_ids Tier-1
+                # reads ad_creative_classifications.landing_page_id). Without
+                # this the captured URLs would sit unused. Non-fatal.
+                try:
+                    pop = await service.populate_classification_landing_page_ids(
+                        _UUID_dest(brand_id)
+                    )
+                    if pop.get("updated", 0) > 0:
+                        logs.append(f"Linked {pop['updated']} classifications to landing pages")
+                except Exception as pop_err:
+                    logger.warning(
+                        f"Classification LP populate failed for {brand_name} (non-fatal): {pop_err}"
+                    )
                 freshness.record_success(brand_id, "ad_destinations", records_affected=dest_stats.get("stored", 0), run_id=run_id)
             else:
                 logs.append("Skipped destination sync (no organization_id)")

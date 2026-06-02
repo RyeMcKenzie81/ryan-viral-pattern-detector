@@ -33,9 +33,16 @@ def sync_url_to_landing_pages(brand_id: str, url: str, product_id: str = None) -
         db = get_supabase_client()
         canonical = canonicalize_url(url)
 
+        # Match on canonical_url first so a trailing-slash / query / scheme
+        # difference updates the existing (e.g. scraped) row instead of inserting
+        # a duplicate that collides on canonical during destination matching.
         existing = db.table("brand_landing_pages").select(
             "id, product_id, scrape_status, canonical_url"
-        ).eq("brand_id", brand_id).eq("url", url).limit(1).execute()
+        ).eq("brand_id", brand_id).eq("canonical_url", canonical).limit(1).execute()
+        if not existing.data:
+            existing = db.table("brand_landing_pages").select(
+                "id, product_id, scrape_status, canonical_url"
+            ).eq("brand_id", brand_id).eq("url", url).limit(1).execute()
 
         if existing.data:
             row = existing.data[0]
