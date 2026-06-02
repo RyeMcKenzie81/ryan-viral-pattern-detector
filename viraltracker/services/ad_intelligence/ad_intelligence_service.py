@@ -181,6 +181,28 @@ class AdIntelligenceService:
         if config is None:
             config = RunConfig()
 
+        # Validate product ownership up front. Callers that bypass the agent
+        # tool (e.g. the weekly digest) reach the service directly, so the
+        # cross-brand guard lives here too — a product from another brand would
+        # silently yield an empty report otherwise.
+        if product_id is not None:
+            try:
+                prod_row = self.supabase.table("products").select(
+                    "brand_id"
+                ).eq("id", str(product_id)).limit(1).execute()
+                if not prod_row.data:
+                    raise ValueError(f"Product {product_id} does not exist")
+                owner_brand = prod_row.data[0].get("brand_id")
+                if owner_brand and str(owner_brand) != str(brand_id):
+                    raise ValueError(
+                        f"Product {product_id} belongs to brand {owner_brand}, "
+                        f"not {brand_id} (cross-brand analysis is not allowed)"
+                    )
+            except ValueError:
+                raise
+            except Exception as e:
+                logger.warning(f"Product-brand validation query failed (continuing): {e}")
+
         # Persist product_id in config so cache lookups can match on it
         if product_id is not None:
             config.product_id = str(product_id)
@@ -231,14 +253,26 @@ class AdIntelligenceService:
                     "recs_generated": 0,
                 })
                 brand_name = await self._get_brand_name(brand_id)
-                return AccountAnalysisResult(
+                empty_result = AccountAnalysisResult(
                     run_id=run.id,
                     brand_name=brand_name,
                     date_range=f"Last {config.days_back} days",
                     total_ads=0,
                     active_ads=0,
                     total_spend=0,
+                    no_ads_in_scope=True,
                 )
+                # Persist the "no ads in scope" markdown so the cache serves an
+                # explicit message instead of an empty body that triggers an
+                # endless re-queue loop in analyze_account.
+                try:
+                    from .chat_renderer import ChatRenderer
+                    self.supabase.table("ad_intelligence_runs").update({
+                        "rendered_markdown": ChatRenderer.render_account_analysis(empty_result),
+                    }).eq("id", str(run.id)).execute()
+                except Exception as e:
+                    logger.warning(f"Failed to persist no-ads markdown for run {run.id}: {e}")
+                return empty_result
 
             # 2. Classify active ads
             batch_result = await self.classifier.classify_batch(
@@ -269,8 +303,13 @@ class AdIntelligenceService:
 
             # 6. Build result
             brand_name = await self._get_brand_name(brand_id)
+            # Scope the header spend to the product's active ad set when a product
+            # filter is in play, so the total matches the per-level breakdown
+            # (was account-wide regardless of product → the $54K-vs-$3K bug).
+            # Brand-level runs (no product) keep the account-wide total.
             total_spend = await self._get_total_spend(
-                brand_id, run.date_range_start, run.date_range_end
+                brand_id, run.date_range_start, run.date_range_end,
+                ad_ids=active_ids if product_id is not None else None,
             )
 
             # Compute distributions
@@ -762,8 +801,9 @@ class AdIntelligenceService:
         brand_id: UUID,
         date_range_start: date,
         date_range_end: date,
+        ad_ids: Optional[List[str]] = None,
     ) -> float:
-        """Get total spend for a brand in a date range.
+        """Get total spend in a date range, optionally scoped to an ad set.
 
         Uses pagination to ensure all rows are counted (Supabase default limit is 1000).
 
@@ -771,17 +811,25 @@ class AdIntelligenceService:
             brand_id: Brand UUID.
             date_range_start: Start date.
             date_range_end: End date.
+            ad_ids: Optional list of meta_ad_ids to restrict the sum to. When
+                provided (e.g. a product-filtered active set), spend is scoped to
+                exactly those ads via ``.in_("meta_ad_id", ad_ids)``, mirroring
+                ``_compute_awareness_aggregates``. When ``None`` (brand-level
+                runs), the sum spans every ad for the brand (unchanged behavior).
+                An empty list returns 0.0 (no ads in scope → no spend).
 
         Returns:
             Total spend as float.
         """
+        if ad_ids is not None and len(ad_ids) == 0:
+            return 0.0
         try:
             total = 0.0
             offset = 0
             page_size = 1000
 
             while True:
-                result = self.supabase.table("meta_ads_performance").select(
+                query = self.supabase.table("meta_ads_performance").select(
                     "spend"
                 ).eq(
                     "brand_id", str(brand_id)
@@ -789,7 +837,10 @@ class AdIntelligenceService:
                     "date", date_range_start.isoformat()
                 ).lte(
                     "date", date_range_end.isoformat()
-                ).range(offset, offset + page_size - 1).execute()
+                )
+                if ad_ids is not None:
+                    query = query.in_("meta_ad_id", ad_ids)
+                result = query.range(offset, offset + page_size - 1).execute()
 
                 if not result.data:
                     break

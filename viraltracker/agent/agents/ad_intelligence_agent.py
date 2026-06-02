@@ -263,6 +263,31 @@ async def analyze_account(
 
     product_uuid = UUID(product_id) if product_id else None
 
+    # Validate: product must belong to this brand. Catches cross-brand mixups
+    # (e.g. resolving a product for the wrong brand) that would otherwise yield
+    # an empty product-scoped report that looks like "no data."
+    if product_uuid:
+        try:
+            prod_row = db.table("products").select("brand_id, name").eq(
+                "id", str(product_uuid)
+            ).limit(1).execute()
+            if not prod_row.data:
+                return (
+                    f"ERROR: product {product_uuid} does not exist. Re-resolve the "
+                    "product with resolve_product_name and try again."
+                )
+            owner_brand = prod_row.data[0].get("brand_id")
+            if owner_brand and str(owner_brand) != str(brand_id):
+                prod_name = prod_row.data[0].get("name", "that product")
+                return (
+                    f"ERROR: '{prod_name}' belongs to a different brand "
+                    f"({owner_brand}), not the brand you passed ({brand_id}). "
+                    "Resolve the product within the correct brand, or analyze the "
+                    "brand that actually owns it."
+                )
+        except Exception as e:
+            logger.warning(f"Product-brand validation failed (continuing): {e}")
+
     # Cache brand context for follow-up queries
     ctx.deps.result_cache.custom["ad_intelligence_brand_id"] = brand_id
     if product_uuid:
