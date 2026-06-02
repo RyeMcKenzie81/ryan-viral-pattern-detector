@@ -2200,10 +2200,17 @@ async def execute_meta_sync_job(job: Dict) -> Dict[str, Any]:
                 dest_stats = await service.sync_ad_destinations_to_db(
                     brand_id=_UUID_dest(brand_id),
                     organization_id=_UUID_dest(org_id),
-                    limit=params.get('destination_limit', 100),
+                    # Spend-prioritized + terminal-marked, so a higher cap drains
+                    # the backlog faster without re-fetching no-URL ads forever.
+                    limit=params.get('destination_limit', 250),
                 )
-                if dest_stats["stored"] > 0:
-                    logs.append(f"Fetched {dest_stats['fetched']} / stored {dest_stats['stored']} destination URLs")
+                if dest_stats.get("stored", 0) > 0 or dest_stats.get("no_url", 0) > 0:
+                    logs.append(
+                        f"Destinations: fetched {dest_stats.get('fetched', 0)} / "
+                        f"stored {dest_stats.get('stored', 0)} / "
+                        f"no-url {dest_stats.get('no_url', 0)} / "
+                        f"multi-url {dest_stats.get('multi_url', 0)}"
+                    )
                 freshness.record_success(brand_id, "ad_destinations", records_affected=dest_stats.get("stored", 0), run_id=run_id)
             else:
                 logs.append("Skipped destination sync (no organization_id)")
