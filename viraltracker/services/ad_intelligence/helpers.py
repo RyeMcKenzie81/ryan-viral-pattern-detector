@@ -198,10 +198,17 @@ def compute_roas(perf_row: Dict, value_field: str) -> Optional[float]:
 def resolve_product_ad_ids(
     supabase, brand_id: str, product_id: str, ad_ids: List[str]
 ) -> set:
-    """Resolve which ad_ids belong to a product via two-tier matching.
+    """Resolve which ad_ids belong to a product via tiered matching.
 
-    Tier 1: Join classified ads via landing_page_id -> brand_landing_pages.product_id.
+    Tier 0: Direct destination match — ad's captured destination_url canonical
+        maps to a brand_landing_page tagged with this product. URL-first and
+        independent of whether the ad was ever classified (the primary path).
+    Tier 1: Classified ads whose landing_page_id -> brand_landing_pages.product_id.
     Tier 2: Campaign/adset/ad name substring match on product name.
+
+    Tiers are additive (union). Tier 0 is the high-coverage path: most ads have a
+    captured destination but only a fraction are classified, so Tier 1 alone
+    badly under-counts product spend.
 
     Args:
         supabase: Supabase client instance.
@@ -225,17 +232,55 @@ def resolve_product_ad_ids(
     except Exception as e:
         logger.debug(f"Failed to fetch product name: {e}")
 
-    # Tier 1: Landing page -> product_id match
+    # Fetch all landing pages for the brand once (used by Tier 0 + Tier 1).
+    landing_pages: List[dict] = []
     try:
-        lp_result = (
+        lp_all = (
             supabase.table("brand_landing_pages")
-            .select("id")
+            .select("id, canonical_url, product_id")
             .eq("brand_id", brand_id)
-            .eq("product_id", product_id)
             .execute()
         )
-        lp_ids = [r["id"] for r in (lp_result.data or [])]
+        landing_pages = lp_all.data or []
+    except Exception as e:
+        logger.debug(f"Failed to fetch brand landing pages: {e}")
 
+    lp_ids = [lp["id"] for lp in landing_pages if lp.get("product_id") == product_id]
+
+    # Tier 0: Direct destination match (URL-first, no classification dependency).
+    # Use only canonicals that map UNAMBIGUOUSLY to this product — a canonical
+    # tagged to more than one product is excluded (consistent with the ambiguous
+    # handling in match_destinations_to_landing_pages).
+    try:
+        canon_products: dict = {}
+        for lp in landing_pages:
+            canon = lp.get("canonical_url")
+            pid = lp.get("product_id")
+            if canon and pid:
+                canon_products.setdefault(canon, set()).add(pid)
+        exclusive_canons = [
+            canon for canon, pids in canon_products.items()
+            if pids == {product_id}
+        ]
+        if exclusive_canons:
+            for i in range(0, len(ad_ids), 500):
+                batch = ad_ids[i:i + 500]
+                dest_result = (
+                    supabase.table("meta_ad_destinations")
+                    .select("meta_ad_id")
+                    .eq("brand_id", brand_id)
+                    .in_("canonical_url", exclusive_canons)
+                    .in_("meta_ad_id", batch)
+                    .execute()
+                )
+                for d in (dest_result.data or []):
+                    if d.get("meta_ad_id"):
+                        matched.add(d["meta_ad_id"])
+    except Exception as e:
+        logger.debug(f"Tier 0 direct destination resolution failed: {e}")
+
+    # Tier 1: Landing page -> product_id match (via classifications)
+    try:
         if lp_ids:
             for i in range(0, len(ad_ids), 500):
                 batch = ad_ids[i:i + 500]

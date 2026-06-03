@@ -2191,47 +2191,10 @@ async def execute_meta_sync_job(job: Dict) -> Dict[str, Any]:
             logs.append(f"Asset download error (non-fatal): {asset_err}")
             logger.warning(f"Asset download failed for {brand_name}: {asset_err}")
 
-        # Step 4.5: Fetch destination URLs for new ads (NON-FATAL)
-        freshness.record_start(brand_id, "ad_destinations", run_id=run_id)
-        try:
-            org_id = brand_info.get("organization_id")
-            if org_id:
-                from uuid import UUID as _UUID_dest
-                dest_stats = await service.sync_ad_destinations_to_db(
-                    brand_id=_UUID_dest(brand_id),
-                    organization_id=_UUID_dest(org_id),
-                    # Spend-prioritized + terminal-marked, so a higher cap drains
-                    # the backlog faster without re-fetching no-URL ads forever.
-                    limit=params.get('destination_limit', 250),
-                )
-                if dest_stats.get("stored", 0) > 0 or dest_stats.get("no_url", 0) > 0:
-                    logs.append(
-                        f"Destinations: fetched {dest_stats.get('fetched', 0)} / "
-                        f"stored {dest_stats.get('stored', 0)} / "
-                        f"no-url {dest_stats.get('no_url', 0)} / "
-                        f"multi-url {dest_stats.get('multi_url', 0)}"
-                    )
-                # Wire newly-captured URLs into classifications so product
-                # attribution can consume them (resolve_product_ad_ids Tier-1
-                # reads ad_creative_classifications.landing_page_id). Without
-                # this the captured URLs would sit unused. Non-fatal.
-                try:
-                    pop = await service.populate_classification_landing_page_ids(
-                        _UUID_dest(brand_id)
-                    )
-                    if pop.get("updated", 0) > 0:
-                        logs.append(f"Linked {pop['updated']} classifications to landing pages")
-                except Exception as pop_err:
-                    logger.warning(
-                        f"Classification LP populate failed for {brand_name} (non-fatal): {pop_err}"
-                    )
-                freshness.record_success(brand_id, "ad_destinations", records_affected=dest_stats.get("stored", 0), run_id=run_id)
-            else:
-                logs.append("Skipped destination sync (no organization_id)")
-        except Exception as dest_err:
-            freshness.record_failure(brand_id, "ad_destinations", str(dest_err), run_id=run_id)
-            logs.append(f"Destination URL fetch error (non-fatal): {dest_err}")
-            logger.warning(f"Destination URL fetch failed for {brand_name}: {dest_err}")
+        # Destination-URL capture + classification wiring now runs as its own
+        # `destination_sync` job (lighter meta_sync, own runtime/concurrency caps,
+        # own cadence — avoids competing with meta_sync for the Meta rate budget).
+        # See execute_destination_sync_job.
 
         # Step 4.7: Fetch demographic breakdowns (NON-FATAL)
         # Cap at 7 days — breakdowns return ~18x more rows per ad, 30 days causes timeouts
@@ -2468,6 +2431,125 @@ async def execute_demographic_backfill_job(job: Dict) -> Dict[str, Any]:
             "logs": "\n".join(logs)
         })
 
+        _reschedule_after_failure(job, job_id, get_run_attempt_number(run_id))
+        return {"success": False, "error": error_msg}
+
+
+# ============================================================================
+# Destination Sync Job Handler
+# ============================================================================
+
+@register_job_handler('destination_sync')
+async def execute_destination_sync_job(job: Dict) -> Dict[str, Any]:
+    """
+    Capture ad destination URLs and wire them into product attribution.
+
+    Runs sync_ad_destinations_to_db (spend-prioritized, terminal-marked, 1 Meta
+    call/ad) then populate_classification_landing_page_ids. Split out of meta_sync
+    so it has its own runtime limit, concurrency cap, and cadence and doesn't bog
+    down (or share the Meta rate budget with) the heavy performance sync.
+
+    Parameters (from job['parameters']):
+        destination_limit: int - Max ads to fetch per run (default: 250)
+        spend_window_days: int - Window for spend-prioritized selection (default: 30)
+    """
+    job_id = job['id']
+    job_name = job['name']
+    brand_id = job.get('brand_id')
+    brand_info = job.get('brands') or {}
+    brand_name = brand_info.get('name', 'Unknown')
+    params = job.get('parameters') or {}
+
+    logger.info(f"Starting destination sync job: {job_name} for brand {brand_name}")
+
+    # Pickup state and run row are set atomically by claim_next_job.
+    assert job.get('_claimed'), (
+        "execute_*_job called outside the claim path "
+        "(job.get('_claimed') is falsy). This function expects a "
+        "pre-claimed run from claim_next_job()."
+    )
+    run_id = job['_run_id']
+
+    logs = []
+    from viraltracker.services.dataset_freshness_service import DatasetFreshnessService
+    freshness = DatasetFreshnessService()
+    freshness.record_start(brand_id, "ad_destinations", run_id=run_id)
+    try:
+        from viraltracker.services.meta_ads_service import MetaAdsService
+        from uuid import UUID as _UUID
+        service = MetaAdsService()
+
+        # Resolve org_id (fall back to the brands table if the join didn't carry it).
+        org_id = brand_info.get("organization_id")
+        if not org_id and brand_id:
+            try:
+                db = get_supabase_client()
+                row = db.table("brands").select("organization_id").eq("id", brand_id).limit(1).execute()
+                if row.data:
+                    org_id = row.data[0].get("organization_id")
+            except Exception as org_err:
+                logger.warning(f"Could not resolve organization_id for {brand_name}: {org_err}")
+
+        if not org_id:
+            logs.append("Skipped destination sync (no organization_id)")
+            freshness.record_failure(brand_id, "ad_destinations", "no organization_id", run_id=run_id)
+            update_job_run(run_id, {
+                "status": "completed",
+                "completed_at": datetime.now(PST).isoformat(),
+                "logs": "\n".join(logs),
+            })
+            _update_job_next_run(job, job_id)
+            return {"success": True, "skipped": "no_org_id"}
+
+        dest_stats = await service.sync_ad_destinations_to_db(
+            brand_id=_UUID(brand_id),
+            organization_id=_UUID(org_id),
+            limit=params.get('destination_limit', 250),
+            spend_window_days=params.get('spend_window_days', 30),
+        )
+        logs.append(
+            f"Destinations: fetched {dest_stats.get('fetched', 0)} / "
+            f"stored {dest_stats.get('stored', 0)} / "
+            f"no-url {dest_stats.get('no_url', 0)} / "
+            f"multi-url {dest_stats.get('multi_url', 0)}"
+        )
+
+        # Wire newly-captured URLs into classifications (non-fatal). Tier-0 of
+        # resolve_product_ad_ids reads destinations directly, but this also keeps
+        # ad_creative_classifications.landing_page_id current for the analysis.
+        try:
+            pop = await service.populate_classification_landing_page_ids(_UUID(brand_id))
+            if pop.get("updated", 0) > 0:
+                logs.append(f"Linked {pop['updated']} classifications to landing pages")
+        except Exception as pop_err:
+            logs.append(f"Classification LP populate failed (non-fatal): {pop_err}")
+            logger.warning(f"Classification LP populate failed for {brand_name}: {pop_err}")
+
+        freshness.record_success(
+            brand_id, "ad_destinations",
+            records_affected=dest_stats.get("stored", 0), run_id=run_id,
+        )
+        update_job_run(run_id, {
+            "status": "completed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "logs": "\n".join(logs),
+        })
+        _update_job_next_run(job, job_id)
+
+        logger.info(f"Completed destination sync: {brand_name} - {dest_stats}")
+        return {"success": True, "stats": dest_stats}
+
+    except Exception as e:
+        error_msg = str(e)
+        logs.append(f"Job failed: {error_msg}")
+        logger.error(f"Destination sync job {job_name} failed: {error_msg}")
+        freshness.record_failure(brand_id, "ad_destinations", error_msg, run_id=run_id)
+        update_job_run(run_id, {
+            "status": "failed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "error_message": error_msg,
+            "logs": "\n".join(logs),
+        })
         _reschedule_after_failure(job, job_id, get_run_attempt_number(run_id))
         return {"success": False, "error": error_msg}
 
