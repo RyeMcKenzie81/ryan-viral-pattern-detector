@@ -1,11 +1,16 @@
 """WeeklyDigestService — assemble the weekly per-product digest data.
 
-Per product: run full_analysis (with classification OFF — the daily jobs handle
-classifying, so this is pure DB aggregation) → awareness/CPA. Split each product's
-spend/CPA by market (US/CA). Compute a brand-level coverage line + unmapped-spend
-worklist. The renderer (digest_renderer) turns the returned dict into Slack blocks.
+A digest is a REPORT, so it reads the already-stored classifications + baselines
++ performance directly from the DB — it does NOT re-run the classification
+pipeline. (full_analysis with max_new=0 was unreliable here: classify_batch's
+cache key includes the volatile Meta thumbnail URL, which rotates between the
+daily classification and the digest run, so cache hits silently vanish and every
+product came back with an empty awareness table.)
 
-All money is in the ad-account currency (from MetaAdsService.get_brand_currency).
+Per product: awareness/CPA from stored classifications (latest level per ad) +
+meta_ads_performance; split spend/CPA by market (US/CA); brand-level coverage +
+unmapped worklist. No Gemini/Meta calls (except a one-time currency self-heal).
+All money is in the ad-account currency.
 """
 from __future__ import annotations
 
@@ -25,13 +30,12 @@ def _num(v) -> float:
 
 
 class WeeklyDigestService:
-    def __init__(self, supabase, intel_service, market_service, meta_service):
+    def __init__(self, supabase, market_service, meta_service):
         self.supabase = supabase
-        self.intel = intel_service
         self.market = market_service
         self.meta = meta_service
 
-    async def build_brand_digest(self, brand_id: UUID, org_id: UUID, days_back: int = 30) -> Dict[str, Any]:
+    async def build_brand_digest(self, brand_id: UUID, days_back: int = 30) -> Dict[str, Any]:
         from .helpers import get_active_ad_ids, resolve_product_ad_ids
         from .models import RunConfig
 
@@ -45,11 +49,10 @@ class WeeklyDigestService:
         start = end - timedelta(days=days_back)
         start_s, end_s = start.isoformat(), end.isoformat()
 
-        # Use full_analysis's active-ad window (not days_back) so the market-split
-        # ad set matches the product header/awareness ad set — otherwise the
-        # `Market:` spend and the header spend describe different ads and diverge.
-        active_window = RunConfig().active_window_days
-        active_ids = await get_active_ad_ids(self.supabase, brand_id, end, active_window)
+        # Same active-ad window the rest of ad-intelligence uses, so the digest's
+        # active set lines up with the daily analysis the client sees elsewhere.
+        active_ids = await get_active_ad_ids(self.supabase, brand_id, end, RunConfig().active_window_days)
+        baselines = self._latest_baselines(bid)
 
         prods = (self.supabase.table("products").select("id, name")
                  .eq("brand_id", bid).order("name").execute().data or [])
@@ -57,44 +60,28 @@ class WeeklyDigestService:
         products_out: List[Dict[str, Any]] = []
         for prod in prods:
             pid, pname = prod["id"], prod.get("name", "Unnamed")
+            product_ad_ids = list(resolve_product_ad_ids(self.supabase, bid, pid, active_ids))
+            if not product_ad_ids:
+                products_out.append({"name": pname, "no_ads": True})
+                continue
             try:
-                # Classification OFF (max_new=0) → reuse existing classifications,
-                # pure DB aggregation, no Gemini cost in the digest path.
-                config = RunConfig(
-                    days_back=days_back,
-                    max_classifications_per_run=0,
-                    max_video_classifications_per_run=0,
+                total_spend, active_ads, rows = self._product_awareness(
+                    bid, product_ad_ids, start_s, end_s, baselines
                 )
-                result = await self.intel.full_analysis(
-                    brand_id=brand_id, org_id=org_id, config=config,
-                    product_id=UUID(pid) if isinstance(pid, str) else pid,
-                )
+                markets = self.market.split_spend_by_market(brand_id, product_ad_ids, start_s, end_s)
             except Exception as e:
-                logger.warning(f"Digest: analysis failed for product {pname}: {e}")
+                logger.warning(f"Digest: product {pname} failed: {e}")
                 products_out.append({"name": pname, "error": True})
                 continue
 
-            if getattr(result, "no_ads_in_scope", False) or result.active_ads == 0:
-                products_out.append({"name": pname, "no_ads": True})
-                continue
-
-            rows = self._awareness_rows(result)
-            product_ad_ids = list(resolve_product_ad_ids(self.supabase, bid, pid, active_ids))
-            try:
-                markets = self.market.split_spend_by_market(brand_id, product_ad_ids, start_s, end_s)
-            except Exception as e:
-                logger.warning(f"Digest: market split failed for {pname}: {e}")
-                markets = {}
-            insight = (result.creative_insights or [None])[0]
-
             products_out.append({
                 "name": pname,
-                "total_spend": result.total_spend,
-                "active_ads": result.active_ads,
+                "total_spend": total_spend,
+                "active_ads": active_ads,
                 "no_ads": False,
                 "awareness": rows,
                 "markets": markets,
-                "insight": insight,
+                "insight": self._insight(rows),
             })
 
         try:
@@ -112,21 +99,112 @@ class WeeklyDigestService:
             "unmapped_funnels": unmapped,
         }
 
-    @staticmethod
-    def _awareness_rows(result) -> List[Dict[str, Any]]:
-        dist = result.awareness_distribution or {}
-        agg = result.awareness_aggregates or {}
-        base = result.awareness_baselines or {}
-        rows = []
-        for level, count in dist.items():
-            a = agg.get(level, {})
-            b = base.get(level, {})
-            rows.append({
-                "level": level, "ads": count,
-                "spend": a.get("spend"), "agg_cpa": a.get("cpa"), "med_cpa": b.get("cpa"),
+    # ------------------------------------------------------------------ #
+    # Awareness from stored classifications (no re-classification)
+    # ------------------------------------------------------------------ #
+
+    def _latest_baselines(self, bid: str) -> Dict[str, float]:
+        """Latest median CPA per awareness level (creative_format='all') from the
+        daily-computed ad_intelligence_baselines."""
+        rows = (self.supabase.table("ad_intelligence_baselines")
+                .select("awareness_level, median_cost_per_purchase, computed_at")
+                .eq("brand_id", bid).eq("creative_format", "all")
+                .order("computed_at", desc=True).execute().data or [])
+        out: Dict[str, float] = {}
+        for r in rows:
+            lvl = r.get("awareness_level")
+            if lvl and lvl != "all" and lvl not in out:  # first per level = latest
+                mcpa = r.get("median_cost_per_purchase")
+                if mcpa is not None:
+                    out[lvl] = _num(mcpa)
+        return out
+
+    def _product_awareness(
+        self, bid: str, ad_ids: List[str], start_s: str, end_s: str, baselines: Dict[str, float]
+    ) -> Tuple[float, int, List[Dict[str, Any]]]:
+        """(total_spend, active_ads, awareness_rows) computed directly from the
+        latest stored classification per ad + windowed performance."""
+        # latest awareness level per ad
+        level_by_ad: Dict[str, str] = {}
+        for i in range(0, len(ad_ids), 500):
+            batch = ad_ids[i:i + 500]
+            rows = (self.supabase.table("ad_creative_classifications")
+                    .select("meta_ad_id, creative_awareness_level, classified_at")
+                    .eq("brand_id", bid).in_("meta_ad_id", batch)
+                    .order("classified_at", desc=True).execute().data or [])
+            for r in rows:
+                a = r.get("meta_ad_id")
+                if a and a not in level_by_ad and r.get("creative_awareness_level"):
+                    level_by_ad[a] = r["creative_awareness_level"]
+
+        # spend + purchases per ad over the window (paginated)
+        perf: Dict[str, List[float]] = {}
+        for i in range(0, len(ad_ids), 500):
+            batch = ad_ids[i:i + 500]
+            offset, page = 0, 1000
+            while True:
+                rows = (self.supabase.table("meta_ads_performance")
+                        .select("meta_ad_id, spend, purchases")
+                        .eq("brand_id", bid).gte("date", start_s).lte("date", end_s)
+                        .in_("meta_ad_id", batch).order("id")
+                        .range(offset, offset + page - 1).execute().data or [])
+                if not rows:
+                    break
+                for r in rows:
+                    a = r.get("meta_ad_id")
+                    if not a:
+                        continue
+                    e = perf.setdefault(a, [0.0, 0.0])
+                    e[0] += _num(r.get("spend"))
+                    e[1] += _num(r.get("purchases"))
+                if len(rows) < page:
+                    break
+                offset += page
+
+        total_spend = round(sum(v[0] for v in perf.values()), 2)
+        active_ads = len(ad_ids)
+
+        agg: Dict[str, List[float]] = {}  # level -> [ads, spend, purchases]
+        for ad, (s, p) in perf.items():
+            # Bucket ads with no stored classification under "unclassified" so the
+            # table sums to the product total (rather than silently dropping spend
+            # and leaving a confusing gap vs the header). Classification coverage
+            # is the daily job's responsibility — this just surfaces it honestly.
+            lvl = level_by_ad.get(ad) or "unclassified"
+            e = agg.setdefault(lvl, [0, 0.0, 0.0])
+            e[0] += 1
+            e[1] += s
+            e[2] += p
+
+        rows_out: List[Dict[str, Any]] = []
+        for lvl, (ads, s, p) in agg.items():
+            rows_out.append({
+                "level": lvl, "ads": int(ads), "spend": round(s, 2),
+                "agg_cpa": round(s / p, 2) if p else None,
+                "med_cpa": baselines.get(lvl),
             })
-        rows.sort(key=lambda r: (r.get("spend") or 0), reverse=True)
-        return rows
+        rows_out.sort(key=lambda r: (r["spend"] or 0), reverse=True)
+        return total_spend, active_ads, rows_out
+
+    @staticmethod
+    def _insight(rows: List[Dict[str, Any]]) -> Optional[str]:
+        """A simple 'what to work on': the level whose aggregate CPA is furthest
+        OVER its median baseline (≥20% gap, with real spend)."""
+        worst, worst_gap = None, 0.0
+        for r in rows:
+            a, m = r.get("agg_cpa"), r.get("med_cpa")
+            if a and m and m > 0 and (r.get("spend") or 0) > 0:
+                gap = (a - m) / m
+                if gap > worst_gap:
+                    worst, worst_gap = r, gap
+        if worst and worst_gap >= 0.2:
+            lvl = str(worst["level"]).replace("_", " ")
+            return f"{lvl} CPA {worst_gap * 100:.0f}% over baseline (${worst['agg_cpa']:.0f} vs ${worst['med_cpa']:.0f})."
+        return None
+
+    # ------------------------------------------------------------------ #
+    # Coverage + unmapped worklist (unchanged)
+    # ------------------------------------------------------------------ #
 
     def _coverage_and_unmapped(
         self, bid: str, start_s: str, end_s: str, top_n: int = 5
@@ -134,7 +212,6 @@ class WeeklyDigestService:
         """Coverage line + top unmapped funnels, over ads that HAVE a captured
         destination. Attributed = canonical maps to a product-tagged landing page;
         unmapped = canonical has no product tag (the tag-this worklist)."""
-        # Product-tagged canonicals.
         tagged = set()
         lp_rows = (self.supabase.table("brand_landing_pages")
                    .select("canonical_url, product_id").eq("brand_id", bid).execute().data or [])
@@ -142,7 +219,6 @@ class WeeklyDigestService:
             if r.get("canonical_url") and r.get("product_id"):
                 tagged.add(r["canonical_url"])
 
-        # ad -> canonical (first seen).
         canon_by_ad: Dict[str, str] = {}
         dest_rows = (self.supabase.table("meta_ad_destinations")
                      .select("meta_ad_id, canonical_url").eq("brand_id", bid).execute().data or [])
@@ -154,7 +230,6 @@ class WeeklyDigestService:
         if not canon_by_ad:
             return {}, []
 
-        # spend per ad over the window (paginated).
         ad_ids = list(canon_by_ad.keys())
         spend_by_ad: Dict[str, float] = {}
         for i in range(0, len(ad_ids), 500):
