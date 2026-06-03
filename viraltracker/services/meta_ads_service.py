@@ -2301,19 +2301,21 @@ class MetaAdsService:
     async def fetch_ad_destination_urls(
         self,
         ad_ids: List[str],
-    ) -> Dict[str, str]:
+    ) -> Dict[str, Dict[str, Any]]:
         """
-        Fetch destination URLs for a list of ad IDs.
+        Fetch destination-URL outcomes for a list of ad IDs (one Meta call each).
 
-        Gets the landing page URL that users are directed to when clicking the ad.
-        The URL is extracted from the AdCreative's object_story_spec.link_data.link
-        or call_to_action.value.link.
+        Gets the landing page URL that users are directed to when clicking the ad,
+        extracted from the AdCreative (link_url / object_story_spec / asset_feed_spec).
 
         Args:
             ad_ids: List of Meta ad IDs.
 
         Returns:
-            Dict mapping ad_id -> destination_url (original, not canonicalized).
+            Dict mapping ad_id -> outcome dict
+            ``{"url", "fetch_ok", "creative_id", "url_count"}``. Ads that hit a
+            transient error are omitted (retried next run). See
+            ``_fetch_ad_destinations_sync``.
         """
         if not ad_ids:
             return {}
@@ -2322,106 +2324,155 @@ class MetaAdsService:
         await self._rate_limit()
 
         try:
-            destinations = await asyncio.to_thread(
+            outcomes = await asyncio.to_thread(
                 self._fetch_ad_destinations_sync,
                 ad_ids
             )
-            logger.info(f"Fetched {len(destinations)} ad destination URLs")
-            return destinations
+            found = sum(1 for o in outcomes.values() if o.get("url"))
+            logger.info(
+                f"Fetched destination outcomes for {len(outcomes)}/{len(ad_ids)} ads "
+                f"({found} with a URL)"
+            )
+            return outcomes
         except Exception as e:
             logger.error(f"Failed to fetch ad destination URLs: {e}")
             return {}
 
-    def _fetch_ad_destinations_sync(self, ad_ids: List[str]) -> Dict[str, str]:
-        """
-        Synchronous call to fetch ad destination URLs.
+    @staticmethod
+    def _extract_destination_from_creative(creative_info: Dict[str, Any]) -> tuple:
+        """Pull the primary destination URL + distinct-link count from a creative.
 
-        Tries multiple locations in the AdCreative:
-        1. object_story_spec.link_data.link
-        2. object_story_spec.link_data.call_to_action.value.link
-        3. object_story_spec.video_data.call_to_action.value.link
-        4. asset_feed_spec.link_urls
+        Tries multiple locations in the AdCreative, in priority order:
+        1. link_url (direct)
+        2. object_story_spec.link_data.link
+        3. object_story_spec.link_data.call_to_action.value.link
+        4. object_story_spec.video_data.call_to_action.value.link
+        5. asset_feed_spec.link_urls[0] (dynamic / DCO ads)
 
         Returns:
-            Dict mapping ad_id -> destination_url.
+            (primary_url, distinct_url_count). ``distinct_url_count`` counts the
+            distinct links in asset_feed_spec (DCO); >1 means the ad rotates
+            multiple destinations and only the first is attributed today.
+        """
+        # Distinct DCO links (asset_feed_spec.link_urls) — used for multi-URL flag.
+        dco_links: List[str] = []
+        asset_feed = creative_info.get("asset_feed_spec") or {}
+        for item in (asset_feed.get("link_urls") or []):
+            if isinstance(item, dict):
+                u = item.get("website_url")
+            elif isinstance(item, str):
+                u = item
+            else:
+                u = None
+            if u:
+                dco_links.append(u)
+        distinct_dco = list(dict.fromkeys(dco_links))  # de-dup, order-preserving
+
+        # Primary URL waterfall.
+        destination_url = creative_info.get("link_url")
+        story_spec = creative_info.get("object_story_spec") or {}
+        if not destination_url:
+            link_data = story_spec.get("link_data") or {}
+            destination_url = link_data.get("link")
+            if not destination_url:
+                cta_value = (link_data.get("call_to_action") or {}).get("value") or {}
+                destination_url = cta_value.get("link")
+        if not destination_url:
+            video_data = story_spec.get("video_data") or {}
+            cta_value = (video_data.get("call_to_action") or {}).get("value") or {}
+            destination_url = cta_value.get("link")
+        if not destination_url and distinct_dco:
+            destination_url = distinct_dco[0]
+
+        url_count = len(distinct_dco) if distinct_dco else (1 if destination_url else 0)
+        return destination_url, url_count
+
+    def _fetch_ad_destinations_sync(self, ad_ids: List[str]) -> Dict[str, Dict[str, Any]]:
+        """
+        Synchronous fetch of ad destination URLs, ONE Graph call per ad.
+
+        Uses field expansion (``creative{...}``) to read the creative inline with
+        the ad — previously this made two calls per ad (Ad.api_get then a separate
+        AdCreative.api_get), so this halves the Meta calls for the backfill.
+
+        Returns:
+            Dict mapping ad_id -> outcome dict:
+              {
+                "url":         Optional[str],  # resolved destination, or None
+                "fetch_ok":    bool,           # API call succeeded (terminal vs transient)
+                "creative_id": Optional[str],
+                "url_count":   int,            # distinct links seen (>1 => DCO/multi-URL)
+              }
+            Ads that hit a TRANSIENT error (network/5xx/rate-limit) are OMITTED
+            entirely, so the caller retries them next run and never writes a
+            permanent "give up" marker for a transient failure.
         """
         from facebook_business.adobjects.ad import Ad
-        from facebook_business.adobjects.adcreative import AdCreative
 
-        destinations: Dict[str, str] = {}
+        outcomes: Dict[str, Dict[str, Any]] = {}
 
-        for ad_id in ad_ids:
+        for idx, ad_id in enumerate(ad_ids):
+            # Gentle pacing for large backfills. Reads are 1 point and the burst
+            # bucket is ~9,000 points / 300s, so a 100-ad batch never needs this;
+            # it only matters if limit is raised well above 100.
+            if idx and idx % 100 == 0:
+                time.sleep(1.0)
             try:
-                # Step 1: Get the creative ID from the ad
+                # Single call: expand the creative's link fields inline.
                 ad = Ad(ad_id)
-                ad_data = ad.api_get(fields=["id", "creative"])
-
-                creative_data = ad_data.get("creative")
-                if not creative_data:
-                    logger.debug(f"No creative for ad {ad_id}")
-                    continue
-
-                creative_id = creative_data.get("id")
-                if not creative_id:
-                    continue
-
-                # Step 2: Fetch the creative with link-related fields
-                creative = AdCreative(creative_id)
-                creative_info = creative.api_get(fields=[
+                ad_data = ad.api_get(fields=[
                     "id",
-                    "object_story_spec",
-                    "asset_feed_spec",
-                    "link_url",
+                    "creative{id,link_url,object_story_spec,asset_feed_spec}",
                 ])
 
-                destination_url = None
+                creative_info = ad_data.get("creative")
+                if not creative_info:
+                    # Call succeeded but the ad has no creative — terminal, not
+                    # transient (retrying won't conjure a creative).
+                    outcomes[ad_id] = {
+                        "url": None, "fetch_ok": True,
+                        "creative_id": None, "url_count": 0,
+                    }
+                    logger.debug(f"Ad {ad_id}: no creative on ad (terminal)")
+                    continue
 
-                # Try 1: Direct link_url field
-                destination_url = creative_info.get("link_url")
+                creative_id = creative_info.get("id")
+                destination_url, url_count = self._extract_destination_from_creative(creative_info)
 
-                # Try 2: object_story_spec.link_data.link
+                # Safety net: only treat "no URL" as TERMINAL when the creative
+                # actually carried the link-bearing fields. If field expansion
+                # returned only {id} (e.g. SDK/permission quirk), we can't tell
+                # "no link" from "fields not returned" — treat as inconclusive
+                # and omit, so we never permanently mark a real-URL ad as no_url.
                 if not destination_url:
-                    story_spec = creative_info.get("object_story_spec", {})
-                    link_data = story_spec.get("link_data", {})
-                    destination_url = link_data.get("link")
+                    expansion_present = any(
+                        k in creative_info
+                        for k in ("link_url", "object_story_spec", "asset_feed_spec")
+                    )
+                    if not expansion_present:
+                        logger.warning(
+                            f"Ad {ad_id}: creative returned no link fields "
+                            f"(inconclusive, will retry) — keys={list(creative_info.keys())}"
+                        )
+                        continue
 
-                    # Try 2b: link_data.call_to_action.value.link
-                    if not destination_url:
-                        cta = link_data.get("call_to_action", {})
-                        cta_value = cta.get("value", {})
-                        destination_url = cta_value.get("link")
-
-                # Try 3: object_story_spec.video_data.call_to_action.value.link
-                if not destination_url:
-                    story_spec = creative_info.get("object_story_spec", {})
-                    video_data = story_spec.get("video_data", {})
-                    cta = video_data.get("call_to_action", {})
-                    cta_value = cta.get("value", {})
-                    destination_url = cta_value.get("link")
-
-                # Try 4: asset_feed_spec.link_urls (for dynamic ads)
-                if not destination_url:
-                    asset_feed = creative_info.get("asset_feed_spec", {})
-                    link_urls = asset_feed.get("link_urls", [])
-                    if link_urls and len(link_urls) > 0:
-                        # Take first URL from dynamic feed
-                        first_link = link_urls[0]
-                        if isinstance(first_link, dict):
-                            destination_url = first_link.get("website_url")
-                        elif isinstance(first_link, str):
-                            destination_url = first_link
-
+                outcomes[ad_id] = {
+                    "url": destination_url,
+                    "fetch_ok": True,
+                    "creative_id": creative_id,
+                    "url_count": url_count,
+                }
                 if destination_url:
-                    destinations[ad_id] = destination_url
-                    logger.debug(f"Ad {ad_id}: destination={destination_url[:60]}...")
+                    logger.debug(f"Ad {ad_id}: destination={destination_url[:60]} (links={url_count})")
                 else:
-                    logger.debug(f"Ad {ad_id}: no destination URL found in creative")
+                    logger.debug(f"Ad {ad_id}: no destination URL found in creative (terminal)")
 
             except Exception as e:
-                logger.warning(f"Could not fetch destination URL for {ad_id}: {e}")
+                # Transient: omit so it's retried next run (no terminal marker).
+                logger.warning(f"Transient error fetching destination for {ad_id} (will retry): {e}")
                 continue
 
-        return destinations
+        return outcomes
 
     async def sync_ad_destinations_to_db(
         self,
@@ -2429,93 +2480,193 @@ class MetaAdsService:
         organization_id: UUID,
         ad_ids: Optional[List[str]] = None,
         limit: int = 100,
+        spend_window_days: int = 30,
     ) -> Dict[str, int]:
         """
         Fetch and store ad destination URLs for a brand.
 
-        Fetches destination URLs from Meta API, canonicalizes them,
-        and stores in meta_ad_destinations table.
+        Fetches destination URLs from Meta API, canonicalizes them, and stores
+        them in meta_ad_destinations. Ads with no resolvable URL get a TERMINAL
+        marker in meta_ad_destination_status so they stop being re-fetched every
+        run; transient failures get NO marker (retried next run). When ad_ids is
+        None, the missing ads are selected highest-recent-spend-first so the
+        per-run budget goes to attribution-relevant ads.
 
         Args:
             brand_id: Brand UUID.
             organization_id: Organization UUID.
-            ad_ids: Optional specific ad IDs to process. If None, finds ads missing destinations.
+            ad_ids: Optional specific ad IDs to process. If None, auto-selects
+                missing ads prioritized by recent spend.
             limit: Maximum ads to process in this batch.
+            spend_window_days: Window (days) used to rank missing ads by spend.
 
         Returns:
-            Dict with counts: {"fetched": N, "stored": N, "matched": N}.
+            Dict with counts: {"fetched", "stored", "matched", "no_url", "multi_url"}.
         """
         from ..core.database import get_supabase_client
         from .url_canonicalizer import canonicalize_url
 
         supabase = get_supabase_client()
-        stats = {"fetched": 0, "stored": 0, "matched": 0}
+        stats = {"fetched": 0, "stored": 0, "matched": 0, "no_url": 0, "multi_url": 0}
 
-        # Get ad IDs to process
+        # Select ads to process: missing a found URL, not terminally marked,
+        # ranked by recent spend (descending) so high-value ads go first.
         if ad_ids is None:
-            # Find ads without destination URLs
-            existing_result = supabase.table("meta_ad_destinations").select(
-                "meta_ad_id"
-            ).eq(
-                "brand_id", str(brand_id)
-            ).execute()
-
-            existing_ad_ids = {r["meta_ad_id"] for r in (existing_result.data or [])}
-
-            # Get all ads for this brand
-            ads_result = supabase.table("meta_ads_performance").select(
-                "meta_ad_id"
-            ).eq(
-                "brand_id", str(brand_id)
-            ).execute()
-
-            all_ad_ids = list(set(r["meta_ad_id"] for r in (ads_result.data or [])))
-
-            # Filter to ads without destinations
-            ad_ids = [aid for aid in all_ad_ids if aid not in existing_ad_ids][:limit]
+            ad_ids = self._select_missing_destination_ads(
+                supabase, brand_id, limit, spend_window_days
+            )
 
         if not ad_ids:
             logger.info(f"No ads need destination URL fetching for brand {brand_id}")
             return stats
 
-        logger.info(f"Fetching destination URLs for {len(ad_ids)} ads")
+        logger.info(f"Fetching destination URLs for {len(ad_ids)} ads (spend-prioritized)")
 
-        # Fetch from Meta API
-        destinations = await self.fetch_ad_destination_urls(ad_ids)
-        stats["fetched"] = len(destinations)
+        # Fetch outcomes from Meta API (one call per ad; transient errors omitted)
+        outcomes = await self.fetch_ad_destination_urls(ad_ids)
+        stats["fetched"] = len(outcomes)
 
-        if not destinations:
+        if not outcomes:
             return stats
 
-        # Store in database with canonicalization
-        for meta_ad_id, destination_url in destinations.items():
-            try:
-                canonical = canonicalize_url(destination_url)
+        for meta_ad_id, outcome in outcomes.items():
+            url = outcome.get("url")
+            creative_id = outcome.get("creative_id")
+            url_count = int(outcome.get("url_count") or 0)
 
-                record = {
-                    "organization_id": str(organization_id),
-                    "brand_id": str(brand_id),
-                    "meta_ad_id": meta_ad_id,
-                    "destination_url": destination_url,
-                    "canonical_url": canonical,
-                }
+            if url:
+                # Store the found URL.
+                try:
+                    canonical = canonicalize_url(url)
+                    supabase.table("meta_ad_destinations").upsert({
+                        "organization_id": str(organization_id),
+                        "brand_id": str(brand_id),
+                        "meta_ad_id": meta_ad_id,
+                        "destination_url": url,
+                        "canonical_url": canonical,
+                    }, on_conflict="brand_id,meta_ad_id,canonical_url").execute()
+                    stats["stored"] += 1
+                except Exception as e:
+                    logger.error(f"Failed to store destination for {meta_ad_id}: {e}")
 
-                supabase.table("meta_ad_destinations").upsert(
-                    record,
-                    on_conflict="brand_id,meta_ad_id,canonical_url"
-                ).execute()
+                # Flag DCO / multi-URL ads (only the first link is attributed).
+                if url_count > 1:
+                    self._upsert_destination_status(
+                        supabase, organization_id, brand_id, meta_ad_id,
+                        status="multi_url", reason=f"{url_count} distinct links",
+                        creative_id=creative_id, url_count=url_count,
+                    )
+                    stats["multi_url"] += 1
 
-                stats["stored"] += 1
-
-            except Exception as e:
-                logger.error(f"Failed to store destination for {meta_ad_id}: {e}")
+            elif outcome.get("fetch_ok"):
+                # Creative fetched OK but carried no link → TERMINAL. Stop retrying.
+                self._upsert_destination_status(
+                    supabase, organization_id, brand_id, meta_ad_id,
+                    status="no_url", reason="no_link_in_creative",
+                    creative_id=creative_id, url_count=0,
+                )
+                stats["no_url"] += 1
+            # else: transient (not in outcomes / fetch_ok False) → no marker, retried.
 
         logger.info(
             f"Synced ad destinations for brand {brand_id}: "
-            f"fetched={stats['fetched']}, stored={stats['stored']}"
+            f"fetched={stats['fetched']}, stored={stats['stored']}, "
+            f"no_url(terminal)={stats['no_url']}, multi_url={stats['multi_url']}"
         )
 
         return stats
+
+    def _get_ad_spend_map(
+        self, supabase, brand_id_str: str, days_back: int
+    ) -> Dict[str, float]:
+        """Sum spend by meta_ad_id over the recent window (paginated)."""
+        cutoff = (datetime.now(timezone.utc).date() - timedelta(days=days_back)).isoformat()
+        spend_map: Dict[str, float] = {}
+        offset = 0
+        page = 1000
+        while True:
+            rows = (supabase.table("meta_ads_performance").select("meta_ad_id, spend")
+                    .eq("brand_id", brand_id_str).gte("date", cutoff)
+                    .range(offset, offset + page - 1).execute().data or [])
+            if not rows:
+                break
+            for r in rows:
+                raw = r.get("spend")
+                try:
+                    s = float(raw) if raw is not None else 0.0
+                except (TypeError, ValueError):
+                    s = 0.0
+                ad = r.get("meta_ad_id")
+                if ad:
+                    spend_map[ad] = spend_map.get(ad, 0.0) + s
+            if len(rows) < page:
+                break
+            offset += page
+        return spend_map
+
+    def _select_missing_destination_ads(
+        self, supabase, brand_id: UUID, limit: int, spend_window_days: int
+    ) -> List[str]:
+        """Pick ads needing a destination URL, highest-recent-spend first.
+
+        Excludes ads that already have a found URL (meta_ad_destinations) and
+        ads with a TERMINAL no_url marker (meta_ad_destination_status). Ads with
+        no recent spend sort last (spend 0), so they're only picked once the
+        high-spend backlog is drained.
+        """
+        bid = str(brand_id)
+
+        found = {r["meta_ad_id"] for r in (
+            supabase.table("meta_ad_destinations").select("meta_ad_id")
+            .eq("brand_id", bid).execute().data or []
+        )}
+        terminal = {r["meta_ad_id"] for r in (
+            supabase.table("meta_ad_destination_status").select("meta_ad_id")
+            .eq("brand_id", bid).eq("status", "no_url").execute().data or []
+        )}
+
+        spend_map = self._get_ad_spend_map(supabase, bid, spend_window_days)
+
+        # All ads for the brand (all-time), paginated, so zero-recent-spend ads
+        # are still eligible once the spending backlog is cleared.
+        all_ads = set(spend_map.keys())
+        offset = 0
+        page = 1000
+        while True:
+            rows = (supabase.table("meta_ads_performance").select("meta_ad_id")
+                    .eq("brand_id", bid).range(offset, offset + page - 1).execute().data or [])
+            if not rows:
+                break
+            for r in rows:
+                if r.get("meta_ad_id"):
+                    all_ads.add(r["meta_ad_id"])
+            if len(rows) < page:
+                break
+            offset += page
+
+        candidates = [a for a in all_ads if a not in found and a not in terminal]
+        candidates.sort(key=lambda a: spend_map.get(a, 0.0), reverse=True)
+        return candidates[:limit]
+
+    def _upsert_destination_status(
+        self, supabase, organization_id: UUID, brand_id: UUID, meta_ad_id: str,
+        status: str, reason: Optional[str] = None,
+        creative_id: Optional[str] = None, url_count: int = 0,
+    ) -> None:
+        """Upsert a per-ad destination fetch-outcome marker (non-fatal)."""
+        try:
+            supabase.table("meta_ad_destination_status").upsert({
+                "organization_id": str(organization_id),
+                "brand_id": str(brand_id),
+                "meta_ad_id": meta_ad_id,
+                "status": status,
+                "reason": reason,
+                "creative_id": creative_id,
+                "url_count": url_count,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }, on_conflict="brand_id,meta_ad_id").execute()
+        except Exception as e:
+            logger.warning(f"Failed to upsert destination status ({status}) for {meta_ad_id}: {e}")
 
     async def match_destinations_to_landing_pages(
         self,
