@@ -191,3 +191,110 @@ class TestUpdateMarket:
         assert upd["currency"] == "CAD"
         assert upd["host_patterns"] == ["martin.com"]   # www stripped + lowercased
         assert "updated_at" in upd
+
+
+# ---------------------------------------------------------------------------
+# split_spend_by_market
+# ---------------------------------------------------------------------------
+
+
+class _SplitTable:
+    def __init__(self, name, data_map):
+        self.name = name
+        self.data_map = data_map
+        self.ins = {}
+        self._start = 0
+
+    def select(self, *a):
+        return self
+
+    def eq(self, *a):
+        return self
+
+    def gte(self, *a):
+        return self
+
+    def lte(self, *a):
+        return self
+
+    def order(self, *a):
+        return self
+
+    def in_(self, col, vals):
+        self.ins[col] = set(vals)
+        return self
+
+    def range(self, start, end):
+        self._start = start
+        return self
+
+    def execute(self):
+        if self._start and self._start > 0:
+            return SimpleNamespace(data=[])  # page 2 is empty → terminate loop
+        rows = list(self.data_map.get(self.name, []))
+        if "meta_ad_id" in self.ins:
+            rows = [r for r in rows if r.get("meta_ad_id") in self.ins["meta_ad_id"]]
+        return SimpleNamespace(data=rows)
+
+
+class _SplitSupa:
+    def __init__(self, data_map):
+        self.data_map = data_map
+
+    def table(self, name):
+        return _SplitTable(name, self.data_map)
+
+
+class TestSplitSpendByMarket:
+    def _svc(self, data_map, markets):
+        svc = BrandMarketService(supabase_client=_SplitSupa(data_map))
+        svc.list_markets = lambda brand_id: markets
+        return svc
+
+    def test_splits_us_ca_and_unknown(self):
+        markets = [
+            {"code": "US", "currency": "USD", "host_patterns": ["us.martinclinic.com"], "is_default": False},
+            {"code": "CA", "currency": "CAD", "host_patterns": ["martinclinic.com"], "is_default": False},
+        ]
+        data_map = {
+            "meta_ad_destinations": [
+                {"meta_ad_id": "ad1", "canonical_url": "https://us.martinclinic.com/pages/v3-adv"},
+                {"meta_ad_id": "ad2", "canonical_url": "https://martinclinic.com/pages/navitol"},
+                {"meta_ad_id": "ad3", "canonical_url": "https://elsewhere.com/x"},
+            ],
+            "meta_ads_performance": [
+                {"meta_ad_id": "ad1", "spend": "100", "purchases": "2"},
+                {"meta_ad_id": "ad2", "spend": "50", "purchases": "1"},
+                {"meta_ad_id": "ad3", "spend": "30", "purchases": "0"},
+            ],
+        }
+        svc = self._svc(data_map, markets)
+        out = svc.split_spend_by_market(uuid4(), ["ad1", "ad2", "ad3"], "2026-05-01", "2026-05-31")
+        assert out["US"] == {"spend": 100.0, "purchases": 2, "ads": 1, "currency": "USD", "cpa": 50.0}
+        assert out["CA"] == {"spend": 50.0, "purchases": 1, "ads": 1, "currency": "CAD", "cpa": 50.0}
+        # ad3 host matches no market and there's no default → UNKNOWN, CPA None (0 purchases)
+        assert out["UNKNOWN"]["spend"] == 30.0
+        assert out["UNKNOWN"]["cpa"] is None
+        assert out["UNKNOWN"]["currency"] is None
+
+    def test_unmatched_host_falls_to_default_market(self):
+        markets = [
+            {"code": "US", "currency": "USD", "host_patterns": ["us.martinclinic.com"], "is_default": True},
+            {"code": "CA", "currency": "CAD", "host_patterns": ["martinclinic.com"], "is_default": False},
+        ]
+        data_map = {
+            "meta_ad_destinations": [
+                {"meta_ad_id": "adX", "canonical_url": "https://random.com/y"},
+            ],
+            "meta_ads_performance": [
+                {"meta_ad_id": "adX", "spend": "20", "purchases": "4"},
+            ],
+        }
+        svc = self._svc(data_map, markets)
+        out = svc.split_spend_by_market(uuid4(), ["adX"], "2026-05-01", "2026-05-31")
+        assert "US" in out and "UNKNOWN" not in out  # default soaks up the unmatched host
+        assert out["US"]["cpa"] == 5.0
+
+    def test_empty_ad_ids(self):
+        svc = self._svc({}, [])
+        assert svc.split_spend_by_market(uuid4(), [], "2026-05-01", "2026-05-31") == {}

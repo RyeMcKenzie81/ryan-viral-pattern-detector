@@ -123,6 +123,90 @@ class BrandMarketService:
                 return m
         return None
 
+    def _market_for_host(self, host: str, markets: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        """In-memory market resolution for a host (no DB call) — for batch splits.
+        Exact host match against host_patterns, else the default market, else None."""
+        if host:
+            for m in markets:
+                if host in [p.lower() for p in (m.get("host_patterns") or [])]:
+                    return m
+        for m in markets:
+            if m.get("is_default"):
+                return m
+        return None
+
+    def split_spend_by_market(
+        self, brand_id, ad_ids: List[str], date_start: str, date_end: str
+    ) -> Dict[str, Dict[str, Any]]:
+        """Split a set of ads' spend + purchases + CPA by market.
+
+        Market comes from each ad's captured destination canonical
+        (meta_ad_destinations — the reliable WS2/WS3 source, NOT the sparse
+        meta_ads_performance.destination_url), resolved against the brand's
+        markets. Metrics come from meta_ads_performance over [date_start, date_end]
+        (paginated). Ads whose host matches no market (and no default) bucket under
+        'UNKNOWN'.
+
+        Returns {market_code: {spend, purchases, cpa, currency, ads}}.
+        CPA/spend are in the ad-account currency (caller labels it); this only
+        splits the buckets.
+        """
+        if not ad_ids:
+            return {}
+        bid = str(brand_id)
+        markets = self.list_markets(brand_id)
+
+        # ad -> canonical (first seen) from meta_ad_destinations
+        canon_by_ad: Dict[str, str] = {}
+        for i in range(0, len(ad_ids), 500):
+            batch = ad_ids[i:i + 500]
+            rows = (self.supabase.table("meta_ad_destinations")
+                    .select("meta_ad_id, canonical_url")
+                    .eq("brand_id", bid).in_("meta_ad_id", batch).execute().data or [])
+            for r in rows:
+                a, c = r.get("meta_ad_id"), r.get("canonical_url")
+                if a and c and a not in canon_by_ad:
+                    canon_by_ad[a] = c
+
+        # ad -> {spend, purchases} from meta_ads_performance (paginated per batch)
+        agg_by_ad: Dict[str, Dict[str, float]] = {}
+        for i in range(0, len(ad_ids), 500):
+            batch = ad_ids[i:i + 500]
+            offset, page = 0, 1000
+            while True:
+                rows = (self.supabase.table("meta_ads_performance")
+                        .select("meta_ad_id, spend, purchases")
+                        .eq("brand_id", bid).gte("date", date_start).lte("date", date_end)
+                        .in_("meta_ad_id", batch).order("id")
+                        .range(offset, offset + page - 1).execute().data or [])
+                if not rows:
+                    break
+                for r in rows:
+                    a = r.get("meta_ad_id")
+                    if not a:
+                        continue
+                    e = agg_by_ad.setdefault(a, {"spend": 0.0, "purchases": 0.0})
+                    e["spend"] += _num(r.get("spend"))
+                    e["purchases"] += _num(r.get("purchases"))
+                if len(rows) < page:
+                    break
+                offset += page
+
+        out: Dict[str, Dict[str, Any]] = {}
+        for ad_id, m in agg_by_ad.items():
+            mk = self._market_for_host(host_of(canon_by_ad.get(ad_id)), markets)
+            code = mk["code"] if mk else "UNKNOWN"
+            cur = mk["currency"] if mk else None
+            e = out.setdefault(code, {"spend": 0.0, "purchases": 0.0, "ads": 0, "currency": cur})
+            e["spend"] += m["spend"]
+            e["purchases"] += m["purchases"]
+            e["ads"] += 1
+        for code, e in out.items():
+            e["cpa"] = round(e["spend"] / e["purchases"], 2) if e["purchases"] else None
+            e["spend"] = round(e["spend"], 2)
+            e["purchases"] = int(e["purchases"])
+        return out
+
     def _clear_defaults(self, brand_id, except_id: Optional[str] = None) -> None:
         try:
             q = self.supabase.table("brand_markets").update({"is_default": False}).eq("brand_id", str(brand_id))
@@ -131,6 +215,14 @@ class BrandMarketService:
             q.execute()
         except Exception as e:
             logger.warning(f"Failed to clear default markets for brand {brand_id}: {e}")
+
+
+def _num(v) -> float:
+    """Coerce a value to float, treating None/garbage as 0.0."""
+    try:
+        return float(v) if v is not None else 0.0
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _norm_hosts(hosts: Optional[List[str]]) -> List[str]:
