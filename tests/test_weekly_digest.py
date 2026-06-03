@@ -181,24 +181,26 @@ class TestProductAwareness:
             "ad_creative_classifications": [
                 {"meta_ad_id": "a1", "creative_awareness_level": "unaware", "classified_at": "2026-06-03"},
                 {"meta_ad_id": "a2", "creative_awareness_level": "problem_aware", "classified_at": "2026-06-03"},
+                {"meta_ad_id": "a3", "creative_awareness_level": "most_aware", "classified_at": "2026-06-03"},
                 {"meta_ad_id": "a1", "creative_awareness_level": "solution_aware", "classified_at": "2026-05-01"},
             ],
             "meta_ads_performance": [
                 {"meta_ad_id": "a1", "spend": "100", "purchases": "2"},
                 {"meta_ad_id": "a2", "spend": "50", "purchases": "1"},
+                {"meta_ad_id": "a3", "spend": "200", "purchases": "5"},  # highest spend, but most-aware
             ],
         }
         svc = WeeklyDigestService(_CovSupa(data_map), MagicMock(), MagicMock())
         total, active, rows = svc._product_awareness(
-            "BRAND", ["a1", "a2"], "2026-05-01", "2026-05-31",
+            "BRAND", ["a1", "a2", "a3"], "2026-05-01", "2026-05-31",
             baselines={"unaware": 40.0, "problem_aware": 41.0},
         )
-        assert total == 150.0
-        assert active == 2
-        # sorted by spend desc; a1 newest level = unaware (ignores stale solution_aware)
-        assert rows[0]["level"] == "unaware" and rows[0]["spend"] == 100.0
-        assert rows[0]["agg_cpa"] == 50.0 and rows[0]["med_cpa"] == 40.0
-        assert {r["level"] for r in rows} == {"unaware", "problem_aware"}
+        assert total == 350.0
+        assert active == 3
+        # Ordered by awareness STAGE (Unaware→Most Aware), NOT spend — so most_aware
+        # ($200, highest spend) is LAST, and a1's newest level (unaware) wins over stale.
+        assert [r["level"] for r in rows] == ["unaware", "problem_aware", "most_aware"]
+        assert rows[0]["spend"] == 100.0 and rows[0]["med_cpa"] == 40.0
 
 
 # ---------------------------------------------------------------------------
