@@ -193,6 +193,53 @@ class MetaAdsService:
 
         return None
 
+    async def fetch_account_currency(self, brand_id: UUID) -> Optional[str]:
+        """Fetch the ad-account billing currency from Meta (AdAccount.currency).
+
+        Sets up the per-brand token first (via get_ad_account_for_brand), then
+        reads the account object's ``currency`` field — this is NOT on the
+        insights endpoint, only on the AdAccount object itself.
+        """
+        self._ensure_sdk()
+        act_id = await self.get_ad_account_for_brand(brand_id)
+        if not act_id:
+            return None
+        try:
+            return await asyncio.to_thread(self._fetch_account_currency_sync, act_id)
+        except Exception as e:
+            logger.warning(f"Failed to fetch account currency for brand {brand_id}: {e}")
+            return None
+
+    def _fetch_account_currency_sync(self, ad_account_id: str) -> Optional[str]:
+        from facebook_business.adobjects.adaccount import AdAccount
+        acct = AdAccount(ad_account_id).api_get(fields=["currency"])
+        return acct.get("currency")
+
+    async def get_brand_currency(self, brand_id: UUID, default: str = "USD") -> str:
+        """Return the brand's ad-SPEND currency (its primary ad account's billing
+        currency) — the currency of spend/CPA. Reads brand_ad_accounts.currency;
+        if unset, fetches it from Meta once and persists it (self-healing). Falls
+        back to ``default``. NOTE: distinct from brand_markets.currency (the
+        store/revenue currency)."""
+        from ..core.database import get_supabase_client
+        db = get_supabase_client()
+        row = db.table("brand_ad_accounts").select("currency").eq(
+            "brand_id", str(brand_id)
+        ).eq("is_primary", True).limit(1).execute()
+        if row.data and row.data[0].get("currency"):
+            return row.data[0]["currency"]
+        # Auto-heal: fetch from Meta + persist for next time.
+        cur = await self.fetch_account_currency(brand_id)
+        if cur:
+            try:
+                db.table("brand_ad_accounts").update({"currency": cur}).eq(
+                    "brand_id", str(brand_id)
+                ).eq("is_primary", True).execute()
+            except Exception as e:
+                logger.warning(f"Failed to persist account currency for brand {brand_id}: {e}")
+            return cur
+        return default
+
     def _use_brand_token(self, token: str) -> None:
         """Switch SDK to use a per-brand token for the current operation.
 
