@@ -198,10 +198,17 @@ def compute_roas(perf_row: Dict, value_field: str) -> Optional[float]:
 def resolve_product_ad_ids(
     supabase, brand_id: str, product_id: str, ad_ids: List[str]
 ) -> set:
-    """Resolve which ad_ids belong to a product via two-tier matching.
+    """Resolve which ad_ids belong to a product via tiered matching.
 
-    Tier 1: Join classified ads via landing_page_id -> brand_landing_pages.product_id.
+    Tier 0: Direct destination match — ad's captured destination_url canonical
+        maps to a brand_landing_page tagged with this product. URL-first and
+        independent of whether the ad was ever classified (the primary path).
+    Tier 1: Classified ads whose landing_page_id -> brand_landing_pages.product_id.
     Tier 2: Campaign/adset/ad name substring match on product name.
+
+    Tiers are additive (union). Tier 0 is the high-coverage path: most ads have a
+    captured destination but only a fraction are classified, so Tier 1 alone
+    badly under-counts product spend.
 
     Args:
         supabase: Supabase client instance.
@@ -225,17 +232,61 @@ def resolve_product_ad_ids(
     except Exception as e:
         logger.debug(f"Failed to fetch product name: {e}")
 
-    # Tier 1: Landing page -> product_id match
+    # Fetch all landing pages for the brand once (used by Tier 0 + Tier 1).
+    landing_pages: List[dict] = []
     try:
-        lp_result = (
+        lp_all = (
             supabase.table("brand_landing_pages")
-            .select("id")
+            .select("id, canonical_url, product_id")
             .eq("brand_id", brand_id)
-            .eq("product_id", product_id)
             .execute()
         )
-        lp_ids = [r["id"] for r in (lp_result.data or [])]
+        landing_pages = lp_all.data or []
+    except Exception as e:
+        logger.debug(f"Failed to fetch brand landing pages: {e}")
 
+    lp_ids = [lp["id"] for lp in landing_pages if lp.get("product_id") == product_id]
+
+    # Tier 0: Direct destination match (URL-first, no classification dependency).
+    # Use only canonicals that map UNAMBIGUOUSLY to this product — a canonical
+    # tagged to more than one product is excluded (consistent with the ambiguous
+    # handling in match_destinations_to_landing_pages).
+    try:
+        canon_products: dict = {}
+        for lp in landing_pages:
+            canon = lp.get("canonical_url")
+            pid = lp.get("product_id")
+            if canon and pid:
+                canon_products.setdefault(canon, set()).add(pid)
+        exclusive_canons = {
+            canon for canon, pids in canon_products.items()
+            if pids == {product_id}
+        }
+        if exclusive_canons:
+            # Filter the destination canonical in Python rather than passing the
+            # (potentially long) URL list to .in_() — a product with many tagged
+            # variant LPs could otherwise blow the PostgREST URL length and 400,
+            # silently reverting to the classification-gated under-count. The
+            # query stays bounded by the ad_id batch + brand_id.
+            for i in range(0, len(ad_ids), 500):
+                batch = ad_ids[i:i + 500]
+                dest_result = (
+                    supabase.table("meta_ad_destinations")
+                    .select("meta_ad_id, canonical_url")
+                    .eq("brand_id", brand_id)
+                    .in_("meta_ad_id", batch)
+                    .execute()
+                )
+                for d in (dest_result.data or []):
+                    if d.get("meta_ad_id") and d.get("canonical_url") in exclusive_canons:
+                        matched.add(d["meta_ad_id"])
+    except Exception as e:
+        # Warn (not debug): a silent failure here reverts to classification-gated
+        # counts (the $705-vs-$3,719 under-count this tier exists to fix).
+        logger.warning(f"Tier 0 direct destination resolution failed: {e}")
+
+    # Tier 1: Landing page -> product_id match (via classifications)
+    try:
         if lp_ids:
             for i in range(0, len(ad_ids), 500):
                 batch = ad_ids[i:i + 500]
