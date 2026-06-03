@@ -2210,6 +2210,91 @@ with st.container():
 st.divider()
 
 # ============================================================================
+# MARKETS SECTION
+# ============================================================================
+
+st.subheader("🌍 Markets")
+st.caption(
+    "Map destination hostnames to markets so per-product reporting splits by "
+    "market (US vs CA) and currency instead of blending. An ad's market is "
+    "derived from its landing-page host — no per-variant tagging."
+)
+
+from viraltracker.services.brand_market_service import BrandMarketService
+_mkt_service = BrandMarketService()
+_markets = _mkt_service.list_markets(selected_brand_id)
+
+if _markets:
+    for _m in _markets:
+        _title = f"{_m['code']} — {_m.get('label') or ''} ({_m['currency']})"
+        if _m.get("is_default"):
+            _title += "  ⭐ default"
+        with st.expander(_title):
+            with st.form(f"edit_market_{_m['id']}"):
+                ec1, ec2, ec3 = st.columns(3)
+                e_code = ec1.text_input("Code", value=_m["code"])
+                e_label = ec2.text_input("Label", value=_m.get("label") or "")
+                e_currency = ec3.text_input("Currency", value=_m["currency"])
+                e_hosts = st.text_area(
+                    "Destination hosts (one per line)",
+                    value="\n".join(_m.get("host_patterns") or []),
+                    help="Exact hostnames, e.g. us.martinclinic.com",
+                )
+                e_default = st.checkbox("Default market (fallback)", value=bool(_m.get("is_default")))
+                sc1, sc2 = st.columns(2)
+                if sc1.form_submit_button("Save", type="primary"):
+                    try:
+                        _mkt_service.update_market(_m["id"], {
+                            "code": e_code, "label": e_label or None, "currency": e_currency,
+                            "host_patterns": [h.strip() for h in e_hosts.split("\n") if h.strip()],
+                            "is_default": e_default,
+                        })
+                        st.success("Updated")
+                        st.rerun()
+                    except Exception as _e:
+                        st.error(
+                            f"Could not save market: {_e}. (A market code must be "
+                            "unique within the brand.)"
+                        )
+                if sc2.form_submit_button("Delete"):
+                    _mkt_service.delete_market(_m["id"])
+                    st.warning("Deleted")
+                    st.rerun()
+else:
+    st.info(
+        "No markets configured. Add one below — e.g. **US** → `us.martinclinic.com`, "
+        "**CA** → `martinclinic.com`."
+    )
+
+with st.expander("➕ Add market"):
+    with st.form("add_market"):
+        nc1, nc2, nc3 = st.columns(3)
+        n_code = nc1.text_input("Code", placeholder="US")
+        n_label = nc2.text_input("Label", placeholder="United States")
+        n_currency = nc3.text_input("Currency", value="USD")
+        n_hosts = st.text_area("Destination hosts (one per line)", placeholder="us.martinclinic.com")
+        n_default = st.checkbox("Default market (fallback)")
+        if st.form_submit_button("Add market", type="primary"):
+            if not n_code.strip():
+                st.error("Code is required")
+            else:
+                try:
+                    _mkt_service.create_market(
+                        selected_brand_id, code=n_code, label=n_label or None, currency=n_currency,
+                        host_patterns=[h.strip() for h in n_hosts.split("\n") if h.strip()],
+                        is_default=n_default,
+                    )
+                    st.success(f"Added market {n_code.strip().upper()}")
+                    st.rerun()
+                except Exception as _e:
+                    st.error(
+                        f"Could not add market: {_e}. (A market code must be "
+                        "unique within the brand.)"
+                    )
+
+st.divider()
+
+# ============================================================================
 # PRODUCTS SECTION
 # ============================================================================
 
