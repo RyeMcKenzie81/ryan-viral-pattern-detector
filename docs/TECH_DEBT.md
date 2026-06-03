@@ -1084,3 +1084,24 @@ Each follows the pattern: input → AI generation → user review of draft → c
 **Why deferred**: The framework-eval roadmap (`framework-eval-design-20260415-123723.md`) specifies the sequence A → C → Next.js → MCP. These workflows arguably fit in Phase 2 ("ad creation workflows accessible from chat") but the most valuable piece — Ad Creator V2 itself — is already chat-tooled via `complete_ad_workflow`. The prerequisite workflows are higher-effort polish that should come after Phase 3 (API foundation) so they can be built once and consumed by both chat and the eventual Next.js frontend.
 
 **Reference**: Discussed in extended chat session 2026-04-29 (chat workflow scoping). Plan: `~/.gstack/projects/RyeMcKenzie81-ryan-viral-pattern-detector/ryemckenzie-RyeMcKenzie81-framework-eval-design-20260415-123723.md`
+
+---
+
+### 39. Multi-Currency Spend / CPA Normalization
+
+**Priority**: Medium (blocks correct multi-market reporting; rises to High before the per-product Slack digest ships)
+**Complexity**: Medium (schema + capture + a normalization/labeling layer)
+**Added**: 2026-06-03
+
+**Context**: `meta_ads_performance.spend` has **no currency column** and CPA/ROAS computation assumes a single currency. For brands running ads in more than one currency (e.g. Martin Clinic: US store in USD via `us.martinclinic.com`, Canadian store in CAD via `martinclinic.com`), today's aggregated spend and CPA **silently blend CAD and USD** — wrong in *units*, not just market dynamics. This surfaced while building the market dimension (`brand_markets` / `BrandMarketService`, 2026-06-03): we can now split reporting by market, but the underlying spend still has no currency attached.
+
+**Why it matters now**: The WS4 unmapped-spend worklist and the WS5 weekly per-product Slack digest are the first consumers that will report per-market CPA to a client. Reporting CA dollars as if they were US dollars would mislead the client team. `brand_markets.currency` already records the intended currency per market; the gap is on the *spend* side.
+
+**What to build**:
+1. **Capture currency on spend** — add a `currency` column to `meta_ads_performance` (Meta returns `account_currency` / per-ad currency; `facebook_ads.currency` already captures it as text — wire it through to the perf table). Backfill from the account/brand currency where missing.
+2. **Currency-aware aggregation** — CPA/spend rollups group by (or assert single) currency; never sum across currencies without conversion.
+3. **Digest labeling** — WS5 reports each market's CPA in its own currency (`brand_markets.currency`), and either (a) reports per-currency, or (b) normalizes to one currency via an FX rate (store a rate source) for a blended view. Start with (a) — label, don't convert.
+
+**Alternative geo source**: Meta offers a country/region insights breakdown we don't currently fetch (only `age_gender` + `placement`). Capturing it would give authoritative delivery-country per ad, complementing the host-derived market in `brand_markets`.
+
+**Reference**: [[attribution_market_dimension]] memory; `brand_markets` table (migration `2026-06-03_brand_markets.sql`); `BrandMarketService.resolve_market_for_url`.
