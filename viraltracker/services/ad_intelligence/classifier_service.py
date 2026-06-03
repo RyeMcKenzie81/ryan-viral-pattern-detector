@@ -21,6 +21,7 @@ Reclassification triggers:
 from __future__ import annotations
 
 import hashlib
+from urllib.parse import urlparse
 import json
 import logging
 import os
@@ -768,8 +769,28 @@ class ClassifierService:
         Returns:
             Hex digest string.
         """
-        content = f"{thumbnail_url or ''}|{ad_copy or ''}|{lp_id or ''}|{video_id or ''}"
+        content = f"{self._stable_image_key(thumbnail_url)}|{ad_copy or ''}|{lp_id or ''}|{video_id or ''}"
         return hashlib.sha256(content.encode()).hexdigest()
+
+    @staticmethod
+    def _stable_image_key(thumbnail_url: Optional[str]) -> str:
+        """Stable key for an ad's image, immune to Meta CDN signed-URL rotation.
+
+        Meta thumbnail URLs look like
+        ``https://scontent-<node>.xx.fbcdn.net/v/t45.../<imageid>_n.png?stp=...&_nc_ohc=...&_nc_oc=...``
+        The PATH (with the image-id filename) is stable for a given image; the
+        host (CDN node) and query string (signed/expiring params) rotate
+        constantly. Keying the input hash on the full URL therefore re-fires
+        classification on every refresh (one ad seen here had 55 distinct hashes
+        across 58 runs). Key on the path only — it changes when the image changes,
+        not when the signed URL is refreshed.
+        """
+        if not thumbnail_url:
+            return ""
+        try:
+            return urlparse(thumbnail_url).path or thumbnail_url
+        except Exception:
+            return thumbnail_url
 
     def _needs_new_classification(
         self,
