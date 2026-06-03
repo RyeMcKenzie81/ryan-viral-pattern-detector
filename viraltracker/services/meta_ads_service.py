@@ -990,7 +990,16 @@ class MetaAdsService:
                             if image_url:
                                 logger.info(f"Ad {ad_id}: IMAGE - using asset_feed_spec")
 
-                    # 4. Last resort: thumbnail_url
+                    # 4b. SHARE / post-backed ads: the creative references an
+                    # existing organic post (effective_object_story_id) and has no
+                    # inline image. Fetch the post's image directly. This is the
+                    # path that recovers static ads run as boosted posts.
+                    if not image_url:
+                        image_url = self._fetch_post_image(creative_info.get("effective_object_story_id"))
+                        if image_url:
+                            logger.info(f"Ad {ad_id}: IMAGE - using post image (effective_object_story_id)")
+
+                    # 5. Last resort: thumbnail_url
                     if not image_url:
                         image_url = creative_info.get("thumbnail_url")
                         if image_url:
@@ -1029,6 +1038,34 @@ class MetaAdsService:
                 continue
 
         return thumbnails
+
+    def _fetch_post_image(self, story_id: Optional[str]) -> Optional[str]:
+        """Fetch the image URL of an organic post, for SHARE/post-backed ads whose
+        creative has no inline image. Tries the full-size attachment image, then
+        full_picture. The returned URL is a fresh Meta CDN URL — the caller
+        downloads it to storage immediately, so its short life doesn't matter."""
+        if not story_id:
+            return None
+        try:
+            from facebook_business.api import FacebookAdsApi
+            api = FacebookAdsApi.get_default_api()
+            resp = api.call('GET', (story_id,), {
+                'fields': 'full_picture,attachments{media{image{src}}}'
+            })
+            data = resp.json() if hasattr(resp, 'json') else {}
+            # Prefer the full-size attachment image; fall back to full_picture.
+            try:
+                att = (data.get('attachments', {}) or {}).get('data') or []
+                if att:
+                    src = att[0].get('media', {}).get('image', {}).get('src')
+                    if src:
+                        return src
+            except Exception:
+                pass
+            return data.get('full_picture')
+        except Exception as e:
+            logger.warning(f"Failed to fetch post image for story {story_id}: {e}")
+            return None
 
     def normalize_metrics(self, insight: Dict[str, Any]) -> Dict[str, Any]:
         """
