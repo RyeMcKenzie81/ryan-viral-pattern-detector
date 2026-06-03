@@ -18,7 +18,7 @@ Run with: pytest tests/test_attribution_ws3_wire_and_selfheal.py -v
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
 import pytest
@@ -255,3 +255,71 @@ class TestMatchCanonicalCollision:
         result = await _run_match(dests, [])
         assert result["matches"] == []
         assert result["unmatched_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_null_canonical_lp_is_backfilled_and_matched(self):
+        """A legacy landing page with a url but NULL canonical_url must be
+        canonicalized (and persisted) so it can match a destination."""
+        from viraltracker.services.url_canonicalizer import canonicalize_url
+        from viraltracker.services.meta_ads_service import MetaAdsService
+        canon = canonicalize_url("https://b.com/x/")  # what the dest canonicalizes to
+        dests = [{"meta_ad_id": "ad1", "destination_url": "https://b.com/x", "canonical_url": canon}]
+        lps = [{"id": "lpNull", "url": "https://b.com/x/", "canonical_url": None, "product_id": "P1"}]
+
+        fake = _Supa(_match_store(dests, lps))
+        svc = MetaAdsService(access_token="fake")
+        with patch("viraltracker.core.database.get_supabase_client", return_value=fake):
+            result = await svc.match_destinations_to_landing_pages(uuid4())
+
+        # canonical_url was persisted for the legacy row...
+        bl_updates = [w for w in fake.recorder if w["op"] == "update" and w["table"] == "brand_landing_pages"]
+        assert any(u["payload"].get("canonical_url") == canon for u in bl_updates)
+        # ...and the destination now matches it.
+        assert len(result["matches"]) == 1
+        assert result["matches"][0]["landing_page_id"] == "lpNull"
+
+
+# ---------------------------------------------------------------------------
+# WS3 self-heal call sites (T3) — create/update must invoke the bridge
+# ---------------------------------------------------------------------------
+
+
+class TestSelfHealCallSites:
+
+    def _svc(self):
+        from viraltracker.services.product_offer_variant_service import ProductOfferVariantService
+        with patch("viraltracker.services.product_offer_variant_service.get_supabase_client",
+                   return_value=MagicMock()):
+            svc = ProductOfferVariantService()
+        return svc
+
+    def test_create_offer_variant_invokes_sync(self):
+        product_id = uuid4()
+        new_id = str(uuid4())
+        svc = self._svc()
+        svc.get_offer_variants = lambda *a, **k: []        # first variant
+        svc.supabase.table.return_value.insert.return_value.execute.return_value = SimpleNamespace(
+            data=[{"id": new_id}]
+        )
+        svc.sync_landing_page_for_variant = MagicMock(return_value=True)
+
+        svc.create_offer_variant(product_id, "My Angle", "https://b.com/lp")
+        svc.sync_landing_page_for_variant.assert_called_once_with(product_id, "https://b.com/lp")
+
+    def test_create_or_update_update_branch_invokes_sync(self):
+        from viraltracker.services.product_offer_variant_service import ProductOfferVariantService
+        product_id = uuid4()
+        existing = str(uuid4())
+        svc = self._svc()
+        # Existing-variant lookup returns a row → update branch.
+        svc.supabase.table.return_value.select.return_value.eq.return_value.eq.return_value.limit.return_value.execute.return_value = SimpleNamespace(
+            data=[{"id": existing, "name": "X"}]
+        )
+        svc.update_offer_variant = MagicMock()
+        svc.sync_landing_page_for_variant = MagicMock(return_value=True)
+
+        vid, created = svc.create_or_update_offer_variant(
+            product_id, "https://b.com/lp", name="X", pain_points=["p"]
+        )
+        assert created is False
+        svc.sync_landing_page_for_variant.assert_called_once_with(product_id, "https://b.com/lp")
