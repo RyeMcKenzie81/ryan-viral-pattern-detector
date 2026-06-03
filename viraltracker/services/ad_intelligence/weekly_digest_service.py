@@ -45,7 +45,11 @@ class WeeklyDigestService:
         start = end - timedelta(days=days_back)
         start_s, end_s = start.isoformat(), end.isoformat()
 
-        active_ids = await get_active_ad_ids(self.supabase, brand_id, end, days_back)
+        # Use full_analysis's active-ad window (not days_back) so the market-split
+        # ad set matches the product header/awareness ad set — otherwise the
+        # `Market:` spend and the header spend describe different ads and diverge.
+        active_window = RunConfig().active_window_days
+        active_ids = await get_active_ad_ids(self.supabase, brand_id, end, active_window)
 
         prods = (self.supabase.table("products").select("id, name")
                  .eq("brand_id", bid).order("name").execute().data or [])
@@ -67,7 +71,7 @@ class WeeklyDigestService:
                 )
             except Exception as e:
                 logger.warning(f"Digest: analysis failed for product {pname}: {e}")
-                products_out.append({"name": pname, "no_ads": True})
+                products_out.append({"name": pname, "error": True})
                 continue
 
             if getattr(result, "no_ads_in_scope", False) or result.active_ads == 0:

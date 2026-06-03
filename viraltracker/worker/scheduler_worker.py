@@ -2571,8 +2571,9 @@ async def execute_weekly_product_digest_job(job: Dict) -> Dict[str, Any]:
     coverage) to a brand's Slack channel.
 
     Thin: assemble via WeeklyDigestService, render via digest_renderer, post via
-    SlackService. No Meta calls in the analysis (full_analysis runs with
-    classification OFF — DB aggregation only). Currency = the ad account's.
+    SlackService. The analysis is DB-only (full_analysis runs with classification
+    OFF), except a one-time self-healing currency fetch from Meta if the account
+    currency isn't cached yet. Currency = the ad account's.
 
     Parameters (from job['parameters']):
         days_back: int (default 30)

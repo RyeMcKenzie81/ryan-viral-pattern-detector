@@ -70,6 +70,14 @@ class TestRenderer:
         assert "Coverage:" in joined and "95%" in joined
         assert "Unmapped" in joined and "7reasons-w" in joined
 
+    def test_error_product_distinct_from_no_ads(self):
+        data = dict(_DATA, products=[{"name": "Broken Product", "error": True}])
+        _, blocks = render_brand_digest(data)
+        joined = "\n".join(b.get("text", {}).get("text", "") for b in blocks if b["type"] == "section")
+        assert "Broken Product" in joined
+        assert "Could not analyze" in joined          # error variant
+        assert "No active ads in scope" not in joined  # NOT the dark-product message
+
 
 # ---------------------------------------------------------------------------
 # Service helpers

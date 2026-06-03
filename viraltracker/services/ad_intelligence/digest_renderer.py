@@ -53,6 +53,9 @@ def _market_line(markets: Dict[str, Dict[str, Any]]) -> str:
 
 def _product_block(p: Dict[str, Any], currency: str) -> Dict[str, Any]:
     name = p.get("name", "Unnamed")
+    if p.get("error"):
+        text = f"*{name}*\n:warning: _Could not analyze this product this run._"
+        return {"type": "section", "text": {"type": "mrkdwn", "text": text}}
     if p.get("no_ads"):
         text = f"*{name}*\n_No active ads in scope this period._"
         return {"type": "section", "text": {"type": "mrkdwn", "text": text}}
