@@ -2318,8 +2318,10 @@ class MetaAdsService:
         if images_to_dl and remaining_images > 0:
             logger.info(f"Found {len(images_to_dl)} image ads needing download")
 
-            # Fetch fresh URLs from API (stored URLs expire)
-            batch_size = min(remaining_images, 50)
+            # Fetch fresh URLs from API (stored URLs expire). Per-run image batch
+            # cap (100) bounds Meta calls + runtime; raise via more runs or a
+            # higher cap if backfilling a large undownloaded set.
+            batch_size = min(remaining_images, 100)
             ad_ids_batch = images_to_dl[:batch_size]
 
             fresh_urls = await self.fetch_ad_thumbnails(ad_ids_batch)
