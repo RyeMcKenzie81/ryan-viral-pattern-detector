@@ -12,6 +12,7 @@ variant (later phase); this service holds the brand-level market definitions.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 from uuid import UUID
@@ -22,8 +23,14 @@ logger = logging.getLogger(__name__)
 
 
 def host_of(url: Optional[str]) -> str:
-    """Extract the lowercase hostname from a URL (no port), tolerant of input
-    that omits a scheme (e.g. 'us.martinclinic.com/pages/x')."""
+    """Extract the lowercase, www-stripped hostname from a URL (no port).
+
+    Tolerant of input that omits a scheme ('us.martinclinic.com/pages/x'). The
+    leading ``www.`` is dropped so a bare-host market pattern (``martinclinic.com``)
+    matches a ``www.`` host too — and so storage and lookup are consistent
+    regardless of which URL field (raw or canonical) a caller passes. Note only
+    ``www.`` is stripped; meaningful subdomains like ``us.`` are preserved (that's
+    the market signal)."""
     if not url:
         return ""
     u = url.strip()
@@ -31,7 +38,7 @@ def host_of(url: Optional[str]) -> str:
         u = "https://" + u
     try:
         host = (urlparse(u).hostname or "").lower()
-        return host
+        return re.sub(r"^www\.", "", host)
     except Exception:
         return ""
 
@@ -127,10 +134,12 @@ class BrandMarketService:
 
 
 def _norm_hosts(hosts: Optional[List[str]]) -> List[str]:
-    """Normalize host patterns to lowercase bare hostnames, de-duplicated."""
+    """Normalize host patterns to lowercase, www-stripped bare hostnames,
+    de-duplicated. Inputs that don't parse to a hostname are dropped (storing
+    raw junk that could never match is worse than dropping it)."""
     out: List[str] = []
     for h in (hosts or []):
-        hh = host_of(h) or (h or "").strip().lower()
+        hh = host_of(h)
         if hh and hh not in out:
             out.append(hh)
     return out

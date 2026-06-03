@@ -78,6 +78,26 @@ class TestResolveMarket:
         ])
         assert svc.resolve_market_for_url(uuid4(), "https://MARTINCLINIC.com/x")["code"] == "CA"
 
+    def test_www_host_matches_bare_pattern(self):
+        """A bare-host pattern must match a www-prefixed destination (www is
+        stripped on both sides), regardless of raw vs canonical URL field."""
+        svc = self._svc([
+            {"code": "CA", "currency": "CAD", "host_patterns": ["martinclinic.com"], "is_default": False},
+        ])
+        assert svc.resolve_market_for_url(uuid4(), "https://www.martinclinic.com/pages/x")["code"] == "CA"
+
+    def test_www_pattern_normalized_so_it_matches_bare_host(self):
+        """A pattern entered WITH www still matches a bare host (both normalize)."""
+        svc = self._svc([
+            {"code": "CA", "currency": "CAD", "host_patterns": ["www.martinclinic.com"], "is_default": False},
+        ])
+        # host_patterns as stored would be normalized by _norm_hosts on write;
+        # simulate the stored (bare) form to mirror production.
+        svc2 = self._svc([
+            {"code": "CA", "currency": "CAD", "host_patterns": [_norm_hosts(["www.martinclinic.com"])[0]], "is_default": False},
+        ])
+        assert svc2.resolve_market_for_url(uuid4(), "https://martinclinic.com/x")["code"] == "CA"
+
 
 # ---------------------------------------------------------------------------
 # create_market normalization + default-clearing
@@ -159,3 +179,15 @@ class TestCreateMarket:
         svc.create_market(uuid4(), code="US", currency="USD", host_patterns=["us.martinclinic.com"])
         ops = [r[0] for r in fake.rec]
         assert ops == ["insert"]  # no default-clearing update
+
+
+class TestUpdateMarket:
+    def test_normalizes_fields_and_stamps_updated_at(self):
+        fake = _FakeSupa()
+        svc = BrandMarketService(supabase_client=fake)
+        svc.update_market("mkt-1", {"code": "ca", "currency": "cad", "host_patterns": ["WWW.Martin.com"]})
+        upd = next(r for r in fake.rec if r[0] == "update")[2]
+        assert upd["code"] == "CA"
+        assert upd["currency"] == "CAD"
+        assert upd["host_patterns"] == ["martin.com"]   # www stripped + lowercased
+        assert "updated_at" in upd

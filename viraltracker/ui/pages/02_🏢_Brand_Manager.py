@@ -2243,13 +2243,19 @@ if _markets:
                 e_default = st.checkbox("Default market (fallback)", value=bool(_m.get("is_default")))
                 sc1, sc2 = st.columns(2)
                 if sc1.form_submit_button("Save", type="primary"):
-                    _mkt_service.update_market(_m["id"], {
-                        "code": e_code, "label": e_label or None, "currency": e_currency,
-                        "host_patterns": [h.strip() for h in e_hosts.split("\n") if h.strip()],
-                        "is_default": e_default,
-                    })
-                    st.success("Updated")
-                    st.rerun()
+                    try:
+                        _mkt_service.update_market(_m["id"], {
+                            "code": e_code, "label": e_label or None, "currency": e_currency,
+                            "host_patterns": [h.strip() for h in e_hosts.split("\n") if h.strip()],
+                            "is_default": e_default,
+                        })
+                        st.success("Updated")
+                        st.rerun()
+                    except Exception as _e:
+                        st.error(
+                            f"Could not save market: {_e}. (A market code must be "
+                            "unique within the brand.)"
+                        )
                 if sc2.form_submit_button("Delete"):
                     _mkt_service.delete_market(_m["id"])
                     st.warning("Deleted")
@@ -2272,13 +2278,19 @@ with st.expander("➕ Add market"):
             if not n_code.strip():
                 st.error("Code is required")
             else:
-                _mkt_service.create_market(
-                    selected_brand_id, code=n_code, label=n_label or None, currency=n_currency,
-                    host_patterns=[h.strip() for h in n_hosts.split("\n") if h.strip()],
-                    is_default=n_default,
-                )
-                st.success(f"Added market {n_code.strip().upper()}")
-                st.rerun()
+                try:
+                    _mkt_service.create_market(
+                        selected_brand_id, code=n_code, label=n_label or None, currency=n_currency,
+                        host_patterns=[h.strip() for h in n_hosts.split("\n") if h.strip()],
+                        is_default=n_default,
+                    )
+                    st.success(f"Added market {n_code.strip().upper()}")
+                    st.rerun()
+                except Exception as _e:
+                    st.error(
+                        f"Could not add market: {_e}. (A market code must be "
+                        "unique within the brand.)"
+                    )
 
 st.divider()
 

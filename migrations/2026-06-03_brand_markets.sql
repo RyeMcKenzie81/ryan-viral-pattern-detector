@@ -29,6 +29,11 @@ CREATE TABLE IF NOT EXISTS brand_markets (
 
 CREATE INDEX IF NOT EXISTS idx_brand_markets_brand ON brand_markets (brand_id);
 
+-- Hard-enforce at most one default market per brand (the service also clears
+-- siblings, but this guarantees the invariant under any write path).
+CREATE UNIQUE INDEX IF NOT EXISTS brand_markets_one_default
+    ON brand_markets (brand_id) WHERE is_default;
+
 COMMENT ON TABLE brand_markets IS
     'Per-brand market definitions + the destination hostnames that map to each. Drives market-split (US/CA) reporting so multi-market/multi-currency spend never blends into one CPA.';
 COMMENT ON COLUMN brand_markets.host_patterns IS
