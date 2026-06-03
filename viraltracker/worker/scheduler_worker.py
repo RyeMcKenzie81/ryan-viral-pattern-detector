@@ -2571,8 +2571,8 @@ async def execute_weekly_product_digest_job(job: Dict) -> Dict[str, Any]:
     coverage) to a brand's Slack channel.
 
     Thin: assemble via WeeklyDigestService, render via digest_renderer, post via
-    SlackService. The analysis is DB-only (full_analysis runs with classification
-    OFF), except a one-time self-healing currency fetch from Meta if the account
+    SlackService. DB-only — reads stored classifications + baselines + performance
+    (no Gemini/Meta), except a one-time self-healing currency fetch if the account
     currency isn't cached yet. Currency = the ad account's.
 
     Parameters (from job['parameters']):
@@ -2596,8 +2596,6 @@ async def execute_weekly_product_digest_job(job: Dict) -> Dict[str, Any]:
     logs = []
     try:
         from uuid import UUID as _UUID
-        from viraltracker.services.gemini_service import GeminiService
-        from viraltracker.services.ad_intelligence.ad_intelligence_service import AdIntelligenceService
         from viraltracker.services.ad_intelligence.weekly_digest_service import WeeklyDigestService
         from viraltracker.services.ad_intelligence.digest_renderer import render_brand_digest
         from viraltracker.services.brand_market_service import BrandMarketService
@@ -2605,15 +2603,9 @@ async def execute_weekly_product_digest_job(job: Dict) -> Dict[str, Any]:
         from viraltracker.services.slack_service import SlackService
 
         db = get_supabase_client()
-        org_row = db.table("brands").select("organization_id").eq("id", str(brand_id)).limit(1).execute()
-        if not org_row.data:
-            raise ValueError(f"Brand {brand_id} not found")
-        org_id = _UUID(org_row.data[0]["organization_id"])
-
-        intel = AdIntelligenceService(db, gemini_service=GeminiService())
-        digest = WeeklyDigestService(db, intel, BrandMarketService(db), MetaAdsService())
+        digest = WeeklyDigestService(db, BrandMarketService(db), MetaAdsService())
         data = await digest.build_brand_digest(
-            _UUID(brand_id), org_id, days_back=params.get('days_back', 30)
+            _UUID(brand_id), days_back=params.get('days_back', 30)
         )
 
         text, blocks = render_brand_digest(data)

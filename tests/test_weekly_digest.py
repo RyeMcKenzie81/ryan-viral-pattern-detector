@@ -84,17 +84,18 @@ class TestRenderer:
 # ---------------------------------------------------------------------------
 
 
-class TestAwarenessRows:
-    def test_sorted_by_spend_desc_with_baselines(self):
-        result = SimpleNamespace(
-            awareness_distribution={"unaware": 31, "problem_aware": 28},
-            awareness_aggregates={"unaware": {"spend": 1200.0, "cpa": 51.0},
-                                  "problem_aware": {"spend": 1400.0, "cpa": 38.0}},
-            awareness_baselines={"unaware": {"cpa": 40.0}, "problem_aware": {"cpa": 41.0}},
-        )
-        rows = WeeklyDigestService._awareness_rows(result)
-        assert [r["level"] for r in rows] == ["problem_aware", "unaware"]  # 1400 > 1200
-        assert rows[0]["med_cpa"] == 41.0 and rows[0]["agg_cpa"] == 38.0
+class TestInsight:
+    def test_flags_worst_over_baseline(self):
+        rows = [
+            {"level": "unaware", "spend": 1200.0, "agg_cpa": 60.0, "med_cpa": 40.0},   # +50%
+            {"level": "problem_aware", "spend": 1400.0, "agg_cpa": 38.0, "med_cpa": 41.0},  # under
+        ]
+        msg = WeeklyDigestService._insight(rows)
+        assert msg is not None and "unaware" in msg and "50%" in msg
+
+    def test_none_when_all_under_or_small(self):
+        rows = [{"level": "x", "spend": 100.0, "agg_cpa": 30.0, "med_cpa": 40.0}]  # under baseline
+        assert WeeklyDigestService._insight(rows) is None
 
 
 class _CovTable:
@@ -116,7 +117,7 @@ class _CovTable:
     def lte(self, *a):
         return self
 
-    def order(self, *a):
+    def order(self, *a, **k):
         return self
 
     def in_(self, col, vals):
@@ -162,7 +163,7 @@ class TestCoverageAndUnmapped:
                 {"meta_ad_id": "a3", "spend": "50"},
             ],
         }
-        svc = WeeklyDigestService(_CovSupa(data_map), MagicMock(), MagicMock(), MagicMock())
+        svc = WeeklyDigestService(_CovSupa(data_map), MagicMock(), MagicMock())
         coverage, unmapped = svc._coverage_and_unmapped("BRAND", "2026-05-01", "2026-05-31")
         # a1 tagged ($900); a2 + a3 untagged ($150) → 900 / 1050 = 85.7%
         assert coverage["attributed"] == 900.0
@@ -171,6 +172,33 @@ class TestCoverageAndUnmapped:
         # top unmapped funnel is c/untagged ($100)
         assert unmapped[0]["url"] == "c/untagged"
         assert unmapped[0]["spend"] == 100.0
+
+
+class TestProductAwareness:
+    def test_awareness_from_stored_classifications(self):
+        data_map = {
+            # latest-first per ad; a1's newest level is "unaware"
+            "ad_creative_classifications": [
+                {"meta_ad_id": "a1", "creative_awareness_level": "unaware", "classified_at": "2026-06-03"},
+                {"meta_ad_id": "a2", "creative_awareness_level": "problem_aware", "classified_at": "2026-06-03"},
+                {"meta_ad_id": "a1", "creative_awareness_level": "solution_aware", "classified_at": "2026-05-01"},
+            ],
+            "meta_ads_performance": [
+                {"meta_ad_id": "a1", "spend": "100", "purchases": "2"},
+                {"meta_ad_id": "a2", "spend": "50", "purchases": "1"},
+            ],
+        }
+        svc = WeeklyDigestService(_CovSupa(data_map), MagicMock(), MagicMock())
+        total, active, rows = svc._product_awareness(
+            "BRAND", ["a1", "a2"], "2026-05-01", "2026-05-31",
+            baselines={"unaware": 40.0, "problem_aware": 41.0},
+        )
+        assert total == 150.0
+        assert active == 2
+        # sorted by spend desc; a1 newest level = unaware (ignores stale solution_aware)
+        assert rows[0]["level"] == "unaware" and rows[0]["spend"] == 100.0
+        assert rows[0]["agg_cpa"] == 50.0 and rows[0]["med_cpa"] == 40.0
+        assert {r["level"] for r in rows} == {"unaware", "problem_aware"}
 
 
 # ---------------------------------------------------------------------------
