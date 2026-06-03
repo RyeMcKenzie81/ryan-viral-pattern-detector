@@ -360,6 +360,10 @@ class AccountAnalysisResult(BaseModel):
     total_ads: int
     active_ads: int
     total_spend: float
+    # True when the (brand or product) scope matched zero active ads. Lets
+    # consumers (chat, weekly digest) render an explicit "no ads in scope"
+    # message instead of a blank report that looks like a silent failure.
+    no_ads_in_scope: bool = False
     awareness_distribution: Dict[str, int] = Field(default_factory=dict)
     format_distribution: Dict[str, int] = Field(default_factory=dict)
     health_distribution: Dict[str, int] = Field(default_factory=dict)

@@ -31,6 +31,17 @@ class ChatRenderer:
         Returns:
             Formatted markdown string.
         """
+        if result.no_ads_in_scope:
+            return (
+                f"## Account Analysis: {result.brand_name}\n"
+                f"**Period**: {result.date_range}\n\n"
+                "**No active ads in scope.** No ads matched this scope in the "
+                "selected window, so there is nothing to report. If you expected "
+                "ads here, the likely cause is attribution: the product may have "
+                "no mapped destination URLs yet (check the unmapped-spend "
+                "worklist), or the window is too narrow."
+            )
+
         lines = [
             f"## Account Analysis: {result.brand_name}",
             f"**Run**: `{str(result.run_id)[:8]}` | "
