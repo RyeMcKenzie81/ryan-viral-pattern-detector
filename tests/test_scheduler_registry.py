@@ -32,7 +32,7 @@ EXPECTED_JOB_TYPES = {
     "size_variant", "smart_edit", "seo_content_eval", "seo_publish",
     "seo_auto_interlink", "demographic_backfill", "seo_opportunity_scan",
     "token_refresh", "competitor_intel_analysis", "quick_intel_analysis",
-    "destination_sync",
+    "destination_sync", "weekly_product_digest",
 }
 
 
