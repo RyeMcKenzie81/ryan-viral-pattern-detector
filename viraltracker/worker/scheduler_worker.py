@@ -2562,6 +2562,99 @@ async def execute_destination_sync_job(job: Dict) -> Dict[str, Any]:
 
 
 # ============================================================================
+# Weekly Product Digest Job Handler
+# ============================================================================
+
+@register_job_handler('weekly_product_digest')
+async def execute_weekly_product_digest_job(job: Dict) -> Dict[str, Any]:
+    """Post a weekly per-product digest (awareness/CPA + US/CA market split +
+    coverage) to a brand's Slack channel.
+
+    Thin: assemble via WeeklyDigestService, render via digest_renderer, post via
+    SlackService. The analysis is DB-only (full_analysis runs with classification
+    OFF), except a one-time self-healing currency fetch from Meta if the account
+    currency isn't cached yet. Currency = the ad account's.
+
+    Parameters (from job['parameters']):
+        days_back: int (default 30)
+        webhook_url: str (Slack Incoming Webhook; falls back to Config default)
+    """
+    job_id = job['id']
+    brand_id = job.get('brand_id')
+    brand_info = job.get('brands') or {}
+    brand_name = brand_info.get('name', 'Unknown')
+    params = job.get('parameters') or {}
+
+    logger.info(f"Starting weekly product digest job for brand {brand_name}")
+    assert job.get('_claimed'), (
+        "execute_*_job called outside the claim path "
+        "(job.get('_claimed') is falsy). This function expects a "
+        "pre-claimed run from claim_next_job()."
+    )
+    run_id = job['_run_id']
+
+    logs = []
+    try:
+        from uuid import UUID as _UUID
+        from viraltracker.services.gemini_service import GeminiService
+        from viraltracker.services.ad_intelligence.ad_intelligence_service import AdIntelligenceService
+        from viraltracker.services.ad_intelligence.weekly_digest_service import WeeklyDigestService
+        from viraltracker.services.ad_intelligence.digest_renderer import render_brand_digest
+        from viraltracker.services.brand_market_service import BrandMarketService
+        from viraltracker.services.meta_ads_service import MetaAdsService
+        from viraltracker.services.slack_service import SlackService
+
+        db = get_supabase_client()
+        org_row = db.table("brands").select("organization_id").eq("id", str(brand_id)).limit(1).execute()
+        if not org_row.data:
+            raise ValueError(f"Brand {brand_id} not found")
+        org_id = _UUID(org_row.data[0]["organization_id"])
+
+        intel = AdIntelligenceService(db, gemini_service=GeminiService())
+        digest = WeeklyDigestService(db, intel, BrandMarketService(db), MetaAdsService())
+        data = await digest.build_brand_digest(
+            _UUID(brand_id), org_id, days_back=params.get('days_back', 30)
+        )
+
+        text, blocks = render_brand_digest(data)
+        webhook = params.get('webhook_url')
+        slack = SlackService(webhook_url=webhook)
+        if not slack.enabled:
+            logs.append("No Slack webhook configured (params.webhook_url or Config) — digest built but not delivered")
+            update_job_run(run_id, {
+                "status": "completed", "completed_at": datetime.now(PST).isoformat(),
+                "logs": "\n".join(logs),
+            })
+            _update_job_next_run(job, job_id)
+            return {"success": True, "delivered": False, "products": len(data["products"])}
+
+        result = await slack.send_message(text=text, blocks=blocks, webhook_url=webhook)
+        if result.success:
+            logs.append(f"Posted digest: {len(data['products'])} products to Slack")
+        else:
+            logs.append(f"Slack delivery failed: {result.error}")
+
+        update_job_run(run_id, {
+            "status": "completed", "completed_at": datetime.now(PST).isoformat(),
+            "logs": "\n".join(logs),
+        })
+        _update_job_next_run(job, job_id)
+        logger.info(f"Completed weekly digest: {brand_name} ({len(data['products'])} products, slack_ok={result.success})")
+        return {"success": True, "delivered": result.success, "products": len(data["products"])}
+
+    except Exception as e:
+        error_msg = str(e)
+        logs.append(f"Job failed: {error_msg}")
+        logger.error(f"Weekly digest job {job_id} failed: {error_msg}")
+        update_job_run(run_id, {
+            "status": "failed", "completed_at": datetime.now(PST).isoformat(),
+            "error_message": error_msg, "logs": "\n".join(logs),
+        })
+        _reschedule_after_failure(job, job_id, get_run_attempt_number(run_id))
+        return {"success": False, "error": error_msg}
+
+
+# ============================================================================
 # Scorecard Job Handler
 # ============================================================================
 
