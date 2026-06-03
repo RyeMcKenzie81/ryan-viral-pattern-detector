@@ -2576,6 +2576,34 @@ class MetaAdsService:
 
         return stats
 
+    @staticmethod
+    def _paginated_id_set(
+        supabase, table_name: str, brand_id_str: str, column: str,
+        extra_eq: Optional[tuple] = None,
+    ) -> set:
+        """Collect a column's values for a brand across all pages (deterministic).
+
+        A fresh query is built per page (PostgREST builders are single-use), and
+        rows are ordered by ``id`` so range pages don't skip/duplicate.
+        """
+        out: set = set()
+        offset = 0
+        page = 1000
+        while True:
+            q = supabase.table(table_name).select(column).eq("brand_id", brand_id_str)
+            if extra_eq is not None:
+                q = q.eq(extra_eq[0], extra_eq[1])
+            rows = q.order("id").range(offset, offset + page - 1).execute().data or []
+            if not rows:
+                break
+            for r in rows:
+                if r.get(column):
+                    out.add(r[column])
+            if len(rows) < page:
+                break
+            offset += page
+        return out
+
     def _get_ad_spend_map(
         self, supabase, brand_id_str: str, days_back: int
     ) -> Dict[str, float]:
@@ -2585,9 +2613,12 @@ class MetaAdsService:
         offset = 0
         page = 1000
         while True:
+            # Order by the PK so .range() pages partition deterministically.
+            # Without an explicit order, PostgREST range pages can skip/duplicate
+            # rows — and Martin has ~31k perf rows (multi-page), so this matters.
             rows = (supabase.table("meta_ads_performance").select("meta_ad_id, spend")
                     .eq("brand_id", brand_id_str).gte("date", cutoff)
-                    .range(offset, offset + page - 1).execute().data or [])
+                    .order("id").range(offset, offset + page - 1).execute().data or [])
             if not rows:
                 break
             for r in rows:
@@ -2616,25 +2647,27 @@ class MetaAdsService:
         """
         bid = str(brand_id)
 
-        found = {r["meta_ad_id"] for r in (
-            supabase.table("meta_ad_destinations").select("meta_ad_id")
-            .eq("brand_id", bid).execute().data or []
-        )}
-        terminal = {r["meta_ad_id"] for r in (
-            supabase.table("meta_ad_destination_status").select("meta_ad_id")
-            .eq("brand_id", bid).eq("status", "no_url").execute().data or []
-        )}
+        # Found + terminal exclusion sets — paginated so >1000-ad brands don't
+        # silently truncate the set and re-fetch already-handled ads.
+        found = self._paginated_id_set(
+            supabase, "meta_ad_destinations", bid, "meta_ad_id"
+        )
+        terminal = self._paginated_id_set(
+            supabase, "meta_ad_destination_status", bid, "meta_ad_id",
+            extra_eq=("status", "no_url"),
+        )
 
         spend_map = self._get_ad_spend_map(supabase, bid, spend_window_days)
 
-        # All ads for the brand (all-time), paginated, so zero-recent-spend ads
-        # are still eligible once the spending backlog is cleared.
+        # All ads for the brand (all-time), paginated + ordered by PK so range
+        # pages partition deterministically (Martin: ~31k perf rows = 31 pages).
         all_ads = set(spend_map.keys())
         offset = 0
         page = 1000
         while True:
             rows = (supabase.table("meta_ads_performance").select("meta_ad_id")
-                    .eq("brand_id", bid).range(offset, offset + page - 1).execute().data or [])
+                    .eq("brand_id", bid).order("id")
+                    .range(offset, offset + page - 1).execute().data or [])
             if not rows:
                 break
             for r in rows:
@@ -2714,6 +2747,25 @@ class MetaAdsService:
         ).execute()
 
         landing_pages = lps_result.data or []
+
+        # Self-heal: backfill canonical_url for legacy rows that have a url but no
+        # canonical. Without this they can never match a destination (matching is
+        # canonical-keyed), so any spend pointing at them is invisible. Martin had
+        # ~50% of landing pages with NULL canonical. Patches the in-memory rows too
+        # so this same run can match them. Non-fatal per row.
+        from .url_canonicalizer import canonicalize_url
+        for lp in landing_pages:
+            if not lp.get("canonical_url") and lp.get("url"):
+                canon = canonicalize_url(lp["url"])
+                if not canon:
+                    continue
+                lp["canonical_url"] = canon
+                try:
+                    supabase.table("brand_landing_pages").update(
+                        {"canonical_url": canon}
+                    ).eq("id", lp["id"]).execute()
+                except Exception as e:
+                    logger.warning(f"Failed to backfill canonical_url for LP {lp['id']}: {e}")
 
         # Group landing pages by canonical URL (multiple rows can share one).
         lps_by_canonical: Dict[str, List[Dict]] = {}

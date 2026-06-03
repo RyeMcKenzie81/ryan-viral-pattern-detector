@@ -195,6 +195,9 @@ class _FakeBuilder:
     def lte(self, *a, **k):
         return self
 
+    def order(self, *a, **k):
+        return self
+
     def range(self, *a, **k):
         return self
 
@@ -265,6 +268,41 @@ class TestSelectMissingDestinationAds:
             _FakeSupabase(data_map), brand, limit=2, spend_window_days=30
         )
         assert picked == ["b", "c"]  # top-2 by spend
+
+
+class TestGetAdSpendMap:
+
+    def test_handles_null_and_blank_spend_and_accumulates(self):
+        data_map = {
+            ("meta_ads_performance", "meta_ad_id, spend"): [
+                {"meta_ad_id": "a", "spend": "100"},
+                {"meta_ad_id": "a", "spend": None},    # null → 0
+                {"meta_ad_id": "a", "spend": ""},      # blank → 0
+                {"meta_ad_id": "b", "spend": "10.5"},
+                {"meta_ad_id": "b", "spend": "x"},     # non-numeric → 0
+            ],
+        }
+        svc = MetaAdsService(access_token="fake")
+        spend = svc._get_ad_spend_map(_FakeSupabase(data_map), "BRAND", 30)
+        assert spend["a"] == 100.0   # 100 + 0 + 0
+        assert spend["b"] == 10.5    # 10.5 + 0
+
+
+class TestPaginatedIdSet:
+
+    def test_collects_column_and_applies_extra_eq(self):
+        # extra_eq doesn't change the fake's return (keyed on table+cols), but the
+        # call must not raise and must collect the column values.
+        data_map = {
+            ("meta_ad_destination_status", "meta_ad_id"): [
+                {"meta_ad_id": "x"}, {"meta_ad_id": "y"}, {"meta_ad_id": None},
+            ],
+        }
+        got = MetaAdsService._paginated_id_set(
+            _FakeSupabase(data_map), "meta_ad_destination_status", "BRAND",
+            "meta_ad_id", extra_eq=("status", "no_url"),
+        )
+        assert got == {"x", "y"}  # None dropped
 
 
 # ---------------------------------------------------------------------------
