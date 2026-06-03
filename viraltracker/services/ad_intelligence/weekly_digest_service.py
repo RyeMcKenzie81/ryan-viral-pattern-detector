@@ -29,6 +29,14 @@ def _num(v) -> float:
         return 0.0
 
 
+# Awareness stages, least-aware → most-aware, so the digest reads as a CPA
+# waterfall down the funnel. Anything off-ladder (unclassified/unknown) sorts last.
+_LEVEL_ORDER = {
+    "unaware": 0, "problem_aware": 1, "solution_aware": 2,
+    "product_aware": 3, "most_aware": 4,
+}
+
+
 class WeeklyDigestService:
     def __init__(self, supabase, market_service, meta_service):
         self.supabase = supabase
@@ -183,7 +191,9 @@ class WeeklyDigestService:
                 "agg_cpa": round(s / p, 2) if p else None,
                 "med_cpa": baselines.get(lvl),
             })
-        rows_out.sort(key=lambda r: (r["spend"] or 0), reverse=True)
+        # Order by awareness stage (Unaware → Most Aware) so it reads as a CPA
+        # waterfall; unclassified/unknown fall to the end.
+        rows_out.sort(key=lambda r: _LEVEL_ORDER.get(r["level"], 99))
         return total_spend, active_ads, rows_out
 
     @staticmethod
