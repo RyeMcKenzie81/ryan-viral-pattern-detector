@@ -2213,6 +2213,12 @@ class MetaAdsService:
         """
         from ..core.database import get_supabase_client
 
+        # Activate the per-brand OAuth token before any Meta read — OAuth brands
+        # (e.g. Martin) can't be read on the system token, so without this the
+        # creative/post-image fetches silently return nothing and nothing downloads
+        # (same fix as the destination_sync job).
+        await self.get_ad_account_for_brand(brand_id)
+
         supabase = get_supabase_client()
         downloaded = {"videos": 0, "images": 0}
         marked_nd = {"videos": 0, "images": 0}      # not_downloadable (terminal)
