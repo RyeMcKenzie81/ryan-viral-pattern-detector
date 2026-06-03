@@ -2276,18 +2276,26 @@ class MetaAdsService:
         image_ad_ids = all_ad_ids - video_ad_ids
 
         # --- Check which already have assets (downloaded or marked not_downloadable) ---
-        existing_result = supabase.table("meta_ad_assets").select(
-            "meta_ad_id, asset_type"
-        ).eq(
-            "brand_id", str(brand_id)
-        ).in_(
-            "status", ["downloaded", "not_downloadable"]
-        ).execute()
-
-        existing_set = {
-            (r["meta_ad_id"], r["asset_type"])
-            for r in (existing_result.data or [])
-        }
+        # Paginate: a brand can have >1000 assets (Martin has ~1,136). A single
+        # capped query leaves already-done ads out of the dedup set, so they get
+        # re-downloaded every run and crowd the batch out before it reaches the
+        # genuinely-undownloaded ads (e.g. SHARE/post-backed creatives).
+        existing_set = set()
+        _offset, _page = 0, 1000
+        while True:
+            _rows = (supabase.table("meta_ad_assets")
+                     .select("meta_ad_id, asset_type")
+                     .eq("brand_id", str(brand_id))
+                     .in_("status", ["downloaded", "not_downloadable"])
+                     .order("meta_ad_id")
+                     .range(_offset, _offset + _page - 1).execute().data or [])
+            if not _rows:
+                break
+            for r in _rows:
+                existing_set.add((r["meta_ad_id"], r["asset_type"]))
+            if len(_rows) < _page:
+                break
+            _offset += _page
 
         # --- Download videos ---
         videos_to_dl = {
