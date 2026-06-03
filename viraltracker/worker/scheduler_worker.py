@@ -2501,6 +2501,13 @@ async def execute_destination_sync_job(job: Dict) -> Dict[str, Any]:
             _update_job_next_run(job, job_id)
             return {"success": True, "skipped": "no_org_id"}
 
+        # Initialize the per-brand Meta token BEFORE fetching. The SDK session is
+        # otherwise the system token, which cannot read an OAuth brand's ads —
+        # the fetch then silently returns {} and reports "fetched 0". meta_sync's
+        # old Step 4.5 got this for free because get_ad_insights had already run
+        # in the same job; the standalone job must set it explicitly.
+        await service.get_ad_account_for_brand(_UUID(brand_id))
+
         dest_stats = await service.sync_ad_destinations_to_db(
             brand_id=_UUID(brand_id),
             organization_id=_UUID(org_id),
