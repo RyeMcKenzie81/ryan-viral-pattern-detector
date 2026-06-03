@@ -258,26 +258,32 @@ def resolve_product_ad_ids(
             pid = lp.get("product_id")
             if canon and pid:
                 canon_products.setdefault(canon, set()).add(pid)
-        exclusive_canons = [
+        exclusive_canons = {
             canon for canon, pids in canon_products.items()
             if pids == {product_id}
-        ]
+        }
         if exclusive_canons:
+            # Filter the destination canonical in Python rather than passing the
+            # (potentially long) URL list to .in_() — a product with many tagged
+            # variant LPs could otherwise blow the PostgREST URL length and 400,
+            # silently reverting to the classification-gated under-count. The
+            # query stays bounded by the ad_id batch + brand_id.
             for i in range(0, len(ad_ids), 500):
                 batch = ad_ids[i:i + 500]
                 dest_result = (
                     supabase.table("meta_ad_destinations")
-                    .select("meta_ad_id")
+                    .select("meta_ad_id, canonical_url")
                     .eq("brand_id", brand_id)
-                    .in_("canonical_url", exclusive_canons)
                     .in_("meta_ad_id", batch)
                     .execute()
                 )
                 for d in (dest_result.data or []):
-                    if d.get("meta_ad_id"):
+                    if d.get("meta_ad_id") and d.get("canonical_url") in exclusive_canons:
                         matched.add(d["meta_ad_id"])
     except Exception as e:
-        logger.debug(f"Tier 0 direct destination resolution failed: {e}")
+        # Warn (not debug): a silent failure here reverts to classification-gated
+        # counts (the $705-vs-$3,719 under-count this tier exists to fix).
+        logger.warning(f"Tier 0 direct destination resolution failed: {e}")
 
     # Tier 1: Landing page -> product_id match (via classifications)
     try:

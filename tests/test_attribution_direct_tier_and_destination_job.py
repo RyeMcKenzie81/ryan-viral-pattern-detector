@@ -238,6 +238,51 @@ class TestDestinationSyncHandler:
         svc.sync_ad_destinations_to_db.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_org_resolved_from_brands_table_fallback(self):
+        """brand_info lacks organization_id → handler resolves it from the brands
+        table and runs the sync with that org."""
+        from viraltracker.worker import scheduler_worker as sw
+        org = "55555555-5555-5555-5555-555555555555"
+        db = MagicMock()
+        db.table.return_value.select.return_value.eq.return_value.limit.return_value.execute.return_value = MagicMock(
+            data=[{"organization_id": org}]
+        )
+        svc = MagicMock()
+        svc.sync_ad_destinations_to_db = AsyncMock(
+            return_value={"fetched": 1, "stored": 1, "no_url": 0, "multi_url": 0, "matched": 0})
+        svc.populate_classification_landing_page_ids = AsyncMock(return_value={"updated": 0})
+
+        with patch("viraltracker.services.meta_ads_service.MetaAdsService", return_value=svc), \
+             patch("viraltracker.services.dataset_freshness_service.DatasetFreshnessService", return_value=MagicMock()), \
+             patch.object(sw, "get_supabase_client", return_value=db), \
+             patch.object(sw, "update_job_run"), patch.object(sw, "update_job"):
+            job = _claimed_job(brands={"name": "Martin"})  # no organization_id
+            result = await sw.execute_destination_sync_job(job)
+
+        assert result["success"] is True
+        svc.sync_ad_destinations_to_db.assert_awaited_once()
+        # The resolved org (from the brands fallback) was passed through.
+        assert str(svc.sync_ad_destinations_to_db.await_args.kwargs["organization_id"]) == org
+
+    @pytest.mark.asyncio
+    async def test_sync_failure_marks_failed_and_reschedules(self):
+        from viraltracker.worker import scheduler_worker as sw
+        svc = MagicMock()
+        svc.sync_ad_destinations_to_db = AsyncMock(side_effect=RuntimeError("meta down"))
+
+        with patch("viraltracker.services.meta_ads_service.MetaAdsService", return_value=svc), \
+             patch("viraltracker.services.dataset_freshness_service.DatasetFreshnessService", return_value=MagicMock()), \
+             patch.object(sw, "update_job_run") as upd_run, \
+             patch.object(sw, "_reschedule_after_failure") as resched, \
+             patch.object(sw, "get_run_attempt_number", return_value=1), \
+             patch.object(sw, "update_job"):
+            result = await sw.execute_destination_sync_job(_claimed_job())
+
+        assert result["success"] is False
+        assert any(c.args[1].get("status") == "failed" for c in upd_run.call_args_list)
+        resched.assert_called_once()
+
+    @pytest.mark.asyncio
     async def test_assert_requires_claim_path(self):
         from viraltracker.worker.scheduler_worker import execute_destination_sync_job
         with pytest.raises(AssertionError, match="claim_next_job"):

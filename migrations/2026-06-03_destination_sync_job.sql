@@ -13,7 +13,9 @@
 -- meta_sync, to avoid a silent regression.
 
 -- 1. Allow the new job_type on scheduled_jobs (CHECK is an explicit allowlist).
-ALTER TABLE scheduled_jobs DROP CONSTRAINT valid_job_type;
+-- IF EXISTS + both known constraint names so a re-run / fresh DB doesn't hard-fail.
+ALTER TABLE scheduled_jobs DROP CONSTRAINT IF EXISTS valid_job_type;
+ALTER TABLE scheduled_jobs DROP CONSTRAINT IF EXISTS scheduled_jobs_job_type_check;
 ALTER TABLE scheduled_jobs ADD CONSTRAINT valid_job_type CHECK (job_type = ANY (ARRAY[
   'ad_creation','ad_creation_v2','meta_sync','scorecard','template_scrape',
   'template_approval','congruence_reanalysis','ad_classification','asset_download',
