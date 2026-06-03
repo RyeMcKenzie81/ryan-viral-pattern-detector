@@ -3250,7 +3250,14 @@ else:
                         st.markdown(f"**{len(offer_variants)} offer variant(s)** (landing page angles)")
 
                         for ov in offer_variants:
-                            with st.expander(f"**{ov.get('name', 'Unnamed')}**", expanded=False):
+                            # Show the landing-page host+path beside the name so it's
+                            # obvious which URL (and market) each variant maps to,
+                            # without having to expand it.
+                            _ov_label = f"**{ov.get('name', 'Unnamed')}**"
+                            _ov_lp = ov.get('landing_page_url') or ''
+                            if _ov_lp:
+                                _ov_label += f"  ·  {_ov_lp.split('://', 1)[-1]}"
+                            with st.expander(_ov_label, expanded=False):
                                 ov_id = ov.get('id')
 
                                 # Landing page URL + LP actions row
