@@ -1362,6 +1362,17 @@ Return ONLY a JSON array of question strings."""
                                 self.supabase.table("product_offer_variants").insert(ov_data).execute()
                                 logger.info(f"Created offer variant: {ov['name']} for product {prod['name']}")
 
+                                # Self-heal attribution: tag the matching landing
+                                # page with this product (raw insert bypasses
+                                # ProductOfferVariantService, so do it explicitly).
+                                try:
+                                    from .product_offer_variant_service import ProductOfferVariantService
+                                    ProductOfferVariantService().sync_landing_page_for_variant(
+                                        UUID(created_product_id), ov["landing_page_url"]
+                                    )
+                                except Exception as _ov_sync_err:
+                                    logger.warning(f"Offer-variant LP sync failed (non-fatal): {_ov_sync_err}")
+
                     # Synthesize benefits and pain points from all sources into product
                     self._synthesize_product_data(
                         product_id=UUID(created_product_id),
