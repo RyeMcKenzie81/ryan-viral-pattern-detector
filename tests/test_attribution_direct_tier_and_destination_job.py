@@ -178,6 +178,7 @@ class TestDestinationSyncHandler:
     async def test_runs_sync_then_populate_and_rearms(self):
         from viraltracker.worker import scheduler_worker as sw
         svc = MagicMock()
+        svc.get_ad_account_for_brand = AsyncMock(return_value="act_123")
         svc.sync_ad_destinations_to_db = AsyncMock(
             return_value={"fetched": 5, "stored": 3, "no_url": 1, "multi_url": 0, "matched": 0})
         svc.populate_classification_landing_page_ids = AsyncMock(return_value={"updated": 2})
@@ -189,6 +190,9 @@ class TestDestinationSyncHandler:
             result = await sw.execute_destination_sync_job(_claimed_job())
 
         assert result["success"] is True
+        # Per-brand Meta token MUST be set before the fetch (else OAuth brands
+        # silently capture nothing).
+        svc.get_ad_account_for_brand.assert_awaited_once()
         svc.sync_ad_destinations_to_db.assert_awaited_once()
         svc.populate_classification_landing_page_ids.assert_awaited_once()
         # Run row marked completed.
@@ -202,6 +206,7 @@ class TestDestinationSyncHandler:
     async def test_populate_failure_is_non_fatal(self):
         from viraltracker.worker import scheduler_worker as sw
         svc = MagicMock()
+        svc.get_ad_account_for_brand = AsyncMock(return_value="act_123")
         svc.sync_ad_destinations_to_db = AsyncMock(
             return_value={"fetched": 1, "stored": 1, "no_url": 0, "multi_url": 0, "matched": 0})
         svc.populate_classification_landing_page_ids = AsyncMock(side_effect=RuntimeError("boom"))
@@ -248,6 +253,7 @@ class TestDestinationSyncHandler:
             data=[{"organization_id": org}]
         )
         svc = MagicMock()
+        svc.get_ad_account_for_brand = AsyncMock(return_value="act_123")
         svc.sync_ad_destinations_to_db = AsyncMock(
             return_value={"fetched": 1, "stored": 1, "no_url": 0, "multi_url": 0, "matched": 0})
         svc.populate_classification_landing_page_ids = AsyncMock(return_value={"updated": 0})
@@ -268,6 +274,7 @@ class TestDestinationSyncHandler:
     async def test_sync_failure_marks_failed_and_reschedules(self):
         from viraltracker.worker import scheduler_worker as sw
         svc = MagicMock()
+        svc.get_ad_account_for_brand = AsyncMock(return_value="act_123")
         svc.sync_ad_destinations_to_db = AsyncMock(side_effect=RuntimeError("meta down"))
 
         with patch("viraltracker.services.meta_ads_service.MetaAdsService", return_value=svc), \
