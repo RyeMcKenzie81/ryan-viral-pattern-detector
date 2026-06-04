@@ -189,10 +189,15 @@ class WeeklyDigestService:
 
         rows_out: List[Dict[str, Any]] = []
         for lvl, (ads, s, p) in agg.items():
+            # The baselines job buckets ads with no awareness classification under
+            # "unknown"; the digest labels that same population "unclassified". Map
+            # across so the unclassified row shows its brand-wide median reference
+            # instead of a needless blank.
+            base_key = "unknown" if lvl == "unclassified" else lvl
             rows_out.append({
                 "level": lvl, "ads": int(ads), "spend": round(s, 2),
                 "agg_cpa": round(s / p, 2) if p else None,
-                "med_cpa": baselines.get(lvl),
+                "med_cpa": baselines.get(base_key),
             })
         # Order by awareness stage (Unaware → Most Aware) so it reads as a CPA
         # waterfall; unclassified/unknown fall to the end.

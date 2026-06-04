@@ -104,15 +104,18 @@ def render_brand_digest(data: Dict[str, Any]) -> Tuple[str, List[Dict[str, Any]]
         cov_txt += f"\n*Unmapped* (${coverage.get('unmapped', 0):,.0f}): {top}\n_Tag in Brand Manager → Offer Variants to attribute._"
     blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": cov_txt}})
 
-    # Fine print: how to read the two CPA columns. AggCPA is spend-scoped (this
-    # change); MedCPA is the separately-computed baseline cohort (active+classified
-    # only), so the two are not a perfect apples-to-apples comparison yet, and the
-    # unclassified bucket has no baseline. Disclosed rather than silently mixed.
+    # Fine print: how to read the two CPA columns. Both are spend-inclusive over
+    # the same ~30d window — the daily baselines job filters meta_ads_performance
+    # by brand + date only (no ad_status filter), so paused-but-spent ads are
+    # already in the median. AggCPA is THIS product's blended cost for the level;
+    # MedCPA is the BRAND-WIDE median for the level. Product-actual vs brand
+    # benchmark, by design — not a cohort mismatch.
     blocks.append({"type": "context", "elements": [
         {"type": "mrkdwn", "text": (
-            "_AggCPA = spend ÷ purchases over the window (includes paused-but-spent ads). "
-            "MedCPA = latest computed baseline per level (active + classified reference); "
-            "blank for unclassified._"
+            "_AggCPA = this product's spend ÷ purchases for the level. "
+            "MedCPA = brand-wide median for the level over the same ~30d window "
+            "(both include paused-but-spent ads). AggCPA above MedCPA = this "
+            "product runs costlier than the brand norm at that level._"
         )}
     ]})
 

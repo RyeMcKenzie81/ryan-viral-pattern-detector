@@ -1106,23 +1106,18 @@ Each follows the pattern: input → AI generation → user review of draft → c
 
 **Reference**: [[attribution_market_dimension]] memory; `brand_markets` table (migration `2026-06-03_brand_markets.sql`); `BrandMarketService.resolve_market_for_url`.
 
-### 40. Spend-Scope the Baselines Cohort (MedCPA vs AggCPA mismatch)
+### 40. ~~Spend-Scope the Baselines Cohort~~ ✅ MOSTLY A NON-ISSUE (investigated 2026-06-04)
 
-**Priority**: Medium (digest comparison correctness; `AggCPA` is already correct)
-**Complexity**: Medium (touches `baseline_service.py`, which also feeds diagnose/recommend)
-**Added**: 2026-06-03
+**Resolution**: A code review (2026-06-03) flagged a "cohort mismatch" between the digest's spend-scoped **AggCPA** and the **MedCPA** baseline, on the assumption that baselines were computed from an active-only cohort. **Direct investigation (2026-06-04) found that assumption was false.**
 
-**Context**: The weekly digest's **AggCPA** is now computed from the spend-scoped ad set (`get_spending_ad_ids` — every ad that spent in the window, including paused ones; see [[digest_spend_scope]]). But the **MedCPA** baseline shown next to it (`WeeklyDigestService._latest_baselines` → `ad_intelligence_baselines`) is still produced by the daily baselines job over the **active + classified** cohort only. So:
+`baseline_service._fetch_classified_performance` (lines 361-367) queries `meta_ads_performance` filtered by **brand_id + date range only — no `ad_status` filter**. So the baseline cohort **already includes paused-but-spent ads**. Martin's live baselines confirm it: computed daily, over the trailing 30 days (matching the digest window), with ~766 unique ads — far more than the active set. There was no real cohort mismatch.
 
-1. **Cohort mismatch** — AggCPA includes paused-but-spent and unclassified ads; the MedCPA baseline does not. The two columns are not strictly apples-to-apples.
-2. **Window mismatch** — `_latest_baselines` takes the *latest* baseline per level by `computed_at`, with **no date-range filter**, so a baseline computed for a different/older window can sit beside a 30-day AggCPA.
-3. **Unclassified has no baseline** — the `unclassified` bucket's `med_cpa` is always `None` (baselines are only computed for named awareness levels), so it renders blank and is skipped by `_insight()`.
+What was actually fixed (PR, 2026-06-04):
+- The digest footnote wrongly described MedCPA as an "active + classified reference". Corrected to: brand-wide median per level over the same ~30d window, paused-but-spent included. The AggCPA-vs-MedCPA comparison is **product-actual vs brand-benchmark by design**, not a bug.
+- The `unclassified` row showed a blank MedCPA because the baselines job keys that population `"unknown"` while the digest looked up `"unclassified"`. Added a one-line mapping so the row shows the brand-wide unclassified median.
 
-Currently **disclosed, not fixed**: the digest footer fine-print explains AggCPA vs MedCPA, and the unclassified row renders MedCPA as `-`.
+**Remaining (genuinely minor, not scheduled)**:
+- `_latest_baselines` picks the latest baseline per level by `computed_at` with no date-range filter. In practice the daily analysis job keeps baselines fresh + 30-day-windowed, so this is fine; a strict window-equality filter would be *worse* (blank MedCPA on any day the digest runs before that day's analysis job). Left as latest-by-computed_at intentionally.
+- MedCPA is a **brand-wide** benchmark, not the product's own in-window median. That's a deliberate design choice (cross-product benchmark beats a 2-3-ad self-referential median); revisit only if a per-product median is explicitly wanted.
 
-**What to build** (pick per appetite):
-1. Compute baselines from the spend-scoped cohort (status-agnostic) so MedCPA matches AggCPA's universe — but verify the blast radius on diagnose/recommend, which consume the same baselines.
-2. Have `_latest_baselines` filter by (or surface) the baseline's `date_range_start`/`date_range_end` so the window is aligned/visible.
-3. Optionally compute an `unclassified` baseline (or keep it intentionally blank).
-
-**Reference**: [[digest_spend_scope]] memory; `weekly_digest_service._latest_baselines`; `baseline_service._fetch_classified_performance`; review surfaced this on 2026-06-03 (3 of 6 confirmed findings).
+**Reference**: [[digest_spend_scope]] memory; `weekly_digest_service._latest_baselines` / `_product_awareness`; `baseline_service._fetch_classified_performance:361`.
