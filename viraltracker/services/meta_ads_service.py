@@ -2227,51 +2227,57 @@ class MetaAdsService:
         remaining_videos = max_videos
         remaining_images = max_images
 
-        # --- Video ads: any ad with a downloadable video ID ---
-        video_ads_result = supabase.table("meta_ads_performance").select(
-            "meta_ad_id, meta_video_id"
-        ).eq(
-            "brand_id", str(brand_id)
-        ).not_.is_(
-            "meta_video_id", "null"
-        ).execute()
+        # All meta_ads_performance reads below paginate the same way: the table has
+        # one row per ad per day (~31k for Martin), so a single query caps at ~1000
+        # rows = a small, arbitrary slice. Un-paginated, the video sets were
+        # incomplete (videos leaked into the image set) AND the image universe was
+        # truncated (most ads never considered for download at all).
+        def _paginate(build_query):
+            out, _o, _p = [], 0, 1000
+            while True:
+                _rows = build_query().order("meta_ad_id").range(_o, _o + _p - 1).execute().data or []
+                if not _rows:
+                    break
+                out.extend(_rows)
+                if len(_rows) < _p:
+                    break
+                _o += _p
+            return out
 
+        # --- Video ads: any ad with a downloadable video ID ---
         video_ads = {}
-        for row in (video_ads_result.data or []):
+        for row in _paginate(lambda: supabase.table("meta_ads_performance")
+                             .select("meta_ad_id, meta_video_id").eq("brand_id", str(brand_id))
+                             .not_.is_("meta_video_id", "null")):
             ad_id = row["meta_ad_id"]
             if ad_id not in video_ads:
                 video_ads[ad_id] = row["meta_video_id"]
 
         # --- Build strong video ad ID set for image exclusion ---
         # Any ad with ANY video indicator on ANY row must be excluded from images
-        video_indicator_result = supabase.table("meta_ads_performance").select(
-            "meta_ad_id"
-        ).eq("brand_id", str(brand_id)).or_(
-            "is_video.eq.true,meta_video_id.not.is.null"
-        ).execute()
-
         video_ad_ids = set(
-            r["meta_ad_id"] for r in (video_indicator_result.data or []) if r.get("meta_ad_id")
+            r["meta_ad_id"] for r in _paginate(lambda: supabase.table("meta_ads_performance")
+                .select("meta_ad_id").eq("brand_id", str(brand_id))
+                .or_("is_video.eq.true,meta_video_id.not.is.null"))
+            if r.get("meta_ad_id")
         )
 
         # Also check object_type for VIDEO (if column exists)
         try:
-            video_type_result = supabase.table("meta_ads_performance").select(
-                "meta_ad_id"
-            ).eq("brand_id", str(brand_id)).ilike("object_type", "%VIDEO%").execute()
             video_ad_ids.update(
-                r["meta_ad_id"] for r in (video_type_result.data or []) if r.get("meta_ad_id")
+                r["meta_ad_id"] for r in _paginate(lambda: supabase.table("meta_ads_performance")
+                    .select("meta_ad_id").eq("brand_id", str(brand_id))
+                    .ilike("object_type", "%VIDEO%"))
+                if r.get("meta_ad_id")
             )
         except Exception:
             logger.debug("object_type column not available yet — skipping object_type video check")
 
         # --- Image ads: all unique ads minus known video ads ---
-        all_ads_result = supabase.table("meta_ads_performance").select(
-            "meta_ad_id"
-        ).eq("brand_id", str(brand_id)).execute()
-
         all_ad_ids = set(
-            r["meta_ad_id"] for r in (all_ads_result.data or []) if r.get("meta_ad_id")
+            r["meta_ad_id"] for r in _paginate(lambda: supabase.table("meta_ads_performance")
+                .select("meta_ad_id").eq("brand_id", str(brand_id)))
+            if r.get("meta_ad_id")
         )
         image_ad_ids = all_ad_ids - video_ad_ids
 
