@@ -23,9 +23,9 @@ Think of this as "packaging" the article for search engines while keeping the hu
 ## Tasks
 
 ### 1. Meta Tags
-Create optimized meta tags:
+Create optimized YAML frontmatter. It must be the very first thing in your
+output, starting on line 1 with `---` (NOT wrapped in a code fence). Format:
 
-```markdown
 ---
 title: "[60-character SEO title with keyword]"
 description: "[155-character meta description with keyword and hook]"
@@ -35,7 +35,6 @@ date: "[YYYY-MM-DD]"
 updated: "[YYYY-MM-DD]"
 tags: {AVAILABLE_TAGS}
 ---
-```
 
 **Title formula:** Keyword + Benefit or Hook
 **Description formula:** Problem + Solution + CTA
@@ -99,15 +98,13 @@ Identify 2-3 places to add authority links:
 - Only use rel="nofollow" for paid/sponsored links or user-generated content
 
 ### 7. Author Bio
-Add at the end:
+Add at the very end of the article, as plain markdown (NOT inside a code fence):
 
-```markdown
 ---
 
 **About the Author:** {AUTHOR_BIO}
 
 **Last Updated:** [Date]
-```
 
 ---
 
@@ -119,6 +116,9 @@ Return ONLY the optimized article with:
 3. Internal link suggestions marked [LINK: anchor](url)
 4. Image markers placed INLINE in the body: [HERO IMAGE: ...] at top, [IMAGE: ...] distributed throughout
 5. Author bio at bottom
+
+**CRITICAL: Output raw markdown only. Do NOT wrap your output — or any part of it, including the frontmatter — in a code fence.**
+Your response must begin with the `---` of the YAML frontmatter on the very first line. Do NOT start with ```markdown, ```, or any code fence, and do NOT end with a closing fence. The examples above use indentation for illustration only; your actual output must be bare markdown with no surrounding fences.
 
 **CRITICAL: Do NOT include any analysis, checklists, summaries, or commentary in your output.**
 Do NOT include sections like "SEO Optimization Summary", "Keyword Placement Check", "External Link Suggestions", "Readability Check", or "Content Integrity". These are internal checks — run them silently but only output the article itself.

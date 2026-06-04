@@ -253,12 +253,18 @@ class ContentGenerationService:
             "c": ArticleStatus.OPTIMIZED.value,
         }
 
+        update_fields = {
+            column: content,
+            "phase": phase,
+            "status": phase_status[phase],
+        }
+        if phase in ("b", "c"):
+            update_fields["word_count"] = self._compute_word_count(content)
+
         try:
-            self.supabase.table("seo_articles").update({
-                column: content,
-                "phase": phase,
-                "status": phase_status[phase],
-            }).eq("id", article_id).execute()
+            self.supabase.table("seo_articles").update(
+                update_fields
+            ).eq("id", article_id).execute()
 
             logger.info(f"Ingested Phase {phase.upper()} result for article {article_id}")
         except Exception as e:
@@ -581,12 +587,20 @@ class ContentGenerationService:
             "c": ArticleStatus.OPTIMIZED.value,
         }
 
+        update_fields = {
+            column: content,
+            "phase": phase,
+            "status": phase_status.get(phase, ArticleStatus.DRAFT.value),
+        }
+        # Persist reader-visible word count once the body exists (Phase B draft
+        # and Phase C optimize). Phase A is just an outline, so skip it.
+        if phase in ("b", "c"):
+            update_fields["word_count"] = self._compute_word_count(content)
+
         try:
-            self.supabase.table("seo_articles").update({
-                column: content,
-                "phase": phase,
-                "status": phase_status.get(phase, ArticleStatus.DRAFT.value),
-            }).eq("id", article_id).execute()
+            self.supabase.table("seo_articles").update(
+                update_fields
+            ).eq("id", article_id).execute()
         except Exception as e:
             logger.error(f"Failed to save Phase {phase.upper()} output: {e}")
 
@@ -632,6 +646,31 @@ class ContentGenerationService:
     # =========================================================================
     # HELPERS
     # =========================================================================
+
+    @staticmethod
+    def _compute_word_count(content_markdown: str) -> int:
+        """Compute the reader-visible word count for an article body.
+
+        Renders the markdown to HTML (which strips frontmatter, code fences,
+        image markers, schema/related sections, etc.) and counts words in the
+        resulting plain text, so the stored count matches what's actually
+        published rather than counting markup tokens. Falls back to a naive
+        whitespace split if rendering is unavailable.
+        """
+        if not content_markdown:
+            return 0
+        try:
+            from viraltracker.services.seo_pipeline.services.cms_publisher_service import (
+                render_markdown_to_html,
+            )
+            from bs4 import BeautifulSoup
+
+            html = render_markdown_to_html(content_markdown)
+            text = BeautifulSoup(html, "html.parser").get_text(" ")
+            return len(text.split())
+        except Exception as e:
+            logger.warning(f"word_count computation failed, using naive count: {e}")
+            return len(content_markdown.split())
 
     @staticmethod
     def _infer_search_intent(keyword: str) -> str:
