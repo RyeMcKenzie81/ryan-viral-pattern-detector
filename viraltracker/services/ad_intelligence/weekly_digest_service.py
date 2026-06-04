@@ -44,8 +44,7 @@ class WeeklyDigestService:
         self.meta = meta_service
 
     async def build_brand_digest(self, brand_id: UUID, days_back: int = 30) -> Dict[str, Any]:
-        from .helpers import get_active_ad_ids, resolve_product_ad_ids
-        from .models import RunConfig
+        from .helpers import get_spending_ad_ids, resolve_product_ad_ids
 
         bid = str(brand_id)
         currency = await self.meta.get_brand_currency(brand_id)
@@ -57,9 +56,12 @@ class WeeklyDigestService:
         start = end - timedelta(days=days_back)
         start_s, end_s = start.isoformat(), end.isoformat()
 
-        # Same active-ad window the rest of ad-intelligence uses, so the digest's
-        # active set lines up with the daily analysis the client sees elsewhere.
-        active_ids = await get_active_ad_ids(self.supabase, brand_id, end, RunConfig().active_window_days)
+        # Scope by SPEND over the full reporting window — NOT delivery status. An
+        # ad that spent in the window and was then paused still drove cost and must
+        # count toward its level's aggregate CPA. (get_active_ad_ids excludes
+        # PAUSED/ARCHIVED and only looks back active_window_days (7), which silently
+        # dropped real spend from a 30-day report.)
+        spend_ids = await get_spending_ad_ids(self.supabase, brand_id, start, end)
         baselines = self._latest_baselines(bid)
 
         prods = (self.supabase.table("products").select("id, name")
@@ -68,12 +70,12 @@ class WeeklyDigestService:
         products_out: List[Dict[str, Any]] = []
         for prod in prods:
             pid, pname = prod["id"], prod.get("name", "Unnamed")
-            product_ad_ids = list(resolve_product_ad_ids(self.supabase, bid, pid, active_ids))
+            product_ad_ids = list(resolve_product_ad_ids(self.supabase, bid, pid, spend_ids))
             if not product_ad_ids:
                 products_out.append({"name": pname, "no_ads": True})
                 continue
             try:
-                total_spend, active_ads, rows = self._product_awareness(
+                total_spend, n_ads, rows = self._product_awareness(
                     bid, product_ad_ids, start_s, end_s, baselines
                 )
                 markets = self.market.split_spend_by_market(brand_id, product_ad_ids, start_s, end_s)
@@ -85,7 +87,7 @@ class WeeklyDigestService:
             products_out.append({
                 "name": pname,
                 "total_spend": total_spend,
-                "active_ads": active_ads,
+                "spending_ads": n_ads,
                 "no_ads": False,
                 "awareness": rows,
                 "markets": markets,
@@ -130,8 +132,9 @@ class WeeklyDigestService:
     def _product_awareness(
         self, bid: str, ad_ids: List[str], start_s: str, end_s: str, baselines: Dict[str, float]
     ) -> Tuple[float, int, List[Dict[str, Any]]]:
-        """(total_spend, active_ads, awareness_rows) computed directly from the
-        latest stored classification per ad + windowed performance."""
+        """(total_spend, n_ads, awareness_rows) computed directly from the latest
+        stored classification per ad + windowed performance. ``ad_ids`` is the
+        spend-scoped product set, so paused-but-spent ads are included."""
         # latest awareness level per ad
         level_by_ad: Dict[str, str] = {}
         for i in range(0, len(ad_ids), 500):
@@ -170,7 +173,7 @@ class WeeklyDigestService:
                 offset += page
 
         total_spend = round(sum(v[0] for v in perf.values()), 2)
-        active_ads = len(ad_ids)
+        n_ads = len(ad_ids)
 
         agg: Dict[str, List[float]] = {}  # level -> [ads, spend, purchases]
         for ad, (s, p) in perf.items():
@@ -194,7 +197,7 @@ class WeeklyDigestService:
         # Order by awareness stage (Unaware → Most Aware) so it reads as a CPA
         # waterfall; unclassified/unknown fall to the end.
         rows_out.sort(key=lambda r: _LEVEL_ORDER.get(r["level"], 99))
-        return total_spend, active_ads, rows_out
+        return total_spend, n_ads, rows_out
 
     @staticmethod
     def _insight(rows: List[Dict[str, Any]]) -> Optional[str]:

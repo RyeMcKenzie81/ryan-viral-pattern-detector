@@ -3716,11 +3716,12 @@ async def _run_classification_for_brand(
     max_video: int = 15,
     days_back: int = 30,
     scrape_missing_lp: bool = False,
+    scope: str = "active",
 ) -> Dict[str, Any]:
-    """Shared helper: classify active ads for a brand.
+    """Shared helper: classify a brand's ads.
 
     Used by both the standalone ad_classification job and the auto_classify
-    chain in meta_sync. Initializes services, fetches active ads, creates
+    chain in meta_sync. Initializes services, fetches the target ad set, creates
     an ad_intelligence_runs record, and calls classify_batch().
 
     Args:
@@ -3728,20 +3729,28 @@ async def _run_classification_for_brand(
         logs: Mutable log list to append progress messages.
         max_new: Max new Gemini classification calls (default: 200).
         max_video: Max video classification calls (default: 15).
-        days_back: Number of days to look back for active ads (default: 30).
+        days_back: Number of days to look back (default: 30).
         scrape_missing_lp: If True, create and scrape landing pages for
             unmatched destination URLs during classification.
+        scope: Which ad set to classify.
+            - "active" (default): currently-delivering ads via get_active_ad_ids
+              (excludes PAUSED/ARCHIVED). Keeps the daily/meta_sync behavior.
+            - "spend": every ad that spent in the last ``days_back`` days,
+              INCLUDING paused ones, via get_spending_ad_ids. Use this to feed
+              the weekly digest so a paused-but-spent ad still gets an awareness
+              level (and thus contributes to its level's aggregate CPA) instead
+              of landing in the "unclassified" bucket forever.
 
     Returns:
         Dict with keys: total_active, classified, video, errors.
     """
     from uuid import UUID as _UUID
-    from datetime import date as _date
+    from datetime import date as _date, timedelta as _timedelta
     from viraltracker.services.gemini_service import GeminiService
     from viraltracker.services.ad_intelligence.classifier_service import ClassifierService
     from viraltracker.services.ad_intelligence.ad_intelligence_service import AdIntelligenceService
     from viraltracker.services.ad_intelligence.congruence_analyzer import CongruenceAnalyzer
-    from viraltracker.services.ad_intelligence.helpers import get_active_ad_ids
+    from viraltracker.services.ad_intelligence.helpers import get_active_ad_ids, get_spending_ad_ids
     from viraltracker.services.video_analysis_service import VideoAnalysisService
 
     db = get_supabase_client()
@@ -3767,22 +3776,29 @@ async def _run_classification_for_brand(
         congruence_analyzer=congruence_analyzer,
     )
 
-    # Get active ad IDs
+    # Get the target ad set (active-only vs spend-scoped — see ``scope`` docstring)
     date_range_end = _date.today()
-    active_ids = await get_active_ad_ids(
-        db, brand_id, date_range_end, active_window_days=days_back
-    )
+    if scope == "spend":
+        window_start = date_range_end - _timedelta(days=days_back)
+        target_ids = await get_spending_ad_ids(db, brand_id, window_start, date_range_end)
+        logs.append(
+            f"Scope=spend: {len(target_ids)} ads with spend in last {days_back}d "
+            f"(includes paused/archived)"
+        )
+    else:
+        target_ids = await get_active_ad_ids(
+            db, brand_id, date_range_end, active_window_days=days_back
+        )
+        logs.append(f"Scope=active: {len(target_ids)} currently-active ads")
 
-    if not active_ids:
-        logs.append("No active ads found for classification")
+    if not target_ids:
+        logs.append("No ads found for classification")
         return {
             "total_active": 0,
             "classified": 0,
             "video": 0,
             "errors": 0,
         }
-
-    logs.append(f"Found {len(active_ids)} active ads")
 
     # Create ad_intelligence_runs record for audit trail
     intel_service = AdIntelligenceService(db, gemini_service=gemini_service)
@@ -3799,7 +3815,7 @@ async def _run_classification_for_brand(
             brand_id=brand_id,
             org_id=org_id,
             run_id=run.id,
-            meta_ad_ids=active_ids,
+            meta_ad_ids=target_ids,
             max_new=max_new,
             max_video=max_video,
             scrape_missing_lp=scrape_missing_lp,
@@ -3812,7 +3828,7 @@ async def _run_classification_for_brand(
 
         # Complete the run
         await intel_service._complete_run(run.id, "completed", {
-            "total_ads": len(active_ids),
+            "total_ads": len(target_ids),
             "classified": total_classified,
             "new": batch_result.new_count,
             "cached": batch_result.cached_count,
@@ -3834,7 +3850,7 @@ async def _run_classification_for_brand(
             logs.append(f"Errors: {batch_result.error_count}")
 
         return {
-            "total_active": len(active_ids),
+            "total_active": len(target_ids),
             "classified": total_classified,
             "new": batch_result.new_count,
             "cached": batch_result.cached_count,
@@ -3940,7 +3956,10 @@ async def execute_ad_classification_job(job: Dict) -> Dict[str, Any]:
     Parameters (from job['parameters']):
         max_new: int - Max new Gemini classifications (default: 200)
         max_video: int - Max video classifications (default: 15)
-        days_back: int - Days to look back for active ads (default: 30)
+        days_back: int - Days to look back (default: 30)
+        scope: str - "active" (default, currently-delivering ads) or "spend"
+            (every ad that spent in the window, including paused — feeds the
+            weekly digest so paused-but-spent ads still get an awareness level)
     """
     job_id = job['id']
     job_name = job['name']
@@ -3975,9 +3994,12 @@ async def execute_ad_classification_job(job: Dict) -> Dict[str, Any]:
         max_new = params.get('max_new', 200)
         max_video = params.get('max_video', 15)
         days_back = params.get('days_back', 30)
+        scope = params.get('scope', 'active')
 
         logs.append(f"Classifying ads for brand: {brand_name}")
-        logs.append(f"Max new: {max_new}, Max video: {max_video}, Days back: {days_back}")
+        logs.append(
+            f"Max new: {max_new}, Max video: {max_video}, Days back: {days_back}, Scope: {scope}"
+        )
 
         result = await _run_classification_for_brand(
             brand_id=UUID(brand_id),
@@ -3985,6 +4007,7 @@ async def execute_ad_classification_job(job: Dict) -> Dict[str, Any]:
             max_new=max_new,
             max_video=max_video,
             days_back=days_back,
+            scope=scope,
         )
 
         logs.append("")

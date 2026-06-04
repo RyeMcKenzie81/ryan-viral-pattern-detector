@@ -1105,3 +1105,24 @@ Each follows the pattern: input → AI generation → user review of draft → c
 **Alternative geo source**: Meta offers a country/region insights breakdown we don't currently fetch (only `age_gender` + `placement`). Capturing it would give authoritative delivery-country per ad, complementing the host-derived market in `brand_markets`.
 
 **Reference**: [[attribution_market_dimension]] memory; `brand_markets` table (migration `2026-06-03_brand_markets.sql`); `BrandMarketService.resolve_market_for_url`.
+
+### 40. Spend-Scope the Baselines Cohort (MedCPA vs AggCPA mismatch)
+
+**Priority**: Medium (digest comparison correctness; `AggCPA` is already correct)
+**Complexity**: Medium (touches `baseline_service.py`, which also feeds diagnose/recommend)
+**Added**: 2026-06-03
+
+**Context**: The weekly digest's **AggCPA** is now computed from the spend-scoped ad set (`get_spending_ad_ids` — every ad that spent in the window, including paused ones; see [[digest_spend_scope]]). But the **MedCPA** baseline shown next to it (`WeeklyDigestService._latest_baselines` → `ad_intelligence_baselines`) is still produced by the daily baselines job over the **active + classified** cohort only. So:
+
+1. **Cohort mismatch** — AggCPA includes paused-but-spent and unclassified ads; the MedCPA baseline does not. The two columns are not strictly apples-to-apples.
+2. **Window mismatch** — `_latest_baselines` takes the *latest* baseline per level by `computed_at`, with **no date-range filter**, so a baseline computed for a different/older window can sit beside a 30-day AggCPA.
+3. **Unclassified has no baseline** — the `unclassified` bucket's `med_cpa` is always `None` (baselines are only computed for named awareness levels), so it renders blank and is skipped by `_insight()`.
+
+Currently **disclosed, not fixed**: the digest footer fine-print explains AggCPA vs MedCPA, and the unclassified row renders MedCPA as `-`.
+
+**What to build** (pick per appetite):
+1. Compute baselines from the spend-scoped cohort (status-agnostic) so MedCPA matches AggCPA's universe — but verify the blast radius on diagnose/recommend, which consume the same baselines.
+2. Have `_latest_baselines` filter by (or surface) the baseline's `date_range_start`/`date_range_end` so the window is aligned/visible.
+3. Optionally compute an `unclassified` baseline (or keep it intentionally blank).
+
+**Reference**: [[digest_spend_scope]] memory; `weekly_digest_service._latest_baselines`; `baseline_service._fetch_classified_performance`; review surfaced this on 2026-06-03 (3 of 6 confirmed findings).
