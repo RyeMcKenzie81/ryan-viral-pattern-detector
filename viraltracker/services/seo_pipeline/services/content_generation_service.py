@@ -568,6 +568,17 @@ class ContentGenerationService:
         duration_ms = int((time.time() - start_time) * 1000)
         content = response.content[0].text
 
+        # Guard against empty LLM output. If we save a blank phase output the
+        # article still advances to optimized/qa_passed and eventually publishes
+        # an empty body — the exact failure regenerate-from-scratch exists to
+        # fix. Fail the job instead so the article stays in a fixable state.
+        if not content or not content.strip():
+            raise ValueError(
+                f"Phase {phase.upper()} returned empty content for article "
+                f"{article_id} (model={model}). Not saving; failing the job so "
+                "the article can be retried or regenerated."
+            )
+
         # Track usage
         if organization_id:
             self._track_usage(

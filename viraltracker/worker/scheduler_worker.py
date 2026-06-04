@@ -6329,37 +6329,43 @@ async def execute_seo_publish_job(job: Dict) -> Dict[str, Any]:
                     failed_count += 1
                     continue
 
-                # Build article payload
-                article_payload = {
-                    "title": full_article.get("title") or full_article.get("seo_title") or full_article.get("keyword", ""),
-                    "body_html": full_article.get("content_html", ""),
-                    "author": full_article.get("author_name", ""),
-                    "seo_title": full_article.get("seo_title", ""),
-                    "meta_description": full_article.get("meta_description", ""),
-                    "keyword": full_article.get("keyword", ""),
-                    "tags": full_article.get("tags", ""),
-                    "schema_markup": full_article.get("schema_markup"),
-                    "hero_image_url": full_article.get("hero_image_url"),
-                    "summary_html": full_article.get("summary_html"),
-                }
+                # Empty-body guard. publish_article renders the body from
+                # phase_c_output / content_markdown / phase_b_output; if all are
+                # empty we would push a blank article live and mark it published.
+                # Fail instead so the article stays in a fixable state.
+                effective_content = (
+                    full_article.get("phase_c_output")
+                    or full_article.get("content_markdown")
+                    or full_article.get("phase_b_output")
+                    or ""
+                )
+                if not effective_content.strip():
+                    queue_service.mark_failed(
+                        queue_id, "Article body is empty — refusing to publish blank content"
+                    )
+                    logs.append(f"SKIP (empty body): {full_article.get('keyword', article_id)}")
+                    failed_count += 1
+                    continue
 
-                cms_article_id = full_article.get("cms_article_id")
-
-                if cms_article_id:
-                    # Promote draft to live
-                    result = publisher.update(cms_article_id, article_payload, draft=False)
-                    logs.append(f"PUBLISHED (draft→live): {full_article.get('keyword', article_id)}")
-                else:
-                    # Create and publish live
-                    result = publisher.publish(article_payload, draft=False)
-                    # Save CMS article ID back
-                    new_cms_id = result.get("cms_article_id")
-                    if new_cms_id:
-                        eval_svc.supabase.table("seo_articles").update({
-                            "cms_article_id": new_cms_id,
-                            "published_url": result.get("published_url"),
-                        }).eq("id", article_id).execute()
-                    logs.append(f"PUBLISHED (new): {full_article.get('keyword', article_id)}")
+                # Route through the canonical publish path instead of a
+                # hand-rolled payload. publish_article re-renders the body,
+                # resolves the author via author_id, joins tags into a CSV string,
+                # writes back cms_article_id / published_url / status, and marks
+                # cluster spokes published. The old inline payload read columns
+                # that do not exist on seo_articles (author_name, summary_html)
+                # and passed tags as a list, silently dropping author and tags on
+                # every autopilot publish.
+                cms_was_existing = bool(full_article.get("cms_article_id"))
+                cms_service.publish_article(
+                    article_id=article_id,
+                    brand_id=entry_brand_id,
+                    organization_id=entry_org_id,
+                    draft=False,
+                )
+                logs.append(
+                    f"PUBLISHED ({'draft→live' if cms_was_existing else 'new'}): "
+                    f"{full_article.get('keyword', article_id)}"
+                )
 
                 queue_service.mark_published(queue_id, article_id)
                 published += 1

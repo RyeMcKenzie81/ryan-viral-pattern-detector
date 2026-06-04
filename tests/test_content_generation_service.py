@@ -415,6 +415,30 @@ class TestAPIMode:
         assert call_args.kwargs["model"] == "claude-opus-4-7"
         assert call_args.kwargs["max_tokens"] == 8192
 
+    def test_empty_output_raises_and_does_not_save(self, service):
+        """An empty/whitespace LLM response must fail the job, not save blank.
+
+        Regression guard: previously empty Phase output was saved and the
+        article advanced to optimized/qa_passed, eventually publishing an empty
+        body. The guard raises before any DB write so the job fails cleanly.
+        """
+        article_id = str(uuid4())
+
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(text="   \n  \n")]  # whitespace only
+        mock_response.usage.input_tokens = 100
+        mock_response.usage.output_tokens = 0
+        service.anthropic_client.messages.create.return_value = mock_response
+
+        update_chain = MagicMock()
+        service.supabase.table.return_value.update.return_value.eq.return_value = update_chain
+
+        with pytest.raises(ValueError, match="empty content"):
+            service.generate_phase_a(article_id=article_id, keyword="test", mode="api")
+
+        # The phase output must NOT have been written to the DB.
+        update_chain.execute.assert_not_called()
+
     def test_api_mode_tracks_usage(self, service):
         article_id = str(uuid4())
 
