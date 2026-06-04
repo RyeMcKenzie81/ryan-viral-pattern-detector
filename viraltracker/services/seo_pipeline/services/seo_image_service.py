@@ -88,24 +88,29 @@ class SEOImageService:
     # PRODUCT REFERENCE IMAGES
     # =========================================================================
 
-    async def _load_product_reference_data(self, brand_id: str) -> Tuple[List[str], List[str]]:
+    async def _load_product_reference_data(self, brand_id: str) -> Tuple[List[str], List[str], str]:
         """
-        Load product images and keywords for a brand.
+        Load product images, keywords, and a size/scale hint for a brand.
 
         Returns:
-            Tuple of (base64_images, product_keywords) where product_keywords
-            are lowercased terms from product names used to decide whether a
-            given image description should include product references.
+            Tuple of (base64_images, product_keywords, size_hint) where:
+            - product_keywords are lowercased terms from product names used to
+              decide whether a given image description should include product
+              references.
+            - size_hint is a short natural-language description of the product's
+              real-world dimensions / handling, injected into the image prompt so
+              the model renders the product at true scale (e.g. a small card deck
+              instead of an oversized box).
         """
         # Find products for this brand
         products = await asyncio.to_thread(
             lambda: self.supabase.table("products")
-            .select("id, name")
+            .select("id, name, product_dimensions")
             .eq("brand_id", brand_id)
             .execute()
         )
         if not products.data:
-            return [], []
+            return [], [], ""
 
         # Build keyword list from product names for matching
         # e.g. "Yakety Pack - Pause Play Connect" -> ["yakety", "pack", "pause", "play", "connect"]
@@ -119,6 +124,11 @@ class SEOImageService:
                     product_keywords.add(word)
             # Also add the full name as a phrase match
             product_keywords.add(name.lower().strip())
+
+        # Build a size/scale hint from product_dimensions so the model renders
+        # the product at its true real-world size. Without this, products like a
+        # small card deck get rendered as oversized boxes.
+        size_hint = self._build_product_size_hint(products.data)
 
         product_ids = [p["id"] for p in products.data]
 
@@ -147,7 +157,7 @@ class SEOImageService:
                 break
 
         if not image_paths:
-            return []
+            return [], sorted(product_keywords), size_hint
 
         # Download and convert to base64
         reference_images = []
@@ -172,9 +182,39 @@ class SEOImageService:
 
         logger.info(
             f"Loaded {len(reference_images)} product reference images for brand {brand_id} "
-            f"(keywords: {', '.join(sorted(product_keywords)[:10])})"
+            f"(keywords: {', '.join(sorted(product_keywords)[:10])}; "
+            f"size_hint: {'yes' if size_hint else 'no'})"
         )
-        return reference_images, sorted(product_keywords)
+        return reference_images, sorted(product_keywords), size_hint
+
+    @staticmethod
+    def _build_product_size_hint(products: List[Dict[str, Any]]) -> str:
+        """Build a natural-language scale instruction from product_dimensions.
+
+        product_dimensions is a free-text field (e.g. "Length: 2.75 in\\nWidth:
+        2.5 in\\nHeight: 4 in\\n\\nCard deck that fits in hand."). We collapse it
+        to a single line per product and wrap it with an explicit
+        render-at-true-scale instruction.
+        """
+        parts = []
+        for p in products:
+            dims = (p.get("product_dimensions") or "").strip()
+            if not dims:
+                continue
+            # Collapse whitespace/newlines into a readable single line.
+            dims_one_line = re.sub(r'\s*\n\s*', '; ', dims)
+            dims_one_line = re.sub(r'\s{2,}', ' ', dims_one_line).strip().strip(';').strip()
+            name = (p.get("name") or "the product").strip()
+            parts.append(f"{name} — {dims_one_line}")
+
+        if not parts:
+            return ""
+
+        return (
+            "Render the product at its TRUE real-world size and proportions; do "
+            "not oversize it. Product scale and handling reference: "
+            + " | ".join(parts)
+        )
 
     @staticmethod
     def _description_mentions_product(description: str, product_keywords: List[str]) -> bool:
@@ -291,8 +331,8 @@ class SEOImageService:
                 "stats": {"total": 0, "success": 0, "failed": 0},
             }
 
-        # Load product reference images and keywords once for all images
-        product_images, product_keywords = await self._load_product_reference_data(brand_id)
+        # Load product reference images, keywords, and size hint once for all images
+        product_images, product_keywords, product_size_hint = await self._load_product_reference_data(brand_id)
 
         slug = self._generate_slug(keyword)
         image_metadata = []
@@ -308,9 +348,11 @@ class SEOImageService:
                 progress_callback(idx, total, f"Generating image {idx + 1}/{total}: {marker['description'][:50]}")
 
             # Only include product references when the description mentions the product
-            refs = product_images if self._description_mentions_product(
+            mentions_product = self._description_mentions_product(
                 marker["description"], product_keywords
-            ) else None
+            )
+            refs = product_images if mentions_product else None
+            size_hint = product_size_hint if mentions_product else None
 
             result = await self._generate_and_upload_single(
                 description=marker["description"],
@@ -321,6 +363,7 @@ class SEOImageService:
                 index=idx,
                 image_style=image_style,
                 reference_images=refs,
+                product_size_hint=size_hint,
             )
 
             image_metadata.append(result)
@@ -392,10 +435,10 @@ class SEOImageService:
         description = custom_prompt or old_entry.get("description", "")
         slug = self._generate_slug(article.get("keyword", "article"))
 
-        product_images, product_keywords = await self._load_product_reference_data(brand_id)
-        refs = product_images if self._description_mentions_product(
-            description, product_keywords
-        ) else None
+        product_images, product_keywords, product_size_hint = await self._load_product_reference_data(brand_id)
+        mentions_product = self._description_mentions_product(description, product_keywords)
+        refs = product_images if mentions_product else None
+        size_hint = product_size_hint if mentions_product else None
 
         result = await self._generate_and_upload_single(
             description=description,
@@ -406,6 +449,7 @@ class SEOImageService:
             index=image_index,
             image_style=image_style,
             reference_images=refs,
+            product_size_hint=size_hint,
         )
 
         # Update metadata
@@ -443,6 +487,7 @@ class SEOImageService:
         index: int,
         image_style: Optional[str] = None,
         reference_images: Optional[List[str]] = None,
+        product_size_hint: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Generate a single image and upload to storage."""
         filename = self._generate_filename(slug, image_type, index)
@@ -462,7 +507,9 @@ class SEOImageService:
 
         try:
             prompt = self._enhance_prompt(
-                description, image_style=image_style, has_reference_images=bool(reference_images),
+                description, image_style=image_style,
+                has_reference_images=bool(reference_images),
+                product_size_hint=product_size_hint,
             )
             start_ms = time.time()
 
@@ -519,8 +566,9 @@ class SEOImageService:
         description: str,
         image_style: Optional[str] = None,
         has_reference_images: bool = False,
+        product_size_hint: Optional[str] = None,
     ) -> str:
-        """Add photography style and reference image instructions to prompt."""
+        """Add photography style, reference image, and product-scale instructions."""
         style = image_style or PHOTOGRAPHY_STYLE
         prompt = f"{description}. {style}"
         if has_reference_images:
@@ -530,6 +578,10 @@ class SEOImageService:
                 "for accurate visual representation. Match the product's real "
                 "appearance, colors, and packaging."
             )
+            # Scale guidance prevents the model from rendering a small product
+            # (e.g. a card deck) as an oversized box.
+            if product_size_hint:
+                prompt += f" {product_size_hint}"
         return prompt
 
     @staticmethod
