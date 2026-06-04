@@ -625,3 +625,33 @@ class TestArticleCRUD:
         for status in ArticleStatus:
             result = service.list_articles(str(uuid4()), status=status.value)
             assert result == []
+
+
+class TestComputeWordCount:
+    """Reader-visible word count used to populate seo_articles.word_count."""
+
+    def test_empty_content_is_zero(self):
+        assert ContentGenerationService._compute_word_count("") == 0
+        assert ContentGenerationService._compute_word_count(None) == 0
+
+    def test_counts_body_words_excluding_frontmatter_and_markup(self):
+        md = (
+            '---\ntitle: "Ignore me"\ndescription: "Also ignore"\n---\n\n'
+            "## A Heading\n\n"
+            "This body has exactly eight visible words here.\n"
+        )
+        # "A Heading" (2) + "This body has exactly eight visible words here" (8) = 10
+        assert ContentGenerationService._compute_word_count(md) == 10
+
+    def test_fenced_frontmatter_does_not_inflate_count(self):
+        """A ```markdown-wrapped frontmatter must not be counted as body text."""
+        md = (
+            "```markdown\n---\ntitle: \"T\"\ntags: [a, b]\n---\n```\n\n"
+            "Just three words.\n"
+        )
+        assert ContentGenerationService._compute_word_count(md) == 3
+
+    def test_empty_article_stays_low(self):
+        """An article with no real body should produce a low count (drives the
+        Exceptions empty-article detection)."""
+        assert ContentGenerationService._compute_word_count('---\ntitle: "x"\n---\n') < 50
