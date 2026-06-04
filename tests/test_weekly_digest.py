@@ -25,10 +25,12 @@ _DATA = {
         {
             "name": "Big Three Bundle", "total_spend": 3719.0, "spending_ads": 80, "no_ads": False,
             "awareness": [
-                {"level": "unaware", "ads": 31, "spend": 1200.0, "roas": 2.3, "agg_cpa": 51.0,
-                 "prod_med_cpa": 48.0, "prod_p25_cpa": 38.0, "brand_med_cpa": 40.0},
-                {"level": "problem_aware", "ads": 28, "spend": 1400.0, "roas": 1.8, "agg_cpa": 38.0,
-                 "prod_med_cpa": 36.0, "prod_p25_cpa": 29.0, "brand_med_cpa": 41.0},
+                {"level": "unaware", "ads": 31, "spend": 1200.0, "roas": 2.3, "cvr": 0.021,
+                 "agg_cpa": 51.0, "prod_med_cpa": 48.0, "prod_p25_cpa": 38.0, "brand_med_cpa": 40.0,
+                 "agg_catc": 24.0, "prod_med_catc": 22.0, "prod_p25_catc": 15.0},
+                {"level": "problem_aware", "ads": 28, "spend": 1400.0, "roas": 1.8, "cvr": 0.014,
+                 "agg_cpa": 38.0, "prod_med_cpa": 36.0, "prod_p25_cpa": 29.0, "brand_med_cpa": 41.0,
+                 "agg_catc": 19.0, "prod_med_catc": 18.0, "prod_p25_catc": 12.0},
             ],
             "markets": {"US": {"spend": 3719.0, "cpa": 46.0, "ads": 80, "currency": "CAD"}},
             "insight": "Unaware CPA 28% over baseline.",
@@ -57,9 +59,13 @@ class TestRenderer:
         assert "Big Three Bundle" in joined
         assert "```" in joined            # monospace awareness table
         assert "unaware" in joined
-        assert "ROAS" in joined and "P25" in joined and "BrMed" in joined  # new columns
-        assert "$38" in joined            # unaware prod_p25_cpa rendered (whole dollars)
+        # overview table cols + targets table cols both present
+        assert "ROAS" in joined and "CVR" in joined and "ATC" in joined
+        assert "cpaP25" in joined and "atcP25" in joined and "BrMed" in joined
         assert "2.3x" in joined           # unaware ROAS rendered
+        assert "2.1%" in joined           # unaware CVR (0.021) rendered as percent
+        assert "$38" in joined            # unaware prod_p25_cpa rendered
+        assert "$15" in joined            # unaware prod_p25_catc rendered
         assert "*US*" in joined            # market split line
         assert "3,719" in joined
 
@@ -205,9 +211,12 @@ class TestProductAwareness:
                 {"meta_ad_id": "a1", "creative_awareness_level": "solution_aware", "classified_at": "2026-05-01"},
             ],
             "meta_ads_performance": [
-                {"meta_ad_id": "a1", "spend": "100", "purchases": "2", "purchase_value": "250"},
-                {"meta_ad_id": "a2", "spend": "50", "purchases": "1", "purchase_value": "100"},
-                {"meta_ad_id": "a3", "spend": "200", "purchases": "5", "purchase_value": "600"},  # highest spend, most-aware
+                {"meta_ad_id": "a1", "spend": "100", "purchases": "2", "purchase_value": "250",
+                 "add_to_carts": "5", "link_clicks": "40"},
+                {"meta_ad_id": "a2", "spend": "50", "purchases": "1", "purchase_value": "100",
+                 "add_to_carts": "2", "link_clicks": "25"},
+                {"meta_ad_id": "a3", "spend": "200", "purchases": "5", "purchase_value": "600",
+                 "add_to_carts": "10", "link_clicks": "100"},  # highest spend, most-aware
             ],
         }
         svc = WeeklyDigestService(_CovSupa(data_map), MagicMock(), MagicMock())
@@ -225,7 +234,10 @@ class TestProductAwareness:
         assert rows[0]["spend"] == 100.0 and rows[0]["brand_med_cpa"] == 40.0
         assert rows[0]["agg_cpa"] == 50.0
         assert rows[0]["prod_med_cpa"] == 50.0 and rows[0]["prod_p25_cpa"] == 50.0
-        assert rows[0]["roas"] == 2.5   # a1 revenue 250 / spend 100
+        assert rows[0]["roas"] == 2.5    # a1 revenue 250 / spend 100
+        assert rows[0]["cvr"] == 0.05    # a1 purchases 2 / link_clicks 40
+        assert rows[0]["agg_catc"] == 20.0  # a1 spend 100 / add_to_carts 5
+        assert rows[0]["prod_med_catc"] == 20.0  # single sample
 
     def test_unclassified_row_uses_unknown_baseline(self):
         """Ads with no classification bucket as 'unclassified'; that's the same
