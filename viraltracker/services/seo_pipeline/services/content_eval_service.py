@@ -166,6 +166,14 @@ class ContentEvalService:
             self.supabase.table("seo_content_eval_results")
             .select("article_id")
             .in_("article_id", article_ids)
+            # Only NON-superseded evals count as "already evaluated". When a
+            # human remediates a failed article (Exceptions fix buttons,
+            # Re-evaluate, or regenerate-from-scratch), the old eval row is
+            # marked superseded and the article is reset to qa_passed. Without
+            # this filter the article still looks "already evaluated" and is
+            # never picked up again, so remediation silently no-ops and the
+            # article stays stuck at qa_passed forever.
+            .is_("superseded_by", "null")
             .execute()
         ).data or []
         already_evaluated = {r["article_id"] for r in existing}

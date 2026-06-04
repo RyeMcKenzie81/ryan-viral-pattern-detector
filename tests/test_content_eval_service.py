@@ -206,6 +206,7 @@ class TestGetPendingArticles:
                 chain = MagicMock()
                 chain.select.return_value = chain
                 chain.in_.return_value = chain
+                chain.is_.return_value = chain
                 chain.execute.return_value = eval_result
                 return chain
         mock_db.table = table_side_effect
@@ -214,6 +215,59 @@ class TestGetPendingArticles:
         pending = svc.get_pending_articles(brand_id=BRAND_ID)
         assert len(pending) == 1
         assert pending[0]["id"] == "a2"
+
+    def test_superseded_eval_is_re_evaluated(self):
+        """An article whose only eval is superseded must be returned as pending.
+
+        Regression guard for the P0 where remediation (Exceptions fix buttons /
+        Re-evaluate / regenerate) reset an article to qa_passed but it was never
+        re-evaluated because the superseded eval row still made it look
+        "already evaluated". The eval query MUST filter superseded_by IS NULL.
+        """
+        mock_db = MagicMock()
+        articles_result = MagicMock()
+        articles_result.data = [
+            {"id": "a1", "brand_id": BRAND_ID, "status": "qa_passed"},
+        ]
+        # The eval query is now filtered to non-superseded rows. a1's only eval
+        # was superseded, so this returns empty -> a1 is still pending.
+        eval_result = MagicMock()
+        eval_result.data = []
+
+        is_calls = []
+        call_count = [0]
+
+        def table_side_effect(name):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                chain = MagicMock()
+                chain.select.return_value = chain
+                chain.in_.return_value = chain
+                chain.eq.return_value = chain
+                chain.execute.return_value = articles_result
+                return chain
+            chain = MagicMock()
+            chain.select.return_value = chain
+            chain.in_.return_value = chain
+
+            def _is(col, val):
+                is_calls.append((col, val))
+                return chain
+
+            chain.is_.side_effect = _is
+            chain.execute.return_value = eval_result
+            return chain
+
+        mock_db.table = table_side_effect
+
+        svc = _make_service(mock_db)
+        pending = svc.get_pending_articles(brand_id=BRAND_ID)
+
+        # The article must be re-evaluated (not silently dropped)...
+        assert len(pending) == 1
+        assert pending[0]["id"] == "a1"
+        # ...and the fix must actually be present: superseded_by IS NULL filter.
+        assert ("superseded_by", "null") in is_calls
 
     def test_returns_empty_when_no_articles(self):
         mock_db = MagicMock()
