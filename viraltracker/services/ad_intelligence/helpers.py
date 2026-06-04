@@ -437,6 +437,79 @@ async def get_active_ad_ids(
         return []
 
 
+async def get_spending_ad_ids(
+    supabase,
+    brand_id: UUID,
+    start_date: date,
+    end_date: date,
+) -> List[str]:
+    """Return meta_ad_ids that accumulated spend within [start_date, end_date].
+
+    Unlike get_active_ad_ids, this does NOT exclude ads by delivery status: an ad
+    that spent $2,000 in the window and was then PAUSED still drove that cost and
+    must count toward the period's aggregate/median CPA. A weekly report measures
+    spend over a window, not who is delivering right now — so for reporting the
+    candidate set is "spent in window", not "currently active".
+
+    Spend-only (not impressions): an ad with impressions but zero spend adds
+    nothing to a CPA, so it does not belong in the spend-scoped report set.
+
+    Paginated — a 30-day window for an active brand easily exceeds Supabase's
+    1000-row default, and a truncated read would silently drop spend.
+
+    Args:
+        supabase: Supabase client instance.
+        brand_id: Brand UUID to filter by.
+        start_date: Inclusive start of the spend window.
+        end_date: Inclusive end of the spend window.
+
+    Returns:
+        Sorted list of meta_ad_id strings with positive spend. Empty on error.
+    """
+    spend_by_ad: Dict[str, float] = {}
+    try:
+        offset, page = 0, 1000
+        while True:
+            rows = (
+                supabase.table("meta_ads_performance")
+                .select("meta_ad_id, spend")
+                .eq("brand_id", str(brand_id))
+                .gte("date", start_date.isoformat())
+                .lte("date", end_date.isoformat())
+                .order("id")
+                .range(offset, offset + page - 1)
+                .execute()
+                .data
+                or []
+            )
+            if not rows:
+                break
+            for r in rows:
+                aid = r.get("meta_ad_id")
+                if not aid:
+                    continue
+                s = _safe_numeric(r.get("spend"))
+                # Accumulate every valid numeric (incl. negative refund rows, so
+                # the per-ad NET spend is correct); the positive filter is applied
+                # once at the end. None/unparseable spend is skipped.
+                if s is not None:
+                    spend_by_ad[aid] = spend_by_ad.get(aid, 0.0) + s
+            if len(rows) < page:
+                break
+            offset += page
+
+        spend_ids = sorted(aid for aid, s in spend_by_ad.items() if s > 0)
+        logger.info(
+            f"Found {len(spend_ids)} ads with spend for brand {brand_id} "
+            f"in window [{start_date}, {end_date}]"
+        )
+        return spend_ids
+
+    except Exception as e:
+        logger.error(f"Error fetching spending ad IDs for brand {brand_id}: {e}")
+        return []
+
+
 # =============================================================================
 # Org / Brand Validation
 # =============================================================================

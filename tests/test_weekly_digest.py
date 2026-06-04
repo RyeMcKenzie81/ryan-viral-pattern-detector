@@ -23,7 +23,7 @@ _DATA = {
     "date_range": "Last 30 days",
     "products": [
         {
-            "name": "Big Three Bundle", "total_spend": 3719.0, "active_ads": 80, "no_ads": False,
+            "name": "Big Three Bundle", "total_spend": 3719.0, "spending_ads": 80, "no_ads": False,
             "awareness": [
                 {"level": "unaware", "ads": 31, "spend": 1200.0, "agg_cpa": 51.0, "med_cpa": 40.0},
                 {"level": "problem_aware", "ads": 28, "spend": 1400.0, "agg_cpa": 38.0, "med_cpa": 41.0},
@@ -62,7 +62,7 @@ class TestRenderer:
         _, blocks = render_brand_digest(_DATA)
         joined = "\n".join(b.get("text", {}).get("text", "") for b in blocks if b["type"] == "section")
         assert "DHA Upgraded" in joined
-        assert "No active ads in scope" in joined
+        assert "No ads with spend in scope" in joined
 
     def test_coverage_footer(self):
         _, blocks = render_brand_digest(_DATA)
@@ -75,8 +75,8 @@ class TestRenderer:
         _, blocks = render_brand_digest(data)
         joined = "\n".join(b.get("text", {}).get("text", "") for b in blocks if b["type"] == "section")
         assert "Broken Product" in joined
-        assert "Could not analyze" in joined          # error variant
-        assert "No active ads in scope" not in joined  # NOT the dark-product message
+        assert "Could not analyze" in joined               # error variant
+        assert "No ads with spend in scope" not in joined  # NOT the dark-product message
 
 
 # ---------------------------------------------------------------------------
@@ -104,6 +104,7 @@ class _CovTable:
         self.data_map = data_map
         self.ins = {}
         self._start = 0
+        self._end = None  # set by range(); None => no pagination slice
 
     def select(self, *a):
         return self
@@ -126,14 +127,18 @@ class _CovTable:
 
     def range(self, start, end):
         self._start = start
+        self._end = end
         return self
 
     def execute(self):
-        if self._start and self._start > 0:
-            return SimpleNamespace(data=[])
         rows = list(self.data_map.get(self.name, []))
         if "meta_ad_id" in self.ins:
             rows = [r for r in rows if r.get("meta_ad_id") in self.ins["meta_ad_id"]]
+        # Faithfully model PostgREST .range(start, end) as an inclusive slice, so
+        # multi-page pagination loops (offset += page) are actually exercised
+        # instead of short-circuiting after page 1.
+        if self._end is not None:
+            rows = rows[self._start:self._end + 1]
         return SimpleNamespace(data=rows)
 
 
@@ -201,6 +206,58 @@ class TestProductAwareness:
         # ($200, highest spend) is LAST, and a1's newest level (unaware) wins over stale.
         assert [r["level"] for r in rows] == ["unaware", "problem_aware", "most_aware"]
         assert rows[0]["spend"] == 100.0 and rows[0]["med_cpa"] == 40.0
+
+
+class TestSpendingAdIds:
+    @pytest.mark.asyncio
+    async def test_includes_paused_excludes_zero_and_sums_days(self):
+        """Spend-scoped set ignores delivery status: a paused-but-spent ad is in,
+        a zero-spend ad is out, and per-day rows sum (net) per ad."""
+        from datetime import date
+        from viraltracker.services.ad_intelligence.helpers import get_spending_ad_ids
+        data_map = {"meta_ads_performance": [
+            # 'paused_big' would be dropped by get_active_ad_ids (status), but its
+            # spend still drove cost — get_spending_ad_ids never looks at status.
+            {"meta_ad_id": "paused_big", "spend": "2000"},
+            {"meta_ad_id": "paused_big", "spend": "500"},     # second day, same ad
+            {"meta_ad_id": "small", "spend": "10"},
+            {"meta_ad_id": "zero", "spend": "0"},             # no spend → excluded
+            {"meta_ad_id": "refund_net_pos", "spend": "2000"},
+            {"meta_ad_id": "refund_net_pos", "spend": "-100"},  # net 1900 → included
+            {"meta_ad_id": "fully_refunded", "spend": "50"},
+            {"meta_ad_id": "fully_refunded", "spend": "-50"},   # net 0 → excluded
+            {"meta_ad_id": "bad", "spend": "abc"},            # unparseable → skipped
+            {"meta_ad_id": "blank", "spend": ""},             # empty → skipped
+            {"meta_ad_id": "nullspend", "spend": None},       # null spend → skipped
+            {"meta_ad_id": None, "spend": "99"},              # null id → ignored
+        ]}
+        ids = await get_spending_ad_ids(
+            _CovSupa(data_map), "BRAND", date(2026, 5, 1), date(2026, 5, 31)
+        )
+        assert "paused_big" in ids        # paused-but-spent included
+        assert "small" in ids
+        assert "refund_net_pos" in ids    # +2000 -100 = 1900 > 0
+        assert "zero" not in ids          # zero-spend excluded
+        assert "fully_refunded" not in ids  # net 0 excluded
+        assert "bad" not in ids and "blank" not in ids and "nullspend" not in ids
+        assert None not in ids
+        assert ids == sorted(ids)         # returned sorted/deterministic
+
+    @pytest.mark.asyncio
+    async def test_paginates_past_first_page(self):
+        """>1000 rows must be walked across pages (offset += page), not truncated
+        at Supabase's 1000-row default — the whole point of the paginated read."""
+        from datetime import date
+        from viraltracker.services.ad_intelligence.helpers import get_spending_ad_ids
+        # 1200 daily rows for one ad (spend 1 each) + a small ad on the last page.
+        rows = [{"meta_ad_id": "big", "spend": "1"} for _ in range(1200)]
+        rows.append({"meta_ad_id": "tail", "spend": "5"})  # index 1200 → page 2 only
+        ids = await get_spending_ad_ids(
+            _CovSupa({"meta_ads_performance": rows}), "BRAND",
+            date(2026, 5, 1), date(2026, 5, 31),
+        )
+        # 'tail' is only reachable if the loop fetched page 2 (offset 1000-1999).
+        assert ids == ["big", "tail"]
 
 
 # ---------------------------------------------------------------------------

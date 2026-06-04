@@ -57,10 +57,10 @@ def _product_block(p: Dict[str, Any], currency: str) -> Dict[str, Any]:
         text = f"*{name}*\n:warning: _Could not analyze this product this run._"
         return {"type": "section", "text": {"type": "mrkdwn", "text": text}}
     if p.get("no_ads"):
-        text = f"*{name}*\n_No active ads in scope this period._"
+        text = f"*{name}*\n_No ads with spend in scope this period._"
         return {"type": "section", "text": {"type": "mrkdwn", "text": text}}
 
-    head = f"*{name}*  —  {_money(p.get('total_spend'), currency)} · {p.get('active_ads', 0)} ads"
+    head = f"*{name}*  —  {_money(p.get('total_spend'), currency)} · {p.get('spending_ads', 0)} ads w/ spend"
     chunks = [head]
     mline = _market_line(p.get("markets") or {})
     if mline:
@@ -103,6 +103,18 @@ def render_brand_digest(data: Dict[str, Any]) -> Tuple[str, List[Dict[str, Any]]
         top = ", ".join(f"{u['url']} (${u['spend']:,.0f})" for u in unmapped[:5])
         cov_txt += f"\n*Unmapped* (${coverage.get('unmapped', 0):,.0f}): {top}\n_Tag in Brand Manager → Offer Variants to attribute._"
     blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": cov_txt}})
+
+    # Fine print: how to read the two CPA columns. AggCPA is spend-scoped (this
+    # change); MedCPA is the separately-computed baseline cohort (active+classified
+    # only), so the two are not a perfect apples-to-apples comparison yet, and the
+    # unclassified bucket has no baseline. Disclosed rather than silently mixed.
+    blocks.append({"type": "context", "elements": [
+        {"type": "mrkdwn", "text": (
+            "_AggCPA = spend ÷ purchases over the window (includes paused-but-spent ads). "
+            "MedCPA = latest computed baseline per level (active + classified reference); "
+            "blank for unclassified._"
+        )}
+    ]})
 
     fallback = f"{brand} weekly digest — {len(products)} products, {date_range} ({currency})"
     return fallback, blocks
