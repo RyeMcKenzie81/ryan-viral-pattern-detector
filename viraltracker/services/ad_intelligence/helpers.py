@@ -457,6 +457,13 @@ async def get_spending_ad_ids(
     Paginated — a 30-day window for an active brand easily exceeds Supabase's
     1000-row default, and a truncated read would silently drop spend.
 
+    Ordering: highest-spend first (ties broken by meta_ad_id for determinism).
+    The digest consumes this as a set, so order is irrelevant there — but the
+    classification consumer caps NEW Gemini calls at max_new, and when the
+    backlog exceeds the cap the budget should go to the biggest-dollar ads,
+    which move aggregate/median CPA the most. A paused $2,000 ad must not wait
+    behind a long tail of $5 ads just because its meta_ad_id sorts later.
+
     Args:
         supabase: Supabase client instance.
         brand_id: Brand UUID to filter by.
@@ -464,7 +471,8 @@ async def get_spending_ad_ids(
         end_date: Inclusive end of the spend window.
 
     Returns:
-        Sorted list of meta_ad_id strings with positive spend. Empty on error.
+        List of meta_ad_id strings with positive spend, highest spend first.
+        Empty on error.
     """
     spend_by_ad: Dict[str, float] = {}
     try:
@@ -498,10 +506,17 @@ async def get_spending_ad_ids(
                 break
             offset += page
 
-        spend_ids = sorted(aid for aid, s in spend_by_ad.items() if s > 0)
+        # Highest spend first; meta_ad_id as a deterministic tiebreaker so the
+        # ordering (and thus which ads a capped consumer reaches) is stable.
+        spend_ids = [
+            aid for aid, _ in sorted(
+                ((aid, s) for aid, s in spend_by_ad.items() if s > 0),
+                key=lambda kv: (-kv[1], kv[0]),
+            )
+        ]
         logger.info(
             f"Found {len(spend_ids)} ads with spend for brand {brand_id} "
-            f"in window [{start_date}, {end_date}]"
+            f"in window [{start_date}, {end_date}] (ordered by spend desc)"
         )
         return spend_ids
 

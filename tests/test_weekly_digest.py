@@ -234,14 +234,14 @@ class TestSpendingAdIds:
         ids = await get_spending_ad_ids(
             _CovSupa(data_map), "BRAND", date(2026, 5, 1), date(2026, 5, 31)
         )
-        assert "paused_big" in ids        # paused-but-spent included
-        assert "small" in ids
-        assert "refund_net_pos" in ids    # +2000 -100 = 1900 > 0
         assert "zero" not in ids          # zero-spend excluded
         assert "fully_refunded" not in ids  # net 0 excluded
         assert "bad" not in ids and "blank" not in ids and "nullspend" not in ids
         assert None not in ids
-        assert ids == sorted(ids)         # returned sorted/deterministic
+        # Ordered by spend DESC (tie-break meta_ad_id): paused_big=2500,
+        # refund_net_pos=1900 (2000-100), small=10. So the biggest-dollar ad
+        # leads, which is what a capped classifier should classify first.
+        assert ids == ["paused_big", "refund_net_pos", "small"]
 
     @pytest.mark.asyncio
     async def test_paginates_past_first_page(self):
