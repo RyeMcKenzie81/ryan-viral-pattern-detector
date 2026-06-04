@@ -30,31 +30,48 @@ def _roas(v: Optional[float]) -> str:
     return f"{v:.1f}x" if v is not None else "-"
 
 
-def _awareness_table(rows: List[Dict[str, Any]]) -> str:
-    """Monospace table of awareness levels (rendered in a Slack code block).
+def _pct(v: Optional[float]) -> str:
+    """CVR ratio -> percentage, e.g. 0.0152 -> 1.5%."""
+    return f"{v * 100:.1f}%" if v is not None else "-"
 
-    Columns: ROAS = revenue ÷ spend (blended); Agg = this product's blended CPA;
-    Med / P25 = this product's median and 25th-percentile per-ad CPA at the level
-    (P25 = the better-than-median target); BrMed = the brand-wide median benchmark.
+
+def _awareness_table(rows: List[Dict[str, Any]]) -> str:
+    """Two monospace tables per product (Slack code blocks): an efficiency
+    overview (spend, ROAS, CVR, blended CPA + cost-per-ATC) and a cost-target
+    breakdown (per-ad median & top-quartile p25 for CPA and ATC, + brand CPA
+    benchmark). Two tables because ~11 metrics/level won't fit one Slack row.
     """
     if not rows:
         return "_no classified ads in scope_"
-    header = (
-        f"{'Level':<15}{'Ads':>4} {'Spend':>8} {'ROAS':>5} "
-        f"{'Agg':>5} {'Med':>5} {'P25':>5} {'BrMed':>5}"
-    )
-    lines = [header]
+
+    def _lvl(r):
+        return str(r.get("level", "")).replace("_", " ")[:14]
+
+    def _spend(r):
+        s = r.get("spend")
+        return f"${s:,.0f}" if s is not None else "-"
+
+    # Table 1 — efficiency overview (CPA/ATC here are blended)
+    t1 = [f"{'Level':<15}{'Ads':>4} {'Spend':>8} {'ROAS':>5} {'CVR':>6} {'CPA':>6} {'ATC':>6}"]
     for r in rows:
-        level = str(r.get("level", "")).replace("_", " ")[:14]
-        ads = r.get("ads", 0)
-        spend = r.get("spend")
-        spend_s = f"${spend:,.0f}" if spend is not None else "-"
-        lines.append(
-            f"{level:<15}{ads:>4} {spend_s:>8} {_roas(r.get('roas')):>5} "
-            f"{_cpa0(r.get('agg_cpa')):>5} {_cpa0(r.get('prod_med_cpa')):>5} "
-            f"{_cpa0(r.get('prod_p25_cpa')):>5} {_cpa0(r.get('brand_med_cpa')):>5}"
+        t1.append(
+            f"{_lvl(r):<15}{r.get('ads', 0):>4} {_spend(r):>8} "
+            f"{_roas(r.get('roas')):>5} {_pct(r.get('cvr')):>6} "
+            f"{_cpa0(r.get('agg_cpa')):>6} {_cpa0(r.get('agg_catc')):>6}"
         )
-    return "```\n" + "\n".join(lines) + "\n```"
+    # Table 2 — per-ad cost targets (median + top-quartile p25), + brand CPA benchmark
+    t2 = [f"{'Level':<15}{'cpaMed':>7} {'cpaP25':>7} {'atcMed':>7} {'atcP25':>7} {'BrMed':>7}"]
+    for r in rows:
+        t2.append(
+            f"{_lvl(r):<15}{_cpa0(r.get('prod_med_cpa')):>7} {_cpa0(r.get('prod_p25_cpa')):>7} "
+            f"{_cpa0(r.get('prod_med_catc')):>7} {_cpa0(r.get('prod_p25_catc')):>7} "
+            f"{_cpa0(r.get('brand_med_cpa')):>7}"
+        )
+    return (
+        "```\n" + "\n".join(t1) + "\n```\n"
+        "_targets — $/purchase (cpa) & $/add-to-cart (atc), per-ad median & p25:_\n"
+        "```\n" + "\n".join(t2) + "\n```"
+    )
 
 
 def _market_line(markets: Dict[str, Dict[str, Any]]) -> str:
@@ -129,11 +146,11 @@ def render_brand_digest(data: Dict[str, Any]) -> Tuple[str, List[Dict[str, Any]]
     # only, no ad_status filter, so paused-but-spent ads are in BrMed too).
     blocks.append({"type": "context", "elements": [
         {"type": "mrkdwn", "text": (
-            "_*ROAS* = revenue ÷ spend (blended). *Agg* = spend ÷ purchases (blended). "
-            "*Med* / *P25* = this product's median & 25th-pctile per-ad CPA at the level "
-            "(P25 = the better-than-median target — only the top 25% of converting ads hit it). "
-            "*BrMed* = brand-wide median CPA benchmark. CPA cols over converting ads; "
-            "all over the same ~30d window, paused-but-spent included._"
+            "_*ROAS* = revenue ÷ spend. *CVR* = purchases ÷ link-clicks. "
+            "*CPA* = $/purchase, *ATC* = $/add-to-cart (overview values are blended; "
+            "cpaMed/atcMed & cpaP25/atcP25 are this product's per-ad median & "
+            "top-quartile target — P25 beats the median). *BrMed* = brand-wide median CPA. "
+            "Cost medians over ads that converted; ~30d window, paused-but-spent included._"
         )}
     ]})
 
