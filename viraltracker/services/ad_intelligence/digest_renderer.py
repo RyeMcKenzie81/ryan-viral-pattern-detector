@@ -25,18 +25,23 @@ def _cpa0(v: Optional[float]) -> str:
     return f"${v:,.0f}" if v is not None else "-"
 
 
+def _roas(v: Optional[float]) -> str:
+    """Compact ROAS (revenue ÷ spend) as e.g. 2.3x."""
+    return f"{v:.1f}x" if v is not None else "-"
+
+
 def _awareness_table(rows: List[Dict[str, Any]]) -> str:
     """Monospace table of awareness levels (rendered in a Slack code block).
 
-    Columns: Agg = this product's blended CPA; Med / P75 = this product's median
-    and 75th-percentile per-ad CPA at the level; BrMed = the brand-wide median
-    benchmark for the level.
+    Columns: ROAS = revenue ÷ spend (blended); Agg = this product's blended CPA;
+    Med / P25 = this product's median and 25th-percentile per-ad CPA at the level
+    (P25 = the better-than-median target); BrMed = the brand-wide median benchmark.
     """
     if not rows:
         return "_no classified ads in scope_"
     header = (
-        f"{'Level':<15}{'Ads':>4} {'Spend':>8} "
-        f"{'Agg':>6} {'Med':>6} {'P75':>6} {'BrMed':>6}"
+        f"{'Level':<15}{'Ads':>4} {'Spend':>8} {'ROAS':>5} "
+        f"{'Agg':>5} {'Med':>5} {'P25':>5} {'BrMed':>5}"
     )
     lines = [header]
     for r in rows:
@@ -45,9 +50,9 @@ def _awareness_table(rows: List[Dict[str, Any]]) -> str:
         spend = r.get("spend")
         spend_s = f"${spend:,.0f}" if spend is not None else "-"
         lines.append(
-            f"{level:<15}{ads:>4} {spend_s:>8} "
-            f"{_cpa0(r.get('agg_cpa')):>6} {_cpa0(r.get('prod_med_cpa')):>6} "
-            f"{_cpa0(r.get('prod_p75_cpa')):>6} {_cpa0(r.get('brand_med_cpa')):>6}"
+            f"{level:<15}{ads:>4} {spend_s:>8} {_roas(r.get('roas')):>5} "
+            f"{_cpa0(r.get('agg_cpa')):>5} {_cpa0(r.get('prod_med_cpa')):>5} "
+            f"{_cpa0(r.get('prod_p25_cpa')):>5} {_cpa0(r.get('brand_med_cpa')):>5}"
         )
     return "```\n" + "\n".join(lines) + "\n```"
 
@@ -124,11 +129,11 @@ def render_brand_digest(data: Dict[str, Any]) -> Tuple[str, List[Dict[str, Any]]
     # only, no ad_status filter, so paused-but-spent ads are in BrMed too).
     blocks.append({"type": "context", "elements": [
         {"type": "mrkdwn", "text": (
-            "_*Agg* = this product's spend ÷ purchases (blended). "
-            "*Med* / *P75* = this product's median & 75th-pctile per-ad CPA at the level "
-            "(P75 = max-acceptable target for new ads — 75% of converting ads beat it). "
-            "*BrMed* = brand-wide median benchmark. All over the same ~30d window, "
-            "paused-but-spent included._"
+            "_*ROAS* = revenue ÷ spend (blended). *Agg* = spend ÷ purchases (blended). "
+            "*Med* / *P25* = this product's median & 25th-pctile per-ad CPA at the level "
+            "(P25 = the better-than-median target — only the top 25% of converting ads hit it). "
+            "*BrMed* = brand-wide median CPA benchmark. CPA cols over converting ads; "
+            "all over the same ~30d window, paused-but-spent included._"
         )}
     ]})
 

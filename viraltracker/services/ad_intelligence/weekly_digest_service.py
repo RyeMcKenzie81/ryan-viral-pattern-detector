@@ -167,14 +167,14 @@ class WeeklyDigestService:
                 if a and a not in level_by_ad and r.get("creative_awareness_level"):
                     level_by_ad[a] = r["creative_awareness_level"]
 
-        # spend + purchases per ad over the window (paginated)
+        # spend + purchases + revenue per ad over the window (paginated)
         perf: Dict[str, List[float]] = {}
         for i in range(0, len(ad_ids), 500):
             batch = ad_ids[i:i + 500]
             offset, page = 0, 1000
             while True:
                 rows = (self.supabase.table("meta_ads_performance")
-                        .select("meta_ad_id, spend, purchases")
+                        .select("meta_ad_id, spend, purchases, purchase_value")
                         .eq("brand_id", bid).gte("date", start_s).lte("date", end_s)
                         .in_("meta_ad_id", batch).order("id")
                         .range(offset, offset + page - 1).execute().data or [])
@@ -184,9 +184,10 @@ class WeeklyDigestService:
                     a = r.get("meta_ad_id")
                     if not a:
                         continue
-                    e = perf.setdefault(a, [0.0, 0.0])
+                    e = perf.setdefault(a, [0.0, 0.0, 0.0])
                     e[0] += _num(r.get("spend"))
                     e[1] += _num(r.get("purchases"))
+                    e[2] += _num(r.get("purchase_value"))
                 if len(rows) < page:
                     break
                 offset += page
@@ -194,25 +195,26 @@ class WeeklyDigestService:
         total_spend = round(sum(v[0] for v in perf.values()), 2)
         n_ads = len(ad_ids)
 
-        agg: Dict[str, List[float]] = {}  # level -> [ads, spend, purchases]
+        agg: Dict[str, List[float]] = {}  # level -> [ads, spend, purchases, revenue]
         cpa_samples: Dict[str, List[float]] = {}  # level -> per-ad CPAs (purchases>0)
-        for ad, (s, p) in perf.items():
+        for ad, (s, p, rev) in perf.items():
             # Bucket ads with no stored classification under "unclassified" so the
             # table sums to the product total (rather than silently dropping spend
             # and leaving a confusing gap vs the header). Classification coverage
             # is the daily job's responsibility — this just surfaces it honestly.
             lvl = level_by_ad.get(ad) or "unclassified"
-            e = agg.setdefault(lvl, [0, 0.0, 0.0])
+            e = agg.setdefault(lvl, [0, 0.0, 0.0, 0.0])
             e[0] += 1
             e[1] += s
             e[2] += p
+            e[3] += rev
             # Per-ad CPA only exists for ads that converted; non-converting ads
-            # have no defined CPA, so they don't enter the median/p75 sample.
+            # have no defined CPA, so they don't enter the median/p25 sample.
             if p > 0:
                 cpa_samples.setdefault(lvl, []).append(s / p)
 
         rows_out: List[Dict[str, Any]] = []
-        for lvl, (ads, s, p) in agg.items():
+        for lvl, (ads, s, p, rev) in agg.items():
             # The baselines job buckets ads with no awareness classification under
             # "unknown"; the digest labels that same population "unclassified". Map
             # across so the brand benchmark column shows for it too.
@@ -220,9 +222,10 @@ class WeeklyDigestService:
             samples = cpa_samples.get(lvl, [])
             rows_out.append({
                 "level": lvl, "ads": int(ads), "spend": round(s, 2),
+                "roas": round(rev / s, 2) if s else None,    # revenue ÷ spend (blended)
                 "agg_cpa": round(s / p, 2) if p else None,   # product blended
                 "prod_med_cpa": _percentile(samples, 50),    # product median (per-ad)
-                "prod_p75_cpa": _percentile(samples, 75),    # product 75th pctile target
+                "prod_p25_cpa": _percentile(samples, 25),    # product 25th pctile = target
                 "brand_med_cpa": baselines.get(base_key),    # brand-wide benchmark
             })
         # Order by awareness stage (Unaware → Most Aware) so it reads as a CPA

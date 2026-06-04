@@ -25,10 +25,10 @@ _DATA = {
         {
             "name": "Big Three Bundle", "total_spend": 3719.0, "spending_ads": 80, "no_ads": False,
             "awareness": [
-                {"level": "unaware", "ads": 31, "spend": 1200.0, "agg_cpa": 51.0,
-                 "prod_med_cpa": 48.0, "prod_p75_cpa": 62.0, "brand_med_cpa": 40.0},
-                {"level": "problem_aware", "ads": 28, "spend": 1400.0, "agg_cpa": 38.0,
-                 "prod_med_cpa": 36.0, "prod_p75_cpa": 44.0, "brand_med_cpa": 41.0},
+                {"level": "unaware", "ads": 31, "spend": 1200.0, "roas": 2.3, "agg_cpa": 51.0,
+                 "prod_med_cpa": 48.0, "prod_p25_cpa": 38.0, "brand_med_cpa": 40.0},
+                {"level": "problem_aware", "ads": 28, "spend": 1400.0, "roas": 1.8, "agg_cpa": 38.0,
+                 "prod_med_cpa": 36.0, "prod_p25_cpa": 29.0, "brand_med_cpa": 41.0},
             ],
             "markets": {"US": {"spend": 3719.0, "cpa": 46.0, "ads": 80, "currency": "CAD"}},
             "insight": "Unaware CPA 28% over baseline.",
@@ -57,8 +57,9 @@ class TestRenderer:
         assert "Big Three Bundle" in joined
         assert "```" in joined            # monospace awareness table
         assert "unaware" in joined
-        assert "P75" in joined and "BrMed" in joined  # product p75 + brand benchmark columns
-        assert "$62" in joined            # unaware prod_p75_cpa rendered (whole dollars)
+        assert "ROAS" in joined and "P25" in joined and "BrMed" in joined  # new columns
+        assert "$38" in joined            # unaware prod_p25_cpa rendered (whole dollars)
+        assert "2.3x" in joined           # unaware ROAS rendered
         assert "*US*" in joined            # market split line
         assert "3,719" in joined
 
@@ -204,9 +205,9 @@ class TestProductAwareness:
                 {"meta_ad_id": "a1", "creative_awareness_level": "solution_aware", "classified_at": "2026-05-01"},
             ],
             "meta_ads_performance": [
-                {"meta_ad_id": "a1", "spend": "100", "purchases": "2"},
-                {"meta_ad_id": "a2", "spend": "50", "purchases": "1"},
-                {"meta_ad_id": "a3", "spend": "200", "purchases": "5"},  # highest spend, but most-aware
+                {"meta_ad_id": "a1", "spend": "100", "purchases": "2", "purchase_value": "250"},
+                {"meta_ad_id": "a2", "spend": "50", "purchases": "1", "purchase_value": "100"},
+                {"meta_ad_id": "a3", "spend": "200", "purchases": "5", "purchase_value": "600"},  # highest spend, most-aware
             ],
         }
         svc = WeeklyDigestService(_CovSupa(data_map), MagicMock(), MagicMock())
@@ -223,7 +224,8 @@ class TestProductAwareness:
         # so product median == p75 == 50). brand_med_cpa from the baselines dict.
         assert rows[0]["spend"] == 100.0 and rows[0]["brand_med_cpa"] == 40.0
         assert rows[0]["agg_cpa"] == 50.0
-        assert rows[0]["prod_med_cpa"] == 50.0 and rows[0]["prod_p75_cpa"] == 50.0
+        assert rows[0]["prod_med_cpa"] == 50.0 and rows[0]["prod_p25_cpa"] == 50.0
+        assert rows[0]["roas"] == 2.5   # a1 revenue 250 / spend 100
 
     def test_unclassified_row_uses_unknown_baseline(self):
         """Ads with no classification bucket as 'unclassified'; that's the same
