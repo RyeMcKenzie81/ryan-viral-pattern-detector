@@ -128,6 +128,31 @@ class WeeklyDigestService:
             "unmapped_funnels": unmapped,
         }
 
+    def publish_html_report(self, brand_id: UUID, data: Dict[str, Any]) -> Optional[str]:
+        """Render the digest as a standalone HTML page, upload it to storage, and
+        return a signed URL for the 'Open full report' link in the Slack message.
+
+        Non-fatal: returns None on any failure so the Slack digest still posts
+        (just without the link). Uses the shared public cron-outputs bucket and a
+        permanent public URL (UUID-keyed path, so effectively unlisted) — the same
+        posture meta-ad-assets already uses for client creatives.
+        """
+        from .digest_renderer import render_brand_digest_html
+        try:
+            html_doc = render_brand_digest_html(data)
+            path = f"digests/{brand_id}/{date.today().isoformat()}.html"
+            bucket = self.supabase.storage.from_("cron-outputs")
+            bucket.upload(
+                path,
+                html_doc.encode("utf-8"),
+                file_options={"content-type": "text/html", "upsert": "true"},
+            )
+            url = bucket.get_public_url(path)
+            return url or None
+        except Exception as e:
+            logger.warning(f"Digest HTML publish failed for brand {brand_id} (non-fatal): {e}")
+            return None
+
     # ------------------------------------------------------------------ #
     # Awareness from stored classifications (no re-classification)
     # ------------------------------------------------------------------ #

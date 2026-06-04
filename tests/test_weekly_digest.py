@@ -315,6 +315,63 @@ class TestSpendingAdIds:
 
 
 # ---------------------------------------------------------------------------
+# HTML report + storage publish
+# ---------------------------------------------------------------------------
+
+
+class _Bucket:
+    def __init__(self, raise_upload=False):
+        self.calls = []
+        self.raise_upload = raise_upload
+
+    def upload(self, path, content, file_options=None):
+        if self.raise_upload:
+            raise RuntimeError("storage boom")
+        self.calls.append(("upload", path, file_options, content))
+        return {}
+
+    def get_public_url(self, path):
+        self.calls.append(("public", path))
+        return f"https://ex/storage/cron-outputs/{path}"
+
+
+class _StorageSupa:
+    def __init__(self, bucket):
+        self.storage = SimpleNamespace(from_=lambda name: bucket)
+
+
+class TestHtmlReport:
+    def test_render_html_has_grid_and_values(self):
+        from viraltracker.services.ad_intelligence.digest_renderer import render_brand_digest_html
+        doc = render_brand_digest_html(_DATA)
+        assert doc.startswith("<!DOCTYPE html>")
+        assert "Martin Clinic" in doc and "Big Three Bundle" in doc
+        assert "<table" in doc and "ROAS" in doc and "Cost / add-to-cart" in doc
+        # values: roas 2.3 -> 2.3x, cvr 0.021 -> 2.1%, p25 cpa 38 -> $38, p25 atc 15 -> $15
+        assert "2.3x" in doc and "2.1%" in doc and "$38" in doc and "$15" in doc
+        assert "No ads with spend in scope" in doc   # DHA Upgraded (no_ads)
+        assert "Coverage" in doc and "95%" in doc
+
+    def test_render_html_escapes_names(self):
+        from viraltracker.services.ad_intelligence.digest_renderer import render_brand_digest_html
+        doc = render_brand_digest_html(dict(_DATA, brand_name="A & <b>B</b>"))
+        assert "A &amp; &lt;b&gt;B&lt;/b&gt;" in doc
+        assert "<b>B</b>" not in doc   # not injected raw
+
+    def test_publish_uploads_and_returns_signed_url(self):
+        bucket = _Bucket()
+        svc = WeeklyDigestService(_StorageSupa(bucket), MagicMock(), MagicMock())
+        url = svc.publish_html_report("BRAND", _DATA)
+        assert url and url.startswith("https://ex/storage/cron-outputs/digests/BRAND/")
+        up = next(c for c in bucket.calls if c[0] == "upload")
+        assert up[2]["content-type"] == "text/html" and up[2]["upsert"] == "true"
+
+    def test_publish_non_fatal_on_error(self):
+        svc = WeeklyDigestService(_StorageSupa(_Bucket(raise_upload=True)), MagicMock(), MagicMock())
+        assert svc.publish_html_report("BRAND", _DATA) is None
+
+
+# ---------------------------------------------------------------------------
 # Job handler
 # ---------------------------------------------------------------------------
 
