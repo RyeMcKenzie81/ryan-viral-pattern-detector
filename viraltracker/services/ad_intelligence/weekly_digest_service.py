@@ -29,6 +29,25 @@ def _num(v) -> float:
         return 0.0
 
 
+def _percentile(values: List[float], pct: float) -> Optional[float]:
+    """Linear-interpolated percentile (numpy-style) of a list of values.
+
+    Returns None for an empty list. Used for the per-product median (p50) and
+    p75 of per-ad CPAs, so the figures are specific to the product + window
+    rather than the brand-wide baseline.
+    """
+    if not values:
+        return None
+    vals = sorted(values)
+    if len(vals) == 1:
+        return round(vals[0], 2)
+    k = (len(vals) - 1) * (pct / 100.0)
+    lo = int(k)
+    hi = min(lo + 1, len(vals) - 1)
+    frac = k - lo
+    return round(vals[lo] * (1 - frac) + vals[hi] * frac, 2)
+
+
 # Awareness stages, least-aware → most-aware, so the digest reads as a CPA
 # waterfall down the funnel. Anything off-ladder (unclassified/unknown) sorts last.
 _LEVEL_ORDER = {
@@ -176,6 +195,7 @@ class WeeklyDigestService:
         n_ads = len(ad_ids)
 
         agg: Dict[str, List[float]] = {}  # level -> [ads, spend, purchases]
+        cpa_samples: Dict[str, List[float]] = {}  # level -> per-ad CPAs (purchases>0)
         for ad, (s, p) in perf.items():
             # Bucket ads with no stored classification under "unclassified" so the
             # table sums to the product total (rather than silently dropping spend
@@ -186,18 +206,24 @@ class WeeklyDigestService:
             e[0] += 1
             e[1] += s
             e[2] += p
+            # Per-ad CPA only exists for ads that converted; non-converting ads
+            # have no defined CPA, so they don't enter the median/p75 sample.
+            if p > 0:
+                cpa_samples.setdefault(lvl, []).append(s / p)
 
         rows_out: List[Dict[str, Any]] = []
         for lvl, (ads, s, p) in agg.items():
             # The baselines job buckets ads with no awareness classification under
             # "unknown"; the digest labels that same population "unclassified". Map
-            # across so the unclassified row shows its brand-wide median reference
-            # instead of a needless blank.
+            # across so the brand benchmark column shows for it too.
             base_key = "unknown" if lvl == "unclassified" else lvl
+            samples = cpa_samples.get(lvl, [])
             rows_out.append({
                 "level": lvl, "ads": int(ads), "spend": round(s, 2),
-                "agg_cpa": round(s / p, 2) if p else None,
-                "med_cpa": baselines.get(base_key),
+                "agg_cpa": round(s / p, 2) if p else None,   # product blended
+                "prod_med_cpa": _percentile(samples, 50),    # product median (per-ad)
+                "prod_p75_cpa": _percentile(samples, 75),    # product 75th pctile target
+                "brand_med_cpa": baselines.get(base_key),    # brand-wide benchmark
             })
         # Order by awareness stage (Unaware → Most Aware) so it reads as a CPA
         # waterfall; unclassified/unknown fall to the end.
@@ -207,17 +233,17 @@ class WeeklyDigestService:
     @staticmethod
     def _insight(rows: List[Dict[str, Any]]) -> Optional[str]:
         """A simple 'what to work on': the level whose aggregate CPA is furthest
-        OVER its median baseline (≥20% gap, with real spend)."""
+        OVER the brand-wide median benchmark (≥20% gap, with real spend)."""
         worst, worst_gap = None, 0.0
         for r in rows:
-            a, m = r.get("agg_cpa"), r.get("med_cpa")
+            a, m = r.get("agg_cpa"), r.get("brand_med_cpa")
             if a and m and m > 0 and (r.get("spend") or 0) > 0:
                 gap = (a - m) / m
                 if gap > worst_gap:
                     worst, worst_gap = r, gap
         if worst and worst_gap >= 0.2:
             lvl = str(worst["level"]).replace("_", " ")
-            return f"{lvl} CPA {worst_gap * 100:.0f}% over baseline (${worst['agg_cpa']:.0f} vs ${worst['med_cpa']:.0f})."
+            return f"{lvl} CPA {worst_gap * 100:.0f}% over brand baseline (${worst['agg_cpa']:.0f} vs ${worst['brand_med_cpa']:.0f})."
         return None
 
     # ------------------------------------------------------------------ #

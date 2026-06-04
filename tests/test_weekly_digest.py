@@ -25,8 +25,10 @@ _DATA = {
         {
             "name": "Big Three Bundle", "total_spend": 3719.0, "spending_ads": 80, "no_ads": False,
             "awareness": [
-                {"level": "unaware", "ads": 31, "spend": 1200.0, "agg_cpa": 51.0, "med_cpa": 40.0},
-                {"level": "problem_aware", "ads": 28, "spend": 1400.0, "agg_cpa": 38.0, "med_cpa": 41.0},
+                {"level": "unaware", "ads": 31, "spend": 1200.0, "agg_cpa": 51.0,
+                 "prod_med_cpa": 48.0, "prod_p75_cpa": 62.0, "brand_med_cpa": 40.0},
+                {"level": "problem_aware", "ads": 28, "spend": 1400.0, "agg_cpa": 38.0,
+                 "prod_med_cpa": 36.0, "prod_p75_cpa": 44.0, "brand_med_cpa": 41.0},
             ],
             "markets": {"US": {"spend": 3719.0, "cpa": 46.0, "ads": 80, "currency": "CAD"}},
             "insight": "Unaware CPA 28% over baseline.",
@@ -55,6 +57,8 @@ class TestRenderer:
         assert "Big Three Bundle" in joined
         assert "```" in joined            # monospace awareness table
         assert "unaware" in joined
+        assert "P75" in joined and "BrMed" in joined  # product p75 + brand benchmark columns
+        assert "$62" in joined            # unaware prod_p75_cpa rendered (whole dollars)
         assert "*US*" in joined            # market split line
         assert "3,719" in joined
 
@@ -87,15 +91,25 @@ class TestRenderer:
 class TestInsight:
     def test_flags_worst_over_baseline(self):
         rows = [
-            {"level": "unaware", "spend": 1200.0, "agg_cpa": 60.0, "med_cpa": 40.0},   # +50%
-            {"level": "problem_aware", "spend": 1400.0, "agg_cpa": 38.0, "med_cpa": 41.0},  # under
+            {"level": "unaware", "spend": 1200.0, "agg_cpa": 60.0, "brand_med_cpa": 40.0},   # +50%
+            {"level": "problem_aware", "spend": 1400.0, "agg_cpa": 38.0, "brand_med_cpa": 41.0},  # under
         ]
         msg = WeeklyDigestService._insight(rows)
         assert msg is not None and "unaware" in msg and "50%" in msg
 
     def test_none_when_all_under_or_small(self):
-        rows = [{"level": "x", "spend": 100.0, "agg_cpa": 30.0, "med_cpa": 40.0}]  # under baseline
+        rows = [{"level": "x", "spend": 100.0, "agg_cpa": 30.0, "brand_med_cpa": 40.0}]  # under baseline
         assert WeeklyDigestService._insight(rows) is None
+
+
+class TestPercentile:
+    def test_interpolated_percentiles(self):
+        from viraltracker.services.ad_intelligence.weekly_digest_service import _percentile
+        assert _percentile([], 50) is None
+        assert _percentile([42.0], 75) == 42.0          # single sample
+        assert _percentile([10.0, 20.0, 30.0], 50) == 20.0   # median
+        # p75 of [10,20,30,40] = interpolate at k=2.25 → 30 + .25*(40-30) = 32.5
+        assert _percentile([10.0, 20.0, 30.0, 40.0], 75) == 32.5
 
 
 class _CovTable:
@@ -205,7 +219,11 @@ class TestProductAwareness:
         # Ordered by awareness STAGE (Unaware→Most Aware), NOT spend — so most_aware
         # ($200, highest spend) is LAST, and a1's newest level (unaware) wins over stale.
         assert [r["level"] for r in rows] == ["unaware", "problem_aware", "most_aware"]
-        assert rows[0]["spend"] == 100.0 and rows[0]["med_cpa"] == 40.0
+        # rows[0]=unaware (a1: spend 100, purchases 2 → per-ad CPA 50; single sample
+        # so product median == p75 == 50). brand_med_cpa from the baselines dict.
+        assert rows[0]["spend"] == 100.0 and rows[0]["brand_med_cpa"] == 40.0
+        assert rows[0]["agg_cpa"] == 50.0
+        assert rows[0]["prod_med_cpa"] == 50.0 and rows[0]["prod_p75_cpa"] == 50.0
 
     def test_unclassified_row_uses_unknown_baseline(self):
         """Ads with no classification bucket as 'unclassified'; that's the same
@@ -226,8 +244,8 @@ class TestProductAwareness:
             baselines={"unaware": 40.0, "unknown": 61.29},
         )
         by_level = {r["level"]: r for r in rows}
-        assert by_level["unclassified"]["med_cpa"] == 61.29   # mapped from "unknown"
-        assert by_level["unaware"]["med_cpa"] == 40.0
+        assert by_level["unclassified"]["brand_med_cpa"] == 61.29   # mapped from "unknown"
+        assert by_level["unaware"]["brand_med_cpa"] == 40.0
 
 
 class TestSpendingAdIds:

@@ -20,19 +20,34 @@ def _cpa(v: Optional[float]) -> str:
     return f"${v:,.2f}" if v is not None else "-"
 
 
+def _cpa0(v: Optional[float]) -> str:
+    """Compact whole-dollar CPA for the multi-column awareness table."""
+    return f"${v:,.0f}" if v is not None else "-"
+
+
 def _awareness_table(rows: List[Dict[str, Any]]) -> str:
-    """Monospace table of awareness levels (rendered in a Slack code block)."""
+    """Monospace table of awareness levels (rendered in a Slack code block).
+
+    Columns: Agg = this product's blended CPA; Med / P75 = this product's median
+    and 75th-percentile per-ad CPA at the level; BrMed = the brand-wide median
+    benchmark for the level.
+    """
     if not rows:
         return "_no classified ads in scope_"
-    header = f"{'Level':<16}{'Ads':>4}  {'Spend':>9}  {'AggCPA':>8}  {'MedCPA':>8}"
+    header = (
+        f"{'Level':<15}{'Ads':>4} {'Spend':>8} "
+        f"{'Agg':>6} {'Med':>6} {'P75':>6} {'BrMed':>6}"
+    )
     lines = [header]
     for r in rows:
-        level = str(r.get("level", "")).replace("_", " ")[:15]
+        level = str(r.get("level", "")).replace("_", " ")[:14]
         ads = r.get("ads", 0)
         spend = r.get("spend")
         spend_s = f"${spend:,.0f}" if spend is not None else "-"
         lines.append(
-            f"{level:<16}{ads:>4}  {spend_s:>9}  {_cpa(r.get('agg_cpa')):>8}  {_cpa(r.get('med_cpa')):>8}"
+            f"{level:<15}{ads:>4} {spend_s:>8} "
+            f"{_cpa0(r.get('agg_cpa')):>6} {_cpa0(r.get('prod_med_cpa')):>6} "
+            f"{_cpa0(r.get('prod_p75_cpa')):>6} {_cpa0(r.get('brand_med_cpa')):>6}"
         )
     return "```\n" + "\n".join(lines) + "\n```"
 
@@ -104,18 +119,16 @@ def render_brand_digest(data: Dict[str, Any]) -> Tuple[str, List[Dict[str, Any]]
         cov_txt += f"\n*Unmapped* (${coverage.get('unmapped', 0):,.0f}): {top}\n_Tag in Brand Manager → Offer Variants to attribute._"
     blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": cov_txt}})
 
-    # Fine print: how to read the two CPA columns. Both are spend-inclusive over
-    # the same ~30d window — the daily baselines job filters meta_ads_performance
-    # by brand + date only (no ad_status filter), so paused-but-spent ads are
-    # already in the median. AggCPA is THIS product's blended cost for the level;
-    # MedCPA is the BRAND-WIDE median for the level. Product-actual vs brand
-    # benchmark, by design — not a cohort mismatch.
+    # Fine print: how to read the CPA columns. All spend-inclusive over the same
+    # ~30d window (the baselines job filters meta_ads_performance by brand + date
+    # only, no ad_status filter, so paused-but-spent ads are in BrMed too).
     blocks.append({"type": "context", "elements": [
         {"type": "mrkdwn", "text": (
-            "_AggCPA = this product's spend ÷ purchases for the level. "
-            "MedCPA = brand-wide median for the level over the same ~30d window "
-            "(both include paused-but-spent ads). AggCPA above MedCPA = this "
-            "product runs costlier than the brand norm at that level._"
+            "_*Agg* = this product's spend ÷ purchases (blended). "
+            "*Med* / *P75* = this product's median & 75th-pctile per-ad CPA at the level "
+            "(P75 = max-acceptable target for new ads — 75% of converting ads beat it). "
+            "*BrMed* = brand-wide median benchmark. All over the same ~30d window, "
+            "paused-but-spent included._"
         )}
     ]})
 
