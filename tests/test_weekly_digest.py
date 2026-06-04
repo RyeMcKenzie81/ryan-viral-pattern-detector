@@ -207,6 +207,28 @@ class TestProductAwareness:
         assert [r["level"] for r in rows] == ["unaware", "problem_aware", "most_aware"]
         assert rows[0]["spend"] == 100.0 and rows[0]["med_cpa"] == 40.0
 
+    def test_unclassified_row_uses_unknown_baseline(self):
+        """Ads with no classification bucket as 'unclassified'; that's the same
+        population the baselines job stores under 'unknown', so the row should
+        show that brand-wide median rather than a blank."""
+        data_map = {
+            "ad_creative_classifications": [
+                {"meta_ad_id": "a1", "creative_awareness_level": "unaware", "classified_at": "2026-06-03"},
+            ],
+            "meta_ads_performance": [
+                {"meta_ad_id": "a1", "spend": "100", "purchases": "2"},
+                {"meta_ad_id": "a2", "spend": "50", "purchases": "1"},   # no classification
+            ],
+        }
+        svc = WeeklyDigestService(_CovSupa(data_map), MagicMock(), MagicMock())
+        _, _, rows = svc._product_awareness(
+            "BRAND", ["a1", "a2"], "2026-05-01", "2026-05-31",
+            baselines={"unaware": 40.0, "unknown": 61.29},
+        )
+        by_level = {r["level"]: r for r in rows}
+        assert by_level["unclassified"]["med_cpa"] == 61.29   # mapped from "unknown"
+        assert by_level["unaware"]["med_cpa"] == 40.0
+
 
 class TestSpendingAdIds:
     @pytest.mark.asyncio
