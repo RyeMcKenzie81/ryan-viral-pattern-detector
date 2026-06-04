@@ -26,6 +26,35 @@ from viraltracker.services.seo_pipeline.services.content_generation_service impo
 )
 
 
+class _ChainQuery:
+    """Chainable Supabase-query stand-in tolerant of arbitrary filter chaining.
+
+    select/eq/neq/order/limit all return self, so adding a filter (e.g. the
+    .neq('status','discovered') in list_articles) doesn't break the test mock.
+    """
+
+    def __init__(self, data):
+        self._data = data
+
+    def select(self, *a, **k):
+        return self
+
+    def eq(self, *a, **k):
+        return self
+
+    def neq(self, *a, **k):
+        return self
+
+    def order(self, *a, **k):
+        return self
+
+    def limit(self, *a, **k):
+        return self
+
+    def execute(self):
+        return MagicMock(data=self._data)
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -592,21 +621,15 @@ class TestArticleCRUD:
         assert result is None
 
     def test_list_articles(self, service):
-        mock_query = MagicMock()
-        mock_query.execute.return_value = MagicMock(data=[
+        service.supabase.table.return_value = _ChainQuery([
             {"id": "a1", "keyword": "kw1"},
             {"id": "a2", "keyword": "kw2"},
         ])
-        service.supabase.table.return_value.select.return_value.eq.return_value.order.return_value = mock_query
-
         result = service.list_articles(str(uuid4()))
         assert len(result) == 2
 
     def test_list_articles_with_status(self, service):
-        mock_query = MagicMock()
-        mock_query.execute.return_value = MagicMock(data=[])
-        service.supabase.table.return_value.select.return_value.eq.return_value.eq.return_value.order.return_value = mock_query
-
+        service.supabase.table.return_value = _ChainQuery([])
         result = service.list_articles(str(uuid4()), status="draft")
         assert result == []
 
@@ -618,10 +641,7 @@ class TestArticleCRUD:
         """Every ArticleStatus value should be accepted."""
         from viraltracker.services.seo_pipeline.models import ArticleStatus
 
-        mock_query = MagicMock()
-        mock_query.execute.return_value = MagicMock(data=[])
-        service.supabase.table.return_value.select.return_value.eq.return_value.eq.return_value.order.return_value = mock_query
-
+        service.supabase.table.return_value = _ChainQuery([])
         for status in ArticleStatus:
             result = service.list_articles(str(uuid4()), status=status.value)
             assert result == []

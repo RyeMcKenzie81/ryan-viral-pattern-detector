@@ -24,6 +24,38 @@ from viraltracker.services.seo_pipeline.services.cms_publisher_service import (
 )
 
 
+class _RecordingQuery:
+    """A chainable Supabase-query stand-in that records .eq() calls.
+
+    Supports arbitrary chaining depth (select/eq/is_/order/limit all return
+    self) so tests don't break when the production query adds another filter,
+    and exposes eq_calls so a test can assert which filters were applied.
+    """
+
+    def __init__(self, data):
+        self._data = data
+        self.eq_calls = []
+
+    def select(self, *a, **k):
+        return self
+
+    def eq(self, col, val):
+        self.eq_calls.append((col, val))
+        return self
+
+    def is_(self, *a, **k):
+        return self
+
+    def order(self, *a, **k):
+        return self
+
+    def limit(self, *a, **k):
+        return self
+
+    def execute(self):
+        return MagicMock(data=self._data)
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -135,6 +167,41 @@ class TestMarkdownToHtml:
         assert "<style>" in html
         assert "max-width: 100%" in html
 
+    def test_fenced_frontmatter_does_not_swallow_body(self, shopify_publisher):
+        """LLM wraps ONLY the frontmatter in a ```markdown fence — the orphaned
+        closing fence must not turn the whole article into a <pre> block."""
+        md = (
+            "```markdown\n"
+            '---\ntitle: "Test"\nkeyword: "x"\n---\n'
+            "```\n\n"
+            "# Real Heading\n\n"
+            "First paragraph of the actual article body.\n\n"
+            "## Second Section\n\nMore body text with **bold**.\n"
+        )
+        html = shopify_publisher._markdown_to_html(md)
+        assert "<pre>" not in html and "<pre><code>" not in html
+        assert "<h1>" in html and "<h2>" in html
+        assert "title:" not in html  # frontmatter stripped
+
+    def test_legit_code_block_in_body_is_preserved(self, shopify_publisher):
+        """P2 regression: an article whose body legitimately opens with a
+        balanced code block must keep it, not have its opening fence stripped.
+
+        The body here starts with a fenced code block. Because the fences are
+        balanced (even count), the orphan-fence guard must leave it alone.
+        """
+        md = (
+            '---\ntitle: "Coding Guide"\n---\n\n'
+            "```python\nprint('hello')\n```\n\n"
+            "Here is an explanation of the code above.\n"
+        )
+        html = shopify_publisher._markdown_to_html(md)
+        # The code block survives as a real <pre><code> block...
+        assert "<pre><code" in html
+        assert "print(" in html
+        # ...and the prose after it is still rendered (not swallowed).
+        assert "explanation of the code" in html
+
 
 # ---------------------------------------------------------------------------
 # ShopifyPublisher: Metafields
@@ -164,8 +231,14 @@ class TestMetafields:
         assert parsed["@type"] == "Article"
 
     def test_no_metafields_for_empty_data(self, shopify_publisher):
+        # Empty input emits no title/description metafields, but the schema_json
+        # metafield is ALWAYS sent (set to "{}") to clear any stale schema on
+        # re-publish — that is intentional, not a leak.
         metafields = shopify_publisher._build_metafields({})
-        assert len(metafields) == 0
+        keys = {(m["namespace"], m["key"]) for m in metafields}
+        assert ("global", "title_tag") not in keys
+        assert ("global", "description_tag") not in keys
+        assert keys == {("seo", "schema_json")}
 
     def test_schema_dict_serialized(self, shopify_publisher):
         data = {"schema_markup": {"@type": "FAQPage", "mainEntity": []}}
@@ -350,10 +423,8 @@ class TestPublisherFactory:
         assert result is None
 
     def test_get_publisher_shopify(self, publisher_service, shopify_config):
-        mock_table = MagicMock()
         integration = {"platform": "shopify", "config": shopify_config}
-        mock_table.select.return_value.eq.return_value.eq.return_value.execute.return_value = MagicMock(data=[integration])
-        publisher_service.supabase.table.return_value = mock_table
+        publisher_service.supabase.table.return_value = _RecordingQuery([integration])
 
         result = publisher_service.get_publisher("brand-id", "org-id")
         assert isinstance(result, ShopifyPublisher)
@@ -503,59 +574,36 @@ class TestPublishArticle:
 
 
 class TestHelperMethods:
-    def test_get_author_name(self, publisher_service):
-        mock_table = MagicMock()
-        mock_table.select.return_value.eq.return_value.execute.return_value = MagicMock(
-            data=[{"name": "Kevin Hinton"}]
+    def test_get_author_data(self, publisher_service):
+        publisher_service.supabase.table.return_value = _RecordingQuery(
+            [{"name": "Kevin Hinton", "bio": "A dad."}]
         )
-        publisher_service.supabase.table.return_value = mock_table
+        data = publisher_service._get_author_data("author-id")
+        assert data.get("name") == "Kevin Hinton"
 
-        name = publisher_service._get_author_name("author-id")
-        assert name == "Kevin Hinton"
+    def test_get_author_data_not_found(self, publisher_service):
+        publisher_service.supabase.table.return_value = _RecordingQuery([])
+        assert publisher_service._get_author_data("nonexistent") == {}
 
-    def test_get_author_name_not_found(self, publisher_service):
-        mock_table = MagicMock()
-        mock_table.select.return_value.eq.return_value.execute.return_value = MagicMock(data=[])
-        publisher_service.supabase.table.return_value = mock_table
-
-        name = publisher_service._get_author_name("nonexistent")
-        assert name == ""
-
-    def test_get_author_name_none(self, publisher_service):
-        name = publisher_service._get_author_name(None)
-        assert name == ""
+    def test_get_author_data_none(self, publisher_service):
+        assert publisher_service._get_author_data(None) == {}
 
     def test_org_filter_applied(self, publisher_service):
-        mock_table = MagicMock()
-        mock_select = MagicMock()
-        mock_eq1 = MagicMock()
-        mock_eq2 = MagicMock()
-        mock_eq2.execute.return_value = MagicMock(data=[])
-
-        mock_table.select.return_value = mock_select
-        mock_select.eq.return_value = mock_eq1
-        mock_eq1.eq.return_value = mock_eq2
-
-        publisher_service.supabase.table.return_value = mock_table
+        q = _RecordingQuery([])
+        publisher_service.supabase.table.return_value = q
 
         publisher_service._get_integration("brand-id", "org-123")
-        # Should chain .eq("organization_id", ...) for non-"all" org
-        assert mock_eq1.eq.called
+        # Non-"all" org must add an organization_id filter (alongside brand_id
+        # and platform).
+        assert ("organization_id", "org-123") in q.eq_calls
 
     def test_org_all_skips_filter(self, publisher_service):
-        mock_table = MagicMock()
-        mock_select = MagicMock()
-        mock_eq_brand = MagicMock()
-        mock_eq_brand.execute.return_value = MagicMock(data=[])
-
-        mock_table.select.return_value = mock_select
-        mock_select.eq.return_value = mock_eq_brand
-
-        publisher_service.supabase.table.return_value = mock_table
+        q = _RecordingQuery([])
+        publisher_service.supabase.table.return_value = q
 
         publisher_service._get_integration("brand-id", "all")
-        # Should NOT chain organization_id filter
-        mock_eq_brand.eq.assert_not_called()
+        # "all" superuser sentinel must NOT be used as an organization_id filter.
+        assert not any(col == "organization_id" for col, _ in q.eq_calls)
 
 
 # ---------------------------------------------------------------------------

@@ -82,14 +82,19 @@ def render_markdown_to_html(content: str) -> str:
     text = text.lstrip()
     text = re.sub(r'^---\n[\s\S]+?\n---\n?', '', text)
 
-    # Defensive guard: if anything above still left an orphaned code fence as the
-    # first line of the body, drop it. Without this, a single stray ``` turns the
-    # whole article into one giant code block. We only strip a *leading* fence
-    # (real article bodies don't open with a code block), and we re-check after
-    # frontmatter removal so we catch fences that the frontmatter was hiding.
+    # Defensive guard: a single orphaned code fence at the start of the body
+    # makes markdown-it swallow the whole article into one <pre> block. This
+    # happens when an LLM wraps only the frontmatter in a ```fence (the closing
+    # ``` is left behind once the frontmatter is removed). Only strip a LEADING
+    # fence when the total number of fences is ODD — i.e. genuinely unbalanced —
+    # so we never eat the opening fence of a legitimate, balanced code block that
+    # an article body might actually contain.
     text = text.lstrip()
-    text = re.sub(r'^```\w*[ \t]*\n', '', text)
-    text = text.lstrip()
+    if text.startswith('```'):
+        fence_count = len(re.findall(r'(?m)^```', text))
+        if fence_count % 2 == 1:
+            text = re.sub(r'^```\w*[ \t]*\n', '', text)
+            text = text.lstrip()
 
     # Remove schema markup sections
     text = re.sub(r'<!--[\s\S]*?SCHEMA MARKUP[\s\S]*?-->\s*```json\s*[\s\S]*?\s*```', '', text)
