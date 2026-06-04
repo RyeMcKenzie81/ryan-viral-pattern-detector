@@ -143,14 +143,52 @@ class TestHelpers:
         assert service._generate_slug("") == "article"
 
     def test_generate_filename_hero(self, service):
-        assert service._generate_filename("my-article", "hero", 0) == "my-article-hero.png"
+        assert service._generate_filename("my-article", "hero", 0) == "my-article-hero.webp"
 
     def test_generate_filename_inline(self, service):
-        assert service._generate_filename("my-article", "inline", 2) == "my-article-inline-2.png"
+        assert service._generate_filename("my-article", "inline", 2) == "my-article-inline-2.webp"
 
     def test_storage_path(self, service):
         path = service._storage_path("brand-123", "my-article", "my-article-hero.png")
         assert path == "seo-articles/brand-123/my-article/my-article-hero.png"
+
+
+# =============================================================================
+# PRODUCT SIZE HINT (prevents oversized-product renders)
+# =============================================================================
+
+class TestProductSizeHint:
+    def test_build_hint_from_dimensions(self, service):
+        hint = service._build_product_size_hint([
+            {
+                "name": "Yakety Pack",
+                "product_dimensions": "Length: 2.75 in\nWidth: 2.5 in\nHeight: 4 in\n\nCard deck that fits in hand.",
+            },
+        ])
+        assert "true real-world size" in hint.lower()
+        assert "2.75 in" in hint
+        assert "Card deck that fits in hand" in hint
+        assert "\n" not in hint  # collapsed to a single line
+
+    def test_build_hint_skips_products_without_dimensions(self, service):
+        hint = service._build_product_size_hint([
+            {"name": "Core Deck", "product_dimensions": None},
+            {"name": "Other", "product_dimensions": ""},
+        ])
+        assert hint == ""
+
+    def test_enhance_prompt_includes_size_hint_only_with_product(self, service):
+        hint = "Render the product at its TRUE real-world size. ref: small card deck"
+        # Product is referenced -> hint included
+        with_product = service._enhance_prompt(
+            "cards on a table", has_reference_images=True, product_size_hint=hint,
+        )
+        assert "TRUE real-world size" in with_product
+        # No product in this image -> hint NOT included
+        without_product = service._enhance_prompt(
+            "a generic landscape", has_reference_images=False, product_size_hint=hint,
+        )
+        assert "TRUE real-world size" not in without_product
 
 
 # =============================================================================
@@ -175,10 +213,18 @@ class TestGenerateArticleImages:
     async def test_generates_and_uploads(self, service):
         """Full flow: extract, generate, upload, replace."""
         import base64
+        from io import BytesIO
+        from PIL import Image
 
-        # Mock Gemini to return base64 image
-        fake_b64 = base64.b64encode(b"fake-png-data").decode()
+        # Gemini must return a REAL image: the service decodes it with PIL and
+        # re-encodes to WebP, so fake bytes would fail to decode.
+        buf = BytesIO()
+        Image.new("RGB", (4, 4), (123, 200, 255)).save(buf, format="PNG")
+        fake_b64 = base64.b64encode(buf.getvalue()).decode()
         service._gemini.generate_image = AsyncMock(return_value=fake_b64)
+
+        # Isolate from product-reference loading (covered by its own tests).
+        service._load_product_reference_data = AsyncMock(return_value=([], [], ""))
 
         # Mock Supabase storage upload
         storage_mock = MagicMock()
