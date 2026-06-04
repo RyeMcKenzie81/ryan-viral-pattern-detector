@@ -2609,6 +2609,22 @@ async def execute_weekly_product_digest_job(job: Dict) -> Dict[str, Any]:
         )
 
         text, blocks = render_brand_digest(data)
+
+        # Publish an HTML version to storage and add an "Open full report" button
+        # (webhook delivery can't attach files). Non-fatal: the Slack digest still
+        # posts without the link if storage/signing fails.
+        try:
+            report_url = digest.publish_html_report(_UUID(brand_id), data)
+            if report_url:
+                blocks.append({"type": "actions", "elements": [{
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "📊 Open full report", "emoji": True},
+                    "url": report_url, "style": "primary",
+                }]})
+                logs.append("Attached HTML report link")
+        except Exception as _e:
+            logs.append(f"HTML report link skipped (non-fatal): {_e}")
+
         webhook = params.get('webhook_url')
         slack = SlackService(webhook_url=webhook)
         if not slack.enabled:

@@ -1,12 +1,15 @@
-"""DigestRenderer — render the weekly per-product digest as Slack Block Kit.
+"""DigestRenderer — render the weekly per-product digest.
 
-Pure formatting: takes the assembled digest data (from WeeklyDigestService) and
-returns ``(fallback_text, blocks)`` for SlackService.send_message. Awareness
-breakdowns are rendered in a code block (monospace) because Slack does not render
-markdown tables. All money is labeled in the account currency (e.g. CAD).
+Pure formatting: takes the assembled digest data (from WeeklyDigestService).
+``render_brand_digest`` returns ``(fallback_text, blocks)`` for Slack (awareness
+breakdowns in monospace code blocks, since Slack does not render markdown tables).
+``render_brand_digest_html`` returns a standalone, styled HTML document with the
+full metric grid — uploaded to storage and linked from the Slack message for a
+cleaner view. All money is in the account currency (e.g. CAD).
 """
 from __future__ import annotations
 
+import html
 from typing import Any, Dict, List, Optional, Tuple
 
 
@@ -156,3 +159,145 @@ def render_brand_digest(data: Dict[str, Any]) -> Tuple[str, List[Dict[str, Any]]
 
     fallback = f"{brand} weekly digest — {len(products)} products, {date_range} ({currency})"
     return fallback, blocks
+
+
+# ---------------------------------------------------------------------------
+# HTML report (uploaded to storage; linked from the Slack message)
+# ---------------------------------------------------------------------------
+
+_HTML_STYLE = """
+*{box-sizing:border-box}
+body{margin:0;background:#f6f7f9;color:#1c2024;
+ font:14px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif}
+.wrap{max-width:1000px;margin:0 auto;padding:28px 20px 64px}
+h1{font-size:22px;margin:0 0 4px}
+.sub{color:#6b7280;margin:0 0 24px}
+.product{background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:18px 20px;
+ margin:0 0 18px;box-shadow:0 1px 2px rgba(0,0,0,.04)}
+.product h2{font-size:17px;margin:0 0 2px}
+.product .meta{color:#6b7280;font-size:13px;margin:0 0 14px}
+table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
+th,td{padding:7px 8px;text-align:right;border-bottom:1px solid #eef0f2;white-space:nowrap}
+thead th{font-size:11px;text-transform:uppercase;letter-spacing:.03em;color:#6b7280;
+ font-weight:600;border-bottom:1px solid #d1d5db}
+thead tr:first-child th{border-bottom:1px solid #eef0f2}
+td.lvl,th.lvl{text-align:left}
+td.lvl{font-weight:600;text-transform:capitalize}
+.grp{border-left:1px solid #eef0f2}
+.tgt{color:#0a7d3c;font-weight:600}
+.roas-low{color:#c1121f;font-weight:600}
+.roas-good{color:#0a7d3c;font-weight:600}
+.muted{color:#9aa1a9}
+.insight{margin:12px 0 0;padding:10px 12px;background:#fff7ed;border:1px solid #fed7aa;
+ border-radius:8px;font-size:13px}
+.dark{color:#9aa1a9;font-style:italic;margin:6px 0 0}
+.footer{background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:16px 20px;margin-top:8px}
+.footer ul{margin:8px 0 0;padding-left:18px;color:#4b5563}
+.fineprint{color:#9aa1a9;font-size:12px;margin-top:18px}
+"""
+
+
+def _h(v: Any) -> str:
+    return html.escape(str(v), quote=True)
+
+
+def _roas_cell(r: Dict[str, Any]) -> str:
+    v = r.get("roas")
+    if v is None:
+        return '<td class="muted">—</td>'
+    cls = "roas-low" if v < 1 else ("roas-good" if v >= 2 else "")
+    return f'<td class="{cls}">{_roas(v)}</td>'
+
+
+def _c(v: Optional[float], cls: str = "") -> str:
+    """A right-aligned whole-dollar CPA/ATC cell ('—', muted, when None)."""
+    klass = ("muted " + cls).strip() if v is None else cls
+    inner = "—" if v is None else _cpa0(v)
+    attr = f' class="{klass}"' if klass else ""
+    return f"<td{attr}>{inner}</td>"
+
+
+def _html_product(p: Dict[str, Any], currency: str) -> str:
+    name = _h(p.get("name", "Unnamed"))
+    if p.get("error"):
+        return f'<section class="product"><h2>{name}</h2><p class="dark">Could not analyze this product this run.</p></section>'
+    if p.get("no_ads"):
+        return f'<section class="product"><h2>{name}</h2><p class="dark">No ads with spend in scope this period.</p></section>'
+
+    spend = p.get("total_spend")
+    meta = f"{_money(spend, currency)} · {p.get('spending_ads', 0)} ads with spend"
+    mline = _market_line(p.get("markets") or {})
+    if mline:
+        meta += " · " + _h(mline.replace("*", ""))
+
+    rows = p.get("awareness") or []
+    body = ""
+    for r in rows:
+        lvl = _h(str(r.get("level", "")).replace("_", " "))
+        spend_s = f"${r['spend']:,.0f}" if r.get("spend") is not None else "—"
+        body += (
+            f"<tr><td class='lvl'>{lvl}</td><td>{r.get('ads', 0)}</td><td>{spend_s}</td>"
+            f"{_roas_cell(r)}<td>{_pct(r.get('cvr'))}</td>"
+            f"{_c(r.get('agg_cpa'), 'grp')}{_c(r.get('prod_med_cpa'))}{_c(r.get('prod_p25_cpa'), 'tgt')}"
+            f"{_c(r.get('agg_catc'), 'grp')}{_c(r.get('prod_med_catc'))}{_c(r.get('prod_p25_catc'), 'tgt')}"
+            f"{_c(r.get('brand_med_cpa'), 'grp muted')}</tr>"
+        )
+    table = (
+        "<table><thead>"
+        "<tr><th class='lvl' rowspan='2'>Level</th><th rowspan='2'>Ads</th><th rowspan='2'>Spend</th>"
+        "<th rowspan='2'>ROAS</th><th rowspan='2'>CVR</th>"
+        "<th class='grp' colspan='3'>CPA ($/purchase)</th><th class='grp' colspan='3'>Cost / add-to-cart</th>"
+        "<th class='grp' rowspan='2'>Brand CPA</th></tr>"
+        "<tr><th class='grp'>Agg</th><th>Med</th><th>P25</th>"
+        "<th class='grp'>Agg</th><th>Med</th><th>P25</th></tr></thead>"
+        f"<tbody>{body}</tbody></table>"
+    )
+    insight = f'<div class="insight">💡 {_h(p["insight"])}</div>' if p.get("insight") else ""
+    return f'<section class="product"><h2>{name}</h2><p class="meta">{meta}</p>{table}{insight}</section>'
+
+
+def render_brand_digest_html(data: Dict[str, Any]) -> str:
+    """Return a standalone, styled HTML document for the brand's weekly digest.
+
+    Same data as ``render_brand_digest`` but with the full metric grid (no Slack
+    width limit) and light styling, so the client can open a clean view from the
+    'Open full report' link in the Slack message.
+    """
+    brand = _h(data.get("brand_name", "Brand"))
+    currency = _h(data.get("currency", "USD"))
+    date_range = _h(data.get("date_range", "Last 30 days"))
+    products = data.get("products") or []
+    coverage = data.get("coverage") or {}
+    unmapped = data.get("unmapped_funnels") or []
+
+    sections = "".join(_html_product(p, data.get("currency", "USD")) for p in products)
+
+    cov_pct = coverage.get("pct")
+    cov = f"<b>Coverage:</b> {cov_pct:.0f}% of captured spend attributed" if cov_pct is not None else "<b>Coverage:</b> n/a"
+    if unmapped:
+        items = "".join(
+            f"<li>{_h(u['url'])} — ${u['spend']:,.0f}</li>" for u in unmapped[:8]
+        )
+        cov += (
+            f'<br><b>Unmapped</b> (${coverage.get("unmapped", 0):,.0f}) — tag in '
+            f"Brand Manager → Offer Variants:<ul>{items}</ul>"
+        )
+
+    fineprint = (
+        "ROAS = revenue ÷ spend. CVR = purchases ÷ link-clicks. CPA = $/purchase, "
+        "Cost/ATC = $/add-to-cart (Agg blended; Med & P25 are this product's per-ad "
+        "median &amp; top-quartile target — green P25 beats the median). Brand CPA = "
+        "brand-wide median benchmark. Cost figures over ads that converted; ~30-day "
+        "window, paused-but-spent ads included."
+    )
+    return (
+        "<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width, initial-scale=1'>"
+        f"<title>{brand} — Weekly Digest</title><style>{_HTML_STYLE}</style></head>"
+        f"<body><div class='wrap'><h1>📊 {brand} — Weekly Digest</h1>"
+        f"<p class='sub'>{date_range} · all spend in <b>{currency}</b> · {len(products)} product(s)</p>"
+        f"{sections}"
+        f"<div class='footer'>{cov}</div>"
+        f"<p class='fineprint'>{fineprint}</p>"
+        "</div></body></html>"
+    )
