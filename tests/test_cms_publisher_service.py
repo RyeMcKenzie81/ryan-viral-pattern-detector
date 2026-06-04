@@ -599,6 +599,52 @@ class TestRenderMarkdownToHtml:
         md = "# Hello\n\nWorld."
         assert shopify_publisher._markdown_to_html(md) == render_markdown_to_html(md)
 
+    # -- LLM code-fence wrappers (regression: articles published as raw markdown) --
+
+    def test_whole_document_code_fence_stripped(self):
+        """LLM wraps the entire doc in ```markdown ... ``` (closing fence at end)."""
+        md = (
+            "```markdown\n"
+            '---\ntitle: "Whole Doc"\n---\n\n'
+            "## Heading\n\nBody **bold** text.\n"
+            "```"
+        )
+        html = render_markdown_to_html(md)
+        assert "<pre>" not in html, "whole-doc fence leaked into a code block"
+        assert "<h2>" in html
+        assert "<strong>bold</strong>" in html
+
+    def test_frontmatter_only_code_fence_does_not_swallow_body(self):
+        """Regression for the production bug: the LLM wrapped ONLY the frontmatter
+        in a ```markdown fence, leaving an orphaned closing ``` that turned the
+        whole article into a single <pre><code> block when published to Shopify.
+        """
+        md = (
+            "```markdown\n"
+            '---\ntitle: "Fenced Frontmatter"\ndescription: "d"\ntags: [a, b]\n---\n'
+            "```\n\n"
+            '<img src="hero.webp" alt="hero" loading="eager" />\n\n'
+            "Opening paragraph that must not end up inside a code block.\n\n"
+            "## The Real Question\n\n"
+            "Body with a [link](https://example.com) and **bold**.\n\n"
+            "- bullet one\n- bullet two\n"
+        )
+        html = render_markdown_to_html(md)
+        assert "<pre>" not in html, "frontmatter-only fence swallowed the article into <pre>"
+        assert "<h2>" in html
+        assert "<li>bullet one</li>" in html
+        assert 'href="https://example.com"' in html
+        # Frontmatter must still be gone, not rendered as visible text.
+        assert "title:" not in html
+
+    def test_plain_frontmatter_no_fence_still_works(self):
+        """No code fence at all — the common case must keep working unchanged."""
+        md = '---\ntitle: "Plain"\n---\n\n## Heading\n\nBody **here**.'
+        html = render_markdown_to_html(md)
+        assert "<pre>" not in html
+        assert "<h2>" in html
+        assert "title:" not in html
+
 
 # ---------------------------------------------------------------------------
 # CMSPublisherService.sync_content_html

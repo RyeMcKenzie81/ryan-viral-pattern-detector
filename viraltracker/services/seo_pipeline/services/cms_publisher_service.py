@@ -46,8 +46,33 @@ def render_markdown_to_html(content: str) -> str:
     # Strip hero image from body FIRST — it's already the Shopify featured image.
     text = re.sub(r'<img[^>]*loading="eager"[^>]*/?>[\s]*', '', text)
 
-    # Strip LLM code fence wrapper
     text = text.strip()
+
+    # Strip LLM code fence wrappers. The model wraps its output in a ```markdown
+    # fence in two different ways, and BOTH must be handled or the article gets
+    # published as raw markdown inside a <pre> block:
+    #
+    #   (a) Whole-document wrapper — ```markdown at the very top, ``` at the very
+    #       bottom, everything in between.
+    #   (b) Frontmatter-only wrapper — ```markdown, the YAML frontmatter, then a
+    #       closing ``` *right after the frontmatter*, with the article body
+    #       outside the fence.
+    #
+    # Case (b) is the dangerous one: stripping only the opening fence leaves an
+    # orphaned closing ``` that, once the frontmatter is removed, becomes the
+    # first line of the body. markdown-it then reads it as the start of a fenced
+    # code block with no terminator and swallows the ENTIRE article into
+    # <pre><code>…</code></pre>. (Observed in production: bug fix 2026-06.)
+
+    # Case (b): unwrap a fence that contains only the frontmatter.
+    text = re.sub(
+        r'^```\w*[ \t]*\n(---\n[\s\S]+?\n---)[ \t]*\n```[ \t]*\n',
+        r'\1\n',
+        text,
+    )
+
+    # Case (a): whole-document wrapper — strip opening fence, and the matching
+    # closing fence only if the opening one was actually present.
     before = text
     text = re.sub(r'^```\w*\n', '', text)
     if text != before:
@@ -56,6 +81,15 @@ def render_markdown_to_html(content: str) -> str:
     # Strip YAML frontmatter
     text = text.lstrip()
     text = re.sub(r'^---\n[\s\S]+?\n---\n?', '', text)
+
+    # Defensive guard: if anything above still left an orphaned code fence as the
+    # first line of the body, drop it. Without this, a single stray ``` turns the
+    # whole article into one giant code block. We only strip a *leading* fence
+    # (real article bodies don't open with a code block), and we re-check after
+    # frontmatter removal so we catch fences that the frontmatter was hiding.
+    text = text.lstrip()
+    text = re.sub(r'^```\w*[ \t]*\n', '', text)
+    text = text.lstrip()
 
     # Remove schema markup sections
     text = re.sub(r'<!--[\s\S]*?SCHEMA MARKUP[\s\S]*?-->\s*```json\s*[\s\S]*?\s*```', '', text)
@@ -904,6 +938,115 @@ class CMSPublisherService:
 
         logger.info(f"Synced content_html for article {article_id}")
         return html
+
+    def repair_markdown_html(
+        self,
+        brand_id: str,
+        organization_id: str,
+        push_to_cms: bool = True,
+        dry_run: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Repair articles whose content_html was published as raw markdown.
+
+        Finds articles whose content_html contains a stray ``<pre><code>`` block
+        (the symptom of the fenced-frontmatter rendering bug), re-renders their
+        content_html from phase_c_output using the fixed renderer, and — if they
+        are already live in the CMS — pushes the corrected HTML back to Shopify.
+
+        Idempotent: once an article renders cleanly it no longer matches and is
+        skipped on subsequent runs.
+
+        Args:
+            brand_id: Brand UUID
+            organization_id: Organization UUID
+            push_to_cms: If True, re-push corrected HTML to Shopify for articles
+                that have a cms_article_id. If False, only fix the DB column.
+            dry_run: If True, report what *would* change without writing anything.
+
+        Returns:
+            Dict with counts: scanned, repaired_db, repushed, skipped, errors,
+            and a list of affected article ids.
+        """
+        # Find candidates: content_html contains a code block that shouldn't be
+        # there. We re-check each one after re-render to confirm it's actually
+        # fixed before counting it.
+        candidates = (
+            self.supabase.table("seo_articles")
+            .select("id, keyword, content_html, phase_c_output, cms_article_id")
+            .eq("brand_id", brand_id)
+            .like("content_html", "%<pre><code>%")
+            .execute()
+        )
+        rows = candidates.data or []
+
+        publisher = None
+        if push_to_cms and not dry_run:
+            publisher = self.get_publisher(brand_id, organization_id)
+
+        repaired_db = 0
+        repushed = 0
+        skipped = 0
+        errors: List[str] = []
+        affected: List[str] = []
+
+        for row in rows:
+            article_id = row["id"]
+            phase_c = row.get("phase_c_output") or ""
+            if not phase_c:
+                skipped += 1
+                logger.warning(
+                    f"repair_markdown_html: article {article_id} has <pre> but no "
+                    "phase_c_output to re-render from — skipping"
+                )
+                continue
+
+            new_html = render_markdown_to_html(phase_c)
+            if "<pre><code>" in new_html:
+                # Re-render didn't fix it — leave it for manual review rather than
+                # silently re-pushing still-broken content.
+                skipped += 1
+                logger.warning(
+                    f"repair_markdown_html: article {article_id} still renders a "
+                    "code block after re-render — needs manual review"
+                )
+                continue
+
+            affected.append(article_id)
+
+            if dry_run:
+                continue
+
+            try:
+                self.supabase.table("seo_articles").update(
+                    {"content_html": new_html}
+                ).eq("id", article_id).execute()
+                repaired_db += 1
+            except Exception as e:
+                errors.append(f"{article_id}: DB update failed: {e}")
+                continue
+
+            cms_id = row.get("cms_article_id")
+            if push_to_cms and publisher and cms_id:
+                try:
+                    publisher.update(
+                        cms_id, {"body_html": new_html}, body_only=True
+                    )
+                    repushed += 1
+                except Exception as e:
+                    errors.append(f"{article_id}: CMS push failed: {e}")
+
+        result = {
+            "scanned": len(rows),
+            "repaired_db": repaired_db,
+            "repushed": repushed,
+            "skipped": skipped,
+            "errors": errors,
+            "affected_article_ids": affected,
+            "dry_run": dry_run,
+        }
+        logger.info(f"repair_markdown_html for brand {brand_id}: {result}")
+        return result
 
     def sync_article_statuses(
         self,
