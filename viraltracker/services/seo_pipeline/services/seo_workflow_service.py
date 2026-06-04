@@ -191,24 +191,12 @@ class SEOWorkflowService:
                 "Use the SEO Workflow > Quick Write flow to create a new article."
             )
 
-        # Clear generated outputs so Phase A starts from a clean slate. The
-        # phase methods will overwrite their own fields, but we explicitly null
-        # the rest so half-stale state from the previous run can't bleed in.
-        self.supabase.table("seo_articles").update({
-            "status": "draft",
-            "phase": "a",
-            "phase_a_output": None,
-            "phase_b_output": None,
-            "phase_c_output": None,
-            "content_markdown": None,
-            "content_html": None,
-            "word_count": None,
-            "image_metadata": None,
-            "image_status": "none",
-            "seo_title": None,
-            "meta_description": None,
-            "schema_markup": None,
-        }).eq("id", article_id).execute()
+        # NOTE: we deliberately do NOT clear the article's generated fields here.
+        # The wipe happens inside _execute_one_off's existing_article_id branch,
+        # AFTER the dedup-unique-index job insert succeeds and the worker thread
+        # has actually started. Wiping up-front meant that a same-keyword dedup
+        # collision (or a crash before Phase A) left the article permanently
+        # blank with no running job — unrecoverable from the UI.
 
         config = {
             "keyword": keyword,
@@ -373,13 +361,28 @@ class SEOWorkflowService:
 
             if existing_article_id:
                 article_id = existing_article_id
-                # Make sure the existing row points at the resolved keyword and is
-                # in a clean state to be re-driven through the phases.
+                # Regeneration: re-point the row at the resolved keyword and wipe
+                # all generated outputs so Phase A/B/C start from a clean slate.
+                # This wipe lives HERE (inside the running job, after the dedup
+                # insert succeeded and the semaphore was acquired) rather than in
+                # regenerate_article, so a dedup collision or pre-Phase-A crash
+                # can never leave the article blanked with no job to refill it.
                 sb.table("seo_articles").update({
                     "keyword_id": keyword_id,
                     "project_id": project_id,
                     "status": "draft",
                     "phase": "a",
+                    "phase_a_output": None,
+                    "phase_b_output": None,
+                    "phase_c_output": None,
+                    "content_markdown": None,
+                    "content_html": None,
+                    "word_count": None,
+                    "image_metadata": None,
+                    "image_status": "none",
+                    "seo_title": None,
+                    "meta_description": None,
+                    "schema_markup": None,
                 }).eq("id", article_id).execute()
             else:
                 article_data = {
