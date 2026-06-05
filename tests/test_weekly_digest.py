@@ -351,6 +351,18 @@ class TestHtmlReport:
         assert "2.3x" in doc and "2.1%" in doc and "$38" in doc and "$15" in doc
         assert "No ads with spend in scope" in doc   # DHA Upgraded (no_ads)
         assert "Coverage" in doc and "95%" in doc
+        assert "Space Grotesk" in doc and "topbar" in doc   # Ryan-branded fonts/header
+
+    def test_render_html_logo_present_and_escaped(self):
+        from viraltracker.services.ad_intelligence.digest_renderer import render_brand_digest_html
+        data = dict(_DATA, brand_logo_url="https://cdn/logo.png?v=1&width=600")
+        doc = render_brand_digest_html(data)
+        assert "<img class='logo'" in doc
+        assert "https://cdn/logo.png?v=1&amp;width=600" in doc   # & escaped in attr
+
+    def test_render_html_no_logo_when_absent(self):
+        from viraltracker.services.ad_intelligence.digest_renderer import render_brand_digest_html
+        assert "class='logo'" not in render_brand_digest_html(_DATA)   # _DATA has no logo
 
     def test_render_html_escapes_names(self):
         from viraltracker.services.ad_intelligence.digest_renderer import render_brand_digest_html

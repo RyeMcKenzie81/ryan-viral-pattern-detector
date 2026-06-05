@@ -68,8 +68,12 @@ class WeeklyDigestService:
         bid = str(brand_id)
         currency = await self.meta.get_brand_currency(brand_id)
 
-        bn = self.supabase.table("brands").select("name").eq("id", bid).limit(1).execute()
-        brand_name = (bn.data[0]["name"] if bn.data else "Brand")
+        # select(*) so a missing logo_url column (pre-migration) degrades to no
+        # logo rather than 400-ing the whole digest.
+        bn = self.supabase.table("brands").select("*").eq("id", bid).limit(1).execute()
+        brow = bn.data[0] if bn.data else {}
+        brand_name = brow.get("name") or "Brand"
+        brand_logo_url = brow.get("logo_url")
 
         end = date.today()
         start = end - timedelta(days=days_back)
@@ -121,6 +125,7 @@ class WeeklyDigestService:
 
         return {
             "brand_name": brand_name,
+            "brand_logo_url": brand_logo_url,
             "currency": currency,
             "date_range": f"Last {days_back} days",
             "products": products_out,

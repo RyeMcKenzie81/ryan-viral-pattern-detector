@@ -166,34 +166,44 @@ def render_brand_digest(data: Dict[str, Any]) -> Tuple[str, List[Dict[str, Any]]
 # ---------------------------------------------------------------------------
 
 _HTML_STYLE = """
+:root{--pink:#FF3D8B;--pink-soft:#FFD9E6;--pink-deep:#D6266B;
+ --blue:#1E5BFF;--blue-soft:#D6E0FF;--blue-deep:#0F3BCC;
+ --ink:#0E1330;--ink-2:#3A4060;--paper:#FFF7F2;--paper-2:#FFEDE2}
 *{box-sizing:border-box}
-body{margin:0;background:#f6f7f9;color:#1c2024;
- font:14px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif}
-.wrap{max-width:1000px;margin:0 auto;padding:28px 20px 64px}
-h1{font-size:22px;margin:0 0 4px}
-.sub{color:#6b7280;margin:0 0 24px}
-.product{background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:18px 20px;
- margin:0 0 18px;box-shadow:0 1px 2px rgba(0,0,0,.04)}
-.product h2{font-size:17px;margin:0 0 2px}
-.product .meta{color:#6b7280;font-size:13px;margin:0 0 14px}
+body{margin:0;background:var(--paper);color:var(--ink);
+ font:15px/1.55 Inter,system-ui,-apple-system,sans-serif}
+.wrap{max-width:1040px;margin:0 auto;padding:0 18px 64px}
+.topbar{display:flex;align-items:center;gap:18px;background:var(--blue);color:#fff;
+ border:2px solid var(--ink);border-radius:18px;padding:22px 24px;margin:24px 0 22px;
+ box-shadow:6px 6px 0 rgba(14,19,48,.14)}
+.topbar .logo{height:44px;width:auto;flex:0 0 auto}
+.kicker{font:700 12px/1 'Space Grotesk',sans-serif;letter-spacing:.14em;text-transform:uppercase;opacity:.85}
+.topbar h1{font:700 30px/1.1 'Space Grotesk',sans-serif;margin:6px 0 4px}
+.topbar .sub{font-size:13px;opacity:.92}
+.product{background:#fff;border:2px solid var(--ink);border-radius:16px;padding:18px 20px;
+ margin:0 0 18px;box-shadow:5px 5px 0 rgba(14,19,48,.12)}
+.product h2{font:700 19px/1.2 'Space Grotesk',sans-serif;margin:0 0 2px}
+.product .meta{color:var(--ink-2);font-size:13px;margin:0 0 14px}
 table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
-th,td{padding:7px 8px;text-align:right;border-bottom:1px solid #eef0f2;white-space:nowrap}
-thead th{font-size:11px;text-transform:uppercase;letter-spacing:.03em;color:#6b7280;
- font-weight:600;border-bottom:1px solid #d1d5db}
-thead tr:first-child th{border-bottom:1px solid #eef0f2}
+th,td{padding:8px 8px;text-align:right;border-bottom:1px solid var(--paper-2);white-space:nowrap}
+thead th{font:700 11px/1 'Space Grotesk',sans-serif;text-transform:uppercase;letter-spacing:.04em;
+ color:var(--ink-2);border-bottom:2px solid var(--ink)}
+thead tr:first-child th{border-bottom:1px solid var(--paper-2)}
 td.lvl,th.lvl{text-align:left}
-td.lvl{font-weight:600;text-transform:capitalize}
-.grp{border-left:1px solid #eef0f2}
-.tgt{color:#0a7d3c;font-weight:600}
-.roas-low{color:#c1121f;font-weight:600}
-.roas-good{color:#0a7d3c;font-weight:600}
-.muted{color:#9aa1a9}
-.insight{margin:12px 0 0;padding:10px 12px;background:#fff7ed;border:1px solid #fed7aa;
- border-radius:8px;font-size:13px}
-.dark{color:#9aa1a9;font-style:italic;margin:6px 0 0}
-.footer{background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:16px 20px;margin-top:8px}
-.footer ul{margin:8px 0 0;padding-left:18px;color:#4b5563}
-.fineprint{color:#9aa1a9;font-size:12px;margin-top:18px}
+td.lvl{font-weight:700;text-transform:capitalize}
+.grp{border-left:1px solid var(--paper-2)}
+.tgt{color:var(--pink-deep);font-weight:700}
+.roas-low{color:var(--pink-deep);font-weight:700}
+.roas-good{color:var(--blue-deep);font-weight:700}
+.muted{color:#a7adba}
+.insight{margin:14px 0 0;padding:11px 14px;background:var(--pink-soft);border:2px solid var(--ink);
+ border-radius:12px;font-size:13px;font-weight:600}
+.dark{color:var(--ink-2);font-style:italic;margin:6px 0 0}
+.footer{background:#fff;border:2px solid var(--ink);border-radius:16px;padding:16px 20px;
+ box-shadow:5px 5px 0 rgba(14,19,48,.12)}
+.footer ul{margin:8px 0 0;padding-left:18px;color:var(--ink-2)}
+.fineprint{color:var(--ink-2);font-size:12px;margin-top:18px;opacity:.85}
+a{color:var(--blue-deep)}
 """
 
 
@@ -266,6 +276,7 @@ def render_brand_digest_html(data: Dict[str, Any]) -> str:
     brand = _h(data.get("brand_name", "Brand"))
     currency = _h(data.get("currency", "USD"))
     date_range = _h(data.get("date_range", "Last 30 days"))
+    logo_url = data.get("brand_logo_url")
     products = data.get("products") or []
     coverage = data.get("coverage") or {}
     unmapped = data.get("unmapped_funnels") or []
@@ -286,16 +297,27 @@ def render_brand_digest_html(data: Dict[str, Any]) -> str:
     fineprint = (
         "ROAS = revenue ÷ spend. CVR = purchases ÷ link-clicks. CPA = $/purchase, "
         "Cost/ATC = $/add-to-cart (Agg blended; Med & P25 are this product's per-ad "
-        "median &amp; top-quartile target — green P25 beats the median). Brand CPA = "
+        "median &amp; top-quartile target — the highlighted P25 beats the median). Brand CPA = "
         "brand-wide median benchmark. Cost figures over ads that converted; ~30-day "
         "window, paused-but-spent ads included."
+    )
+    logo_html = f"<img class='logo' src='{_h(logo_url)}' alt='{brand} logo'>" if logo_url else ""
+    fonts = (
+        "<link rel='preconnect' href='https://fonts.googleapis.com'>"
+        "<link rel='preconnect' href='https://fonts.gstatic.com' crossorigin>"
+        "<link rel='stylesheet' href='https://fonts.googleapis.com/css2?"
+        "family=Inter:wght@400;600;700&family=Space+Grotesk:wght@500;700&display=swap'>"
     )
     return (
         "<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'>"
         "<meta name='viewport' content='width=device-width, initial-scale=1'>"
-        f"<title>{brand} — Weekly Digest</title><style>{_HTML_STYLE}</style></head>"
-        f"<body><div class='wrap'><h1>📊 {brand} — Weekly Digest</h1>"
-        f"<p class='sub'>{date_range} · all spend in <b>{currency}</b> · {len(products)} product(s)</p>"
+        f"{fonts}<title>{brand} — Weekly Digest</title><style>{_HTML_STYLE}</style></head>"
+        "<body><div class='wrap'>"
+        f"<header class='topbar'>{logo_html}<div>"
+        "<div class='kicker'>Weekly Performance Digest</div>"
+        f"<h1>{brand}</h1>"
+        f"<div class='sub'>{date_range} · all spend in {currency} · {len(products)} product(s)</div>"
+        "</div></header>"
         f"{sections}"
         f"<div class='footer'>{cov}</div>"
         f"<p class='fineprint'>{fineprint}</p>"
