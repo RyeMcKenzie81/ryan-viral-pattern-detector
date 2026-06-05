@@ -38,6 +38,13 @@ from uuid import UUID
 
 from .helpers import _safe_numeric
 from .models import AwarenessLevel, BatchClassificationResult, CreativeClassification, CreativeFormat
+# Video-analysis versioning + model. The video deep-analysis prompt is versioned
+# independently of this classifier's CURRENT_PROMPT_VERSION, so a video-prompt
+# bump must invalidate the classify-once cache for video ads (see classify_batch).
+from ..video_analysis_service import (
+    PROMPT_VERSION as VIDEO_ANALYSIS_PROMPT_VERSION,
+    VIDEO_ANALYSIS_MODEL,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -66,11 +73,17 @@ Return ONLY valid JSON with these fields:
 
 Return ONLY the JSON object, no other text."""
 
-# Video-specific classification prompt — focuses on the first 3-5 seconds
+# Video-specific classification prompt — judges awareness from the opening (~10s).
+# Degraded single-value fallback used only when VideoAnalysisService is unavailable;
+# the deep path captures opening AND ending (see DEEP_VIDEO_ANALYSIS_PROMPT).
 VIDEO_CLASSIFICATION_PROMPT = """Analyze this video ad creative and return a JSON classification.
 
-Focus on the FIRST 3-5 SECONDS of the video to determine awareness level.
-The opening hook, framing, and first statement are the primary signals.
+Determine awareness level from the video's OPENING — roughly the FIRST 10 SECONDS —
+i.e. the stage the messaging positions the viewer at (their entry temperature), NOT
+where the video ends. Video ads commonly move the viewer down the funnel, so judge by
+the opening, not the close. If the first moments are a pure attention-grab / pattern
+interrupt unrelated to the offer, judge by the first substantive message that follows
+within that ~10s window.
 
 Also consider the ad copy below:
 
@@ -400,12 +413,12 @@ class ClassifierService:
         spend_order = await self._get_ad_spend_order(brand_id, meta_ad_ids)
         sorted_ids = sorted(meta_ad_ids, key=lambda x: spend_order.get(x, 0), reverse=True)
 
-        # Batch-prefetch all ad data and classifications in bulk (4 queries
-        # instead of ~5 per ad). This reduces 188 ads × 5 queries = 940
-        # sequential HTTP calls down to 4 bulk queries. The ad-data map is no
-        # longer needed for the cache decision (see _match_prefetched_classification);
-        # only the classification map is consulted here.
-        _prefetched_ads, prefetched_classifications = await self._batch_prefetch(
+        # Batch-prefetch all ad data, classifications, and video-analysis versions
+        # in bulk (5 queries instead of ~5 per ad). The ad-data map (is_video) and
+        # the video-analysis version map ARE consulted in the cache decision so a
+        # video-prompt bump invalidates video classify-once (see the cache block
+        # below + _video_analysis_is_stale); the classification map drives the rest.
+        prefetched_ads, prefetched_classifications, video_analysis_versions = await self._batch_prefetch(
             brand_id, sorted_ids
         )
 
@@ -423,7 +436,16 @@ class ClassifierService:
                     prefetched_classifications.get(meta_ad_id, []),
                     force=force,
                 )
-                if existing:
+                # 1A: a video ad's cached classification is only reusable if its OWN
+                # linked deep analysis is at the current video-analysis prompt
+                # version. Otherwise the awareness was judged by a stale video prompt
+                # (or the analysis row was never linked) — fall through to re-analyze.
+                # Image/other ads are unaffected and stay cached.
+                if existing and not self._video_analysis_is_stale(
+                    existing,
+                    prefetched_ads.get(meta_ad_id, {}),
+                    video_analysis_versions,
+                ):
                     classifications.append(self._row_to_model(existing))
                     cached_count += 1
                     continue
@@ -495,9 +517,11 @@ class ClassifierService:
             meta_ad_ids: List of meta ad IDs.
 
         Returns:
-            Tuple of (ad_data_map, classifications_map) where:
+            Tuple of (ad_data_map, classifications_map, video_analysis_versions):
             - ad_data_map: Dict[meta_ad_id] -> ad_data dict (same shape as _fetch_ad_data)
             - classifications_map: Dict[meta_ad_id] -> List[classification rows]
+            - video_analysis_versions: Dict[analysis_id(str)] -> prompt_version, for
+              the video classify-once staleness check.
         """
         brand_str = str(brand_id)
         ad_data_map: Dict[str, Dict[str, Any]] = {
@@ -645,14 +669,46 @@ class ClassifierService:
         except Exception as e:
             logger.warning(f"Batch prefetch classifications failed: {e}")
 
+        # --- Query 5: CURRENT-version ad_video_analysis ids (video classify-once) ---
+        # Map analysis_id -> prompt_version so the cache decision can tell whether a
+        # video ad's cached classification points at a CURRENT-version deep analysis.
+        # The video-analysis prompt is versioned independently of this classifier's
+        # prompt_version, so a video-prompt bump must invalidate classify-once for
+        # video ads (see _video_analysis_is_stale).
+        #
+        # Scoped to the current version on purpose: ad_video_analysis is append-only,
+        # so a single ad accumulates one row per prompt version (v1/v2/v3...). Filtering
+        # to the current version keeps the map at ~1 row/ad, so the row cap is
+        # effectively unreachable and a linked-but-OLD analysis is simply absent from
+        # the map (-> correctly treated as stale by _video_analysis_is_stale).
+        video_analysis_versions: Dict[str, str] = {}
+        try:
+            va_limit = max(1000, len(meta_ad_ids) * 3)
+            va_result = self.supabase.table("ad_video_analysis").select(
+                "id, prompt_version"
+            ).eq(
+                "brand_id", brand_str
+            ).eq(
+                "prompt_version", VIDEO_ANALYSIS_PROMPT_VERSION
+            ).in_(
+                "meta_ad_id", meta_ad_ids
+            ).limit(va_limit).execute()
+            for row in (va_result.data or []):
+                vid = row.get("id")
+                if vid:
+                    video_analysis_versions[str(vid)] = row.get("prompt_version")
+        except Exception as e:
+            logger.warning(f"Batch prefetch video-analysis versions failed: {e}")
+
         logger.info(
             f"Batch prefetch complete for {len(meta_ad_ids)} ads: "
             f"{len(canonical_urls)} destinations, "
             f"{len(video_ad_ids)} video ads, "
-            f"{sum(len(v) for v in classifications_map.values())} cached classifications"
+            f"{sum(len(v) for v in classifications_map.values())} cached classifications, "
+            f"{len(video_analysis_versions)} video analyses"
         )
 
-        return ad_data_map, classifications_map
+        return ad_data_map, classifications_map, video_analysis_versions
 
     def _match_prefetched_classification(
         self,
@@ -688,6 +744,42 @@ class ClassifierService:
         if force or not cached_rows:
             return None
         return cached_rows[0]  # most recent (rows are ordered classified_at desc)
+
+    def _video_analysis_is_stale(
+        self,
+        cached_row: Dict,
+        ad_data: Dict,
+        video_analysis_versions: Dict[str, str],
+    ) -> bool:
+        """True if this cached classification is for a VIDEO ad whose linked deep
+        analysis is NOT at the current video-analysis prompt version (so it must be
+        re-analyzed despite being a current-version classification).
+
+        Classify-once normally treats any current prompt+schema classification as
+        reusable. But the video deep-analysis prompt (VideoAnalysisService) is
+        versioned INDEPENDENTLY of this classifier's CURRENT_PROMPT_VERSION, so:
+          - a video-prompt bump (e.g. v2 -> v3 opening/ending) would otherwise
+            leave the old whole-video awareness cached forever, and
+          - the convergence hole where the analysis row saved but the classifier
+            row never linked it would never self-heal,
+        unless we require the cached row's OWN video_analysis_id to resolve to a
+        CURRENT-version analysis — not merely that some current analysis exists.
+
+        Image/other ads return False (stay cached) — this is O(1) and never touches
+        the network.
+        """
+        is_video = bool(ad_data.get("is_video")) or str(
+            cached_row.get("creative_format") or ""
+        ).startswith("video")
+        if not is_video:
+            return False
+        va_id = cached_row.get("video_analysis_id")
+        if not va_id:
+            # Video ad whose cached classification was never linked to a deep
+            # analysis -> it has no real opening-awareness; (re)analyze it.
+            return True
+        # Missing from the map (deleted/other-brand) or an older version -> stale.
+        return video_analysis_versions.get(str(va_id)) != VIDEO_ANALYSIS_PROMPT_VERSION
 
     async def get_latest_classification(
         self,
@@ -1440,6 +1532,10 @@ class ClassifierService:
             "claims_made": result.claims_made,
             "awareness_level": result.awareness_level,
             "awareness_confidence": result.awareness_confidence,
+            "awareness_level_opening": result.awareness_level_opening,
+            "awareness_level_opening_confidence": result.awareness_level_opening_confidence,
+            "awareness_level_ending": result.awareness_level_ending,
+            "awareness_level_ending_confidence": result.awareness_level_ending_confidence,
             "target_persona": result.target_persona,
             "emotional_drivers": result.emotional_drivers,
             "production_quality": result.production_quality,
@@ -1455,9 +1551,11 @@ class ClassifierService:
             hook_transcript = f"{hook_transcript} [{result.hook_transcript_overlay}]".strip()
 
         return {
-            # Awareness level (from video analysis)
-            "creative_awareness_level": result.awareness_level,
-            "creative_awareness_confidence": result.awareness_confidence,
+            # Awareness level — bucket by the OPENING (entry temperature), not the
+            # whole-video label. result.awareness_level is kept == opening, but be
+            # explicit and fall back if a stale/under-filled result lacks opening.
+            "creative_awareness_level": result.awareness_level_opening or result.awareness_level,
+            "creative_awareness_confidence": result.awareness_level_opening_confidence or result.awareness_confidence,
             # Format
             "creative_format": creative_format,
             # Angle (use first angle if available, or summary)
@@ -1503,7 +1601,9 @@ class ClassifierService:
         client = None
 
         try:
-            from google import genai
+            # make_genai_client was used below but never imported (PR #180
+            # regression) — left this legacy video path raising NameError.
+            from ...core.genai_client import make_genai_client
 
             storage_path = await self._find_asset_in_storage(meta_ad_id, "video")
             if not storage_path:
@@ -1557,7 +1657,7 @@ class ClassifierService:
                 ad_copy=ad_copy or "(no copy available)"
             )
             response = client.models.generate_content(
-                model="gemini-3-flash-preview",
+                model=VIDEO_ANALYSIS_MODEL,
                 contents=[gemini_file, prompt],
             )
 

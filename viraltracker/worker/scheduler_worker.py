@@ -3601,7 +3601,9 @@ async def execute_congruence_reanalysis_job(job: Dict) -> Dict[str, Any]:
         insights_service = CongruenceInsightsService(db)
         gemini_service = GeminiService()
         congruence_analyzer = CongruenceAnalyzer(gemini_service)
-        video_analysis_service = VideoAnalysisService()
+        # VideoAnalysisService.__init__ requires the supabase client; the no-arg
+        # call raised TypeError and broke this job before classification began.
+        video_analysis_service = VideoAnalysisService(db)
 
         # Initialize classifier with congruence analyzer
         classifier = ClassifierService(
