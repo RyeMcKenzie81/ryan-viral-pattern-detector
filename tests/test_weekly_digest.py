@@ -370,13 +370,21 @@ class TestHtmlReport:
         assert "A &amp; &lt;b&gt;B&lt;/b&gt;" in doc
         assert "<b>B</b>" not in doc   # not injected raw
 
-    def test_publish_uploads_and_returns_signed_url(self):
+    def test_publish_uploads_and_returns_viewer_url(self):
         bucket = _Bucket()
         svc = WeeklyDigestService(_StorageSupa(bucket), MagicMock(), MagicMock())
         url = svc.publish_html_report("BRAND", _DATA)
-        assert url and url.startswith("https://ex/storage/cron-outputs/digests/BRAND/")
+        # Links at the API viewer route (NOT the raw storage URL, which Supabase
+        # serves as text/plain). UUID + YYYY-MM-DD path.
+        assert url and "/api/public/digest/BRAND/" in url
         up = next(c for c in bucket.calls if c[0] == "upload")
         assert up[2]["content-type"] == "text/html" and up[2]["upsert"] == "true"
+
+    def test_publish_respects_base_url_env(self, monkeypatch):
+        monkeypatch.setenv("DIGEST_VIEWER_BASE_URL", "https://reports.example.com/")
+        svc = WeeklyDigestService(_StorageSupa(_Bucket()), MagicMock(), MagicMock())
+        url = svc.publish_html_report("BRAND", _DATA)
+        assert url.startswith("https://reports.example.com/api/public/digest/BRAND/")
 
     def test_publish_non_fatal_on_error(self):
         svc = WeeklyDigestService(_StorageSupa(_Bucket(raise_upload=True)), MagicMock(), MagicMock())

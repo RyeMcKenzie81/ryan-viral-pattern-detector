@@ -135,25 +135,32 @@ class WeeklyDigestService:
 
     def publish_html_report(self, brand_id: UUID, data: Dict[str, Any]) -> Optional[str]:
         """Render the digest as a standalone HTML page, upload it to storage, and
-        return a signed URL for the 'Open full report' link in the Slack message.
+        return a URL for the 'Open full report' link in the Slack message.
+
+        The link points at the API's /api/public/digest/<brand>/<date> route, NOT
+        the raw storage URL: Supabase Storage serves uploaded HTML as text/plain
+        (anti-XSS), so a direct storage link shows raw source. The API route reads
+        the stored HTML back and serves it as text/html so it renders.
 
         Non-fatal: returns None on any failure so the Slack digest still posts
-        (just without the link). Uses the shared public cron-outputs bucket and a
-        permanent public URL (UUID-keyed path, so effectively unlisted) — the same
-        posture meta-ad-assets already uses for client creatives.
+        (just without the link).
         """
+        import os
         from .digest_renderer import render_brand_digest_html
         try:
             html_doc = render_brand_digest_html(data)
-            path = f"digests/{brand_id}/{date.today().isoformat()}.html"
-            bucket = self.supabase.storage.from_("cron-outputs")
-            bucket.upload(
+            report_date = date.today().isoformat()
+            path = f"digests/{brand_id}/{report_date}.html"
+            self.supabase.storage.from_("cron-outputs").upload(
                 path,
                 html_doc.encode("utf-8"),
                 file_options={"content-type": "text/html", "upsert": "true"},
             )
-            url = bucket.get_public_url(path)
-            return url or None
+            base = os.getenv(
+                "DIGEST_VIEWER_BASE_URL",
+                "https://ryan-viral-pattern-detector-production.up.railway.app",
+            ).rstrip("/")
+            return f"{base}/api/public/digest/{brand_id}/{report_date}"
         except Exception as e:
             logger.warning(f"Digest HTML publish failed for brand {brand_id} (non-fatal): {e}")
             return None
