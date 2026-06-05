@@ -95,8 +95,7 @@ class WeeklyDigestService:
             pid, pname = prod["id"], prod.get("name", "Unnamed")
             product_ad_ids = list(resolve_product_ad_ids(self.supabase, bid, pid, spend_ids))
             if not product_ad_ids:
-                products_out.append({"name": pname, "no_ads": True})
-                continue
+                continue  # no spend in the period — omit the product from the report
             try:
                 total_spend, n_ads, rows = self._product_awareness(
                     bid, product_ad_ids, start_s, end_s, baselines
@@ -106,6 +105,9 @@ class WeeklyDigestService:
                 logger.warning(f"Digest: product {pname} failed: {e}")
                 products_out.append({"name": pname, "error": True})
                 continue
+
+            if total_spend <= 0:
+                continue  # defensive: resolved ads but zero windowed spend → omit
 
             products_out.append({
                 "name": pname,

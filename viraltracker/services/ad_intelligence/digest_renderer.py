@@ -133,6 +133,8 @@ def render_brand_digest(data: Dict[str, Any]) -> Tuple[str, List[Dict[str, Any]]
     ]
 
     for p in products:
+        if p.get("no_ads"):
+            continue  # product had no spend this period — omit it from the report
         blocks.append(_product_block(p, currency))
 
     # Footer: coverage + unmapped worklist.
@@ -282,7 +284,10 @@ def render_brand_digest_html(data: Dict[str, Any]) -> str:
     coverage = data.get("coverage") or {}
     unmapped = data.get("unmapped_funnels") or []
 
-    sections = "".join(_html_product(p, data.get("currency", "USD")) for p in products)
+    sections = "".join(
+        _html_product(p, data.get("currency", "USD"))
+        for p in products if not p.get("no_ads")
+    )
 
     cov_pct = coverage.get("pct")
     cov = f"<b>Coverage:</b> {cov_pct:.0f}% of captured spend attributed" if cov_pct is not None else "<b>Coverage:</b> n/a"

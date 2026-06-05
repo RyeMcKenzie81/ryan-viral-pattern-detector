@@ -49,9 +49,9 @@ class TestRenderer:
         types = [b["type"] for b in blocks]
         assert types[0] == "header"
         assert "divider" in types
-        # one section per product (2) + footer section
+        # no-spend products are omitted, so only Big Three Bundle + the footer section
         sections = [b for b in blocks if b["type"] == "section"]
-        assert len(sections) >= 3
+        assert len(sections) >= 2
 
     def test_product_section_has_table_and_market(self):
         _, blocks = render_brand_digest(_DATA)
@@ -69,11 +69,12 @@ class TestRenderer:
         assert "*US*" in joined            # market split line
         assert "3,719" in joined
 
-    def test_no_ads_product_message(self):
+    def test_no_spend_product_omitted(self):
+        # DHA Upgraded has no spend (no_ads) — it must NOT appear in the report.
         _, blocks = render_brand_digest(_DATA)
         joined = "\n".join(b.get("text", {}).get("text", "") for b in blocks if b["type"] == "section")
-        assert "DHA Upgraded" in joined
-        assert "No ads with spend in scope" in joined
+        assert "DHA Upgraded" not in joined
+        assert "No ads with spend in scope" not in joined
 
     def test_coverage_footer(self):
         _, blocks = render_brand_digest(_DATA)
@@ -349,7 +350,7 @@ class TestHtmlReport:
         assert "<table" in doc and "ROAS" in doc and "Cost / add-to-cart" in doc
         # values: roas 2.3 -> 2.3x, cvr 0.021 -> 2.1%, p25 cpa 38 -> $38, p25 atc 15 -> $15
         assert "2.3x" in doc and "2.1%" in doc and "$38" in doc and "$15" in doc
-        assert "No ads with spend in scope" in doc   # DHA Upgraded (no_ads)
+        assert "DHA Upgraded" not in doc   # no-spend product omitted
         assert "Coverage" in doc and "95%" in doc
         assert "Space Grotesk" in doc and "topbar" in doc   # Ryan-branded fonts/header
 
