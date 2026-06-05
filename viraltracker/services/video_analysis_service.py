@@ -29,8 +29,17 @@ from supabase import Client
 
 logger = logging.getLogger(__name__)
 
-# Current prompt version - increment when prompt changes significantly
-PROMPT_VERSION = "v2"
+# Current prompt version - increment when prompt changes significantly.
+# v3: awareness is now judged at the video's OPENING (entry temperature, first
+# ~10s past any pure attention-grab) and its ENDING is captured separately, so
+# top-funnel videos stop being filed by the most-aware stage they close on.
+PROMPT_VERSION = "v3"
+
+# Deep video analysis model. Was hardcoded to gemini-3-flash-preview inline;
+# promoted to a named constant and upgraded to gemini-3-pro for awareness
+# accuracy on a paid client account. Change here to swap the model everywhere
+# this service (and the classifier's legacy fallback) uses it.
+VIDEO_ANALYSIS_MODEL = "gemini-3-pro"
 
 # Deep video analysis prompt - extracts comprehensive structured data
 DEEP_VIDEO_ANALYSIS_PROMPT = """Analyze this video advertisement and extract detailed structured data.
@@ -93,8 +102,10 @@ DEEP_VIDEO_ANALYSIS_PROMPT = """Analyze this video advertisement and extract det
     {{"claim": "...", "timestamp_sec": 10.5, "proof_shown": true}}
   ],
 
-  "awareness_level": "<unaware|problem_aware|solution_aware|product_aware|most_aware>",
-  "awareness_confidence": 0.85,
+  "awareness_level_opening": "<unaware|problem_aware|solution_aware|product_aware|most_aware>",
+  "awareness_level_opening_confidence": 0.85,
+  "awareness_level_ending": "<unaware|problem_aware|solution_aware|product_aware|most_aware>",
+  "awareness_level_ending_confidence": 0.85,
 
   "target_persona": {{
     "demographic": "...",
@@ -113,6 +124,7 @@ DEEP_VIDEO_ANALYSIS_PROMPT = """Analyze this video advertisement and extract det
 - Timestamps must be ordered and non-overlapping for transcript_segments
 - If you can't detect text overlays reliably, set text_overlays to [] and text_overlay_confidence to 0.0
 - Hook analysis: evaluate first 3-5 seconds for both spoken and visual hooks
+- AWARENESS — opening vs ending (read carefully): video ads usually move the viewer DOWN the funnel — they may open problem-unaware and close most-aware. `awareness_level_opening` = the stage the video POSITIONS the viewer at in roughly the FIRST 10 SECONDS (the temperature the messaging meets them at, i.e. how much they already know about the problem/solution/product). If those first moments are a pure pattern-interrupt or attention grab (a shocking/unrelated visual, a curiosity hook) with no problem or offer framing yet, judge the opening by the first SUBSTANTIVE message that follows within that ~10s window — not the raw first frame. `awareness_level_ending` = the stage the video leaves the viewer at by its close (typically nearer most_aware/CTA). The two are frequently DIFFERENT; that is expected, not an error. For bucketing/targeting we care most about the opening.
 - Return ONLY valid JSON, no additional text
 """
 
@@ -173,8 +185,15 @@ class VideoAnalysisResult:
     claims_made: Optional[List[Dict]] = None
 
     # Psychology
+    # awareness_level is kept == opening for back-compat with existing consumers
+    # (the digest, congruence, etc.). Opening drives bucketing; ending is captured
+    # for future journey/progression analysis.
     awareness_level: Optional[str] = None
     awareness_confidence: Optional[float] = None
+    awareness_level_opening: Optional[str] = None
+    awareness_level_opening_confidence: Optional[float] = None
+    awareness_level_ending: Optional[str] = None
+    awareness_level_ending_confidence: Optional[float] = None
     target_persona: Optional[Dict] = None
     emotional_drivers: List[str] = field(default_factory=list)
 
@@ -475,7 +494,11 @@ class VideoAnalysisService:
         client = None
 
         try:
-            from google import genai
+            # NOTE: make_genai_client was used here but never imported after PR
+            # #180 swapped genai.Client() -> make_genai_client(); that left this
+            # path raising NameError (caught below as status="error"), so video
+            # deep-analysis silently failed. Import it where it's used.
+            from ..core.genai_client import make_genai_client
 
             # 1. Get video asset metadata
             asset = await self.get_video_asset(meta_ad_id, brand_id)
@@ -573,7 +596,7 @@ class VideoAnalysisService:
                 ad_copy=ad_copy or "(no copy available)"
             )
             response = client.models.generate_content(
-                model="gemini-3-flash-preview",
+                model=VIDEO_ANALYSIS_MODEL,
                 contents=[gemini_file, prompt],
             )
 
@@ -646,9 +669,16 @@ class VideoAnalysisService:
                 jobs_to_be_done=parsed.get("jobs_to_be_done", []),
                 claims_made=parsed.get("claims_made"),
 
-                # Psychology
-                awareness_level=parsed.get("awareness_level"),
-                awareness_confidence=parsed.get("awareness_confidence"),
+                # Psychology — opening drives bucketing; ending captured for the
+                # journey. Fall back to the legacy single awareness_level when the
+                # model omits the split fields, so a v3 prompt that under-fills
+                # never crashes or nulls the bucket.
+                awareness_level=parsed.get("awareness_level_opening") or parsed.get("awareness_level"),
+                awareness_confidence=parsed.get("awareness_level_opening_confidence") or parsed.get("awareness_confidence"),
+                awareness_level_opening=parsed.get("awareness_level_opening") or parsed.get("awareness_level"),
+                awareness_level_opening_confidence=parsed.get("awareness_level_opening_confidence") or parsed.get("awareness_confidence"),
+                awareness_level_ending=parsed.get("awareness_level_ending") or parsed.get("awareness_level_opening") or parsed.get("awareness_level"),
+                awareness_level_ending_confidence=parsed.get("awareness_level_ending_confidence") or parsed.get("awareness_level_opening_confidence") or parsed.get("awareness_confidence"),
                 target_persona=parsed.get("target_persona"),
                 emotional_drivers=parsed.get("emotional_drivers", []),
 
@@ -661,7 +691,7 @@ class VideoAnalysisService:
                 video_id=asset.video_id,
                 creative_id=asset.creative_id,
                 raw_response=parsed,
-                model_used="gemini-3-flash-preview",
+                model_used=VIDEO_ANALYSIS_MODEL,
             )
 
             logger.info(
@@ -777,6 +807,12 @@ class VideoAnalysisService:
                 claims_made=row.get("claims_made"),
                 awareness_level=row.get("awareness_level"),
                 awareness_confidence=row.get("awareness_confidence"),
+                # Backfill opening/ending from the legacy column for pre-v3 rows
+                # so fetched results always carry a non-null opening.
+                awareness_level_opening=row.get("awareness_level_opening") or row.get("awareness_level"),
+                awareness_level_opening_confidence=row.get("awareness_level_opening_confidence") or row.get("awareness_confidence"),
+                awareness_level_ending=row.get("awareness_level_ending") or row.get("awareness_level_opening") or row.get("awareness_level"),
+                awareness_level_ending_confidence=row.get("awareness_level_ending_confidence") or row.get("awareness_level_opening_confidence") or row.get("awareness_confidence"),
                 target_persona=row.get("target_persona"),
                 emotional_drivers=row.get("emotional_drivers", []),
                 video_duration_sec=row.get("video_duration_sec"),
@@ -841,6 +877,10 @@ class VideoAnalysisService:
                 "claims_made": result.claims_made,
                 "awareness_level": result.awareness_level,
                 "awareness_confidence": result.awareness_confidence,
+                "awareness_level_opening": result.awareness_level_opening,
+                "awareness_level_opening_confidence": result.awareness_level_opening_confidence,
+                "awareness_level_ending": result.awareness_level_ending,
+                "awareness_level_ending_confidence": result.awareness_level_ending_confidence,
                 "target_persona": result.target_persona,
                 "emotional_drivers": result.emotional_drivers,
                 "video_duration_sec": result.video_duration_sec,
