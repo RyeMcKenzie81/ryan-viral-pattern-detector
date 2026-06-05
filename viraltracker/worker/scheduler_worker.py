@@ -4342,6 +4342,10 @@ async def execute_seo_status_sync_job(job: Dict) -> Dict[str, Any]:
             raise ValueError(f"Brand {brand_id} not found")
         org_id = brand_result.data[0]["organization_id"]
 
+        # Recover stuck/orphaned pipeline state on the status-sync cadence too,
+        # so it still runs for brands that sync status but have publishing off.
+        logs.extend(_run_seo_pipeline_maintenance())
+
         from viraltracker.services.seo_pipeline.services.cms_publisher_service import CMSPublisherService
         cms_svc = CMSPublisherService()
         result = cms_svc.sync_article_statuses(str(brand_id), org_id)
@@ -6272,6 +6276,37 @@ async def execute_seo_content_eval_job(job: Dict) -> Dict[str, Any]:
         return {"success": False, "error": error_msg}
 
 
+def _run_seo_pipeline_maintenance() -> list:
+    """Recover stuck/orphaned SEO pipeline state. Cheap + idempotent.
+
+    Folded into the recurring SEO heartbeat jobs (status_sync, publish) so it
+    runs automatically wherever the autopilot is active, without requiring a
+    separately-scheduled maintenance job:
+      - reset seo_publish_queue rows stuck in 'publishing' (worker crashed
+        mid-publish) back to 'queued'.
+      - fail seo_workflow_jobs orphaned at 'running'/'pending' with no progress
+        (process restarted mid one-off/cluster job).
+
+    Returns log lines describing what was reaped (empty if nothing).
+    """
+    out = []
+    try:
+        from viraltracker.services.seo_pipeline.services.publish_queue_service import PublishQueueService
+        reaped = PublishQueueService().reap_stuck_publishing()
+        if reaped:
+            out.append(f"Maintenance: reset {reaped} stuck 'publishing' queue row(s)")
+    except Exception as e:
+        logger.warning(f"reap_stuck_publishing failed (non-fatal): {e}")
+    try:
+        from viraltracker.services.seo_pipeline.services.seo_workflow_service import SEOWorkflowService
+        cleaned = SEOWorkflowService().cleanup_stale_jobs()
+        if cleaned:
+            out.append(f"Maintenance: cleaned {cleaned} stale workflow job(s)")
+    except Exception as e:
+        logger.warning(f"cleanup_stale_jobs failed (non-fatal): {e}")
+    return out
+
+
 @register_job_handler('seo_publish')
 async def execute_seo_publish_job(job: Dict) -> Dict[str, Any]:
     """
@@ -6309,6 +6344,9 @@ async def execute_seo_publish_job(job: Dict) -> Dict[str, Any]:
         queue_service = PublishQueueService()
         eval_svc = ContentEvalService()
         cms_service = CMSPublisherService()
+
+        # Recover stuck/orphaned pipeline state before publishing this run.
+        logs.extend(_run_seo_pipeline_maintenance())
 
         due_articles = queue_service.get_due_articles()[:max_publishes]
 

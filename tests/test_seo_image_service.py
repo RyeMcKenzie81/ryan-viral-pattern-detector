@@ -170,6 +170,23 @@ class TestProductSizeHint:
         assert "Card deck that fits in hand" in hint
         assert "\n" not in hint  # collapsed to a single line
 
+    def test_save_image_data_raises_on_db_failure(self, service):
+        """A failed image-data DB write must raise, not silently continue.
+
+        Images are already uploaded to storage; if the metadata write fails
+        silently the article renders imageless and regeneration can't recover.
+        """
+        service._supabase.table.return_value.update.return_value.eq.return_value.execute.side_effect = Exception(
+            "supabase write failed"
+        )
+        with pytest.raises(Exception, match="supabase write failed"):
+            service._save_image_data(
+                article_id="art-1",
+                hero_image_url="https://cdn/x.webp",
+                updated_markdown="body",
+                image_metadata=[{"index": 0, "status": "success"}],
+            )
+
     def test_build_hint_skips_products_without_dimensions(self, service):
         hint = service._build_product_size_hint([
             {"name": "Core Deck", "product_dimensions": None},

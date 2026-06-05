@@ -127,6 +127,22 @@ class TestWordCount:
         assert check.passed is False
         assert check.details["word_count"] == 0
 
+    def test_excludes_frontmatter_and_markers(self, service):
+        """QA now delegates to the canonical reader-visible count, so frontmatter
+        and image markers must NOT inflate the word count (single source of truth
+        with the stored seo_articles.word_count)."""
+        body = " ".join(["word"] * 600)
+        md = (
+            '---\ntitle: "Ignore this frontmatter line entirely"\n'
+            'description: "And this one too it should not count"\n---\n\n'
+            "[HERO IMAGE: a scene that should not be counted as body words]\n\n"
+            f"{body}\n"
+        )
+        check = service._check_word_count(md)
+        # Only the 600 body words count; frontmatter + marker excluded.
+        assert check.details["word_count"] == 600
+        assert check.passed is True
+
 
 # ---------------------------------------------------------------------------
 # Em Dashes

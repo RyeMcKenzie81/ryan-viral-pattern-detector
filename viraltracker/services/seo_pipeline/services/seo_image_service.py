@@ -665,7 +665,12 @@ class SEOImageService:
             ).eq("id", article_id).execute()
             logger.info(f"Saved image data for article {article_id}")
         except Exception as e:
+            # Do NOT swallow. Images were generated + uploaded to storage; if the
+            # metadata/markdown write fails silently, the article renders without
+            # images and regeneration can't find the metadata to retry. Raise so
+            # the caller knows the save failed.
             logger.error(f"Failed to save image data for {article_id}: {e}")
+            raise
 
     def _get_article(self, article_id: str) -> Optional[Dict[str, Any]]:
         """Get article from DB."""

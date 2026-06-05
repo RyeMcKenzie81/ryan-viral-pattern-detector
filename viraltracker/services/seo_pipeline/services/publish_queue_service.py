@@ -181,14 +181,58 @@ class PublishQueueService:
             }).eq("id", queue_id).execute()
             return False
         else:
-            # Keep queued for retry — retries are not constrained to publish window
+            # Keep queued for retry, but back off so a transient Shopify/network
+            # outage doesn't produce hammer-retries within a single scheduler
+            # run. get_due_articles gates on publish_at <= now, so pushing
+            # publish_at forward defers the next attempt. Linear backoff:
+            # 30 min after the 1st failure, 60 after the 2nd, etc.
+            now = datetime.now(pytz.UTC)
+            next_attempt_at = now + timedelta(minutes=30 * retry_count)
             self.supabase.table("seo_publish_queue").update({
                 "status": "queued",
                 "error_message": error_message,
                 "retry_count": retry_count,
-                "updated_at": datetime.now(pytz.UTC).isoformat(),
+                "publish_at": next_attempt_at.isoformat(),
+                "updated_at": now.isoformat(),
             }).eq("id", queue_id).execute()
             return True
+
+    def reap_stuck_publishing(self, threshold_minutes: int = 15) -> int:
+        """Reset queue rows stuck in 'publishing' back to 'queued'.
+
+        If the worker crashes between mark_publishing() and mark_published(), the
+        row is left in 'publishing' forever and is never retried (get_due_articles
+        only picks up 'queued'). This reaper recovers those: any 'publishing' row
+        not touched in threshold_minutes is reset to 'queued' with retry_count++
+        and publish_at=now so it's retried on the next publish run.
+
+        Returns the number of rows reaped.
+        """
+        now = datetime.now(pytz.UTC)
+        cutoff = (now - timedelta(minutes=threshold_minutes)).isoformat()
+
+        stuck = (
+            self.supabase.table("seo_publish_queue")
+            .select("id, retry_count")
+            .eq("status", "publishing")
+            .lt("updated_at", cutoff)
+            .execute()
+        ).data or []
+
+        reaped = 0
+        for row in stuck:
+            self.supabase.table("seo_publish_queue").update({
+                "status": "queued",
+                "retry_count": (row.get("retry_count", 0) or 0) + 1,
+                "publish_at": now.isoformat(),
+                "error_message": "Reset by reaper: stuck in 'publishing' (worker likely crashed mid-publish)",
+                "updated_at": now.isoformat(),
+            }).eq("id", row["id"]).execute()
+            reaped += 1
+
+        if reaped:
+            logger.warning(f"Reaped {reaped} publish-queue row(s) stuck in 'publishing'")
+        return reaped
 
     def get_failed_publishes(
         self,
