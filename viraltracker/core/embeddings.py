@@ -18,6 +18,8 @@ import hashlib
 from google import genai
 from google.genai import types
 
+from viraltracker.core.genai_client import make_genai_client
+
 logger = logging.getLogger(__name__)
 
 # Gemini embedding models and dimensions

@@ -973,20 +973,28 @@ with tab_cluster:
                 st.subheader("Generated Seeds")
                 st.caption(f"{seed_result.total_seeds} seeds across {len(seed_result.seeds_by_topic)} topics")
 
-                # Initialize seed checkboxes to True on first render
+                # Initialize seed checkboxes (and each per-topic "All" toggle) to
+                # True on first render only. After that the widgets own their
+                # state via their session_state keys — we must NOT overwrite them
+                # on rerun, or individual unchecks revert instantly.
                 for topic, seeds in seed_result.seeds_by_topic.items():
+                    toggle_key = f"seo_wf_topic_toggle_{topic}"
+                    if toggle_key not in st.session_state:
+                        st.session_state[toggle_key] = True
                     for si in range(len(seeds)):
                         chk_key = f"seo_wf_seed_chk_{topic}_{si}"
                         if chk_key not in st.session_state:
                             st.session_state[chk_key] = True
 
-                # Sync group toggles → individual checkboxes
-                for topic, seeds in seed_result.seeds_by_topic.items():
-                    toggle_key = f"seo_wf_topic_toggle_{topic}"
-                    if toggle_key in st.session_state:
-                        group_val = st.session_state[toggle_key]
-                        for si in range(len(seeds)):
-                            st.session_state[f"seo_wf_seed_chk_{topic}_{si}"] = group_val
+                # Propagate a per-topic "All" toggle to its seed checkboxes ONLY
+                # when the toggle is actually clicked (on_change), never on every
+                # rerun. The previous version synced unconditionally on each
+                # rerun, so toggling any single seed was immediately overwritten
+                # by the group value.
+                def _apply_topic_toggle(toggle_key: str, seed_keys: list):
+                    val = st.session_state.get(toggle_key, False)
+                    for k in seed_keys:
+                        st.session_state[k] = val
 
                 checked_seeds = []
                 for topic, seeds in seed_result.seeds_by_topic.items():
@@ -996,10 +1004,15 @@ with tab_cluster:
                     with topic_col:
                         st.markdown(f"**{topic}** ({len(seeds)} seeds)")
                     with toggle_col:
+                        _seed_keys = [
+                            f"seo_wf_seed_chk_{topic}_{si}" for si in range(len(seeds))
+                        ]
                         st.checkbox(
                             "All",
                             key=f"seo_wf_topic_toggle_{topic}",
                             label_visibility="collapsed",
+                            on_change=_apply_topic_toggle,
+                            args=(f"seo_wf_topic_toggle_{topic}", _seed_keys),
                         )
                     for si, seed in enumerate(seeds):
                         intent_icon = {"commercial": "💰", "comparison": "⚖️"}.get(
