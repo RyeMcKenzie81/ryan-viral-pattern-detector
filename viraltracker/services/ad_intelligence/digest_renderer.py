@@ -133,6 +133,8 @@ def render_brand_digest(data: Dict[str, Any]) -> Tuple[str, List[Dict[str, Any]]
     ]
 
     for p in products:
+        if p.get("no_ads"):
+            continue  # product had no spend this period — omit it from the report
         blocks.append(_product_block(p, currency))
 
     # Footer: coverage + unmapped worklist.
@@ -173,20 +175,21 @@ _HTML_STYLE = """
 body{margin:0;background:var(--paper);color:var(--ink);
  font:15px/1.55 Inter,system-ui,-apple-system,sans-serif}
 .wrap{max-width:1040px;margin:0 auto;padding:0 18px 64px}
-.topbar{display:flex;align-items:center;gap:18px;background:var(--blue);color:#fff;
- border:2px solid var(--ink);border-radius:18px;padding:22px 24px;margin:24px 0 22px;
- box-shadow:6px 6px 0 rgba(14,19,48,.14)}
-.topbar .logo{height:44px;width:auto;flex:0 0 auto}
-.kicker{font:700 12px/1 'Space Grotesk',sans-serif;letter-spacing:.14em;text-transform:uppercase;opacity:.85}
-.topbar h1{font:700 30px/1.1 'Space Grotesk',sans-serif;margin:6px 0 4px}
-.topbar .sub{font-size:13px;opacity:.92}
+.logo-top{text-align:center;margin:28px 0 14px}
+.logo-top img{height:56px;width:auto}
+.topbar{background:var(--blue);color:#fff;text-align:center;
+ border:2px solid var(--ink);border-radius:18px;padding:22px 24px;margin:0 0 22px;
+ box-shadow:6px 6px 0 var(--ink)}
+.kicker{font:700 13px/1 'Space Grotesk',sans-serif;letter-spacing:.08em;text-transform:uppercase;opacity:.9}
+.topbar h1{font:700 34px/1.08 'Space Grotesk',sans-serif;margin:6px 0 4px;letter-spacing:-.01em}
+.topbar .sub{font-size:14px;opacity:.92}
 .product{background:#fff;border:2px solid var(--ink);border-radius:16px;padding:18px 20px;
- margin:0 0 18px;box-shadow:5px 5px 0 rgba(14,19,48,.12)}
-.product h2{font:700 19px/1.2 'Space Grotesk',sans-serif;margin:0 0 2px}
+ margin:0 0 18px;box-shadow:5px 5px 0 var(--ink)}
+.product h2{font:700 22px/1.15 'Space Grotesk',sans-serif;margin:0 0 3px;letter-spacing:-.01em}
 .product .meta{color:var(--ink-2);font-size:13px;margin:0 0 14px}
 table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
 th,td{padding:8px 8px;text-align:right;border-bottom:1px solid var(--paper-2);white-space:nowrap}
-thead th{font:700 11px/1 'Space Grotesk',sans-serif;text-transform:uppercase;letter-spacing:.04em;
+thead th{font:700 11px/1 'Space Grotesk',sans-serif;text-transform:uppercase;letter-spacing:.06em;
  color:var(--ink-2);border-bottom:2px solid var(--ink)}
 thead tr:first-child th{border-bottom:1px solid var(--paper-2)}
 td.lvl,th.lvl{text-align:left}
@@ -200,7 +203,7 @@ td.lvl{font-weight:700;text-transform:capitalize}
  border-radius:12px;font-size:13px;font-weight:600}
 .dark{color:var(--ink-2);font-style:italic;margin:6px 0 0}
 .footer{background:#fff;border:2px solid var(--ink);border-radius:16px;padding:16px 20px;
- box-shadow:5px 5px 0 rgba(14,19,48,.12)}
+ box-shadow:5px 5px 0 var(--ink)}
 .footer ul{margin:8px 0 0;padding-left:18px;color:var(--ink-2)}
 .fineprint{color:var(--ink-2);font-size:12px;margin-top:18px;opacity:.85}
 a{color:var(--blue-deep)}
@@ -281,7 +284,10 @@ def render_brand_digest_html(data: Dict[str, Any]) -> str:
     coverage = data.get("coverage") or {}
     unmapped = data.get("unmapped_funnels") or []
 
-    sections = "".join(_html_product(p, data.get("currency", "USD")) for p in products)
+    sections = "".join(
+        _html_product(p, data.get("currency", "USD"))
+        for p in products if not p.get("no_ads")
+    )
 
     cov_pct = coverage.get("pct")
     cov = f"<b>Coverage:</b> {cov_pct:.0f}% of captured spend attributed" if cov_pct is not None else "<b>Coverage:</b> n/a"
@@ -301,7 +307,11 @@ def render_brand_digest_html(data: Dict[str, Any]) -> str:
         "brand-wide median benchmark. Cost figures over ads that converted; ~30-day "
         "window, paused-but-spent ads included."
     )
-    logo_html = f"<img class='logo' src='{_h(logo_url)}' alt='{brand} logo'>" if logo_url else ""
+    # Logo sits centered ABOVE the blue header band (on the paper background).
+    logo_html = (
+        f"<div class='logo-top'><img class='logo' src='{_h(logo_url)}' alt='{brand} logo'></div>"
+        if logo_url else ""
+    )
     fonts = (
         "<link rel='preconnect' href='https://fonts.googleapis.com'>"
         "<link rel='preconnect' href='https://fonts.gstatic.com' crossorigin>"
@@ -313,11 +323,12 @@ def render_brand_digest_html(data: Dict[str, Any]) -> str:
         "<meta name='viewport' content='width=device-width, initial-scale=1'>"
         f"{fonts}<title>{brand} — Weekly Digest</title><style>{_HTML_STYLE}</style></head>"
         "<body><div class='wrap'>"
-        f"<header class='topbar'>{logo_html}<div>"
+        f"{logo_html}"
+        "<header class='topbar'>"
         "<div class='kicker'>Weekly Performance Digest</div>"
         f"<h1>{brand}</h1>"
         f"<div class='sub'>{date_range} · all spend in {currency} · {len(products)} product(s)</div>"
-        "</div></header>"
+        "</header>"
         f"{sections}"
         f"<div class='footer'>{cov}</div>"
         f"<p class='fineprint'>{fineprint}</p>"
