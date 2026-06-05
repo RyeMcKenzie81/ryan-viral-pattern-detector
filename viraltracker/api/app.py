@@ -235,6 +235,38 @@ async def public_blueprint_preview(share_token: str, request: Request):
     return HTMLResponse(content=wrapped)
 
 
+@app.get(
+    "/api/public/digest/{brand_id}/{report_date}",
+    tags=["Public"],
+    summary="Public weekly digest report",
+)
+@limiter.limit("100/hour")
+async def public_digest_report(brand_id: str, report_date: str, request: Request):
+    """Serve a weekly digest HTML report — no authentication required.
+
+    The Slack digest links here because Supabase Storage serves uploaded HTML as
+    text/plain (anti-XSS), so a direct storage link shows raw source. This route
+    reads the stored HTML from the cron-outputs bucket and returns it as
+    text/html so it renders. UUID-keyed path = effectively unlisted (same posture
+    as the public bucket itself).
+    """
+    import re
+    from fastapi.responses import HTMLResponse
+    from ..core.database import get_supabase_client
+
+    # Validate to keep the storage path clean (no traversal) before any lookup.
+    if not re.fullmatch(r"[0-9a-fA-F-]{36}", brand_id) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", report_date):
+        raise HTTPException(status_code=404, detail="Not found")
+
+    path = f"digests/{brand_id}/{report_date}.html"
+    try:
+        data = get_supabase_client().storage.from_("cron-outputs").download(path)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Report not found")
+    html = data.decode("utf-8") if isinstance(data, (bytes, bytearray)) else str(data)
+    return HTMLResponse(content=html)
+
+
 # ============================================================================
 # Agent Execution Endpoint
 # ============================================================================
