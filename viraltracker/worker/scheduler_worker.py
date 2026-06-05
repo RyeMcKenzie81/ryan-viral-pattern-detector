@@ -3733,6 +3733,7 @@ async def _run_classification_for_brand(
     days_back: int = 30,
     scrape_missing_lp: bool = False,
     scope: str = "active",
+    force: bool = False,
 ) -> Dict[str, Any]:
     """Shared helper: classify a brand's ads.
 
@@ -3835,6 +3836,7 @@ async def _run_classification_for_brand(
             max_new=max_new,
             max_video=max_video,
             scrape_missing_lp=scrape_missing_lp,
+            force=force,
         )
 
         total_classified = len(batch_result.classifications)
@@ -3976,6 +3978,8 @@ async def execute_ad_classification_job(job: Dict) -> Dict[str, Any]:
         scope: str - "active" (default, currently-delivering ads) or "spend"
             (every ad that spent in the window, including paused — feeds the
             weekly digest so paused-but-spent ads still get an awareness level)
+        force: bool - re-classify ads that already have a current-version
+            classification (default False; only needed after a prompt change)
     """
     job_id = job['id']
     job_name = job['name']
@@ -4011,10 +4015,12 @@ async def execute_ad_classification_job(job: Dict) -> Dict[str, Any]:
         max_video = params.get('max_video', 15)
         days_back = params.get('days_back', 30)
         scope = params.get('scope', 'active')
+        force = bool(params.get('force', False))
 
         logs.append(f"Classifying ads for brand: {brand_name}")
         logs.append(
-            f"Max new: {max_new}, Max video: {max_video}, Days back: {days_back}, Scope: {scope}"
+            f"Max new: {max_new}, Max video: {max_video}, Days back: {days_back}, "
+            f"Scope: {scope}, Force: {force}"
         )
 
         result = await _run_classification_for_brand(
@@ -4024,6 +4030,7 @@ async def execute_ad_classification_job(job: Dict) -> Dict[str, Any]:
             max_video=max_video,
             days_back=days_back,
             scope=scope,
+            force=force,
         )
 
         logs.append("")

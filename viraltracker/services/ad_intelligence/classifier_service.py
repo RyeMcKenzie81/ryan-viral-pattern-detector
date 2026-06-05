@@ -13,9 +13,13 @@ Classification sources (in priority order):
 
 Reclassification triggers:
 - force=True (explicit user request)
-- now > stale_after (time-based staleness)
-- input_hash changed (ad creative was updated)
-- prompt_version changed (batch re-run)
+- prompt_version / schema_version changed (the cache prefetch filters on both)
+
+NOTE: the batch path (classify_batch) is "classified-once" — an ad already
+classified at the current prompt+schema version is reused and never re-run on
+input_hash drift. Meta ad creatives are immutable, and the thumbnail is a
+rotating signed URL, so hashing it caused needless re-classification. The single
+classify_ad() path still tracks input_hash for provenance.
 """
 
 from __future__ import annotations
@@ -355,6 +359,7 @@ class ClassifierService:
         max_new: int = 200,
         max_video: int = 15,
         scrape_missing_lp: bool = False,
+        force: bool = False,
     ) -> BatchClassificationResult:
         """Classify a batch of ads, prioritizing by spend.
 
@@ -365,6 +370,10 @@ class ClassifierService:
         Uses batch-prefetch to load all ad data and existing classifications
         in bulk queries (4 queries total) instead of per-ad N+1 queries.
 
+        Classified-once: an ad already classified at the CURRENT prompt+schema
+        version is treated as cached and never re-run (Meta ad creatives are
+        immutable), regardless of input_hash drift. Only ``force`` re-classifies.
+
         Args:
             brand_id: Brand UUID.
             org_id: Organization UUID.
@@ -374,6 +383,8 @@ class ClassifierService:
             max_video: Max video classifications per run (from RunConfig).
             scrape_missing_lp: If True, create and scrape landing pages for
                 unmatched destination URLs during classification.
+            force: Re-classify even ads that already have a current-version
+                classification (e.g. after a prompt change). Default False.
 
         Returns:
             BatchClassificationResult with classifications list and
@@ -391,30 +402,26 @@ class ClassifierService:
 
         # Batch-prefetch all ad data and classifications in bulk (4 queries
         # instead of ~5 per ad). This reduces 188 ads × 5 queries = 940
-        # sequential HTTP calls down to 4 bulk queries.
-        prefetched_ads, prefetched_classifications = await self._batch_prefetch(
+        # sequential HTTP calls down to 4 bulk queries. The ad-data map is no
+        # longer needed for the cache decision (see _match_prefetched_classification);
+        # only the classification map is consulted here.
+        _prefetched_ads, prefetched_classifications = await self._batch_prefetch(
             brand_id, sorted_ids
         )
 
         skipped_count = 0
         for i, meta_ad_id in enumerate(sorted_ids):
             try:
-                # Use prefetched data (dict lookup, no HTTP)
-                ad_data = prefetched_ads.get(meta_ad_id, {})
-                thumbnail_url = ad_data.get("thumbnail_url", "")
-                ad_copy = ad_data.get("ad_copy", "")
-                lp_id = ad_data.get("landing_page_id")
-                video_id = ad_data.get("meta_video_id")
-                current_hash = self._compute_input_hash(
-                    thumbnail_url, ad_copy,
-                    str(lp_id) if lp_id else None,
-                    video_id=video_id,
-                )
-
-                # Check prefetched classifications for cache hit
+                # Cache hit: any prefetched classification for this ad is already at
+                # the CURRENT prompt+schema version (the prefetch filters on both),
+                # and Meta ad creatives are immutable — so it's reusable. We do NOT
+                # gate on input_hash: the thumbnail is a rotating signed URL and
+                # ad_copy/LP get re-fetched, so hashing them made already-classified
+                # ads miss cache and get needlessly re-classified, burning the
+                # max_new budget. Only force re-classifies.
                 existing = self._match_prefetched_classification(
                     prefetched_classifications.get(meta_ad_id, []),
-                    current_hash,
+                    force=force,
                 )
                 if existing:
                     classifications.append(self._row_to_model(existing))
@@ -436,6 +443,7 @@ class ClassifierService:
                     meta_ad_id, brand_id, org_id, run_id,
                     video_budget_remaining=video_budget,
                     scrape_missing_lp=scrape_missing_lp,
+                    force=force,  # so batch force=True actually re-classifies cache-misses
                 )
                 classifications.append(classification)
 
@@ -649,23 +657,37 @@ class ClassifierService:
     def _match_prefetched_classification(
         self,
         cached_rows: List[Dict],
-        current_input_hash: str,
+        force: bool = False,
     ) -> Optional[Dict]:
-        """Match a prefetched classification by input_hash.
+        """Return a reusable classification for this ad, or None to (re)classify.
+
+        The prefetch already filters rows to the CURRENT prompt+schema version, so
+        a non-empty ``cached_rows`` means this ad is already classified at the
+        current version. Meta ad creatives are immutable (you create a NEW ad to
+        change a creative), so that classification is reusable — we deliberately do
+        NOT compare input_hash. Gating on input_hash (built from the rotating signed
+        thumbnail URL + re-fetched ad_copy/LP) caused already-classified ads to miss
+        cache and be re-run every batch, wasting the max_new budget.
+
+        We also intentionally do NOT apply time-based staleness (stale_after) here:
+        because creatives are immutable, the only reasons to re-classify are a
+        prompt/schema bump (the prefetch filter excludes those rows automatically)
+        or an explicit force. (The single classify_ad() path still honors stale_after
+        for on-demand re-classification.) Skipped ads — e.g. skipped_missing_image —
+        are NOT persisted, so a skip is retried every run until it succeeds; only
+        successful classifications land here as reusable rows.
 
         Args:
-            cached_rows: Prefetched classification rows for this ad
+            cached_rows: Prefetched current-version classification rows for this ad
                 (already ordered by classified_at desc).
-            current_input_hash: Current input hash for change detection.
+            force: If True, never reuse (caller wants a fresh classification).
 
         Returns:
-            Matching classification row or None.
+            The most-recent reusable row, or None.
         """
-        for row in cached_rows:
-            if row.get("input_hash") == current_input_hash:
-                if not self._needs_new_classification(row, current_input_hash, force=False):
-                    return row
-        return None
+        if force or not cached_rows:
+            return None
+        return cached_rows[0]  # most recent (rows are ordered classified_at desc)
 
     async def get_latest_classification(
         self,
