@@ -213,6 +213,78 @@ class TestMarkFailed:
         has_retries = svc.mark_failed("queue-1", "Connection timeout")
         assert has_retries is False
 
+    def test_retry_advances_publish_at_for_backoff(self):
+        """On retry, publish_at must be pushed forward so get_due_articles
+        (which gates on publish_at <= now) defers the next attempt."""
+        mock_db = MagicMock()
+        entry_result = MagicMock()
+        entry_result.data = [{"retry_count": 0, "max_retries": 3}]
+
+        chain = MagicMock()
+        chain.select.return_value = chain
+        chain.eq.return_value = chain
+        chain.limit.return_value = chain
+        chain.update.return_value = chain
+        chain.execute.return_value = entry_result
+        mock_db.table.return_value = chain
+
+        svc = _make_service(mock_db)
+        has_retries = svc.mark_failed("queue-1", "Connection timeout")
+        assert has_retries is True
+
+        payload = chain.update.call_args[0][0]
+        assert payload["status"] == "queued"
+        assert "publish_at" in payload  # backoff applied
+        assert payload["retry_count"] == 1
+
+
+# =============================================================================
+# TESTS — reap_stuck_publishing
+# =============================================================================
+
+
+class TestReapStuckPublishing:
+    def test_resets_stuck_rows(self):
+        mock_db = MagicMock()
+
+        select_result = MagicMock()
+        select_result.data = [
+            {"id": "q1", "retry_count": 0},
+            {"id": "q2", "retry_count": 1},
+        ]
+
+        chain = MagicMock()
+        chain.select.return_value = chain
+        chain.eq.return_value = chain
+        chain.lt.return_value = chain
+        chain.update.return_value = chain
+        chain.execute.return_value = select_result
+        mock_db.table.return_value = chain
+
+        svc = _make_service(mock_db)
+        reaped = svc.reap_stuck_publishing(threshold_minutes=15)
+
+        assert reaped == 2
+        # Last update should reset to queued and advance publish_at
+        payload = chain.update.call_args[0][0]
+        assert payload["status"] == "queued"
+        assert "publish_at" in payload
+
+    def test_nothing_to_reap(self):
+        mock_db = MagicMock()
+        select_result = MagicMock()
+        select_result.data = []
+
+        chain = MagicMock()
+        chain.select.return_value = chain
+        chain.eq.return_value = chain
+        chain.lt.return_value = chain
+        chain.execute.return_value = select_result
+        mock_db.table.return_value = chain
+
+        svc = _make_service(mock_db)
+        assert svc.reap_stuck_publishing() == 0
+
 
 # =============================================================================
 # TESTS — get_queue_stats

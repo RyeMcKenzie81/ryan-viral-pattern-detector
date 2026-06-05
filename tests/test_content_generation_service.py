@@ -439,6 +439,28 @@ class TestAPIMode:
         # The phase output must NOT have been written to the DB.
         update_chain.execute.assert_not_called()
 
+    def test_db_save_failure_raises(self, service):
+        """A failed phase-output DB write must raise, not silently continue.
+
+        Otherwise the article advances to qa_passed with an empty phase output
+        and eventually publishes blank content (silent data loss).
+        """
+        article_id = str(uuid4())
+
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(text="# Real outline content")]
+        mock_response.usage.input_tokens = 100
+        mock_response.usage.output_tokens = 50
+        service.anthropic_client.messages.create.return_value = mock_response
+
+        # DB update raises
+        service.supabase.table.return_value.update.return_value.eq.return_value.execute.side_effect = Exception(
+            "supabase write failed"
+        )
+
+        with pytest.raises(Exception, match="supabase write failed"):
+            service.generate_phase_a(article_id=article_id, keyword="test", mode="api")
+
     def test_api_mode_tracks_usage(self, service):
         article_id = str(uuid4())
 

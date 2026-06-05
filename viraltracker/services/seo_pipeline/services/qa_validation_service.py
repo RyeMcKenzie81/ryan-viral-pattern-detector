@@ -131,7 +131,7 @@ class QAValidationService:
         plain_text = self._extract_plain_text(content_markdown)
 
         checks = []
-        checks.append(self._check_word_count(plain_text))
+        checks.append(self._check_word_count(content_markdown))
         checks.append(self._check_em_dashes(content_markdown))
         checks.append(self._check_title_length(seo_title))
         checks.append(self._check_meta_description(meta_description))
@@ -150,10 +150,28 @@ class QAValidationService:
     # INDIVIDUAL CHECKS
     # =========================================================================
 
-    def _check_word_count(self, plain_text: str) -> QACheck:
-        """Check article meets minimum word count."""
-        words = plain_text.split()
-        count = len(words)
+    @staticmethod
+    def _reader_visible_word_count(content_markdown: str) -> int:
+        """Single source of truth for word count, shared with the pipeline.
+
+        Lazy import avoids a module-load cycle between qa_validation and
+        content_generation.
+        """
+        from viraltracker.services.seo_pipeline.services.content_generation_service import (
+            ContentGenerationService,
+        )
+        return ContentGenerationService._compute_word_count(content_markdown)
+
+    def _check_word_count(self, content_markdown: str) -> QACheck:
+        """Check article meets minimum word count.
+
+        Delegates to the canonical reader-visible word count
+        (ContentGenerationService._compute_word_count) so QA judges against the
+        SAME number that gets persisted to seo_articles.word_count and shown in
+        the UI. Previously QA counted its own regex-stripped plain text, which
+        could disagree with the stored value.
+        """
+        count = self._reader_visible_word_count(content_markdown)
 
         if count >= self.MIN_WORD_COUNT:
             return QACheck(

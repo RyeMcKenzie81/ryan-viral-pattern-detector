@@ -101,24 +101,33 @@ Severity reflects production impact. "Verified" = confirmed against current `mai
 
 ---
 
-## 3. "Do now" — ships without eng review
+## 3. "Do now" — ships without eng review  ✅ DONE (branch: seo-pipeline-hardening)
 
-Low-risk, independent, well-understood. Target: one branch, one PR.
+Low-risk, independent, well-understood. One branch, one PR.
 
-1. **B1 (raise-on-save):** make `_handle_api_mode` and `_save_image_data` raise on DB write
-   failure instead of log-and-continue. Add tests asserting a failed save raises (not returns
-   success).
-2. **B2 + B3 (reaper + scheduled cleanup):** a recurring worker job that (a) resets
-   `seo_publish_queue` rows stuck in `publishing` past a threshold back to `queued`, and (b)
-   calls the existing `cleanup_stale_jobs()` for orphaned `seo_workflow_jobs`. Log what it
-   reaped.
-3. **B5 (publish retry backoff):** advance `publish_at` on `mark_failed` when retries remain.
-4. **B6 (unified word count):** QA `_check_word_count` consumes `_compute_word_count` (single
-   source of truth).
+1. ✅ **B1 (raise-on-save):** `_handle_api_mode` (content_generation) and `_save_image_data`
+   (seo_image) now raise on DB write failure instead of log-and-continue. Tests assert a failed
+   save raises.
+2. ✅ **B2 + B3 (reaper + auto-cleanup):** new `PublishQueueService.reap_stuck_publishing()`
+   resets `publishing` rows older than 15 min back to `queued`. A worker helper
+   `_run_seo_pipeline_maintenance()` runs it + `cleanup_stale_jobs()` at the start of BOTH the
+   `seo_publish` and `seo_status_sync` recurring jobs — so it runs automatically wherever the
+   autopilot is active, no separately-scheduled job required.
+3. ✅ **B5 (publish retry backoff):** `mark_failed` advances `publish_at` (30 min × retry_count)
+   on retry so transient outages don't cause hammer-retries.
+4. ✅ **B6 (unified word count):** QA `_check_word_count` now delegates to
+   `ContentGenerationService._compute_word_count` (single source of truth with the stored
+   `word_count`).
 
 Explicitly NOT in the do-now set: B4-heavy (resume), B7 (threshold consolidation — needs a
 config decision), B8 (eval fail-open policy — needs a product call on fail-open vs fail-closed),
 B9-B11 (observability layer — its own effort), B12/B14 (architectural — §4).
+
+### Noted while here (NOT fixed — separate follow-up)
+- `test_qa_validation_service.py` has 5 pre-existing failures (TestHeadingStructure x3,
+  TestKeywordPlacement x2) that are red on `main`, unrelated to the do-now changes. Likely
+  test-drift or related to B13 (substring keyword matching). Worth a focused pass; deliberately
+  left out of this reliability PR to keep it reviewable.
 
 ---
 

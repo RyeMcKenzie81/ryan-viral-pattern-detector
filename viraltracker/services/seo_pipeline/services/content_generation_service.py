@@ -613,7 +613,12 @@ class ContentGenerationService:
                 update_fields
             ).eq("id", article_id).execute()
         except Exception as e:
-            logger.error(f"Failed to save Phase {phase.upper()} output: {e}")
+            # Do NOT swallow this. If the phase output fails to persist, the
+            # article would otherwise advance to qa_passed with an empty
+            # phase_*_output and eventually publish blank content — silent data
+            # loss. Raise so the job fails and the article stays fixable.
+            logger.error(f"Failed to save Phase {phase.upper()} output for {article_id}: {e}")
+            raise
 
         return {
             "article_id": article_id,
