@@ -6473,10 +6473,62 @@ async def execute_seo_publish_job(job: Dict) -> Dict[str, Any]:
 
 
 def _chain_interlink_job(article_id: str, brand_id: str, organization_id: str):
-    """Create a one-time seo_auto_interlink job using the Run Now pattern."""
+    """Create a one-time seo_auto_interlink job using the Run Now pattern.
+
+    D5.1 (cluster debounce/coalesce): the interlink run now re-links the WHOLE
+    cluster, so if several members of the same cluster publish in one run we only
+    need ONE pending interlink job — it will relink them all. Before chaining,
+    skip if a not-yet-run seo_auto_interlink job already exists for an article in
+    the same cluster. This prevents redundant whole-cluster relink jobs racing
+    each other (and the wasted CMS writes).
+    """
     try:
         from viraltracker.core.database import get_supabase_client
         db = get_supabase_client()
+
+        # Resolve this article's cluster (if any) for the debounce check.
+        spoke = (
+            db.table("seo_cluster_spokes")
+            .select("cluster_id")
+            .eq("article_id", article_id)
+            .limit(1)
+            .execute()
+        )
+        cluster_id = spoke.data[0].get("cluster_id") if spoke.data else None
+
+        if cluster_id:
+            # Find pending (not yet run) interlink jobs for this brand and check
+            # whether any targets an article in the same cluster.
+            # One-time interlink jobs are flipped to status="completed" after
+            # they run, so status="active" identifies not-yet-run ones.
+            pending = (
+                db.table("scheduled_jobs")
+                .select("parameters")
+                .eq("job_type", "seo_auto_interlink")
+                .eq("brand_id", brand_id)
+                .eq("status", "active")
+                .execute()
+            )
+            pending_article_ids = [
+                (p.get("parameters") or {}).get("article_id")
+                for p in (pending.data or [])
+            ]
+            pending_article_ids = [a for a in pending_article_ids if a]
+            if pending_article_ids:
+                siblings = (
+                    db.table("seo_cluster_spokes")
+                    .select("article_id")
+                    .eq("cluster_id", cluster_id)
+                    .in_("article_id", pending_article_ids)
+                    .execute()
+                )
+                if siblings.data:
+                    logger.info(
+                        f"Skipping interlink chain for {article_id}: a pending "
+                        f"interlink job already covers cluster {cluster_id}"
+                    )
+                    return
+
         next_run = (datetime.now(PST) + timedelta(minutes=1)).isoformat()
         db.table("scheduled_jobs").insert({
             "name": f"Auto-interlink: {article_id[:8]}",
@@ -6555,16 +6607,18 @@ async def execute_seo_auto_interlink_job(job: Dict) -> Dict[str, Any]:
             update_job(job_id, {"status": "completed"})
             return {"success": True, "skipped": True}
 
-        enabled_modes = policy.get("interlink_modes", ["auto_link", "bidirectional"])
         article = eval_service._get_article(article_id)
         if not article:
             raise ValueError(f"Article not found: {article_id}")
 
         keyword = article.get("keyword", "Unknown")
         logs.append(f"Article: {keyword}")
-        logs.append(f"Enabled modes: {', '.join(enabled_modes)}")
 
-        # Find the article's cluster
+        # Find the article's cluster. D1: if it's in a cluster, re-interlink the
+        # WHOLE cluster (true bidirectional pillar/spoke over all published
+        # members) rather than only egocentric linking on this article. This is
+        # what makes the hub-and-spoke structure actually form, and it's
+        # self-healing: each member publish re-links siblings to/from this one.
         cluster_spoke = (
             eval_service.supabase.table("seo_cluster_spokes")
             .select("cluster_id")
@@ -6572,52 +6626,33 @@ async def execute_seo_auto_interlink_job(job: Dict) -> Dict[str, Any]:
             .limit(1)
             .execute()
         )
+        cluster_id = (cluster_spoke.data[0].get("cluster_id") if cluster_spoke.data else None)
 
         total_links_added = 0
         related_sections_added = 0
-        suggestions = None
 
-        # Step 1: Suggest links (always run to feed step 3)
-        if "suggest" in enabled_modes or "bidirectional" in enabled_modes:
-            try:
-                suggestions = interlink_service.suggest_links(article_id, save=True)
-                suggestion_count = suggestions.get("suggestion_count", 0)
-                logs.append(f"Suggest: {suggestion_count} links suggested")
-            except Exception as e:
-                logs.append(f"Suggest failed: {e}")
-                logger.error(f"suggest_links failed for {article_id}: {e}")
+        # D3: single canonical entry point. scope='cluster' for clustered
+        # articles, scope='article' for standalone ones.
+        if cluster_id:
+            logs.append(f"Cluster interlink: {cluster_id}")
+            result = interlink_service.interlink(
+                scope="cluster", cluster_id=cluster_id, article_id=article_id,
+                brand_id=brand_id, organization_id=organization_id, push_to_cms=True,
+            )
+            total_links_added = result.get("links_added", 0)
+            related_sections_added = result.get("related_sections_added", 0)
+            for err in result.get("errors", []):
+                logs.append(f"  warn: {err}")
+        else:
+            logs.append("Standalone article interlink (no cluster)")
+            result = interlink_service.interlink(
+                scope="article", article_id=article_id,
+                brand_id=brand_id, organization_id=organization_id, push_to_cms=True,
+            )
+            total_links_added = result.get("links_added", 0)
+            related_sections_added = result.get("related_articles_linked", 0)
 
-        # Step 2: Auto-link (insert <a> tags in HTML)
-        if "auto_link" in enabled_modes:
-            try:
-                result = interlink_service.auto_link_article(
-                    article_id, push_to_cms=True,
-                    brand_id=brand_id, organization_id=organization_id,
-                )
-                links_added = result.get("links_added", 0)
-                total_links_added += links_added
-                logs.append(f"Auto-link: {links_added} links inserted")
-            except Exception as e:
-                logs.append(f"Auto-link failed: {e}")
-                logger.error(f"auto_link_article failed for {article_id}: {e}")
-
-        # Step 3: Bidirectional (add Related Articles section)
-        if "bidirectional" in enabled_modes and suggestions:
-            related_ids = [
-                s["target_article_id"]
-                for s in suggestions.get("suggestions", [])
-            ]
-            if related_ids:
-                try:
-                    result = interlink_service.add_related_section(
-                        article_id, related_ids, push_to_cms=True,
-                        brand_id=brand_id, organization_id=organization_id,
-                    )
-                    related_sections_added = result.get("articles_linked", 0)
-                    logs.append(f"Bidirectional: {related_sections_added} related articles linked")
-                except Exception as e:
-                    logs.append(f"Bidirectional failed: {e}")
-                    logger.error(f"add_related_section failed for {article_id}: {e}")
+        logs.append(f"Links added: {total_links_added}, related sections: {related_sections_added}")
 
         metadata = {
             "links_added": total_links_added,
