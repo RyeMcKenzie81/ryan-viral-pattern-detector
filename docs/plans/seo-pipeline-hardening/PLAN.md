@@ -206,7 +206,9 @@ API-foundation phase.
    internal links. Highest product-impact item. Do ahead of or alongside §4 (it depends on
    the publish-timing model, so the two interact).
 4. **/plan-eng-review on §4** — lock the execution-model decision.
-5. **Observability layer** (B9–B11) — highest long-term reliability value once the model is settled.
+5. **Observability & verification (§7 + B9–B11)** — failure signals AND the
+   correctness/outcome metrics that prove interlinking (§6) actually worked. Build (a)/(e)
+   alongside §6 as its definition-of-done; (c) ranking-correlation accrues over weeks.
 6. **Eval-correctness** (B7, B8) + config consolidation.
 7. **Worker-driven execution + checkpoint/resume** (B4-heavy, B12, B14) — as part of / ahead
    of the API-foundation phase.
@@ -301,3 +303,54 @@ as each member publishes**, so earlier articles gain inbound links to newcomers.
    pages; this is about editorial blog content only.)
 6. **Backfill.** The existing live cluster(s) are already linkless — a one-off whole-cluster
    re-interlink pass over published clusters is needed once the fix lands.
+
+---
+
+## 7. Observability & verification (how we KNOW it's working)
+
+Added 2026-06-05. Distinguishes **failure observability** ("did it error" — covered by B9–B11)
+from **correctness/outcome observability** ("is it actually producing linked, ranking
+clusters"). The plan was strong on the former, thin on the latter. This section closes that.
+
+### Principle: extend existing tools, do NOT build a new dashboard
+A UI map (2026-06-05) found the homes already exist:
+- **SEO Clusters page (`52_🗂️_SEO_Clusters.py`)** already renders a **"Link Health" audit**
+  (lines ~366–490) backed by `ClusterManagementService.get_interlinking_audit()`
+  (`link_coverage_pct` + `missing_links`) and `get_cluster_health()` (line 262;
+  `completion_pct`, published/writing/planned, `link_coverage_pct`). So a per-cluster coverage
+  view ALREADY exists — it's manual (open per cluster) and would already show the new cluster at
+  ~0%. (Correction to §4 notes: `get_cluster_health()` IS surfaced in the UI; it's just unused
+  by the autopilot / alerting.)
+- **SEO Dashboard (`48_🔍_SEO_Dashboard.py`)** already shows a brand-level **"Internal Links"
+  KPI** (lines ~467–486) and full **GSC analytics** per article (impressions/clicks/position,
+  lines ~763–1105) via `SEOAnalyticsService` + `GSCService`.
+
+So the gap is not "no UI" — it's that coverage is manual-only, there's no brand-level orphan
+rollup, no proactive/autopilot signal, and no tie from interlink coverage to ranking outcome.
+
+### What to add, and where it lives
+
+| Metric | Home (extend existing) | Data source |
+|---|---|---|
+| **(a) Per-cluster coverage detail** — per-article inbound/outbound counts, pillar↔spoke vs spoke↔spoke split, bidirectional completeness, "fully interlinked: y/n", links-added-last-7d | SEO Clusters → extend the existing **Link Health** audit (`52`, ~366–490) | `get_interlinking_audit()` + `seo_internal_links` |
+| **(b) Brand-level orphan / low-link report** — articles with 0 inbound (orphans), <2 links, clusters <X% covered; quick "suggest/implement links" actions | SEO Dashboard → **new "Content Health" tab** alongside Analytics (`48`) | `seo_internal_links` + `seo_articles` |
+| **(c) Coverage → ranking correlation (the real outcome signal)** — scatter (link_count vs avg position, sized by impressions), table of top pages with link_count + pending-link count, "+N links ≈ +M positions" | SEO Dashboard → **new "Link Impact" card** in the Analytics section (`48`, after GSC ~1105) | `seo_article_analytics` (GSC) + link counts |
+| **(d) Live-layer verification** — confirm `<a href>` tags exist in the **Shopify-rendered** body, not just `seo_internal_links` rows (DB record ≠ live link Google sees) | spot-check util / Exceptions surfacing | CMS fetch vs DB |
+| **(e) Autopilot signal/alert** — orphan count, clusters with <X% coverage, interlink-job failures roll into the **B9 daily/Slack health summary**; alert on "published article with 0 inbound links after N days" (I10 orphan detector) | worker health job (B9) | same queries as (a)/(b) |
+
+### Acceptance criteria (doubles as the §6 interlinking "definition of done")
+After the §6 fix ships, for a freshly published cluster:
+1. SEO Clusters → Link Health shows **~100% pillar↔spoke coverage** and 0 `missing_links` within
+   N hours of the last member publishing.
+2. Brand **orphan count trends to 0**; the Content Health tab lists no cluster members as orphans.
+3. The **Link Impact** card shows a non-trivial positive relationship between link count and
+   position over time (the actual "it's working" proof).
+4. Live-HTML spot-check confirms the links are present in Shopify, not just the DB.
+
+### Notes
+- (a) and (e) are cheap — the audit/health services already return the numbers; this is mostly
+  surfacing + rolling up, not new computation.
+- (c) is the highest-value but needs a few weeks of post-fix GSC data to be meaningful; build
+  the card early, expect signal to accrue over time.
+- B9–B11 (failure observability) should be implemented together with (e) so health/verification
+  live in one summary rather than scattered.
