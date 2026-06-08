@@ -38,6 +38,12 @@ GENERIC_WORDS = {"guide", "tips", "advice", "best", "top", "complete", "ultimate
 class InterlinkingService:
     """Service for internal link suggestions, auto-linking, and bidirectional links."""
 
+    # D1: per-article link caps so re-running interlinking on every cluster
+    # member publish can't accumulate unbounded links (Google dislikes
+    # link-stuffing). Contextual = in-body <a>; related = footer block entries.
+    MAX_CONTEXTUAL_LINKS_PER_ARTICLE = 5
+    MAX_RELATED_LINKS = 5
+
     def __init__(self, supabase_client=None, publisher_service=None):
         self._supabase = supabase_client
         self._publisher_service = publisher_service
@@ -147,6 +153,8 @@ class InterlinkingService:
         push_to_cms: bool = False,
         brand_id: Optional[str] = None,
         organization_id: Optional[str] = None,
+        candidate_articles: Optional[List[Dict[str, Any]]] = None,
+        max_links: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         Auto-insert internal links into article HTML by finding matching text.
@@ -187,13 +195,30 @@ class InterlinkingService:
                 "message": "No content_html to process. Generate and publish first.",
             }
 
-        project_id = article.get("project_id")
-        other_articles = self._get_project_articles(project_id, exclude_id=article_id)
+        # D5.3: when a candidate list is provided (e.g. cluster members), link
+        # against ONLY those, not the whole project. Otherwise fall back to all
+        # published project articles. Either way, exclude self.
+        if candidate_articles is not None:
+            other_articles = [a for a in candidate_articles if a.get("id") != article_id]
+        else:
+            project_id = article.get("project_id")
+            other_articles = self._get_project_articles(project_id, exclude_id=article_id)
 
         total_links = 0
         linked_articles = []
 
+        # D1: the cap is CUMULATIVE, not per-run. Count internal blog links
+        # already in the body so repeated cluster passes (one per member publish)
+        # don't keep adding `max_links` more each time. In the cluster path the
+        # Related block is removed before this runs, so these are existing
+        # contextual links.
+        existing_internal_links = len(re.findall(r'href="[^"]*/blogs/articles/', html))
+
         for target in other_articles:
+            # D1: stop once the per-article contextual-link cap (existing + new)
+            # is reached so repeated passes can't over-link.
+            if max_links is not None and (existing_internal_links + total_links) >= max_links:
+                break
             target_url = target.get("published_url", "")
             if not target_url:
                 # Build relative URL from handle if no published_url
@@ -429,12 +454,17 @@ class InterlinkingService:
             return {"articles_processed": 0, "links_added": 0, "related_sections_added": 0,
                     "errors": [{"message": "Need at least 2 published articles to interlink"}]}
 
-        # Identify pillar article
+        # Identify pillar article — but only treat it as a link target if it is
+        # itself PUBLISHED. Linking spokes to an unpublished pillar would point
+        # at a derived/draft URL (404 risk) and record a CLUSTER link that isn't
+        # really live (Codex review #3).
+        published_ids = {a["id"] for a in published_articles}
         spokes = cluster.get("spokes", [])
         pillar_article_id = None
         for spoke in spokes:
             if spoke.get("role") == "pillar" and spoke.get("article_id"):
-                pillar_article_id = spoke["article_id"]
+                candidate = spoke["article_id"]
+                pillar_article_id = candidate if candidate in published_ids else None
                 break
 
         total_links = 0
@@ -444,55 +474,87 @@ class InterlinkingService:
         for article in published_articles:
             aid = article["id"]
             try:
-                # Auto-link against all project articles (contextual links)
-                auto_result = self.auto_link_article(aid)
-                added = auto_result.get("links_added", 0)
+                # Snapshot HTML before any change so we only push to CMS if it
+                # actually changed (D5.6 — avoid churning Shopify / clobbering
+                # manual edits on no-op passes).
+                pre = self._get_article(aid)
+                pre_html = (pre.get("content_html") if pre else "") or ""
 
-                # Save cluster link records for pillar-spoke relationships
-                if pillar_article_id:
-                    if aid != pillar_article_id:
-                        # Spoke → pillar link record
-                        self._save_link_record(
-                            source_id=aid, target_id=pillar_article_id,
-                            link_type=LinkType.CLUSTER, status=LinkStatus.IMPLEMENTED,
-                            anchor_text=self._varied_anchor(
-                                next((a.get("keyword", "") for a in published_articles if a["id"] == pillar_article_id), ""),
-                            ),
-                        )
-                    else:
-                        # Pillar → spoke link records
-                        for other in published_articles:
-                            if other["id"] != aid:
-                                self._save_link_record(
-                                    source_id=aid, target_id=other["id"],
-                                    link_type=LinkType.CLUSTER, status=LinkStatus.IMPLEMENTED,
-                                    anchor_text=self._varied_anchor(other.get("keyword", "")),
-                                )
-
-                total_links += added
-
-                # Remove old Related section, rebuild
+                # D5.4: remove the stale Related block FIRST. auto_link skips a
+                # target whose URL already appears in the HTML, so leaving the
+                # old footer block in place would block contextual matching and
+                # lock the article into footer-only links.
                 self._remove_related_section(aid)
 
-                # Pick top related articles (pillar first if this is a spoke, then others)
+                # D5.3 + D1: contextual auto-link against CLUSTER MEMBERS only
+                # (not the whole project), capped so repeated passes can't
+                # over-link. auto_link_article already body-validates: it only
+                # records AUTO links for targets it actually wrapped in the body.
+                auto_result = self.auto_link_article(
+                    aid,
+                    candidate_articles=published_articles,
+                    max_links=self.MAX_CONTEXTUAL_LINKS_PER_ARTICLE,
+                )
+                added = auto_result.get("links_added", 0)
+                total_links += added
+
+                # Rebuild the Related block: pillar first (for spokes), then
+                # other members. These are real footer links.
                 related_ids = []
                 if pillar_article_id and aid != pillar_article_id:
                     related_ids.append(pillar_article_id)
                 for other in published_articles:
                     if other["id"] != aid and other["id"] not in related_ids:
                         related_ids.append(other["id"])
-                related_ids = related_ids[:5]  # Cap at 5
+                related_ids = related_ids[: self.MAX_RELATED_LINKS]
 
+                related_linked = 0
                 if related_ids:
-                    self.add_related_section(aid, related_ids)
-                    related_sections += 1
+                    rel = self.add_related_section(aid, related_ids)
+                    related_linked = rel.get("articles_linked", 0)
+                    if related_linked:
+                        related_sections += 1
 
-                # Push to CMS
+                # D5.5: only record CLUSTER pillar/spoke links that are backed by
+                # a REAL link — either a contextual body link or an entry in the
+                # Related block that was actually written. linked_now is the set
+                # of targets this article genuinely links to now.
+                linked_now = {
+                    l["article_id"] for l in auto_result.get("linked_articles", [])
+                }
+                if related_linked:
+                    linked_now.update(related_ids)
+
+                if pillar_article_id:
+                    if aid != pillar_article_id:
+                        if pillar_article_id in linked_now:
+                            self._save_link_record(
+                                source_id=aid, target_id=pillar_article_id,
+                                link_type=LinkType.CLUSTER, status=LinkStatus.IMPLEMENTED,
+                                anchor_text=self._varied_anchor(
+                                    next((a.get("keyword", "") for a in published_articles if a["id"] == pillar_article_id), ""),
+                                ),
+                            )
+                    else:
+                        for other in published_articles:
+                            if other["id"] != aid and other["id"] in linked_now:
+                                self._save_link_record(
+                                    source_id=aid, target_id=other["id"],
+                                    link_type=LinkType.CLUSTER, status=LinkStatus.IMPLEMENTED,
+                                    anchor_text=self._varied_anchor(other.get("keyword", "")),
+                                )
+
+                # D5.6 + D5.7: push to CMS only if the HTML actually changed, and
+                # surface push failures instead of swallowing them.
                 if push_to_cms and brand_id and organization_id:
-                    # Re-read latest HTML after modifications
                     updated = self._get_article(aid)
-                    if updated and updated.get("cms_article_id"):
-                        self._push_html_to_cms(aid, brand_id, organization_id, updated.get("content_html", ""))
+                    post_html = (updated.get("content_html") if updated else "") or ""
+                    if updated and updated.get("cms_article_id") and post_html != pre_html:
+                        pushed = self._push_html_to_cms(
+                            aid, brand_id, organization_id, post_html
+                        )
+                        if not pushed:
+                            errors.append({"article_id": aid, "error": "CMS push failed (HTML changed but not pushed)"})
                         time.sleep(cms_delay)
 
             except Exception as e:
@@ -505,6 +567,78 @@ class InterlinkingService:
             "related_sections_added": related_sections,
             "errors": errors,
         }
+
+    # =========================================================================
+    # CANONICAL ENTRY POINT (D3)
+    # =========================================================================
+
+    def interlink(
+        self,
+        scope: str,
+        *,
+        article_id: Optional[str] = None,
+        cluster_id: Optional[str] = None,
+        brand_id: Optional[str] = None,
+        organization_id: Optional[str] = None,
+        push_to_cms: bool = True,
+    ) -> Dict[str, Any]:
+        """One canonical interlinking entry point (D3).
+
+        All callers (post-publish worker job, re-run-links UI, the D2 re-render
+        hook) should route here so the §6 logic lives in one place and can't
+        drift.
+
+        scope='cluster' (preferred for clustered articles): re-link the whole
+        cluster — true bidirectional pillar/spoke + contextual + related — over
+        all currently-published members (D1). Self-healing as members publish.
+
+        scope='article': single-article egocentric pass (suggest + auto-link +
+        related) for articles not part of a cluster. Links against published
+        project articles.
+        """
+        if scope == "cluster":
+            if not cluster_id:
+                raise ValueError("interlink(scope='cluster') requires cluster_id")
+            return self.interlink_cluster(
+                cluster_id,
+                trigger_article_id=article_id,
+                push_to_cms=push_to_cms,
+                brand_id=brand_id,
+                organization_id=organization_id,
+            )
+
+        if scope == "article":
+            if not article_id:
+                raise ValueError("interlink(scope='article') requires article_id")
+            suggestions = self.suggest_links(article_id, save=True)
+            auto = self.auto_link_article(
+                article_id,
+                push_to_cms=push_to_cms,
+                brand_id=brand_id,
+                organization_id=organization_id,
+                max_links=self.MAX_CONTEXTUAL_LINKS_PER_ARTICLE,
+            )
+            related_ids = [
+                s["target_article_id"]
+                for s in suggestions.get("suggestions", [])
+            ][: self.MAX_RELATED_LINKS]
+            related_linked = 0
+            if related_ids:
+                self._remove_related_section(article_id)
+                rel = self.add_related_section(
+                    article_id, related_ids,
+                    push_to_cms=push_to_cms,
+                    brand_id=brand_id, organization_id=organization_id,
+                )
+                related_linked = rel.get("articles_linked", 0)
+            return {
+                "scope": "article",
+                "links_added": auto.get("links_added", 0),
+                "related_articles_linked": related_linked,
+                "suggestion_count": suggestions.get("suggestion_count", 0),
+            }
+
+        raise ValueError(f"Unknown interlink scope: {scope!r} (use 'cluster' or 'article')")
 
     @staticmethod
     def _varied_anchor(keyword: str) -> str:
@@ -1000,7 +1134,16 @@ class InterlinkingService:
         placement: str = "",
         priority: str = "",
     ) -> None:
-        """Save a single link record to seo_internal_links."""
+        """Idempotently save a single link record to seo_internal_links.
+
+        §6 D5.2: interlink_cluster re-runs on every cluster member publish, so a
+        plain INSERT would accumulate duplicate (source, target, link_type) rows
+        and inflate inbound-link counts (corrupting the §7 metrics). This does a
+        check-then-write keyed on (source, target, link_type), which is
+        idempotent regardless of whether the unique index migration has been
+        applied yet. The migration's unique index is the hard race backstop;
+        the per-cluster debounce (D5.1) prevents concurrent writers in practice.
+        """
         try:
             data = {
                 "source_article_id": source_id,
@@ -1016,7 +1159,21 @@ class InterlinkingService:
             if priority:
                 data["priority"] = priority
 
-            self.supabase.table("seo_internal_links").insert(data).execute()
+            existing = (
+                self.supabase.table("seo_internal_links")
+                .select("id")
+                .eq("source_article_id", source_id)
+                .eq("target_article_id", target_id)
+                .eq("link_type", link_type.value)
+                .limit(1)
+                .execute()
+            )
+            if existing.data:
+                self.supabase.table("seo_internal_links").update(data).eq(
+                    "id", existing.data[0]["id"]
+                ).execute()
+            else:
+                self.supabase.table("seo_internal_links").insert(data).execute()
         except Exception as e:
             logger.warning(f"Failed to save link record {source_id}->{target_id}: {e}")
 
@@ -1108,8 +1265,14 @@ class InterlinkingService:
         brand_id: str,
         organization_id: str,
         html: str,
-    ) -> None:
-        """Push updated HTML to CMS via publisher service."""
+    ) -> bool:
+        """Push updated HTML to CMS via publisher service.
+
+        Returns True on a successful push, False otherwise (no cms_id, no
+        publisher, or an API error). D5.7: the failure is no longer silently
+        swallowed — the caller (interlink_cluster) records it so a stale-Shopify
+        outcome surfaces instead of the job reporting success with stale CMS.
+        """
         try:
             if self._publisher_service is None:
                 from viraltracker.services.seo_pipeline.services.cms_publisher_service import CMSPublisherService
@@ -1119,11 +1282,14 @@ class InterlinkingService:
             cms_id = article.get("cms_article_id") if article else None
             if not cms_id:
                 logger.warning(f"Article {article_id} has no cms_article_id, skipping CMS push")
-                return
+                return False
 
             publisher = self._publisher_service.get_publisher(brand_id, organization_id)
             if publisher:
                 publisher.update(cms_id, {"body_html": html}, body_only=True)
                 logger.info(f"Pushed updated HTML to CMS for article {article_id}")
+                return True
+            return False
         except Exception as e:
-            logger.warning(f"Failed to push HTML to CMS for {article_id}: {e}")
+            logger.error(f"Failed to push HTML to CMS for {article_id}: {e}")
+            return False

@@ -1066,3 +1066,109 @@ class TestFindLinkingOpportunities:
         if len(result["opportunities"]) >= 2:
             scores = [o["score"] for o in result["opportunities"]]
             assert scores == sorted(scores, reverse=True)
+
+
+# =============================================================================
+# §6 interlinking workstream — D1/D3/D5 behaviors
+# =============================================================================
+
+class TestSaveLinkRecordIdempotent:
+    """D5.2: re-running interlinking must not accumulate duplicate link rows."""
+
+    def _chain(self, existing_data):
+        from unittest.mock import MagicMock
+        sel = MagicMock()
+        sel.select.return_value = sel
+        sel.eq.return_value = sel
+        sel.limit.return_value = sel
+        sel.execute.return_value = MagicMock(data=existing_data)
+        sel.update.return_value = sel
+        sel.insert.return_value = sel
+        return sel
+
+    def test_updates_when_record_exists(self, service):
+        from viraltracker.services.seo_pipeline.models import LinkType, LinkStatus
+        chain = self._chain([{"id": "link-1"}])
+        service._supabase.table = MagicMock(return_value=chain)
+        service._save_link_record("a", "b", LinkType.CLUSTER, LinkStatus.IMPLEMENTED)
+        assert chain.update.called
+        assert not chain.insert.called
+
+    def test_inserts_when_record_absent(self, service):
+        from viraltracker.services.seo_pipeline.models import LinkType, LinkStatus
+        chain = self._chain([])
+        service._supabase.table = MagicMock(return_value=chain)
+        service._save_link_record("a", "b", LinkType.CLUSTER, LinkStatus.IMPLEMENTED)
+        assert chain.insert.called
+        assert not chain.update.called
+
+
+class TestAutoLinkScopingAndCap:
+    """D5.3 (cluster scope) + D1 (link cap) on auto_link_article."""
+
+    def test_restricts_to_candidate_articles(self, service, source_article, target_articles):
+        service._get_article = MagicMock(return_value=source_article)
+        service._get_project_articles = MagicMock(return_value=target_articles)
+        service._update_article_html = MagicMock()
+        service._save_link_record = MagicMock()
+
+        # Only target-001 is a candidate; target-002 must NOT be linked even
+        # though its phrase appears in the body.
+        only = [target_articles[0]]
+        result = service.auto_link_article("art-source-001", candidate_articles=only)
+
+        linked_ids = {l["article_id"] for l in result["linked_articles"]}
+        assert linked_ids <= {"art-target-001"}
+        # project-wide fallback must not have been used
+        service._get_project_articles.assert_not_called()
+
+    def test_respects_max_links_cap(self, service, source_article, target_articles):
+        service._get_article = MagicMock(return_value=source_article)
+        service._update_article_html = MagicMock()
+        service._save_link_record = MagicMock()
+
+        result = service.auto_link_article(
+            "art-source-001", candidate_articles=target_articles, max_links=1,
+        )
+        assert result["links_added"] <= 1
+
+    def test_cap_is_cumulative_counts_existing_links(self, service, target_articles):
+        # Body already has 1 internal blog link; with a cap of 1, no NEW link is
+        # added even though a matchable phrase is present (Codex review #1 — the
+        # cap must be cumulative, not per-run).
+        article = {
+            "id": "art-source-001",
+            "project_id": "proj-001",
+            "keyword": "gaming pc",
+            "content_html": (
+                '<p>See <a href="/blogs/articles/x">this</a>.</p>'
+                "<p>Your gaming monitor matters a lot here.</p>"
+            ),
+            "status": "published",
+        }
+        service._get_article = MagicMock(return_value=article)
+        service._update_article_html = MagicMock()
+        service._save_link_record = MagicMock()
+
+        result = service.auto_link_article(
+            "art-source-001", candidate_articles=target_articles, max_links=1,
+        )
+        assert result["links_added"] == 0
+
+
+class TestInterlinkDispatcher:
+    """D3: one canonical entry point routes to cluster/article."""
+
+    def test_cluster_scope_routes_to_interlink_cluster(self, service):
+        service.interlink_cluster = MagicMock(return_value={"links_added": 3, "related_sections_added": 2, "errors": []})
+        out = service.interlink(scope="cluster", cluster_id="c-1", brand_id="b", organization_id="o")
+        service.interlink_cluster.assert_called_once()
+        assert out["links_added"] == 3
+
+    def test_cluster_scope_requires_cluster_id(self, service):
+        with pytest.raises(ValueError, match="cluster_id"):
+            service.interlink(scope="cluster")
+
+    def test_unknown_scope_raises(self, service):
+        with pytest.raises(ValueError, match="scope"):
+            service.interlink(scope="bogus", article_id="a")
