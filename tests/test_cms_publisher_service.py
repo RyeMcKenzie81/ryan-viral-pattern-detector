@@ -639,6 +639,19 @@ class TestRenderMarkdownToHtml:
         html = render_markdown_to_html(md)
         assert "[IMAGE:" not in html
 
+    def test_link_markers_render_as_clean_anchors(self):
+        # [LINK: anchor](url) must become <a href="url">anchor</a> with NO
+        # leftover "LINK:" prefix in the visible text, and normal links untouched.
+        md = (
+            "Check [LINK: online gaming friends](/blogs/articles/x) and "
+            "[LINK: Yakety Pack](/) plus a [normal link](https://example.com)."
+        )
+        html = render_markdown_to_html(md)
+        assert "LINK:" not in html
+        assert '<a href="/blogs/articles/x">online gaming friends</a>' in html
+        assert '<a href="/">Yakety Pack</a>' in html
+        assert '<a href="https://example.com">normal link</a>' in html
+
     def test_adds_responsive_styling(self):
         html = render_markdown_to_html("# Test")
         assert "max-width: 100%" in html
