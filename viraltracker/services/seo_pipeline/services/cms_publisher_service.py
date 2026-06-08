@@ -112,6 +112,13 @@ def render_markdown_to_html(content: str) -> str:
     # Strip [IMAGE: ...] and [HERO IMAGE: ...] markers
     text = re.sub(r'\[(?:HERO )?IMAGE:\s*[^\]]*\]', '', text, flags=re.IGNORECASE)
 
+    # Convert [LINK: anchor](url) internal-link suggestion markers into real
+    # markdown links by dropping the "LINK: " prefix. The Phase C prompt emits
+    # links as [LINK: anchor](url); without this, markdown-it renders the prefix
+    # into the visible anchor text (<a href="url">LINK: anchor</a>). Only the
+    # bracketed label is touched; the (url) part is left for markdown to render.
+    text = re.sub(r'\[LINK:\s*([^\]]+)\]', r'[\1]', text, flags=re.IGNORECASE)
+
     # Strip LLM self-assessment sections
     for heading in [
         r'SEO Optimization Summary',
