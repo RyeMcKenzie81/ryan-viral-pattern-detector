@@ -165,6 +165,7 @@ class ImageAnalysisResult:
     awareness_confidence: Optional[float] = None
 
     # Provenance
+    analysis_id: Optional[UUID] = None  # ad_image_analysis row id (set on save/fetch; links the classification)
     raw_analysis: Optional[Dict] = None
     model_used: Optional[str] = None
     source_url: Optional[str] = None
@@ -519,6 +520,7 @@ class ImageAnalysisService:
                 visual_style=row.get("visual_style"),
                 awareness_level=row.get("awareness_level"),
                 awareness_confidence=row.get("awareness_confidence"),
+                analysis_id=UUID(row["id"]) if row.get("id") else None,
                 raw_analysis=row.get("raw_analysis"),
                 model_used=row.get("model_used"),
                 source_url=row.get("source_url"),
@@ -533,9 +535,9 @@ class ImageAnalysisService:
         result: ImageAnalysisResult,
         organization_id: UUID,
     ) -> None:
-        """Store analysis result in ad_image_analysis table."""
+        """Store analysis result in ad_image_analysis table; set result.analysis_id."""
         try:
-            self.supabase.table("ad_image_analysis").insert({
+            resp = self.supabase.table("ad_image_analysis").insert({
                 "organization_id": str(organization_id),
                 "brand_id": str(result.brand_id),
                 "meta_ad_id": result.meta_ad_id,
@@ -562,9 +564,20 @@ class ImageAnalysisService:
                 "model_used": result.model_used,
                 "source_url": result.source_url,
             }).execute()
+            if resp.data:
+                result.analysis_id = UUID(resp.data[0]["id"])
         except Exception as e:
-            if "23505" in str(e):  # unique violation — already exists
-                pass
+            if "23505" in str(e):  # unique violation — already exists; fetch its id so the link resolves
+                try:
+                    ex = self.supabase.table("ad_image_analysis").select("id").eq(
+                        "meta_ad_id", result.meta_ad_id
+                    ).eq("brand_id", str(result.brand_id)).eq(
+                        "input_hash", result.input_hash
+                    ).eq("prompt_version", result.prompt_version).limit(1).execute()
+                    if ex.data:
+                        result.analysis_id = UUID(ex.data[0]["id"])
+                except Exception:
+                    pass
             else:
                 logger.error(f"Failed to store image analysis for {result.meta_ad_id}: {e}")
 

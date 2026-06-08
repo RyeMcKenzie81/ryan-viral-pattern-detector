@@ -41,13 +41,24 @@ Rationale (settled by the creative-vs-copy question): the **on-image headline de
 4. Static hierarchy + legibility + per-format sub-rules (steps 2,4).
 5. Readability of advertorials -> deep on-image extraction + 98% storage coverage (the decision itself).
 
-## Open items to verify during build
-- `ad_image_analysis` schema has the columns we map (awareness_level + confidence exist; static is single-value, no opening/ending needed).
-- Inline call vs two-step: does the classifier call `ImageAnalysisService` inline, or do we keep the existing separate image-analysis job feeding it (mirroring video's download->analyze->classify)? Decide in step 5.
-- `ImageAnalysisResult` may need a `copy_awareness_level` add if we judge copy in the same call.
+## Open items — RESOLVED during build (S4)
+- `ad_image_analysis` schema: awareness_level + confidence exist; static is single-value (no opening/ending). `ImageAnalysisResult` now also surfaces `analysis_id` (the saved row id) so the classification can link `image_analysis_id`.
+- Inline vs two-step: **INLINE** (D1). `classify_ad` calls `ImageAnalysisService.analyze_image` directly. The image call is made WITHOUT `ad_copy` (creative awareness is image-pure — exactly how the rubric was hand-calibrated, store=False evals passed no copy), so D3 holds at the strongest level.
+- `ImageAnalysisResult` did NOT need a `copy_awareness_level`: copy is judged by a SEPARATE text-only call in the classifier (`_classify_copy_awareness` + `COPY_AWARENESS_PROMPT`), so the two judgments never share a model call.
+- **Deep-or-SKIP (no light fallback when the deep image service is wired):** when `ImageAnalysisService` is present, image ads route deep-or-skip. If deep can't run (no full-res asset in storage, too low-res, transient parse failure) the ad is SKIPPED (not persisted) rather than falling back to the legacy light thumbnail+caption path (which conflates the caption into creative awareness). This makes classify-once converge — the only PERSISTED non-video outcome is a current-version deep row — and matches the plan's "not in storage → stays at old classification, degrades gracefully" failure mode. The deep service is wired into ALL production `ClassifierService` constructions (scheduler `ad_classification` + `congruence_reanalysis`, `AdIntelligenceService.full_analysis`, `DiagnosticEngine` lazy classifier), consistent with the user's "one shared awareness definition platform-wide" goal. Callers WITHOUT the service keep the legacy light path and never re-flag (`_image_analysis_is_stale` returns False when unwired).
 
-## NOT in scope
-Video (already validated/shipped). Landing-page awareness prompt. The digest publish itself (after both backfills).
+## Build status
+- **S1-S5: done.** #180 fix, rubric refactor (+ video regression gate), deep ImageAnalysisService wiring (PROMPT_VERSION v2), static sub-rules, before/after harness — all committed in `cba45a0d` and hand-validated on ~50 Martin ads.
+- **S4: done.** Classifier image branch routed INLINE through ImageAnalysisService (deep-or-skip), creative/copy split (D3), `image_analysis_id` link + migration, image-version staleness gate (`_image_analysis_is_stale`), Query 6 bulk prefetch (4-tuple). Wired into all production ClassifierService constructions.
+- **S6: unit suite done** (`tests/test_static_awareness.py`, 19 tests): creative<-image vs copy<-ad_copy separation, image-pure call (ad_copy never passed to the image), imagery->format mapping, deep-or-skip routing (ok/low_res/None/error/exception), image-version staleness branches, copy-empty short-circuit, brace-safe copy prompt, #180 import smoke. All 38 classifier tests green.
+- **DEFERRED to rollout (steps 6/8):** the golden-set agreement check (needs live Gemini + stored images — run as a network-gated script, like the calibration evals) and the completeness-gate test (needs the digest version-coverage gate, which is built in step 8). These are rollout gates, not mergeable unit tests.
+- **REQUIRED before this runs in prod:** apply `migrations/2026-06-08_classifications_image_analysis_id.sql` (the INSERT writes `image_analysis_id`; the column must exist). Reads are backward-compatible (graceful None pre-migration).
+
+## Follow-ups (priority order)
+1. **FIRST after this plan — unify the TEMPLATE classifier onto the shared AWARENESS_RUBRIC.** Today `template_queue_service.py` classifies scraped templates with its OWN simple "rate 1-5" prompt via `GeminiService.analyze_image` (stored as INT 1-5 in `scraped_templates.awareness_level`, consumed by `template_scoring_service`'s awareness_align scorer for template<->persona matching). This is a SEPARATE, un-calibrated path -> the platform uses two different awareness definitions (ads = calibrated Schwartz rubric string enum; templates = loose 1-5 int). The user flagged this as very important: one shared definition across the platform to ensure congruence and avoid drift. Bring templates onto `AWARENESS_RUBRIC` (map the rubric output to the 1-5 scale or migrate templates to the string enum), then re-classify the template library.
+
+## NOT in scope (this plan)
+Video (already validated/shipped). Landing-page awareness prompt. The digest publish itself (after both backfills). The template-classifier unification (it's follow-up #1 above, right after this).
 
 ## Worktree parallelization
 Sequential implementation, no parallelization opportunity — every step funnels through `ImageAnalysisService` + `classifier_service.py` (one shared module pair). Build order: #180 fix -> rubric refactor (+ video regression gate) -> wire ImageAnalysisService -> route classifier inline -> comparison harness -> tests -> rollout.
