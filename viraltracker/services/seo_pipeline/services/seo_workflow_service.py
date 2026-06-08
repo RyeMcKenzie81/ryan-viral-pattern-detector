@@ -2017,7 +2017,60 @@ class SEOWorkflowService:
             except Exception as e:
                 logger.warning(f"Re-publish after Phase C re-run failed (non-fatal): {e}")
 
+        # D2: sync_content_html (and the republish) regenerated content_html from
+        # phase_c_output, which dropped every internal link (links live ONLY in
+        # content_html, never in phase_c_output). Rebuild them so re-optimize
+        # doesn't silently strip the article's interlinks. Hooked here (an
+        # explicit user action) rather than inside sync_content_html, so it can't
+        # recurse or thrash across the other sync callers.
+        self._reinterlink_after_render(
+            article_id, brand_id, organization_id, push_to_cms=republish
+        )
+
         return {"phase_c": "complete", "parsed_fields": list((parsed or {}).keys())}
+
+    def _reinterlink_after_render(
+        self,
+        article_id: str,
+        brand_id: str,
+        organization_id: str,
+        push_to_cms: bool,
+    ) -> None:
+        """Rebuild internal links after a content_html re-render (D2).
+
+        Re-renders regenerate content_html from phase_c_output, which has no
+        links, so any prior interlinking is lost. This re-runs the canonical
+        interlink pass (whole cluster if the article is clustered, else
+        single-article). Non-fatal: a re-optimize must not fail because
+        re-linking hiccuped. Hooked only at explicit re-render entry points, so
+        the interlink write (which also touches content_html) never re-triggers
+        this — no recursion (D5.8).
+        """
+        try:
+            from viraltracker.services.seo_pipeline.services.interlinking_service import InterlinkingService
+            link_svc = InterlinkingService(supabase_client=self.supabase)
+            spoke = (
+                self.supabase.table("seo_cluster_spokes")
+                .select("cluster_id")
+                .eq("article_id", article_id)
+                .limit(1)
+                .execute()
+            )
+            cluster_id = spoke.data[0].get("cluster_id") if spoke.data else None
+            if cluster_id:
+                link_svc.interlink(
+                    scope="cluster", cluster_id=cluster_id, article_id=article_id,
+                    brand_id=brand_id, organization_id=organization_id,
+                    push_to_cms=push_to_cms,
+                )
+            else:
+                link_svc.interlink(
+                    scope="article", article_id=article_id,
+                    brand_id=brand_id, organization_id=organization_id,
+                    push_to_cms=push_to_cms,
+                )
+        except Exception as e:
+            logger.warning(f"Re-interlink after render failed (non-fatal) for {article_id}: {e}")
 
     def rerun_interlinking(
         self,
