@@ -401,3 +401,105 @@ they should be folded into the §6 interlinking work and the §4 execution-model
 C2 and C6 are structural and should be settled as part of the §6 interlinking redesign +
 `/plan-eng-review`. C1 rides with the §4 graph-deletion decision. C3/C4/C5 are small, low-risk
 tidy-ups that can land with the §6 implementation PR.
+
+---
+
+## 9. Eng review — locked decisions (2026-06-05)
+
+`/plan-eng-review` over §4/§6/§7/§8, plus a Codex outside-voice pass. Decisions are locked;
+these govern the §6 implementation.
+
+### Locked decisions
+- **D1 — Interlink timing: re-interlink the whole cluster on each member publish.** The
+  post-publish path runs the cluster interlink pass over all *published* members (gated to ≥2).
+  Self-healing: links appear as soon as 2 members are live; earlier members gain inbound links
+  as later ones publish. Interlinking is **additive only** — it wraps existing matched phrases
+  in `<a>` tags and appends a Related block; **no prose rewrite, no LLM**. Enforce a **per-article
+  link cap** (~3–5 contextual + the related block) so repeated passes don't over-link.
+- **D2 — Re-render then re-interlink.** After any `content_html` re-render from `phase_c_output`
+  (which has no links), re-run the interlink pass so links are reconstructed. Single rendering
+  source stays `phase_c_output`; links are always derived, never the canonical copy.
+- **D3 — Consolidate to one canonical entry point.** `InterlinkingService.interlink(scope=
+  article|cluster)`; the post-publish worker job, `rerun_interlinking`, the D2 re-render hook,
+  and the UI all route through it. Delete the duplicated sequences (the drift that caused the
+  post-publish job to skip `interlink_cluster` in the first place).
+- **D4 — Decouple from §4.** Ship D1–D3 on the existing imperative threaded path. The §4
+  execution-model decision (delete dead graph vs resurrect) stays deferred and non-blocking.
+
+### D5 — Minimum bar (Codex outside-voice; REQUIRED before D1/D2 ship)
+D1/D2 turn interlinking into a repeated cross-article background write, which creates a new
+race / write-amplification surface. These are in-scope sub-tasks of §6, NOT deferrable:
+1. **Cluster-level lock / debounce** — near-simultaneous publishes must not race the same
+   cluster (lost updates on DB + CMS). Coalesce/lock per cluster.
+2. **Idempotent link records** — `seo_internal_links` writes must upsert / honor a unique
+   constraint on (source, target, link_type). Today plain `insert()` runs every pass, inflating
+   counts so `_batch_count_inbound_links` (and the §7 orphan/coverage metrics) would lie.
+3. **Scope cluster-mode to cluster members** — `interlink_cluster` currently calls
+   `auto_link_article`, which links against ALL published project articles, not the cluster.
+   Restrict (or prioritize) to cluster members so the link cap isn't exhausted before
+   pillar/spoke links land.
+4. **Order: remove Related block BEFORE contextual matching** — auto-link skips a target whose
+   URL already appears in the footer Related block, so the current order locks articles into
+   footer-only links.
+5. **Body-validate before recording "implemented"** — only write a link record when
+   `_insert_links_in_paragraphs` actually wrapped a phrase. Today records can claim implemented
+   while the body has no link (DB ≠ live).
+6. **Hash-based only-changed CMS push** — `interlink_cluster` re-pushes every processed article
+   regardless of change (the "only changed" mitigation claimed for D1 does not exist yet).
+   Diff final HTML; skip unchanged; protects Shopify rate limit + manual edits.
+7. **Stop swallowing CMS push failures** — `_push_html_to_cms` logs-and-continues, leaving DB
+   updated but Shopify stale. Surface/retry (ties B1/I9).
+8. **D2 trigger safety** — distinguish render-writes from interlink-writes so the reinterlink
+   hook can't recurse (interlinking itself writes `content_html`); fire only at explicit points,
+   not "any content_html change" (`sync_content_html` is called from ~5 flows); ensure ordering
+   so a later `publish_article` re-render can't overwrite a just-added reinterlink.
+
+### Test coverage required (implementation must include from the start)
+- `interlink(scope=cluster)`: spoke→pillar AND pillar→spoke both present; idempotent re-run (no
+  dup links/records, no dup Related block); per-article link cap enforced; <2 published = no-op;
+  additive-only (body text unchanged).
+- **CRITICAL regression (iron rule):** re-render (rerun_phase_c / republish / regenerate) then
+  re-interlink → internal links survive (the C6 bug).
+- D2 trigger: no recursion (interlink write doesn't re-trigger); render-write does.
+- Concurrency: two near-simultaneous publishes on one cluster → lock/debounce prevents lost
+  updates (no clobbered links, single coherent final state).
+- Idempotent records: re-run does not inflate inbound counts (guards the §7 metrics).
+- Body validation: a recorded "implemented" link implies a real `<a>` in the body.
+- Observability: orphan query flags a published article with 0 inbound; audit reflects ~100%
+  intra-cluster coverage post-fix.
+
+### NOT in scope (deferred, with rationale)
+- **§4 execution-model decision** (imperative-worker-driven vs graph; delete dead graph) —
+  decoupled per D4; interlinking fix doesn't need it.
+- **GSC coverage→ranking correlation card (§7c)** — needs weeks of post-fix data to be
+  meaningful; build the card later, after coverage is real.
+- **HTML-parser rewrite of `_insert_links_in_paragraphs`** (regex → BeautifulSoup) — real
+  hardening (C-series), but not required for the P0; do it if the link cap + validation aren't
+  enough to contain the regex blast radius.
+- **Anchor-text strategy applied to HTML (I6/C3)** — contextual anchors stay the matched phrase
+  for now; apply real variation in a follow-up. (Plan should stop *claiming* anchor control
+  until then.)
+- **MCP / API-foundation work** — later roadmap phase; only informs, doesn't gate.
+
+### What already exists (reuse, don't rebuild)
+- `interlink_cluster()` — whole-cluster pillar/spoke + contextual + related (the bidirectional
+  builder; just never called at publish time). D1/D3 wire it correctly; D5 hardens it.
+- `get_cluster_health()` + `get_interlinking_audit()` — coverage % + missing links, already
+  surfaced in SEO Clusters UI → §7a extends these.
+- SEO Dashboard Internal Links KPI + GSC analytics → §7b/§7c homes.
+- `find_linking_opportunities` (GSC striking-distance) → §7e autopilot loop.
+
+---
+
+## GSTACK REVIEW REPORT
+
+| Review | Trigger | Why | Runs | Status | Findings |
+|--------|---------|-----|------|--------|----------|
+| CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | — |
+| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 1 | CLEAR (PLAN) | 5 decisions locked (D1–D5), 0 critical gaps remaining; minimum bar adopted into §6 |
+| Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | — |
+| Outside Voice | `codex-plan-review` | Independent challenge | 1 | issues_found → folded | 13 gaps; coordination/idempotency/validation adopted as D5 minimum bar |
+
+- **CODEX:** found D1/D2 created a race/write-amplification surface; idempotency, cluster-lock, cluster-scope, order, body-validation, only-changed push, and D2 recursion-guard all adopted into §6 (D5).
+- **CROSS-MODEL:** tension on D4 — agreed execution-*model* can defer, but coordination requirements cannot; resolved by adopting the minimum bar now.
+- **VERDICT:** ENG CLEARED — interlinking workstream (§6) ready to implement with D1–D5 as the spec. §4 deferred (non-blocking).
