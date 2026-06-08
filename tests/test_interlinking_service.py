@@ -1132,6 +1132,29 @@ class TestAutoLinkScopingAndCap:
         )
         assert result["links_added"] <= 1
 
+    def test_cap_is_cumulative_counts_existing_links(self, service, target_articles):
+        # Body already has 1 internal blog link; with a cap of 1, no NEW link is
+        # added even though a matchable phrase is present (Codex review #1 — the
+        # cap must be cumulative, not per-run).
+        article = {
+            "id": "art-source-001",
+            "project_id": "proj-001",
+            "keyword": "gaming pc",
+            "content_html": (
+                '<p>See <a href="/blogs/articles/x">this</a>.</p>'
+                "<p>Your gaming monitor matters a lot here.</p>"
+            ),
+            "status": "published",
+        }
+        service._get_article = MagicMock(return_value=article)
+        service._update_article_html = MagicMock()
+        service._save_link_record = MagicMock()
+
+        result = service.auto_link_article(
+            "art-source-001", candidate_articles=target_articles, max_links=1,
+        )
+        assert result["links_added"] == 0
+
 
 class TestInterlinkDispatcher:
     """D3: one canonical entry point routes to cluster/article."""

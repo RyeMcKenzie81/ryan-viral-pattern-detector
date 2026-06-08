@@ -207,10 +207,17 @@ class InterlinkingService:
         total_links = 0
         linked_articles = []
 
+        # D1: the cap is CUMULATIVE, not per-run. Count internal blog links
+        # already in the body so repeated cluster passes (one per member publish)
+        # don't keep adding `max_links` more each time. In the cluster path the
+        # Related block is removed before this runs, so these are existing
+        # contextual links.
+        existing_internal_links = len(re.findall(r'href="[^"]*/blogs/articles/', html))
+
         for target in other_articles:
-            # D1: stop once the per-article contextual-link cap is reached so
-            # repeated passes can't over-link.
-            if max_links is not None and total_links >= max_links:
+            # D1: stop once the per-article contextual-link cap (existing + new)
+            # is reached so repeated passes can't over-link.
+            if max_links is not None and (existing_internal_links + total_links) >= max_links:
                 break
             target_url = target.get("published_url", "")
             if not target_url:
@@ -447,12 +454,17 @@ class InterlinkingService:
             return {"articles_processed": 0, "links_added": 0, "related_sections_added": 0,
                     "errors": [{"message": "Need at least 2 published articles to interlink"}]}
 
-        # Identify pillar article
+        # Identify pillar article — but only treat it as a link target if it is
+        # itself PUBLISHED. Linking spokes to an unpublished pillar would point
+        # at a derived/draft URL (404 risk) and record a CLUSTER link that isn't
+        # really live (Codex review #3).
+        published_ids = {a["id"] for a in published_articles}
         spokes = cluster.get("spokes", [])
         pillar_article_id = None
         for spoke in spokes:
             if spoke.get("role") == "pillar" and spoke.get("article_id"):
-                pillar_article_id = spoke["article_id"]
+                candidate = spoke["article_id"]
+                pillar_article_id = candidate if candidate in published_ids else None
                 break
 
         total_links = 0
