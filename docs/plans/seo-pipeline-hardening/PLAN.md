@@ -206,7 +206,9 @@ API-foundation phase.
    internal links. Highest product-impact item. Do ahead of or alongside §4 (it depends on
    the publish-timing model, so the two interact).
 4. **/plan-eng-review on §4** — lock the execution-model decision.
-5. **Observability layer** (B9–B11) — highest long-term reliability value once the model is settled.
+5. **Observability & verification (§7 + B9–B11)** — failure signals AND the
+   correctness/outcome metrics that prove interlinking (§6) actually worked. Build (a)/(e)
+   alongside §6 as its definition-of-done; (c) ranking-correlation accrues over weeks.
 6. **Eval-correctness** (B7, B8) + config consolidation.
 7. **Worker-driven execution + checkpoint/resume** (B4-heavy, B12, B14) — as part of / ahead
    of the API-foundation phase.
@@ -301,3 +303,101 @@ as each member publishes**, so earlier articles gain inbound links to newcomers.
    pages; this is about editorial blog content only.)
 6. **Backfill.** The existing live cluster(s) are already linkless — a one-off whole-cluster
    re-interlink pass over published clusters is needed once the fix lands.
+
+---
+
+## 7. Observability & verification (how we KNOW it's working)
+
+Added 2026-06-05. Distinguishes **failure observability** ("did it error" — covered by B9–B11)
+from **correctness/outcome observability** ("is it actually producing linked, ranking
+clusters"). The plan was strong on the former, thin on the latter. This section closes that.
+
+### Principle: extend existing tools, do NOT build a new dashboard
+A UI map (2026-06-05) found the homes already exist:
+- **SEO Clusters page (`52_🗂️_SEO_Clusters.py`)** already renders a **"Link Health" audit**
+  (lines ~366–490) backed by `ClusterManagementService.get_interlinking_audit()`
+  (`link_coverage_pct` + `missing_links`) and `get_cluster_health()` (line 262;
+  `completion_pct`, published/writing/planned, `link_coverage_pct`). So a per-cluster coverage
+  view ALREADY exists — it's manual (open per cluster) and would already show the new cluster at
+  ~0%. (Correction to §4 notes: `get_cluster_health()` IS surfaced in the UI; it's just unused
+  by the autopilot / alerting.)
+- **SEO Dashboard (`48_🔍_SEO_Dashboard.py`)** already shows a brand-level **"Internal Links"
+  KPI** (lines ~467–486) and full **GSC analytics** per article (impressions/clicks/position,
+  lines ~763–1105) via `SEOAnalyticsService` + `GSCService`.
+
+So the gap is not "no UI" — it's that coverage is manual-only, there's no brand-level orphan
+rollup, no proactive/autopilot signal, and no tie from interlink coverage to ranking outcome.
+
+### What to add, and where it lives
+
+| Metric | Home (extend existing) | Data source |
+|---|---|---|
+| **(a) Per-cluster coverage detail** — per-article inbound/outbound counts, pillar↔spoke vs spoke↔spoke split, bidirectional completeness, "fully interlinked: y/n", links-added-last-7d | SEO Clusters → extend the existing **Link Health** audit (`52`, ~366–490) | `get_interlinking_audit()` + `seo_internal_links` |
+| **(b) Brand-level orphan / low-link report** — articles with 0 inbound (orphans), <2 links, clusters <X% covered; quick "suggest/implement links" actions | SEO Dashboard → **new "Content Health" tab** alongside Analytics (`48`) | `seo_internal_links` + `seo_articles` |
+| **(c) Coverage → ranking correlation (the real outcome signal)** — scatter (link_count vs avg position, sized by impressions), table of top pages with link_count + pending-link count, "+N links ≈ +M positions" | SEO Dashboard → **new "Link Impact" card** in the Analytics section (`48`, after GSC ~1105) | `seo_article_analytics` (GSC) + link counts |
+| **(d) Live-layer verification** — confirm `<a href>` tags exist in the **Shopify-rendered** body, not just `seo_internal_links` rows (DB record ≠ live link Google sees) | spot-check util / Exceptions surfacing | CMS fetch vs DB |
+| **(e) Autopilot signal/alert** — orphan count, clusters with <X% coverage, interlink-job failures roll into the **B9 daily/Slack health summary**; alert on "published article with 0 inbound links after N days" (I10 orphan detector) | worker health job (B9) | same queries as (a)/(b) |
+
+### Acceptance criteria (doubles as the §6 interlinking "definition of done")
+After the §6 fix ships, for a freshly published cluster:
+1. SEO Clusters → Link Health shows **~100% pillar↔spoke coverage** and 0 `missing_links` within
+   N hours of the last member publishing.
+2. Brand **orphan count trends to 0**; the Content Health tab lists no cluster members as orphans.
+3. The **Link Impact** card shows a non-trivial positive relationship between link count and
+   position over time (the actual "it's working" proof).
+4. Live-HTML spot-check confirms the links are present in Shopify, not just the DB.
+
+### Notes
+- (a) and (e) are cheap — the audit/health services already return the numbers; this is mostly
+  surfacing + rolling up, not new computation.
+- (c) is the highest-value but needs a few weeks of post-fix GSC data to be meaningful; build
+  the card early, expect signal to accrue over time.
+- B9–B11 (failure observability) should be implemented together with (e) so health/verification
+  live in one summary rather than scattered.
+
+---
+
+## 8. Cleanup & simplification
+
+Added 2026-06-05. Redundant / dead / computed-but-unused code found while evaluating the
+interlinking + content path. Doing this alongside §6 keeps the interlinking surface small and
+reviewable instead of building the fix on top of cruft. None of these are urgent on their own;
+they should be folded into the §6 interlinking work and the §4 execution-model cleanup.
+
+- **C1. Dead pydantic-graph orchestrator + its interlinking node** (`orchestrator.py`,
+  `nodes/interlinking.py`). Same item as **B12** — the graph is unused; its
+  `nodes/interlinking.py` calls `interlink_cluster` and is the only "correct" wiring, but it
+  never runs. Delete with the graph (or make the graph real — §4 decision).
+- **C2. Three overlapping interlinking entry points** that duplicate the same
+  suggest→auto_link→related flow:
+  - `execute_seo_auto_interlink_job` (worker, post-publish)
+  - `SEOWorkflowService.rerun_interlinking` (UI "Re-run Links" button)
+  - `interlink_cluster` (whole-cluster, bidirectional)
+  Consolidate to ONE canonical service method that both the worker and the UI call, with a
+  `scope` arg (single-article vs whole-cluster). Today the worker and `rerun_interlinking`
+  hand-roll nearly identical sequences. (This is also where the §6 fix lands — fix once.)
+- **C3. Anchor-text strategy computed but never applied** (`_varied_anchor`,
+  `_generate_anchor_texts`). These produce varied anchors (incl. the ~10% "learn more"
+  throwaways) but are only written to the `seo_internal_links.anchor_text` column; the actual
+  inserted `<a>` text is the raw matched phrase. Either apply the strategy to the HTML (per §6
+  I6) or delete the dead generators. Don't keep both.
+- **C4. `_suggest_placement` / `LinkPlacement` computed but unused.** `suggest_links` returns a
+  placement (MIDDLE/END) that `auto_link_article` ignores (it inserts at first paragraph match).
+  Apply or remove.
+- **C5. Stale docstrings (doc drift).** The `interlinking_service.py` module header and the
+  "Tool 1" docstring still describe Jaccard word-overlap as the primary similarity method;
+  embeddings have been primary since the `make_genai_client` fix. Update so the next reader
+  isn't misled.
+- **C6. Content body has no single source of truth — re-renders silently wipe interlinks.**
+  Interlinks are written ONLY to `content_html` (post-publish). But `content_html` is
+  regenerated from `phase_c_output` by `sync_content_html` and `_update_article_cms_data`
+  (verified) — and `phase_c_output` never contains the interlinks. So any re-render after
+  interlinking (rerun_phase_c / "Re-optimize Content" / re-publish / regenerate) **silently
+  drops every internal link**. Pick one model: (i) re-apply interlinking after any re-render, or
+  (ii) treat `content_html` as the post-interlink source and never blindly overwrite it. This
+  interacts with §6 (links must survive) and §4 (execution model).
+
+### Sequencing note
+C2 and C6 are structural and should be settled as part of the §6 interlinking redesign +
+`/plan-eng-review`. C1 rides with the §4 graph-deletion decision. C3/C4/C5 are small, low-risk
+tidy-ups that can land with the §6 implementation PR.
