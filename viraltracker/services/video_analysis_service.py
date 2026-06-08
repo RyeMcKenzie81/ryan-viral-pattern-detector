@@ -27,6 +27,8 @@ from uuid import UUID
 
 from supabase import Client
 
+from .awareness_rubric import AWARENESS_RUBRIC
+
 logger = logging.getLogger(__name__)
 
 # Current prompt version - increment when prompt changes significantly.
@@ -36,10 +38,13 @@ logger = logging.getLogger(__name__)
 PROMPT_VERSION = "v3"
 
 # Deep video analysis model. Was hardcoded to gemini-3-flash-preview inline;
-# promoted to a named constant and upgraded to gemini-3-pro for awareness
-# accuracy on a paid client account. Change here to swap the model everywhere
-# this service (and the classifier's legacy fallback) uses it.
-VIDEO_ANALYSIS_MODEL = "gemini-3-pro"
+# promoted to a named constant and upgraded to gemini-pro-latest (the repo's
+# blessed vision model, VISION_MODEL in config) for awareness accuracy on a
+# paid client account. It auto-tracks the latest stable Gemini Pro and is in
+# the pricing table. NOTE: bare "gemini-3-pro" 404s for generateContent and the
+# "-image" variants are image-generation only. Change here to swap the model
+# everywhere this service (and the classifier's legacy fallback) uses it.
+VIDEO_ANALYSIS_MODEL = "gemini-pro-latest"
 
 # Deep video analysis prompt - extracts comprehensive structured data
 DEEP_VIDEO_ANALYSIS_PROMPT = """Analyze this video advertisement and extract detailed structured data.
@@ -124,7 +129,10 @@ DEEP_VIDEO_ANALYSIS_PROMPT = """Analyze this video advertisement and extract det
 - Timestamps must be ordered and non-overlapping for transcript_segments
 - If you can't detect text overlays reliably, set text_overlays to [] and text_overlay_confidence to 0.0
 - Hook analysis: evaluate first 3-5 seconds for both spoken and visual hooks
-- AWARENESS — opening vs ending (read carefully): video ads usually move the viewer DOWN the funnel — they may open problem-unaware and close most-aware. `awareness_level_opening` = the stage the video POSITIONS the viewer at in roughly the FIRST 10 SECONDS (the temperature the messaging meets them at, i.e. how much they already know about the problem/solution/product). If those first moments are a pure pattern-interrupt or attention grab (a shocking/unrelated visual, a curiosity hook) with no problem or offer framing yet, judge the opening by the first SUBSTANTIVE message that follows within that ~10s window — not the raw first frame. `awareness_level_ending` = the stage the video leaves the viewer at by its close (typically nearer most_aware/CTA). The two are frequently DIFFERENT; that is expected, not an error. For bucketing/targeting we care most about the opening.
+- AWARENESS (set awareness_level_opening AND awareness_level_ending using the rubric below): video ads move the viewer DOWN the funnel. awareness_level_opening = the stage the OPENING presumes (first substantive message within ~10s, past any pure attention-grab). awareness_level_ending = the stage the video leaves the viewer at by its close (typically nearer most_aware/CTA). The two are frequently DIFFERENT — that is expected, not an error. Apply this rubric to BOTH:
+
+{awareness_rubric}
+
 - Return ONLY valid JSON, no additional text
 """
 
@@ -593,7 +601,8 @@ class VideoAnalysisService:
 
             # 8. Generate deep analysis
             prompt = DEEP_VIDEO_ANALYSIS_PROMPT.format(
-                ad_copy=ad_copy or "(no copy available)"
+                ad_copy=ad_copy or "(no copy available)",
+                awareness_rubric=AWARENESS_RUBRIC,
             )
             response = client.models.generate_content(
                 model=VIDEO_ANALYSIS_MODEL,

@@ -45,6 +45,7 @@ from ..video_analysis_service import (
     PROMPT_VERSION as VIDEO_ANALYSIS_PROMPT_VERSION,
     VIDEO_ANALYSIS_MODEL,
 )
+from ..awareness_rubric import AWARENESS_RUBRIC
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +85,10 @@ where the video ends. Video ads commonly move the viewer down the funnel, so jud
 the opening, not the close. If the first moments are a pure attention-grab / pattern
 interrupt unrelated to the offer, judge by the first substantive message that follows
 within that ~10s window.
+
+Use this awareness rubric (classify by what the opening PRESUMES the viewer knows):
+
+{awareness_rubric}
 
 Also consider the ad copy below:
 
@@ -1654,7 +1659,8 @@ class ClassifierService:
 
             # Generate classification
             prompt = VIDEO_CLASSIFICATION_PROMPT.format(
-                ad_copy=ad_copy or "(no copy available)"
+                ad_copy=ad_copy or "(no copy available)",
+                awareness_rubric=AWARENESS_RUBRIC,
             )
             response = client.models.generate_content(
                 model=VIDEO_ANALYSIS_MODEL,
