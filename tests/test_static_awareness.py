@@ -122,6 +122,44 @@ class TestMappingCreativeVsCopy:
 
 
 # ---------------------------------------------------------------------------
+# Caption source: genuine most-recent non-empty ad_copy, NEVER the ad_name fallback.
+# ---------------------------------------------------------------------------
+class TestGetLatestCaption:
+    def _classifier_with_rows(self, rows):
+        s = _classifier()
+        # supabase.table(...).select(...).eq(...).eq(...).order(...).limit(...).execute()
+        chain = MagicMock()
+        chain.select.return_value = chain
+        chain.eq.return_value = chain
+        chain.order.return_value = chain
+        chain.limit.return_value = chain
+        chain.execute.return_value = SimpleNamespace(data=rows)
+        s.supabase.table.return_value = chain
+        return s
+
+    def test_returns_most_recent_nonempty_caption(self):
+        # latest row empty (placeholder refresh), real caption in an earlier row
+        s = self._classifier_with_rows([
+            {"ad_copy": "", "date": "2026-03-09"},
+            {"ad_copy": "  Something changes with sleep for women over 45.  ", "date": "2026-02-01"},
+        ])
+        assert s._get_latest_caption("ad1", uuid4()) == "Something changes with sleep for women over 45."
+
+    def test_returns_none_when_no_caption_anywhere(self):
+        # No genuine caption -> None (NOT the ad_name fallback). copy awareness skipped.
+        s = self._classifier_with_rows([
+            {"ad_copy": "", "date": "2026-03-09"},
+            {"ad_copy": None, "date": "2026-02-01"},
+        ])
+        assert s._get_latest_caption("ad1", uuid4()) is None
+
+    def test_returns_none_on_query_failure(self):
+        s = _classifier()
+        s.supabase.table.side_effect = RuntimeError("db down")
+        assert s._get_latest_caption("ad1", uuid4()) is None
+
+
+# ---------------------------------------------------------------------------
 # Copy awareness: empty copy short-circuits (no model call); prompt formats safely.
 # ---------------------------------------------------------------------------
 class TestCopyAwareness:

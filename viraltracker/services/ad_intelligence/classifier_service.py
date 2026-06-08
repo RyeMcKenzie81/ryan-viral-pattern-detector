@@ -316,8 +316,14 @@ class ClassifierService:
         # re-runs once the asset is downloaded / becomes readable (same graceful
         # degradation as video's not-in-storage path).
         if not classification_data and not is_video and self._image_analysis is not None:
+            # Copy awareness is judged from the GENUINE caption only (most-recent
+            # non-empty ad_copy across perf rows), NOT the `ad_copy` variable above:
+            # _fetch_ad_data falls back to the internal ad_name when the latest row's
+            # ad_copy is empty, and judging an ad name's awareness is noise. None here
+            # means "no caption" -> copy awareness is skipped, congruence not computed.
+            caption = self._get_latest_caption(meta_ad_id, brand_id)
             image_result = self._classify_image_with_analysis_service(
-                meta_ad_id, brand_id, org_id, ad_copy,
+                meta_ad_id, brand_id, org_id, caption,
             )
             if image_result and image_result != "low_res":
                 classification_data = image_result
@@ -1736,18 +1742,43 @@ class ClassifierService:
             "raw_classification": raw_classification,
         }
 
+    def _get_latest_caption(self, meta_ad_id: str, brand_id: UUID) -> Optional[str]:
+        """Return the most-recent NON-EMPTY Facebook caption (ad_copy) for this ad.
+
+        For copy-awareness only. Deliberately does NOT apply the ad_name fallback that
+        _fetch_ad_data uses — an internal ad name (e.g. 'POV - Emoji- cortisol reducer')
+        is not a caption, and judging its awareness is noise. Scans recent perf rows
+        because Martin's LATEST row is often a placeholder refresh with empty ad_copy
+        while the real caption lives in an earlier row. Returns None when the ad genuinely
+        has no caption (copy awareness is then skipped and congruence is not computed).
+        """
+        try:
+            rows = self.supabase.table("meta_ads_performance").select(
+                "ad_copy, date"
+            ).eq("brand_id", str(brand_id)).eq(
+                "meta_ad_id", meta_ad_id
+            ).order("date", desc=True).limit(60).execute()
+            for row in (rows.data or []):
+                cap = (row.get("ad_copy") or "").strip()
+                if cap:
+                    return cap
+        except Exception as e:
+            logger.warning(f"Caption lookup failed for {meta_ad_id}: {e}")
+        return None
+
     def _classify_image_with_analysis_service(
         self,
         meta_ad_id: str,
         brand_id,
         org_id,
-        ad_copy: Optional[str],
+        caption: Optional[str],
     ):
         """Deep static-image classification via ImageAnalysisService (D1 inline, D3 split).
 
-        creative_awareness comes from the ON-IMAGE text/visual ONLY — ad_copy is NOT passed
-        to the image call (exactly how the rubric was hand-calibrated), so the awareness
-        bucket can never leak from the caption. copy awareness is judged separately.
+        creative_awareness comes from the ON-IMAGE text/visual ONLY — the caption is NOT
+        passed to the image call (exactly how the rubric was hand-calibrated), so the
+        awareness bucket can never leak from the caption. copy awareness is judged
+        separately from the caption (the genuine FB caption, or None).
 
         Returns:
             - a classification dict on success,
@@ -1776,23 +1807,24 @@ class ClassifierService:
             # Parse error or empty awareness — fall back to the light path.
             return None
 
-        return self._map_image_analysis_to_classification(result, ad_copy)
+        return self._map_image_analysis_to_classification(result, caption)
 
-    def _map_image_analysis_to_classification(self, result, ad_copy: Optional[str]) -> Dict:
+    def _map_image_analysis_to_classification(self, result, caption: Optional[str]) -> Dict:
         """Map an ImageAnalysisResult to the classification schema.
 
         creative_awareness <- the deep image analysis (on-image text/visual). copy_awareness
-        is a SEPARATE text-only judgment of ad_copy (D3 — the two never see each other's
+        is a SEPARATE text-only judgment of the caption (D3 — the two never see each other's
         input). Static ads are a single moment: no opening/ending, no duration.
 
         Args:
             result: ImageAnalysisResult from deep analysis.
-            ad_copy: The Facebook caption, judged separately for copy awareness.
+            caption: The genuine Facebook caption (or None), judged separately for copy
+                awareness.
 
         Returns:
             Dict with classification fields.
         """
-        copy_level, copy_conf = self._classify_copy_awareness(ad_copy)
+        copy_level, copy_conf = self._classify_copy_awareness(caption)
 
         # Map imagery_type -> creative_format (static formats)
         imagery_type = (result.visual_style or {}).get("imagery_type")
