@@ -354,3 +354,50 @@ After the §6 fix ships, for a freshly published cluster:
   the card early, expect signal to accrue over time.
 - B9–B11 (failure observability) should be implemented together with (e) so health/verification
   live in one summary rather than scattered.
+
+---
+
+## 8. Cleanup & simplification
+
+Added 2026-06-05. Redundant / dead / computed-but-unused code found while evaluating the
+interlinking + content path. Doing this alongside §6 keeps the interlinking surface small and
+reviewable instead of building the fix on top of cruft. None of these are urgent on their own;
+they should be folded into the §6 interlinking work and the §4 execution-model cleanup.
+
+- **C1. Dead pydantic-graph orchestrator + its interlinking node** (`orchestrator.py`,
+  `nodes/interlinking.py`). Same item as **B12** — the graph is unused; its
+  `nodes/interlinking.py` calls `interlink_cluster` and is the only "correct" wiring, but it
+  never runs. Delete with the graph (or make the graph real — §4 decision).
+- **C2. Three overlapping interlinking entry points** that duplicate the same
+  suggest→auto_link→related flow:
+  - `execute_seo_auto_interlink_job` (worker, post-publish)
+  - `SEOWorkflowService.rerun_interlinking` (UI "Re-run Links" button)
+  - `interlink_cluster` (whole-cluster, bidirectional)
+  Consolidate to ONE canonical service method that both the worker and the UI call, with a
+  `scope` arg (single-article vs whole-cluster). Today the worker and `rerun_interlinking`
+  hand-roll nearly identical sequences. (This is also where the §6 fix lands — fix once.)
+- **C3. Anchor-text strategy computed but never applied** (`_varied_anchor`,
+  `_generate_anchor_texts`). These produce varied anchors (incl. the ~10% "learn more"
+  throwaways) but are only written to the `seo_internal_links.anchor_text` column; the actual
+  inserted `<a>` text is the raw matched phrase. Either apply the strategy to the HTML (per §6
+  I6) or delete the dead generators. Don't keep both.
+- **C4. `_suggest_placement` / `LinkPlacement` computed but unused.** `suggest_links` returns a
+  placement (MIDDLE/END) that `auto_link_article` ignores (it inserts at first paragraph match).
+  Apply or remove.
+- **C5. Stale docstrings (doc drift).** The `interlinking_service.py` module header and the
+  "Tool 1" docstring still describe Jaccard word-overlap as the primary similarity method;
+  embeddings have been primary since the `make_genai_client` fix. Update so the next reader
+  isn't misled.
+- **C6. Content body has no single source of truth — re-renders silently wipe interlinks.**
+  Interlinks are written ONLY to `content_html` (post-publish). But `content_html` is
+  regenerated from `phase_c_output` by `sync_content_html` and `_update_article_cms_data`
+  (verified) — and `phase_c_output` never contains the interlinks. So any re-render after
+  interlinking (rerun_phase_c / "Re-optimize Content" / re-publish / regenerate) **silently
+  drops every internal link**. Pick one model: (i) re-apply interlinking after any re-render, or
+  (ii) treat `content_html` as the post-interlink source and never blindly overwrite it. This
+  interacts with §6 (links must survive) and §4 (execution model).
+
+### Sequencing note
+C2 and C6 are structural and should be settled as part of the §6 interlinking redesign +
+`/plan-eng-review`. C1 rides with the §4 graph-deletion decision. C3/C4/C5 are small, low-risk
+tidy-ups that can land with the §6 implementation PR.
