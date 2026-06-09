@@ -1124,17 +1124,28 @@ What was actually fixed (PR, 2026-06-04):
 
 ---
 
-### 41. low_res Image Asset Recovery (re-fetch 64x64 thumbnails at full res)
+### 41. ~~low_res Image Asset Recovery~~ ✅ MOSTLY RESOLVED 2026-06-09 (residual: dark-post videos)
 
-**Priority**: Medium (last real coverage gap for the static-awareness digest; ~$12k+ of Martin spend stuck on the "cannot classify" line)
-**Complexity**: Medium-High (Meta permissions + asset-job change + marker clearing)
-**Added**: 2026-06-09 (from /plan-eng-review of the static-awareness completeness gate)
+**Priority**: Low (was Medium) — image half fully solved; video half has a proven manual route
+**Added**: 2026-06-09; **Resolved (images)**: 2026-06-09 same day
 
-**Context**: ~13% of Martin's image ads are stored as 64x64 thumbnails (the captured `thumbnail_url` IS 64x64, for page-post-backed ads). The deep classifier marks these `status='low_res'` in `ad_image_analysis` and cannot classify them; the weekly digest's completeness gate (see `docs/plans/static-awareness-completeness/PLAN.md`) shows their spend on a separate "cannot classify (needs high-res re-fetch)" line and excludes it from the gate denominator. They stay there permanently until recovered.
+**What happened**: the "needs Meta page permissions" assumption was WRONG for images. The creative
+`thumbnail_url` accepts `thumbnail_width/thumbnail_height` params and returns an up-to-original-res
+render with only `ads_read` (no page role, no app review). All 13 Martin 64x64 image ads were
+recovered at full res (mostly 1080x1080), markers cleared, deep-classified — two recovered golden
+ads reproduced their hand-validated awareness labels exactly. The digest's "cannot classify" lines
+collapsed from ~$3.7k to ~$143.
 
-**Remaining work (all three needed together)**:
-1. Meta access: `pages_read_engagement` / Page Public Content Access so the full-res creative is fetchable for page-post-backed ads (current System User token lacks it).
-2. Asset job: make it RE-download existing `downloaded` / `not_downloadable` image assets at higher res (today it excludes them via `existing_set` — `meta_ads_service.py:2284,2327`).
-3. Marker clearing: when an ad is re-fetched at higher res, delete/invalidate its `ad_image_analysis status='low_res'` marker so the classifier prefetch re-admits it (the completeness plan deliberately has NO timestamp re-open; clearing the marker is the re-open mechanism).
+**Baked in (prevention)**: `_fetch_thumbnails_sync`'s creative fetch now passes
+`params={"thumbnail_width": 1080, "thumbnail_height": 1080}` so new page-post-backed ads capture a
+full-res `thumbnail_url` (guarded by `tests/test_thumbnail_fullres_capture.py`). One-off recovery
+pattern (fetch → upsert asset → DELETE the `ad_image_analysis status='low_res'` marker → classify):
+see memory `meta_asset_recovery_routes`.
 
-**Depends on**: the static-awareness completeness gate shipping first (so the low_res markers exist). See `docs/plans/static-awareness-completeness/PLAN.md` (NOT-in-scope section).
+**Residual (the only remaining gap)**: dark-post VIDEOS (unpublished page videos used as ad
+creatives) — the API `source` field stays blocked without a role on the client's Page, and public
+watch URLs fail. Proven manual route: Ads Manager → Preview → Share a link → open post → Share →
+Copy link; the `facebook.com/share/r/<token>` URL is PUBLIC and yt-dlp fetches full res (8/8
+Probiotic dark posts recovered this way). Durable fix if volume grows: ask the client to grant
+page access (partner Content permission) so video `source`/post reads work programmatically.
+~$11.6k of UNATTRIBUTED dark-post video spend remains unclassified (affects no product gate).
