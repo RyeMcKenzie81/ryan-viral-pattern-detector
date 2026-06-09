@@ -313,3 +313,84 @@ class SEOAnalyticsService:
                 "active": len(active_projects),
             },
         }
+
+    def get_brand_orphans(
+        self,
+        brand_id: str,
+        organization_id: str,
+    ) -> Dict[str, Any]:
+        """
+        Brand-wide list of ORPHAN published articles.
+
+        Orphan = a published article (published_url IS NOT NULL) with ZERO
+        implemented inbound internal links. Orphans receive no internal link
+        equity and rarely rank — this is the brand-level signal for whether
+        interlinking is actually working.
+
+        Filters by brand_id, which pins the organization, so a superuser's
+        organization_id='all' needs no UUID resolution here (we only add the org
+        filter when it is a concrete id). Read-only.
+
+        Returns:
+            {
+              "published_count": int,
+              "orphan_count": int,
+              "orphan_pct": float,
+              "orphans": [ {article_id, keyword, published_url, project_id} ],
+            }
+        """
+        zero_state = {
+            "published_count": 0,
+            "orphan_count": 0,
+            "orphan_pct": 0.0,
+            "orphans": [],
+        }
+
+        # Live = status 'published' (set by the publish flow / mark_published) AND
+        # a published_url. published_url alone is NOT a live signal: Shopify DRAFT
+        # publishes and the transient 'publishing' state also carry a url, and
+        # imported 'discovered' pages have urls — any of those would manufacture
+        # false orphans. The url check is a defensive co-filter.
+        article_query = (
+            self.supabase.table("seo_articles")
+            .select("id, keyword, published_url, project_id")
+            .eq("brand_id", brand_id)
+            .eq("status", "published")
+        )
+        if organization_id and organization_id != "all":
+            article_query = article_query.eq("organization_id", organization_id)
+        rows = article_query.execute().data or []
+        published = [a for a in rows if (a.get("published_url") or "").strip()]
+        if not published:
+            return zero_state
+
+        published_ids = [a["id"] for a in published]
+        # Source-scope inbound to the brand's live set: seo_internal_links has no
+        # brand column, so an unscoped count could be inflated by a cross-brand or
+        # dead-source 'implemented' row and hide a real orphan.
+        from viraltracker.services.seo_pipeline.services.interlinking_service import (
+            InterlinkingService,
+        )
+        inbound = InterlinkingService(supabase_client=self.supabase).count_inbound_links(
+            published_ids, source_ids=published_ids
+        )
+
+        orphans = [
+            {
+                "article_id": a["id"],
+                "keyword": a.get("keyword") or "(untitled)",
+                "published_url": a.get("published_url"),
+                "project_id": a.get("project_id"),
+            }
+            for a in published
+            if inbound.get(a["id"], 0) == 0
+        ]
+        published_count = len(published)
+        orphan_count = len(orphans)
+        orphan_pct = round(orphan_count / published_count * 100, 1) if published_count else 0.0
+        return {
+            "published_count": published_count,
+            "orphan_count": orphan_count,
+            "orphan_pct": orphan_pct,
+            "orphans": orphans,
+        }

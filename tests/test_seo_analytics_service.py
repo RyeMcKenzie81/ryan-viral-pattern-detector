@@ -468,3 +468,49 @@ class TestGetBrandDashboard:
 
         assert result["projects"]["total"] == 2
         assert result["projects"]["active"] == 1
+
+
+class TestGetBrandOrphans:
+    """Brand-wide orphan report: published articles with 0 inbound links."""
+
+    def _setup_articles(self, service, rows):
+        chain = MagicMock()
+        for m in ["select", "eq", "neq", "in_", "is_", "order"]:
+            getattr(chain, m).return_value = chain
+        chain.execute.return_value = MagicMock(data=rows)
+        service.supabase.table.return_value = chain
+
+    def test_identifies_orphans(self, service):
+        rows = [
+            {"id": "a1", "keyword": "Has inbound", "published_url": "https://x/1", "project_id": "p1"},
+            {"id": "a2", "keyword": "Orphan", "published_url": "https://x/2", "project_id": "p1"},
+            {"id": "a3", "keyword": "Draft", "published_url": None, "project_id": "p1"},  # excluded
+        ]
+        self._setup_articles(service, rows)
+        with patch(
+            "viraltracker.services.seo_pipeline.services.interlinking_service.InterlinkingService"
+        ) as MockIL:
+            MockIL.return_value.count_inbound_links.return_value = {"a1": 3}
+            result = service.get_brand_orphans("brand-1", "org-1")
+
+        assert result["published_count"] == 2  # a3 (no published_url) excluded
+        assert result["orphan_count"] == 1
+        assert result["orphan_pct"] == 50.0
+        assert [o["article_id"] for o in result["orphans"]] == ["a2"]
+
+    def test_no_published_returns_zero_state(self, service):
+        self._setup_articles(service, [{"id": "a3", "published_url": None}])
+        result = service.get_brand_orphans("brand-1", "org-1")
+        assert result == {"published_count": 0, "orphan_count": 0, "orphan_pct": 0.0, "orphans": []}
+
+    def test_all_linked_superuser_all_org(self, service):
+        rows = [{"id": "a1", "keyword": "k", "published_url": "https://x/1", "project_id": "p1"}]
+        self._setup_articles(service, rows)
+        with patch(
+            "viraltracker.services.seo_pipeline.services.interlinking_service.InterlinkingService"
+        ) as MockIL:
+            MockIL.return_value.count_inbound_links.return_value = {"a1": 1}
+            result = service.get_brand_orphans("brand-1", "all")  # 'all' must not break
+
+        assert result["orphan_count"] == 0
+        assert result["published_count"] == 1

@@ -1251,3 +1251,41 @@ class TestBuildRelatedIds:
         related = service._build_related_ids("a3", None, members)
         assert len(related) <= service.MAX_RELATED_LINKS
         assert "a3" not in related
+
+
+class TestCountInboundLinks:
+    """Public canonical primitive for orphan detection — chunking + source scope."""
+
+    def _links_return(self, service, rows):
+        chain = MagicMock()
+        for m in ["select", "in_", "eq"]:
+            getattr(chain, m).return_value = chain
+        chain.execute.return_value = MagicMock(data=rows)
+        service._supabase.table.return_value = chain
+        return chain
+
+    def test_counts_all_when_unscoped(self, service):
+        self._links_return(service, [
+            {"source_article_id": "a", "target_article_id": "t1"},
+            {"source_article_id": "b", "target_article_id": "t1"},
+        ])
+        assert service.count_inbound_links(["t1"]) == {"t1": 2}
+
+    def test_source_scoping_excludes_out_of_scope_sources(self, service):
+        self._links_return(service, [
+            {"source_article_id": "live1", "target_article_id": "t1"},
+            {"source_article_id": "ghost", "target_article_id": "t1"},  # not in scope
+            {"source_article_id": "live1", "target_article_id": "t2"},
+        ])
+        result = service.count_inbound_links(["t1", "t2"], source_ids=["live1"])
+        assert result == {"t1": 1, "t2": 1}  # ghost source dropped
+
+    def test_chunks_targets_at_100(self, service):
+        chain = self._links_return(service, [])
+        service.count_inbound_links([f"a{i}" for i in range(250)])
+        assert chain.execute.call_count == 3  # 100 + 100 + 50
+
+    def test_empty_makes_no_query(self, service):
+        chain = self._links_return(service, [])
+        assert service.count_inbound_links([]) == {}
+        chain.execute.assert_not_called()
