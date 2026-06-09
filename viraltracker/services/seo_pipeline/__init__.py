@@ -7,9 +7,14 @@ brand-scoped article creation and publishing.
 Main components:
 - state.py: SEOPipelineState dataclass
 - models.py: Enums and Pydantic models
-- orchestrator.py: Graph definition and convenience functions
-- nodes/: Thin node wrappers for each pipeline step
 - services/: Business logic services
+
+Execution model (hardening plan §11 R1): production runs through the
+imperative SEOWorkflowService (services/seo_workflow_service.py). The
+pydantic-graph orchestrator + nodes/ were dead code (zero callers) and were
+deleted 2026-06-09; the durable worker-driven execution design lives in
+docs/plans/seo-pipeline-hardening/DURABLE_JOBS_CONTRACT.md and is built at
+the API-foundation roadmap phase.
 
 Usage:
     from viraltracker.services.seo_pipeline.state import SEOPipelineState
