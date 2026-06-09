@@ -449,6 +449,44 @@ def _render_link_health(cluster_id, brand_id, org_id):
     st.metric("Link Coverage", f"{audit['coverage_pct']}%")
     st.caption(f"{audit['total_linked']}/{audit['total_possible']} possible links exist")
 
+    # Per-article inbound coverage — the signal that predicts ranking: every
+    # published article should RECEIVE at least one internal link. (Coverage above
+    # is pair-based; this is per-article inbound, which surfaces orphans.)
+    detail = svc.get_cluster_coverage_detail(cluster_id)
+    if detail.get("published_count"):
+        oc1, oc2 = st.columns(2)
+        with oc1:
+            st.metric(
+                "Inbound coverage",
+                f"{detail['inbound_coverage_pct']}%",
+                help="Published articles receiving at least one inbound internal link.",
+            )
+        with oc2:
+            st.metric(
+                "Orphans",
+                detail["orphan_count"],
+                help="Published articles with ZERO inbound links — they get no link "
+                     "equity and rarely rank. Run Interlink Cluster to fix.",
+            )
+        if detail["orphans"]:
+            st.markdown("**Orphaned articles (0 inbound links):**")
+            for o in detail["orphans"]:
+                lock = " 🔒" if o.get("content_locked") else ""
+                st.caption(f"• {o['keyword']}{lock} — {o['role']}")
+        with st.expander("Per-article link counts"):
+            import pandas as pd
+            df = pd.DataFrame([
+                {
+                    "Article": r["keyword"],
+                    "Role": r["role"],
+                    "Inbound": r["inbound_count"],
+                    "Outbound": r["outbound_count"],
+                    "Orphan": "⚠️" if r["is_orphan"] else "",
+                }
+                for r in detail["articles"]
+            ])
+            st.dataframe(df, hide_index=True, use_container_width=True)
+
     missing = audit.get("missing_links", [])
     if missing:
         st.markdown("**Missing links (similarity >= 0.2):**")

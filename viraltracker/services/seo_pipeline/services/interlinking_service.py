@@ -1289,6 +1289,62 @@ class InterlinkingService:
             logger.warning(f"Failed to count inbound links: {e}")
             return {}
 
+    def count_inbound_links(
+        self,
+        article_ids: List[str],
+        source_ids: Optional[List[str]] = None,
+    ) -> Dict[str, int]:
+        """
+        Count IMPLEMENTED inbound internal links per article (batched).
+
+        Canonical primitive for ORPHAN detection across the pipeline (per-cluster
+        coverage detail + the brand-wide orphan report). An article is an ORPHAN
+        when it is published and its count here is 0 — nothing links TO it, so it
+        receives no internal link equity and rarely ranks.
+
+        source_ids RESTRICTS which sources count. seo_internal_links has no
+        brand/organization column, and stale 'implemented' rows can survive from
+        articles that are now unpublished — so an unscoped count can be inflated
+        by a cross-brand or dead-source link and HIDE a real orphan. Passing the
+        relevant live set (a cluster's or a brand's published articles) as
+        source_ids counts only inbound equity from live, in-scope pages. When
+        None, every implemented inbound link counts (raw inbound).
+
+        Chunks the target ids so the PostgREST `.in_()` URL stays within limits
+        on large brands. Source filtering is applied in Python (not a second
+        `.in_()`) to avoid blowing the URL out with two large lists. Articles
+        with zero inbound links are simply absent from the returned dict (callers
+        read missing as 0).
+
+        Args:
+            article_ids: Target article UUIDs to count inbound links for.
+            source_ids: If given, only count links whose source is in this set.
+
+        Returns:
+            Dict mapping article_id -> inbound link count (omits zero-count ids).
+        """
+        source_set = set(source_ids) if source_ids is not None else None
+        counts: Dict[str, int] = {}
+        for start in range(0, len(article_ids), 100):
+            chunk = article_ids[start:start + 100]
+            try:
+                result = (
+                    self.supabase.table("seo_internal_links")
+                    .select("source_article_id, target_article_id")
+                    .in_("target_article_id", chunk)
+                    .eq("status", LinkStatus.IMPLEMENTED.value)
+                    .execute()
+                )
+            except Exception as e:
+                logger.warning(f"Failed to count inbound links: {e}")
+                continue
+            for row in (result.data or []):
+                if source_set is not None and row.get("source_article_id") not in source_set:
+                    continue
+                tid = row["target_article_id"]
+                counts[tid] = counts.get(tid, 0) + 1
+        return counts
+
     def _update_article_html(self, article_id: str, html: str) -> None:
         """Update content_html in seo_articles."""
         try:

@@ -2057,3 +2057,48 @@ else:
                         st.info("No opportunities found with current filters.")
                 except Exception as e:
                     st.error(f"Error: {e}")
+
+
+# =============================================================================
+# CONTENT HEALTH (brand-wide orphan report)
+# =============================================================================
+# Top-level (not gated behind project selection): orphans are a brand-wide
+# signal of whether interlinking is actually working. An orphan is a published
+# article that receives ZERO inbound internal links — it gets no link equity and
+# rarely ranks.
+
+st.divider()
+st.subheader("Content Health")
+st.caption(
+    "Published articles receiving ZERO inbound internal links (orphans). Orphans "
+    "get no internal link equity and rarely rank. Fix them with Interlink Cluster "
+    "on the Clusters page, or the Auto-Link / Add Related tools above."
+)
+
+try:
+    _orphan_report = get_analytics_service().get_brand_orphans(brand_id, org_id)
+    hc1, hc2, hc3 = st.columns(3)
+    with hc1:
+        st.metric("Published", _orphan_report["published_count"])
+    with hc2:
+        st.metric("Orphans", _orphan_report["orphan_count"])
+    with hc3:
+        st.metric("Orphan rate", f"{_orphan_report['orphan_pct']}%")
+
+    if _orphan_report["orphans"]:
+        with st.expander(f"View {_orphan_report['orphan_count']} orphaned articles"):
+            for _o in _orphan_report["orphans"]:
+                _url = _o.get("published_url")
+                if _url:
+                    st.markdown(f"- [{_o['keyword']}]({_url})")
+                else:
+                    st.caption(f"- {_o['keyword']}")
+    elif _orphan_report["published_count"]:
+        st.success(
+            "No orphans — every published article receives at least one inbound "
+            "internal link."
+        )
+    else:
+        st.info("No published articles yet.")
+except Exception as e:
+    st.warning(f"Could not load content health: {str(e)[:200]}")

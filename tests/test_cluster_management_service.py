@@ -883,3 +883,99 @@ class TestGetClusterSpokeArticleIds:
         _simple_mock(mock_supabase, [])
         result = service.get_cluster_spoke_article_ids(cluster_id)
         assert result == []
+
+
+# ---------------------------------------------------------------------------
+# Per-article coverage detail (Tier-1 observability)
+# ---------------------------------------------------------------------------
+
+class TestGetClusterCoverageDetail:
+    """Inbound-based per-article coverage + orphan detection for a cluster."""
+
+    def test_detects_orphans_roles_and_outbound(self, service, mock_supabase, cluster_id):
+        pillar, spoke_a, spoke_b, draft, pubing = "p1", "s1", "s2", "d1", "g1"
+        _table_mock(mock_supabase, {
+            "seo_cluster_spokes": [
+                {"article_id": pillar, "role": "pillar"},
+                {"article_id": spoke_a, "role": "spoke"},
+                {"article_id": spoke_b, "role": "spoke"},
+                {"article_id": draft, "role": "spoke"},
+                {"article_id": pubing, "role": "spoke"},
+                {"article_id": None, "role": "spoke"},  # ignored
+            ],
+            "seo_clusters": [{"pillar_article_id": pillar}],
+            "seo_articles": [
+                {"id": pillar, "keyword": "Pillar", "published_url": "https://x/p", "status": "published", "content_locked": False},
+                {"id": spoke_a, "keyword": "Spoke A", "published_url": "https://x/a", "status": "published", "content_locked": False},
+                {"id": spoke_b, "keyword": "Spoke B", "published_url": "https://x/b", "status": "published", "content_locked": True},
+                {"id": draft, "keyword": "Draft", "published_url": None, "status": "draft", "content_locked": False},
+                # has a url but status='publishing' (transient) — must NOT count as live
+                {"id": pubing, "keyword": "Publishing", "published_url": "https://x/g", "status": "publishing", "content_locked": False},
+            ],
+            # outbound query (source_article_id) — pillar sends 2
+            "seo_internal_links": [
+                {"source_article_id": pillar},
+                {"source_article_id": pillar},
+            ],
+        })
+        with patch(
+            "viraltracker.services.seo_pipeline.services.interlinking_service.InterlinkingService"
+        ) as MockIL:
+            MockIL.return_value.count_inbound_links.return_value = {pillar: 1, spoke_a: 2}
+            result = service.get_cluster_coverage_detail(cluster_id)
+
+        # draft (no url) AND publishing (url but not 'published') both excluded
+        assert result["published_count"] == 3
+        assert result["orphan_count"] == 1     # spoke_b has 0 inbound
+        assert result["inbound_coverage_pct"] == pytest.approx(66.7, abs=0.1)
+        assert [o["article_id"] for o in result["orphans"]] == [spoke_b]
+        assert result["articles"][0]["article_id"] == spoke_b  # orphan sorted first
+        assert pubing not in {a["article_id"] for a in result["articles"]}
+
+        by_id = {a["article_id"]: a for a in result["articles"]}
+        assert by_id[pillar]["role"] == "pillar"        # from cluster.pillar_article_id
+        assert by_id[spoke_a]["role"] == "spoke"
+        assert by_id[spoke_b]["content_locked"] is True  # surfaced
+        assert by_id[pillar]["outbound_count"] == 2
+        assert by_id[spoke_a]["outbound_count"] == 0
+
+    def test_pillar_only_on_cluster_row_is_included(self, service, mock_supabase, cluster_id):
+        # Pillar lives ONLY on the cluster row, not in seo_cluster_spokes.
+        _table_mock(mock_supabase, {
+            "seo_cluster_spokes": [{"article_id": "s1", "role": "spoke"}],
+            "seo_clusters": [{"pillar_article_id": "p1"}],
+            "seo_articles": [
+                {"id": "s1", "keyword": "Spoke", "published_url": "https://x/s", "status": "published", "content_locked": False},
+                {"id": "p1", "keyword": "Pillar", "published_url": "https://x/p", "status": "published", "content_locked": False},
+            ],
+            "seo_internal_links": [],
+        })
+        with patch(
+            "viraltracker.services.seo_pipeline.services.interlinking_service.InterlinkingService"
+        ) as MockIL:
+            MockIL.return_value.count_inbound_links.return_value = {"s1": 1}  # p1 gets 0
+            result = service.get_cluster_coverage_detail(cluster_id)
+
+        ids = {a["article_id"] for a in result["articles"]}
+        assert "p1" in ids                       # union'd in from the cluster row
+        assert result["published_count"] == 2
+        by_id = {a["article_id"]: a for a in result["articles"]}
+        assert by_id["p1"]["role"] == "pillar"
+        assert by_id["p1"]["is_orphan"] is True  # 0 inbound
+
+    def test_no_published_articles(self, service, mock_supabase, cluster_id):
+        _table_mock(mock_supabase, {
+            "seo_cluster_spokes": [{"article_id": "a1", "role": "spoke"}],
+            "seo_clusters": [{"pillar_article_id": None}],
+            "seo_articles": [{"id": "a1", "keyword": "X", "published_url": None, "status": "draft"}],
+        })
+        result = service.get_cluster_coverage_detail(cluster_id)
+        assert result["published_count"] == 0
+        assert result["orphan_count"] == 0
+        assert "message" in result
+
+    def test_empty_cluster(self, service, mock_supabase, cluster_id):
+        _table_mock(mock_supabase, {"seo_cluster_spokes": []})
+        result = service.get_cluster_coverage_detail(cluster_id)
+        assert result["published_count"] == 0
+        assert "message" in result

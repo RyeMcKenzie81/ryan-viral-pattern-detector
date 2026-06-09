@@ -23,6 +23,7 @@ from typing import Dict, Any, Optional, List
 from viraltracker.services.seo_pipeline.models import (
     ClusterStatus,
     ClusterIntent,
+    LinkStatus,
     SpokeRole,
     SpokeStatus,
 )
@@ -737,6 +738,142 @@ class ClusterManagementService:
             "coverage_pct": coverage_pct,
             "total_possible": total_possible,
             "total_linked": total_linked,
+        }
+
+    def get_cluster_coverage_detail(self, cluster_id: str) -> Dict[str, Any]:
+        """
+        Per-article inbound/outbound link detail for a cluster's PUBLISHED
+        articles, with orphan detection.
+
+        The pair-based coverage_pct from get_interlinking_audit answers "how many
+        possible links exist?"; this answers the question that actually predicts
+        ranking: does every published article RECEIVE at least one internal link?
+        get_cluster_health.link_coverage_pct is source-based (articles that SEND a
+        link), which can look healthy while a spoke receives nothing — this is the
+        inbound (target-based) view instead.
+
+        Orphan = a published article (published_url IS NOT NULL) with ZERO
+        implemented inbound internal links. It gets no link equity and rarely
+        ranks. (A content_locked article can still be an orphan — siblings can
+        link TO it; the lock only stops us rewriting ITS body. The fix is adding
+        inbound links from other articles, so the lock is informational here.)
+
+        Read-only. Returns:
+            {
+              "cluster_id": str,
+              "published_count": int,
+              "orphan_count": int,
+              "inbound_coverage_pct": float,  # published with >=1 inbound / published
+              "articles": [ {article_id, keyword, role, published_url,
+                             inbound_count, outbound_count, is_orphan,
+                             content_locked} ],   # orphans first, then inbound asc
+              "orphans": [ ...same shape, is_orphan only... ],
+            }
+        """
+        empty = {
+            "cluster_id": cluster_id,
+            "published_count": 0,
+            "orphan_count": 0,
+            "inbound_coverage_pct": 0.0,
+            "articles": [],
+            "orphans": [],
+        }
+
+        spokes_result = (
+            self.supabase.table("seo_cluster_spokes")
+            .select("article_id, role")
+            .eq("cluster_id", cluster_id)
+            .execute()
+        )
+        spokes = [s for s in (spokes_result.data or []) if s.get("article_id")]
+
+        # Pillar is authoritative on the cluster row, not on the spoke role — and
+        # a pillar can live ONLY on the cluster row (not in the spokes table), so
+        # union it in or it would be dropped from the cluster's article set.
+        cluster_row = (
+            self.supabase.table("seo_clusters")
+            .select("pillar_article_id")
+            .eq("id", cluster_id)
+            .execute()
+        )
+        pillar_id = cluster_row.data[0]["pillar_article_id"] if cluster_row.data else None
+
+        article_ids = list({s["article_id"] for s in spokes} | ({pillar_id} if pillar_id else set()))
+        if not article_ids:
+            return {**empty, "message": "No articles in this cluster yet."}
+
+        articles_result = (
+            self.supabase.table("seo_articles")
+            .select("id, keyword, published_url, content_locked, status")
+            .in_("id", article_ids)
+            .execute()
+        )
+        # Live = status 'published' AND a published_url. published_url alone is not
+        # enough: Shopify DRAFT publishes and the transient 'publishing' state also
+        # carry a url, and imported 'discovered' pages have urls too — counting any
+        # of those as published would manufacture false orphans.
+        published = {
+            a["id"]: a
+            for a in (articles_result.data or [])
+            if a.get("status") == "published" and (a.get("published_url") or "").strip()
+        }
+        published_ids = list(published.keys())
+        if not published_ids:
+            return {**empty, "message": "No published articles in this cluster yet."}
+
+        # Inbound via the canonical primitive, SOURCE-SCOPED to this cluster's live
+        # set: seo_internal_links has no brand column, so an unscoped count could be
+        # inflated by a stale/cross-brand source and hide a real intra-cluster orphan.
+        from viraltracker.services.seo_pipeline.services.interlinking_service import (
+            InterlinkingService,
+        )
+        inbound = InterlinkingService(supabase_client=self.supabase).count_inbound_links(
+            published_ids, source_ids=published_ids
+        )
+
+        outbound: Dict[str, int] = {}
+        links_out = (
+            self.supabase.table("seo_internal_links")
+            .select("source_article_id")
+            .in_("source_article_id", published_ids)
+            .eq("status", LinkStatus.IMPLEMENTED.value)
+            .execute()
+        )
+        for row in (links_out.data or []):
+            sid = row["source_article_id"]
+            outbound[sid] = outbound.get(sid, 0) + 1
+
+        role_by_id = {s["article_id"]: s.get("role") for s in spokes}
+        articles = []
+        for aid, a in published.items():
+            in_ct = inbound.get(aid, 0)
+            role = "pillar" if aid == pillar_id else (role_by_id.get(aid) or "spoke")
+            articles.append({
+                "article_id": aid,
+                "keyword": a.get("keyword") or "(untitled)",
+                "role": role,
+                "published_url": a.get("published_url"),
+                "inbound_count": in_ct,
+                "outbound_count": outbound.get(aid, 0),
+                "is_orphan": in_ct == 0,
+                "content_locked": bool(a.get("content_locked")),
+            })
+        # Orphans first, then least-linked, so the problems surface at the top.
+        articles.sort(key=lambda r: (not r["is_orphan"], r["inbound_count"]))
+
+        published_count = len(articles)
+        orphan_count = sum(1 for r in articles if r["is_orphan"])
+        inbound_coverage_pct = round(
+            (published_count - orphan_count) / published_count * 100, 1
+        ) if published_count else 0.0
+
+        return {
+            "cluster_id": cluster_id,
+            "published_count": published_count,
+            "orphan_count": orphan_count,
+            "inbound_coverage_pct": inbound_coverage_pct,
+            "articles": articles,
+            "orphans": [r for r in articles if r["is_orphan"]],
         }
 
     # =========================================================================

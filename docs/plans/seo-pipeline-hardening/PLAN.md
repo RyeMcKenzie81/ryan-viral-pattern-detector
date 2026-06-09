@@ -355,6 +355,27 @@ After the §6 fix ships, for a freshly published cluster:
 - B9–B11 (failure observability) should be implemented together with (e) so health/verification
   live in one summary rather than scattered.
 
+### Increment status (2026-06-08)
+
+**Tier-1 SHIPPED (PR pending, branch `RyeMcKenzie81/seo-observability-tier1`):**
+- **(a) Per-cluster coverage detail** — `ClusterManagementService.get_cluster_coverage_detail()`
+  (per-article inbound/outbound counts, role, orphan flag, inbound-coverage %), surfaced in the
+  Clusters Link Health panel. This is the **inbound (target-based)** view; the pre-existing
+  `link_coverage_pct` was source-based and could read healthy while a spoke received nothing.
+- **(b) Brand orphan report** — `SEOAnalyticsService.get_brand_orphans()`, surfaced as a new
+  top-level **"Content Health"** section on the Dashboard (brand-wide, not project-gated).
+- Shared primitive `InterlinkingService.count_inbound_links(article_ids, source_ids=...)`.
+  Orphan = `status='published'` + `published_url` set + **0 implemented inbound** links *from a
+  live in-scope source* (source-scoped because `seo_internal_links` has no brand column).
+- Live validation (Yakety): 103 published, **37 orphans (36%)** — actionable as-is.
+
+**Tier-2 DEFERRED to a combined `/plan-eng-review` with §4** (real data-model decisions):
+- **(c) coverage→ranking correlation** ("Link Impact" card) — needs a coverage-over-time
+  snapshot table + a defined window/lag vs GSC; otherwise it correlates nothing.
+- **(e) autopilot orphan alert (B9)** — placement (new scheduled job vs piggyback
+  `_run_seo_pipeline_maintenance`), threshold, dedup, channel.
+- **(d) live-HTML verification** — spot-check that `<a href>` exists in the Shopify-rendered body.
+
 ---
 
 ## 8. Cleanup & simplification
