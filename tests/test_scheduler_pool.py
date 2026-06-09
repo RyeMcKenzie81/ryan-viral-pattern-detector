@@ -412,3 +412,66 @@ class TestHealOrphanedRecurringJobs:
         assert healed == []
         assert len(updates) == 1  # the attempt happened, but lost the CAS
         emit.assert_not_called()  # no misleading "self-healed" event
+
+
+class TestRecoveryThread:
+    """The recovery owner runs in a daemon THREAD because long sync handlers
+    starve the asyncio event loop (verified live 2026-06-09: zero recovery
+    RPCs, two claims at boot then silence). These cover the tick + lifecycle."""
+
+    def test_tick_runs_rpc_then_heal(self):
+        from viraltracker.worker import scheduler_worker as sw
+
+        fake_db = MagicMock()
+        fake_db.rpc.return_value.execute.return_value = MagicMock(data=[])
+
+        with patch.object(sw, "get_supabase_client", return_value=fake_db), \
+             patch.object(sw, "heal_orphaned_recurring_jobs") as heal:
+            sw._recovery_tick()
+
+        assert fake_db.rpc.call_args[0][0] == "recover_stuck_runs_v2"
+        heal.assert_called_once()
+
+    def test_tick_rpc_failure_does_not_block_heal(self):
+        """The two halves are independent: a missing/failing RPC must not
+        stop the orphan heal (and vice versa)."""
+        from viraltracker.worker import scheduler_worker as sw
+
+        fake_db = MagicMock()
+        fake_db.rpc.return_value.execute.side_effect = RuntimeError("rpc down")
+
+        with patch.object(sw, "get_supabase_client", return_value=fake_db), \
+             patch.object(sw, "heal_orphaned_recurring_jobs") as heal:
+            sw._recovery_tick()  # must not raise
+
+        heal.assert_called_once()
+
+    def test_tick_heal_failure_contained(self):
+        from viraltracker.worker import scheduler_worker as sw
+
+        fake_db = MagicMock()
+        fake_db.rpc.return_value.execute.return_value = MagicMock(data=[])
+
+        with patch.object(sw, "get_supabase_client", return_value=fake_db), \
+             patch.object(sw, "heal_orphaned_recurring_jobs", side_effect=RuntimeError("boom")):
+            sw._recovery_tick()  # must not raise
+
+    def test_thread_ticks_and_stops_on_shutdown_flag(self):
+        import time
+        from viraltracker.worker import scheduler_worker as sw
+
+        ticks = {"n": 0}
+        saved_flag = sw.shutdown_requested
+        sw.shutdown_requested = False
+        try:
+            with patch.object(sw, "_recovery_tick", side_effect=lambda: ticks.__setitem__("n", ticks["n"] + 1)):
+                t = sw.start_recovery_thread(interval_seconds=0.05, jitter_max_seconds=0.0)
+                deadline = time.time() + 2.0
+                while ticks["n"] < 2 and time.time() < deadline:
+                    time.sleep(0.02)
+                sw.shutdown_requested = True
+                t.join(timeout=3.0)
+                assert not t.is_alive()
+                assert ticks["n"] >= 2  # ticked repeatedly before shutdown
+        finally:
+            sw.shutdown_requested = saved_flag
