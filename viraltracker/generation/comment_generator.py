@@ -27,6 +27,7 @@ from google.genai import types
 
 from viraltracker.core.config import FinderConfig
 from viraltracker.core.database import get_supabase_client
+from viraltracker.core.genai_client import make_genai_client  # make_genai_client was called below but never imported (PR #180 regression sweep)
 from viraltracker.generation.comment_finder import TweetMetrics, ScoringResult
 from viraltracker.generation.cost_tracking import extract_and_calculate_cost
 

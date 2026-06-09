@@ -315,6 +315,7 @@ def _generate_exemplars(description: str, count: int = 5) -> List[str]:
     """
     from google import genai
     from google.genai import types
+    from viraltracker.core.genai_client import make_genai_client  # make_genai_client was called below but never imported (PR #180 regression sweep)
 
     # Get API key
     api_key = os.getenv('GEMINI_API_KEY') or os.getenv('GOOGLE_GEMINI_API_KEY')

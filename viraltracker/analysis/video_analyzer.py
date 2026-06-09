@@ -20,6 +20,7 @@ from supabase import Client
 from tqdm import tqdm
 
 from ..core.config import Config
+from ..core.genai_client import make_genai_client  # make_genai_client was called below but never imported (PR #180 regression sweep)
 
 
 logger = logging.getLogger(__name__)
