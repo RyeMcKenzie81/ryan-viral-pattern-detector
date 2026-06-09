@@ -299,6 +299,56 @@ class TestProductAwareness:
         # low_res excluded from the denominator; here it's 0 so pct = 100/180.
         assert comp["current_pct"] == round(100.0 / 180.0, 4)
 
+    def test_video_currency_path(self):
+        """The digest's video branch: a current video link -> CURRENT (in distribution);
+        an old/absent video link -> STALE. Exercises the real ad_video_analysis prefetch."""
+        from viraltracker.services.video_analysis_service import PROMPT_VERSION as VID_V
+        data_map = {
+            "ad_creative_classifications": [
+                {"meta_ad_id": "v1", "creative_awareness_level": "solution_aware",
+                 "creative_format": "video_ugc", "video_analysis_id": "va1", "classified_at": "2026-06-03"},
+                {"meta_ad_id": "v2", "creative_awareness_level": "problem_aware",
+                 "creative_format": "video_ugc", "video_analysis_id": "va_old", "classified_at": "2026-06-03"},
+            ],
+            "ad_video_analysis": [
+                {"id": "va1", "meta_ad_id": "v1", "prompt_version": VID_V, "status": "ok"},
+            ],
+            "meta_ads_performance": [
+                {"meta_ad_id": "v1", "spend": "100", "purchases": "2"},
+                {"meta_ad_id": "v2", "spend": "40", "purchases": "1"},
+            ],
+        }
+        svc = WeeklyDigestService(_CovSupa(data_map), MagicMock(), MagicMock())
+        total, _n, rows, comp = svc._product_awareness(
+            "BRAND", ["v1", "v2"], "2026-05-01", "2026-05-31", baselines={},
+        )
+        assert [r["level"] for r in rows] == ["solution_aware"]   # only v1 (current video)
+        assert comp["current_spend"] == 100.0
+        assert comp["stale_spend"] == 40.0                        # v2 (old video link)
+
+    def test_all_pending_when_no_current_links(self):
+        """Pre-backfill: classifications exist but NONE link a current deep analysis ->
+        all STALE -> empty distribution, current_pct 0.0 (gate marks the product pending)."""
+        data_map = {
+            "ad_creative_classifications": [
+                {"meta_ad_id": "a1", "creative_awareness_level": "unaware", "classified_at": "2026-06-03"},
+                {"meta_ad_id": "a2", "creative_awareness_level": "problem_aware", "classified_at": "2026-06-03"},
+            ],
+            # no ad_image_analysis / ad_video_analysis -> empty current-version sets
+            "meta_ads_performance": [
+                {"meta_ad_id": "a1", "spend": "100", "purchases": "2"},
+                {"meta_ad_id": "a2", "spend": "50", "purchases": "1"},
+            ],
+        }
+        svc = WeeklyDigestService(_CovSupa(data_map), MagicMock(), MagicMock())
+        total, _n, rows, comp = svc._product_awareness(
+            "BRAND", ["a1", "a2"], "2026-05-01", "2026-05-31", baselines={},
+        )
+        assert rows == []                       # nothing current -> empty distribution
+        assert comp["current_spend"] == 0.0
+        assert comp["stale_spend"] == 150.0
+        assert comp["current_pct"] == 0.0       # -> awareness_pending True vs default 0.90
+
 
 class TestLowResCompleteness:
     def test_low_res_excluded_from_denominator(self):
@@ -341,18 +391,39 @@ class TestCompletenessThreshold:
 
 class TestRendererCompleteness:
     def test_pending_suppresses_distribution_and_shows_cannot_classify(self):
+        # MIXED pending: some classifiable spend exists (classifiable_spend > 0), so the
+        # "appears once the backfill completes" copy is appropriate.
         from viraltracker.services.ad_intelligence.digest_renderer import _product_block
         p = {
             "name": "Prod", "total_spend": 1000.0, "spending_ads": 5, "no_ads": False,
             "awareness": [{"level": "unaware", "spend": 100.0}],
             "awareness_pending": True,
-            "completeness": {"current_pct": 0.1, "stale_spend": 0.0,
-                             "unclassified_spend": 0.0, "low_res_spend": 900.0},
+            "completeness": {"current_pct": 0.1, "stale_spend": 90.0,
+                             "unclassified_spend": 0.0, "low_res_spend": 900.0,
+                             "classifiable_spend": 100.0},
         }
         txt = _product_block(p, "USD")["text"]["text"]
         assert "Awareness mix pending" in txt
+        assert "appears once the backfill completes" in txt
         assert "unaware" not in txt        # distribution suppressed below threshold
         assert "Cannot classify" in txt    # low_res line always shown
+
+    def test_all_low_res_does_not_promise_a_backfill(self):
+        # 100% low_res: classifiable_spend == 0 -> show "not classifiable", NOT a backfill
+        # promise (a high-res re-fetch is needed, which the backfill does not do).
+        from viraltracker.services.ad_intelligence.digest_renderer import _product_block
+        p = {
+            "name": "Prod", "total_spend": 900.0, "spending_ads": 3, "no_ads": False,
+            "awareness": [],
+            "awareness_pending": True,
+            "completeness": {"current_pct": 0.0, "stale_spend": 0.0,
+                             "unclassified_spend": 0.0, "low_res_spend": 900.0,
+                             "classifiable_spend": 0.0},
+        }
+        txt = _product_block(p, "USD")["text"]["text"]
+        assert "not classifiable this period" in txt
+        assert "backfill" not in txt          # must NOT promise a backfill that won't help
+        assert "Cannot classify" in txt        # the detail line still shows the $
 
     def test_full_distribution_when_not_pending(self):
         from viraltracker.services.ad_intelligence.digest_renderer import _product_block

@@ -241,27 +241,45 @@ class WeeklyDigestService:
         low_res_ids: set = set()
         for i in range(0, len(ad_ids), 500):
             batch = ad_ids[i:i + 500]
-            rows = (self.supabase.table("ad_creative_classifications")
-                    .select("meta_ad_id, creative_awareness_level, creative_format, "
-                            "image_analysis_id, video_analysis_id, classified_at")
-                    .eq("brand_id", bid).in_("meta_ad_id", batch)
-                    .order("classified_at", desc=True).execute().data or [])
-            for r in rows:
-                a = r.get("meta_ad_id")
-                if a and a not in latest_by_ad:
-                    latest_by_ad[a] = r   # first row = genuine latest
+            lim = max(1000, len(batch) * 3)
+            # GENUINE latest classification row per ad. PAGINATE: ad_creative_classifications
+            # is append-only (one row per run, accumulating across prompt/schema versions),
+            # so a 500-ad chunk can exceed PostgREST's 1000-row default. Without paging the
+            # cap drops the OLDEST rows GLOBALLY (the order is global desc), and an ad whose
+            # rows all fall past the cut would vanish from latest_by_ad -> read as
+            # unclassified -> deflate current_pct -> wrongly trip the publish gate. Global
+            # desc + range means the first time we see an ad IS its genuine latest.
+            offset, page = 0, 1000
+            while True:
+                rows = (self.supabase.table("ad_creative_classifications")
+                        .select("meta_ad_id, creative_awareness_level, creative_format, "
+                                "image_analysis_id, video_analysis_id, classified_at")
+                        .eq("brand_id", bid).in_("meta_ad_id", batch)
+                        .order("classified_at", desc=True)
+                        .range(offset, offset + page - 1).execute().data or [])
+                if not rows:
+                    break
+                for r in rows:
+                    a = r.get("meta_ad_id")
+                    if a and a not in latest_by_ad:
+                        latest_by_ad[a] = r   # first seen (global desc) == genuine latest
+                if len(rows) < page:
+                    break
+                offset += page
+            # Current-version deep-analysis id sets + low_res markers. ONE ad_image_analysis
+            # query yields both (partition on status in Python); one ad_video_analysis query.
+            # .limit(max(1000, len*3)) mirrors the classifier's Query 5/6/7 headroom so the
+            # 1000-row default can't silently truncate the current-version sets.
             try:
-                ii = (self.supabase.table("ad_image_analysis").select("id")
+                ia = (self.supabase.table("ad_image_analysis").select("id, meta_ad_id, status")
                       .eq("brand_id", bid).eq("prompt_version", _IMG_VER)
-                      .in_("meta_ad_id", batch).execute().data or [])
-                current_image_ids.update(str(x["id"]) for x in ii if x.get("id"))
-                lr = (self.supabase.table("ad_image_analysis").select("meta_ad_id")
-                      .eq("brand_id", bid).eq("status", "low_res").eq("prompt_version", _IMG_VER)
-                      .in_("meta_ad_id", batch).execute().data or [])
-                low_res_ids.update(x["meta_ad_id"] for x in lr if x.get("meta_ad_id"))
+                      .in_("meta_ad_id", batch).limit(lim).execute().data or [])
+                current_image_ids.update(str(x["id"]) for x in ia if x.get("id"))
+                low_res_ids.update(x["meta_ad_id"] for x in ia
+                                   if x.get("status") == "low_res" and x.get("meta_ad_id"))
                 vv = (self.supabase.table("ad_video_analysis").select("id")
                       .eq("brand_id", bid).eq("prompt_version", _VID_VER)
-                      .in_("meta_ad_id", batch).execute().data or [])
+                      .in_("meta_ad_id", batch).limit(lim).execute().data or [])
                 current_video_ids.update(str(x["id"]) for x in vv if x.get("id"))
             except Exception as e:
                 logger.warning(f"Digest currency prefetch failed for brand {bid}: {e}")

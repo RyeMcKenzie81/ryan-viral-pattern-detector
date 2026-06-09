@@ -135,12 +135,21 @@ def _product_block(p: Dict[str, Any], currency: str) -> Dict[str, Any]:
     # headline mix, so show "pending" instead of the distribution. Everything else (CPA,
     # completeness line, attribution coverage) still publishes.
     if p.get("awareness_pending"):
-        pct = ((p.get("completeness") or {}).get("current_pct") or 0.0) * 100
-        chunks.append(
-            f":hourglass_flowing_sand: *Awareness mix pending* — only {pct:.0f}% of "
-            f"classifiable spend is classified at the current version. The distribution "
-            f"appears once the backfill completes."
-        )
+        c = p.get("completeness") or {}
+        if (c.get("classifiable_spend") or 0) <= 0:
+            # All spend is low_res — nothing to backfill (needs a high-res re-fetch); the
+            # "Cannot classify" line below carries the detail. Do NOT promise a backfill.
+            chunks.append(
+                ":no_entry_sign: *Awareness not classifiable this period* — all spend is on "
+                "images too low-res to read at the current resolution (see below)."
+            )
+        else:
+            pct = (c.get("current_pct") or 0.0) * 100
+            chunks.append(
+                f":hourglass_flowing_sand: *Awareness mix pending* — only {pct:.0f}% of "
+                f"classifiable spend is classified at the current version. The distribution "
+                f"appears once the backfill completes."
+            )
     else:
         chunks.append(_awareness_table(p.get("awareness") or []))
     cl = _completeness_line(p, currency)
@@ -284,12 +293,19 @@ def _html_product(p: Dict[str, Any], currency: str) -> str:
         meta += " · " + _h(mline.replace("*", ""))
 
     if p.get("awareness_pending"):
-        pct = ((p.get("completeness") or {}).get("current_pct") or 0.0) * 100
-        table = (
-            f'<p class="dark">Awareness mix pending — only {pct:.0f}% of classifiable '
-            f'spend is classified at the current version. The distribution appears once '
-            f'the backfill completes.</p>'
-        )
+        c = p.get("completeness") or {}
+        if (c.get("classifiable_spend") or 0) <= 0:
+            table = (
+                '<p class="dark">Awareness not classifiable this period — all spend is on '
+                'images too low-res to read at the current resolution (see below).</p>'
+            )
+        else:
+            pct = (c.get("current_pct") or 0.0) * 100
+            table = (
+                f'<p class="dark">Awareness mix pending — only {pct:.0f}% of classifiable '
+                f'spend is classified at the current version. The distribution appears once '
+                f'the backfill completes.</p>'
+            )
     else:
         rows = p.get("awareness") or []
         body = ""

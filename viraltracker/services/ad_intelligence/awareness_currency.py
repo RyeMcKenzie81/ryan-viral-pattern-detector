@@ -60,13 +60,14 @@ def awareness_state(meta_ad_id, row, current_image_ids, current_video_ids, low_r
     """
     # CURRENT requires BOTH a current-version deep link AND a usable awareness label.
     # (A current link with a NULL label is not usable -> falls through to unclassified.)
-    if row is not None and row.get("creative_awareness_level"):
-        cf = str(row.get("creative_format") or "")
-        if cf.startswith("video"):
-            if video_link_is_current(row, current_video_ids):
-                return CURRENT
-        elif image_link_is_current(row, current_image_ids):
-            return CURRENT
+    # We test the link directly (image OR video) rather than branching on creative_format:
+    # the two id spaces are disjoint (a classification row carries at most one deep link),
+    # so checking both is unambiguous and robust to a missing/odd creative_format.
+    if row is not None and row.get("creative_awareness_level") and (
+        image_link_is_current(row, current_image_ids)
+        or video_link_is_current(row, current_video_ids)
+    ):
+        return CURRENT
     if meta_ad_id in low_res_ids:
         return LOW_RES
     if row is not None and row.get("creative_awareness_level"):
