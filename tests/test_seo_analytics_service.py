@@ -10,7 +10,7 @@ Tests cover:
 
 import pytest
 from unittest.mock import MagicMock, patch
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from viraltracker.services.seo_pipeline.services.seo_analytics_service import (
     SEOAnalyticsService,
@@ -537,3 +537,148 @@ class TestGetBrandOrphans:
 
         assert result["orphan_count"] == 0
         assert result["published_count"] == 1
+
+
+# =============================================================================
+# LINK IMPACT (§7 increment 2 — R7)
+# =============================================================================
+
+def _impact_db(articles, analytics, snapshots, auto_links):
+    """Router for get_link_impact's four queries."""
+    db = MagicMock()
+
+    def table_side_effect(name):
+        chain = MagicMock()
+        for m in ["select", "eq", "neq", "in_", "gte", "lt", "order", "limit"]:
+            getattr(chain, m).return_value = chain
+        data = {
+            "seo_articles": articles,
+            "seo_article_analytics": analytics,
+            "seo_link_coverage_snapshots": snapshots,
+            "seo_internal_links": auto_links,
+        }.get(name, [])
+        chain.execute.return_value = MagicMock(data=data)
+        return chain
+
+    db.table.side_effect = table_side_effect
+    return db
+
+
+def _days_ago(n):
+    return (datetime.now(timezone.utc) - timedelta(days=n)).date().isoformat()
+
+
+def _pos_series(aid, start_days_ago, end_days_ago, start_pos, end_pos):
+    """Daily GSC rows sliding linearly from start_pos to end_pos."""
+    rows = []
+    total = start_days_ago - end_days_ago
+    for i in range(total + 1):
+        frac = i / total if total else 0
+        rows.append({
+            "article_id": aid,
+            "date": _days_ago(start_days_ago - i),
+            "average_position": start_pos + (end_pos - start_pos) * frac,
+        })
+    return rows
+
+
+class TestGetLinkImpact:
+    def _live(self, *ids):
+        return [
+            {"id": a, "keyword": f"kw-{a}", "status": "published",
+             "published_url": f"https://x/{a}"}
+            for a in ids
+        ]
+
+    def test_approximate_provenance_and_buckets(self, service):
+        """No snapshots yet (cold start): link history reconstructed from AUTO
+        created_at; gained-links article improved, no-gain article flat."""
+        analytics = (
+            _pos_series("a1", 80, 1, 18.0, 12.0)   # improved 6 positions
+            + _pos_series("a2", 80, 1, 20.0, 20.0)  # flat
+            + _pos_series("a3", 80, 1, 15.0, 15.5)  # slight decline
+        )
+        # a1 gained 2 AUTO links mid-window; a2/a3 none in-window.
+        mid = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+        auto = [
+            {"source_article_id": "a2", "target_article_id": "a1", "created_at": mid},
+            {"source_article_id": "a3", "target_article_id": "a1", "created_at": mid},
+        ]
+        db = _impact_db(self._live("a1", "a2", "a3"), analytics, [], auto)
+        svc = SEOAnalyticsService(supabase_client=db)
+        result = svc.get_link_impact("b1", "o1")
+
+        assert result["stale"] is False
+        assert result["insufficient_data"] is False
+        by_id = {a["article_id"]: a for a in result["articles"]}
+        assert by_id["a1"]["link_gain"] == 2
+        assert by_id["a1"]["provenance"] == "approximate"
+        assert by_id["a1"]["position_delta"] < 0          # improved
+        assert by_id["a2"]["link_gain"] == 0
+        assert result["buckets"]["gained_links"]["count"] == 1
+        assert result["buckets"]["no_gain"]["count"] == 2
+        assert result["buckets"]["gained_links"]["median_position_delta"] < 0
+        assert result["measured_since"] is None
+
+    def test_measured_provenance_when_snapshots_cover_window(self, service):
+        analytics = _pos_series("a1", 80, 1, 18.0, 12.0) + _pos_series("a2", 80, 1, 20.0, 20.0) + _pos_series("a3", 80, 1, 15.0, 15.0)
+        snaps = []
+        for aid, start_in, end_in in [("a1", 1, 4), ("a2", 2, 2), ("a3", 1, 1)]:
+            snaps.append({"article_id": aid, "captured_on": _days_ago(85), "inbound_count": start_in})
+            snaps.append({"article_id": aid, "captured_on": _days_ago(2), "inbound_count": end_in})
+        db = _impact_db(self._live("a1", "a2", "a3"), analytics, snaps, [])
+        svc = SEOAnalyticsService(supabase_client=db)
+        result = svc.get_link_impact("b1", "o1")
+
+        by_id = {a["article_id"]: a for a in result["articles"]}
+        assert by_id["a1"]["provenance"] == "measured"
+        assert by_id["a1"]["link_gain"] == 3
+        assert result["measured_since"] == _days_ago(85)
+        assert result["data_as_of"]["snapshots"] == _days_ago(2)
+
+    def test_mixed_provenance_snapshot_mid_window(self, service):
+        """Snapshot exists only recently (began mid-window): end is measured,
+        start reconstructed — provenance 'mixed'."""
+        analytics = _pos_series("a1", 80, 1, 18.0, 12.0) + _pos_series("a2", 80, 1, 20.0, 20.0) + _pos_series("a3", 80, 1, 15.0, 15.0)
+        snaps = [{"article_id": "a1", "captured_on": _days_ago(2), "inbound_count": 5}]
+        db = _impact_db(self._live("a1", "a2", "a3"), analytics, snaps, [])
+        svc = SEOAnalyticsService(supabase_client=db)
+        result = svc.get_link_impact("b1", "o1")
+        by_id = {a["article_id"]: a for a in result["articles"]}
+        assert by_id["a1"]["provenance"] == "mixed"
+        assert by_id["a1"]["links_now"] == 5
+
+    def test_stale_gsc_gates_card(self, service):
+        analytics = _pos_series("a1", 80, 30, 18.0, 12.0)  # newest row 30d old
+        db = _impact_db(self._live("a1"), analytics, [], [])
+        svc = SEOAnalyticsService(supabase_client=db)
+        result = svc.get_link_impact("b1", "o1")
+        assert result["stale"] is True
+
+    def test_insufficient_data_under_three_articles(self, service):
+        analytics = _pos_series("a1", 80, 1, 18.0, 12.0)
+        db = _impact_db(self._live("a1", "a2"), analytics, [], [])
+        svc = SEOAnalyticsService(supabase_client=db)
+        result = svc.get_link_impact("b1", "o1")
+        assert result["insufficient_data"] is True   # only a1 has position data
+
+    def test_sparse_position_data_skipped(self, service):
+        """Articles with fewer than 8 distinct GSC days can't produce an honest
+        delta — excluded."""
+        analytics = _pos_series("a1", 5, 1, 18.0, 12.0)  # only 5 days
+        db = _impact_db(self._live("a1"), analytics, [], [])
+        svc = SEOAnalyticsService(supabase_client=db)
+        result = svc.get_link_impact("b1", "o1")
+        assert result["articles"] == []
+
+    def test_stale_mid_window_snapshot_not_treated_as_measured_end(self, service):
+        """A snapshot last captured 30d ago can't serve as the window-END count
+        (recent link gains would be silently missed) — falls back to approximate."""
+        analytics = _pos_series("a1", 80, 1, 18.0, 12.0) + _pos_series("a2", 80, 1, 20.0, 20.0) + _pos_series("a3", 80, 1, 15.0, 15.0)
+        snaps = [{"article_id": "a1", "captured_on": _days_ago(30), "inbound_count": 9}]
+        db = _impact_db(self._live("a1", "a2", "a3"), analytics, snaps, [])
+        svc = SEOAnalyticsService(supabase_client=db)
+        result = svc.get_link_impact("b1", "o1")
+        by_id = {a["article_id"]: a for a in result["articles"]}
+        assert by_id["a1"]["provenance"] == "approximate"  # stale end rejected
+        assert by_id["a1"]["links_now"] == 0               # approx, not the stale 9

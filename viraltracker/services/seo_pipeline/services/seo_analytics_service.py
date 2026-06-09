@@ -402,3 +402,280 @@ class SEOAnalyticsService:
             "exempt_count": exempt_count,
             "orphans": orphans,
         }
+
+    # =========================================================================
+    # LINK IMPACT (§7 increment 2 — R7: directional telemetry)
+    # =========================================================================
+
+    # A feed older than this gates the Link Impact card (R3: stale ⇒ red badge
+    # AND the correlation claim suppressed — stale data must not drive ranking
+    # claims). Matches OpportunityMinerService.FEED_STALE_DAYS.
+    LINK_IMPACT_STALE_DAYS = 7
+
+    def get_link_impact(
+        self,
+        brand_id: str,
+        organization_id: str,
+        window_days: int = 90,
+    ) -> Dict[str, Any]:
+        """R7: link-gain vs position-movement, framed as DIRECTIONAL telemetry.
+
+        Explicitly NOT a causal claim — position movement is confounded by
+        topic, age, intent, and authority, so no "+N links ≈ +M positions"
+        coefficient is computed. The card groups articles by whether they
+        GAINED inbound links over the window and reports the median position
+        delta per bucket. Useful direction, honest about strength.
+
+        Link-count series:
+        - MEASURED: seo_link_coverage_snapshots (weekly, started 2026-06-09).
+        - APPROXIMATE (cold start): reconstructed from implemented AUTO link
+          created_at timestamps (idempotent writes preserved them). Related-
+          block (bidirectional) records churn their timestamps, so the
+          reconstruction UNDERCOUNTS — every series it feeds is labeled
+          approximate and is replaced by measured data as snapshots accrue.
+
+        Position series: seo_article_analytics (source=gsc, daily). Delta =
+        avg(last 7 days with data) - avg(first 7 days with data) inside the
+        window; NEGATIVE = improved (moved up).
+
+        Staleness gates the card: GSC data older than LINK_IMPACT_STALE_DAYS
+        sets stale=True and the UI suppresses the buckets entirely (R3).
+
+        Returns:
+            {
+              "window_days": int,
+              "data_as_of": {"gsc": iso|None, "snapshots": iso|None},
+              "stale": bool,
+              "measured_since": iso|None,   # earliest snapshot day (provenance switch)
+              "articles": [{article_id, keyword, link_gain, links_now,
+                            position_first, position_now, position_delta,
+                            provenance}],
+              "buckets": {bucket: {"count": int, "median_position_delta": float|None}},
+              "insufficient_data": bool,
+            }
+        """
+        now = datetime.now(timezone.utc)
+        window_start = (now - timedelta(days=window_days)).date()
+
+        empty: Dict[str, Any] = {
+            "window_days": window_days,
+            "data_as_of": {"gsc": None, "snapshots": None},
+            "stale": True,
+            "measured_since": None,
+            "articles": [],
+            "buckets": {},
+            "insufficient_data": True,
+        }
+
+        # Live article set (same definition as everywhere: published + url).
+        art_query = (
+            self.supabase.table("seo_articles")
+            .select("*")
+            .eq("brand_id", brand_id)
+            .eq("status", "published")
+        )
+        if organization_id and organization_id != "all":
+            art_query = art_query.eq("organization_id", organization_id)
+        live = [
+            a for a in (art_query.execute().data or [])
+            if (a.get("published_url") or "").strip()
+        ]
+        if not live:
+            return empty
+        live_ids = [a["id"] for a in live]
+        kw_by_id = {a["id"]: a.get("keyword") or "(untitled)" for a in live}
+
+        # --- Position series (GSC) -------------------------------------------
+        pos_rows: List[Dict[str, Any]] = []
+        for i in range(0, len(live_ids), 50):
+            batch = live_ids[i:i + 50]
+            try:
+                res = (
+                    self.supabase.table("seo_article_analytics")
+                    .select("article_id, date, average_position")
+                    .in_("article_id", batch)
+                    .eq("source", "gsc")
+                    # One row per search_type exists (web/image/video) — only
+                    # web positions are the ranking signal; averaging across
+                    # types corrupts the delta.
+                    .eq("search_type", "web")
+                    .gte("date", window_start.isoformat())
+                    .execute()
+                )
+                pos_rows.extend(res.data or [])
+            except Exception as e:
+                logger.warning(f"Link impact: GSC fetch failed: {e}")
+
+        gsc_newest = max((r["date"] for r in pos_rows), default=None)
+        stale = True
+        if gsc_newest:
+            try:
+                age = (now.date() - datetime.fromisoformat(str(gsc_newest)).date()).days
+                stale = age > self.LINK_IMPACT_STALE_DAYS
+            except Exception:
+                stale = True
+
+        # Per-article first/last 7-days-with-data position averages.
+        by_article: Dict[str, List[tuple]] = {}
+        for r in pos_rows:
+            if r.get("average_position") is None:
+                continue
+            by_article.setdefault(r["article_id"], []).append(
+                (str(r["date"]), float(r["average_position"]))
+            )
+
+        def _edge_avg(series: List[tuple], last: bool) -> Optional[float]:
+            days = sorted({d for d, _ in series}, reverse=last)[:7]
+            vals = [p for d, p in series if d in days]
+            return round(sum(vals) / len(vals), 2) if vals else None
+
+        # --- Link-count series ------------------------------------------------
+        # Measured: earliest + latest snapshot per article in the window.
+        snap_first: Dict[str, tuple] = {}
+        snap_last: Dict[str, tuple] = {}
+        measured_since: Optional[str] = None
+        snap_newest: Optional[str] = None
+        try:
+            snaps = (
+                self.supabase.table("seo_link_coverage_snapshots")
+                .select("article_id, captured_on, inbound_count")
+                .eq("brand_id", brand_id)
+                .gte("captured_on", window_start.isoformat())
+                .execute()
+            )
+            for s in (snaps.data or []):
+                key = s["article_id"]
+                day = str(s["captured_on"])
+                if key not in snap_first or day < snap_first[key][0]:
+                    snap_first[key] = (day, s["inbound_count"])
+                if key not in snap_last or day > snap_last[key][0]:
+                    snap_last[key] = (day, s["inbound_count"])
+                if measured_since is None or day < measured_since:
+                    measured_since = day
+                if snap_newest is None or day > snap_newest:
+                    snap_newest = day
+        except Exception as e:
+            logger.warning(f"Link impact: snapshot fetch failed (migration applied?): {e}")
+
+        # Approximate: implemented AUTO inbound links by created_at, source-
+        # scoped to the live set. Cumulative count <= T reconstructs history.
+        auto_links: Dict[str, List[str]] = {}
+        live_set = set(live_ids)
+        for i in range(0, len(live_ids), 50):
+            batch = live_ids[i:i + 50]
+            try:
+                res = (
+                    self.supabase.table("seo_internal_links")
+                    .select("source_article_id, target_article_id, created_at")
+                    .in_("target_article_id", batch)
+                    .eq("status", "implemented")
+                    .eq("link_type", "auto")
+                    .execute()
+                )
+                for r in (res.data or []):
+                    if r.get("source_article_id") in live_set and r.get("created_at"):
+                        # Parse to aware datetimes here — comparing timestamptz
+                        # STRINGS against a naive cutoff misbuckets boundary
+                        # links across formats/offsets.
+                        try:
+                            raw = str(r["created_at"]).replace("Z", "+00:00").replace(" ", "T")
+                            dt = datetime.fromisoformat(raw)
+                            if dt.tzinfo is None:
+                                dt = dt.replace(tzinfo=timezone.utc)
+                            auto_links.setdefault(r["target_article_id"], []).append(dt)
+                        except Exception:
+                            continue
+            except Exception as e:
+                logger.warning(f"Link impact: auto-link fetch failed: {e}")
+
+        def _approx_at(aid: str, day) -> int:
+            cutoff = datetime(
+                day.year, day.month, day.day, 23, 59, 59, tzinfo=timezone.utc
+            )
+            return sum(1 for ts in auto_links.get(aid, []) if ts <= cutoff)
+
+        # --- Combine ----------------------------------------------------------
+        articles = []
+        for aid in live_ids:
+            series = by_article.get(aid) or []
+            pos_first = _edge_avg(series, last=False)
+            pos_now = _edge_avg(series, last=True)
+            # Require a real spread: at least ~2 distinct weeks of data.
+            distinct_days = {d for d, _ in series}
+            if pos_first is None or pos_now is None or len(distinct_days) < 8:
+                continue
+
+            sf, sl = snap_first.get(aid), snap_last.get(aid)
+            # A snapshot only counts as a window-EDGE measurement if it was
+            # captured near that edge: the latest within 14 days of now, the
+            # earliest within 7 days of the window start. A mid-window stale
+            # snapshot serving as the "end" would silently miss recent gains.
+            end_fresh = (
+                sl is not None
+                and sl[0] >= (now.date() - timedelta(days=14)).isoformat()
+            )
+            start_covered = (
+                sf is not None
+                and sf[0] <= (window_start + timedelta(days=7)).isoformat()
+            )
+            if end_fresh:
+                end_count = sl[1]
+                if start_covered:
+                    start_count = sf[1]
+                    provenance = "measured"
+                else:
+                    start_count = _approx_at(aid, window_start)
+                    provenance = "mixed"
+            else:
+                end_count = _approx_at(aid, now.date())
+                start_count = _approx_at(aid, window_start)
+                provenance = "approximate"
+
+            articles.append({
+                "article_id": aid,
+                "keyword": kw_by_id.get(aid, ""),
+                "link_gain": end_count - start_count,
+                "links_now": end_count,
+                "position_first": pos_first,
+                "position_now": pos_now,
+                "position_delta": round(pos_now - pos_first, 2),
+                "provenance": provenance,
+            })
+
+        def _median(vals: List[float]) -> Optional[float]:
+            if not vals:
+                return None
+            vals = sorted(vals)
+            mid = len(vals) // 2
+            return round(
+                vals[mid] if len(vals) % 2 else (vals[mid - 1] + vals[mid]) / 2, 2
+            )
+
+        gained = [a for a in articles if a["link_gain"] > 0]
+        no_gain = [a for a in articles if a["link_gain"] == 0]
+        lost = [a for a in articles if a["link_gain"] < 0]
+        buckets = {
+            "gained_links": {
+                "count": len(gained),
+                "median_position_delta": _median([a["position_delta"] for a in gained]),
+            },
+            "no_gain": {
+                "count": len(no_gain),
+                "median_position_delta": _median([a["position_delta"] for a in no_gain]),
+            },
+        }
+        if lost:
+            buckets["lost_links"] = {
+                "count": len(lost),
+                "median_position_delta": _median([a["position_delta"] for a in lost]),
+            }
+
+        return {
+            "window_days": window_days,
+            "data_as_of": {"gsc": gsc_newest, "snapshots": snap_newest},
+            "stale": stale,
+            "measured_since": measured_since,
+            "articles": articles,
+            "buckets": buckets,
+            "insufficient_data": len(articles) < 3,
+        }

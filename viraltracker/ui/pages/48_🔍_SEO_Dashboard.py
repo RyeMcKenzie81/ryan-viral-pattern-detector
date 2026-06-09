@@ -2127,3 +2127,99 @@ try:
         st.info("No published articles yet.")
 except Exception as e:
     st.warning(f"Could not load content health: {str(e)[:200]}")
+
+
+# =============================================================================
+# LINK IMPACT (§7 increment 2 — R7: directional telemetry)
+# =============================================================================
+# Did articles that GAINED inbound links move differently in Google than those
+# that didn't? Deliberately NOT a causal claim (no "+N links = +M positions" —
+# rankings are confounded by topic, age, intent, authority); buckets + medians
+# show direction honestly. Stale GSC data suppresses the whole reading (R3).
+
+st.divider()
+st.subheader("Link Impact")
+st.caption(
+    "Directional telemetry: median Google position movement for articles that "
+    "gained inbound internal links vs those that didn't (negative = moved up). "
+    "Not a causal estimate."
+)
+
+try:
+    _li = get_analytics_service().get_link_impact(brand_id, org_id)
+    _as_of = _li.get("data_as_of") or {}
+
+    if _li.get("stale"):
+        st.error(
+            f"⚠️ GSC data is stale (newest: {_as_of.get('gsc') or 'none'}) — "
+            "link-impact readings are suppressed until the feed is fresh. "
+            "Run Sync All above or check the analytics_sync job."
+        )
+    elif _li.get("insufficient_data"):
+        st.info(
+            "Not enough articles with both link history and ranking data yet "
+            f"({len(_li.get('articles', []))} usable). History accrues with each "
+            "weekly scan — check back as snapshots build up."
+        )
+    else:
+        _buckets = _li.get("buckets") or {}
+        _g = _buckets.get("gained_links") or {}
+        _n = _buckets.get("no_gain") or {}
+
+        def _fmt_delta(v):
+            if v is None:
+                return "—"
+            arrow = "▲" if v < 0 else ("▼" if v > 0 else "→")
+            return f"{arrow} {abs(v)} pos"
+
+        lc1, lc2, lc3 = st.columns(3)
+        with lc1:
+            st.metric("Articles analyzed", len(_li.get("articles", [])))
+        with lc2:
+            st.metric(
+                f"Gained links ({_g.get('count', 0)})",
+                _fmt_delta(_g.get("median_position_delta")),
+                help="Median position change for articles whose inbound internal "
+                     "links increased over the window. ▲ = moved up in Google.",
+            )
+        with lc3:
+            st.metric(
+                f"No link gain ({_n.get('count', 0)})",
+                _fmt_delta(_n.get("median_position_delta")),
+                help="Median position change for articles with no inbound link "
+                     "growth — the comparison group.",
+            )
+
+        # Provenance: be explicit about reconstructed vs measured history.
+        _approx = sum(1 for a in _li.get("articles", []) if a["provenance"] != "measured")
+        if _li.get("measured_since"):
+            _prov = f"Measured snapshots since {_li['measured_since']}"
+            if _approx:
+                _prov += (
+                    f"; {_approx} article(s) still use approximate history "
+                    "(reconstructed from link timestamps, undercounts Related-block links)"
+                )
+        else:
+            _prov = (
+                "All history is approximate (reconstructed from link timestamps) — "
+                "measured snapshots begin with the next weekly scan"
+            )
+        st.caption(f"{_prov}. Data as of: GSC {_as_of.get('gsc')} · window {_li.get('window_days')}d.")
+
+        with st.expander("Per-article detail"):
+            _df = pd.DataFrame([
+                {
+                    "Article": a["keyword"],
+                    "link_gain": a["link_gain"],
+                    "Links now": a["links_now"],
+                    "Position then": a["position_first"],
+                    "Position now": a["position_now"],
+                    "position_delta": a["position_delta"],
+                    "History": a["provenance"],
+                }
+                for a in sorted(_li.get("articles", []), key=lambda x: x["position_delta"])
+            ])
+            st.dataframe(_df, hide_index=True, use_container_width=True)
+            st.scatter_chart(_df, x="link_gain", y="position_delta")
+except Exception as e:
+    st.warning(f"Could not load link impact: {str(e)[:200]}")

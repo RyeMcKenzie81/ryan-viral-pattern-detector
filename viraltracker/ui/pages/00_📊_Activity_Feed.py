@@ -691,6 +691,26 @@ def _render_seo_weekly_report_card(details: Dict, key_prefix: str, event_id: str
         else:
             st.caption(line)
 
+        # Live-check (R9): recorded links verified against the live Shopify
+        # body. Missing = DB says implemented but Google can't see it.
+        lc = ih.get("live_check") or {}
+        if lc and not lc.get("skipped"):
+            missing = lc.get("missing") or []
+            base = (
+                f"Live-check: {lc.get('verified', 0)}/{lc.get('links_checked', 0)} "
+                f"links verified on {lc.get('articles_checked', 0)} articles"
+            )
+            if lc.get("locked_flags"):
+                base += f" · {lc['locked_flags']} on locked bodies (flagged)"
+            if lc.get("errors"):
+                base += f" · {lc['errors']} fetch errors"
+            if missing:
+                st.error(f"❌ {len(missing)} recorded link(s) MISSING from live pages. {base}")
+                for m in missing[:5]:
+                    st.caption(f"  • {m.get('source_keyword', '?')} → {m.get('target_url', '?')}")
+            else:
+                st.caption(base)
+
     top_opps = details.get("top_opportunities", [])
     milestones = details.get("rank_milestones", [])
 

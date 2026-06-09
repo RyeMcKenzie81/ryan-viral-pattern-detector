@@ -669,7 +669,16 @@ failure observability ≠ correctness observability.
    `2026-06-09_seo_interlink_health.sql`, manual); scan health pass (non-fatal) + alarm
    events; R5 publish-time self-check; hubless cyclic-ring Related fallback; Activity Feed +
    Dashboard UI. Codex round: 6 findings (2 P1) fixed with regression tests.
-2. **Link Impact card + backfill** (ui/, services/) — R7; live-check R9. NOT built.
+2. **Link Impact card + backfill** (ui/, services/) — R7; live-check R9. ✅ BUILT
+   (2026-06-09, same day as increment 1 rather than waiting for snapshots — the labeled
+   approximate backfill makes the card honest on day one): `SEOAnalyticsService.
+   get_link_impact` (gained-links vs no-gain buckets + median position deltas, NO causal
+   coefficient; provenance measured/mixed/approximate; stale-GSC gate suppresses the
+   reading per R3); `InterlinkingService.verify_live_links` (R9: targeted sample by
+   recency, fetch by cms_article_id, path-match, locked=flag-not-fail, error≠missing)
+   riding the weekly scan; Dashboard "Link Impact" section; live-check line in the weekly
+   Activity Feed card. **Review due ~2026-06-23** (TODOS.md): validate approximate-vs-
+   measured agreement, provenance switch, bucket stability, live-check hit rate.
 
 ---
 

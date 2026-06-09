@@ -1647,3 +1647,150 @@ class TestCodexFixesInc1:
         service._supabase.table.return_value = chain
         result = service._get_project_articles("p1")
         assert [a["id"] for a in result] == ["a1"]
+
+
+class TestVerifyLiveLinks:
+    """R9: verified-vs-recorded — recorded implemented links checked against
+    the live Shopify body, fetched by cms_article_id."""
+
+    PUB_PATH = "viraltracker.services.seo_pipeline.services.cms_publisher_service.CMSPublisherService"
+
+    def _db(self, articles, links):
+        db = MagicMock()
+
+        def table_side_effect(name):
+            chain = MagicMock()
+            for m in ["select", "eq", "neq", "in_", "order", "limit"]:
+                getattr(chain, m).return_value = chain
+            data = {"seo_articles": articles, "seo_internal_links": links}.get(name, [])
+            chain.execute.return_value = MagicMock(data=data)
+            return chain
+
+        db.table.side_effect = table_side_effect
+        return db
+
+    def _arts(self):
+        return [
+            {"id": "s1", "keyword": "Source", "status": "published",
+             "published_url": "https://shop.x/blogs/news/source", "cms_article_id": "901"},
+            {"id": "t1", "keyword": "Target", "status": "published",
+             "published_url": "https://shop.x/blogs/news/target-post", "cms_article_id": "902"},
+        ]
+
+    def _links(self):
+        return [{"source_article_id": "s1", "target_article_id": "t1",
+                 "created_at": "2026-06-09T00:00:00Z"}]
+
+    def test_verified_when_path_in_live_body(self):
+        db = self._db(self._arts(), self._links())
+        svc = InterlinkingService(supabase_client=db)
+        publisher = MagicMock()
+        publisher.get_article.return_value = {
+            "body_html": '<p><a href="https://shop.x/blogs/news/target-post">t</a></p>'
+        }
+        with patch(self.PUB_PATH) as MockPub:
+            MockPub.return_value.get_publisher.return_value = publisher
+            result = svc.verify_live_links("b1", "o1", delay_seconds=0)
+        assert result["verified"] == 1
+        assert result["missing"] == []
+        assert result["articles_checked"] == 1
+
+    def test_missing_link_flagged(self):
+        db = self._db(self._arts(), self._links())
+        svc = InterlinkingService(supabase_client=db)
+        publisher = MagicMock()
+        publisher.get_article.return_value = {"body_html": "<p>no links here</p>"}
+        with patch(self.PUB_PATH) as MockPub:
+            MockPub.return_value.get_publisher.return_value = publisher
+            result = svc.verify_live_links("b1", "o1", delay_seconds=0)
+        assert result["verified"] == 0
+        assert len(result["missing"]) == 1
+        assert result["missing"][0]["target_url"].endswith("target-post")
+
+    def test_fetch_error_is_error_not_missing(self):
+        db = self._db(self._arts(), self._links())
+        svc = InterlinkingService(supabase_client=db)
+        publisher = MagicMock()
+        publisher.get_article.side_effect = RuntimeError("network down")
+        with patch(self.PUB_PATH) as MockPub:
+            MockPub.return_value.get_publisher.return_value = publisher
+            result = svc.verify_live_links("b1", "o1", delay_seconds=0)
+        assert result["errors"] == 1
+        assert result["missing"] == []      # error ≠ missing
+
+    def test_locked_body_flag_not_fail(self):
+        arts = self._arts()
+        arts[0]["content_locked"] = True
+        db = self._db(arts, self._links())
+        svc = InterlinkingService(supabase_client=db)
+        publisher = MagicMock()
+        publisher.get_article.return_value = {"body_html": "<p>human rewrote this</p>"}
+        with patch(self.PUB_PATH) as MockPub:
+            MockPub.return_value.get_publisher.return_value = publisher
+            result = svc.verify_live_links("b1", "o1", delay_seconds=0)
+        assert result["locked_flags"] == 1
+        assert result["missing"] == []      # locked = flagged, not failed
+
+    def test_sample_cap_respected(self):
+        arts = [
+            {"id": f"s{i}", "keyword": f"S{i}", "status": "published",
+             "published_url": f"https://shop.x/blogs/news/s{i}", "cms_article_id": str(900 + i)}
+            for i in range(6)
+        ]
+        links = [
+            {"source_article_id": f"s{i}", "target_article_id": f"s{(i + 1) % 6}",
+             "created_at": f"2026-06-0{(i % 8) + 1}T00:00:00Z"}
+            for i in range(6)
+        ]
+        db = self._db(arts, links)
+        svc = InterlinkingService(supabase_client=db)
+        publisher = MagicMock()
+        publisher.get_article.return_value = {"body_html": "<p>x</p>"}
+        with patch(self.PUB_PATH) as MockPub:
+            MockPub.return_value.get_publisher.return_value = publisher
+            result = svc.verify_live_links("b1", "o1", sample_size=2, delay_seconds=0)
+        assert result["articles_checked"] == 2  # cap held
+
+    def test_no_publisher_skips(self):
+        db = self._db(self._arts(), self._links())
+        svc = InterlinkingService(supabase_client=db)
+        with patch(self.PUB_PATH) as MockPub:
+            MockPub.return_value.get_publisher.return_value = None
+            result = svc.verify_live_links("b1", "o1", delay_seconds=0)
+        assert result["skipped"] == "no CMS publisher configured"
+
+    def test_never_raises(self):
+        db = MagicMock()
+        db.table.side_effect = RuntimeError("db down")
+        svc = InterlinkingService(supabase_client=db)
+        result = svc.verify_live_links("b1", "o1", delay_seconds=0)  # must not raise
+        assert result["errors"] == 1
+
+    def test_prefix_path_does_not_false_verify(self):
+        """/blogs/news/target-post must NOT verify against an href to
+        /blogs/news/target-post-extended (exact path equality, not substring)."""
+        db = self._db(self._arts(), self._links())
+        svc = InterlinkingService(supabase_client=db)
+        publisher = MagicMock()
+        publisher.get_article.return_value = {
+            "body_html": '<a href="https://shop.x/blogs/news/target-post-extended">x</a>'
+        }
+        with patch(self.PUB_PATH) as MockPub:
+            MockPub.return_value.get_publisher.return_value = publisher
+            result = svc.verify_live_links("b1", "o1", delay_seconds=0)
+        assert result["verified"] == 0
+        assert len(result["missing"]) == 1
+
+    def test_plain_text_mention_does_not_verify(self):
+        """The path appearing as TEXT (not an href) is not a link."""
+        db = self._db(self._arts(), self._links())
+        svc = InterlinkingService(supabase_client=db)
+        publisher = MagicMock()
+        publisher.get_article.return_value = {
+            "body_html": "<p>see /blogs/news/target-post for more</p>"
+        }
+        with patch(self.PUB_PATH) as MockPub:
+            MockPub.return_value.get_publisher.return_value = publisher
+            result = svc.verify_live_links("b1", "o1", delay_seconds=0)
+        assert result["verified"] == 0
+        assert len(result["missing"]) == 1
