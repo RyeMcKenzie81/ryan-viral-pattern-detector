@@ -1121,3 +1121,20 @@ What was actually fixed (PR, 2026-06-04):
 - MedCPA is a **brand-wide** benchmark, not the product's own in-window median. That's a deliberate design choice (cross-product benchmark beats a 2-3-ad self-referential median); revisit only if a per-product median is explicitly wanted.
 
 **Reference**: [[digest_spend_scope]] memory; `weekly_digest_service._latest_baselines` / `_product_awareness`; `baseline_service._fetch_classified_performance:361`.
+
+---
+
+### 41. low_res Image Asset Recovery (re-fetch 64x64 thumbnails at full res)
+
+**Priority**: Medium (last real coverage gap for the static-awareness digest; ~$12k+ of Martin spend stuck on the "cannot classify" line)
+**Complexity**: Medium-High (Meta permissions + asset-job change + marker clearing)
+**Added**: 2026-06-09 (from /plan-eng-review of the static-awareness completeness gate)
+
+**Context**: ~13% of Martin's image ads are stored as 64x64 thumbnails (the captured `thumbnail_url` IS 64x64, for page-post-backed ads). The deep classifier marks these `status='low_res'` in `ad_image_analysis` and cannot classify them; the weekly digest's completeness gate (see `docs/plans/static-awareness-completeness/PLAN.md`) shows their spend on a separate "cannot classify (needs high-res re-fetch)" line and excludes it from the gate denominator. They stay there permanently until recovered.
+
+**Remaining work (all three needed together)**:
+1. Meta access: `pages_read_engagement` / Page Public Content Access so the full-res creative is fetchable for page-post-backed ads (current System User token lacks it).
+2. Asset job: make it RE-download existing `downloaded` / `not_downloadable` image assets at higher res (today it excludes them via `existing_set` — `meta_ads_service.py:2284,2327`).
+3. Marker clearing: when an ad is re-fetched at higher res, delete/invalidate its `ad_image_analysis status='low_res'` marker so the classifier prefetch re-admits it (the completeness plan deliberately has NO timestamp re-open; clearing the marker is the re-open mechanism).
+
+**Depends on**: the static-awareness completeness gate shipping first (so the low_res markers exist). See `docs/plans/static-awareness-completeness/PLAN.md` (NOT-in-scope section).
