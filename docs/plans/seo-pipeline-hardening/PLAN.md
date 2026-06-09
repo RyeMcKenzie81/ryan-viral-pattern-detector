@@ -655,10 +655,21 @@ failure observability ≠ correctness observability.
 
 ### Increments (sequencing)
 0. **Feed health + fixes** (worker/) — the three live bugs + freshness in the weekly report.
-   Lane B in parallel: graph deletion + contract doc (R1).
+   ✅ SHIPPED: PR #273 (heal sweep, dispatch reschedule, feed freshness) + PR #275 hotfix
+   (recovery owner → daemon thread; the asyncio loop was starved by long sync handlers —
+   verified live, healed 6 orphaned jobs incl. Daily Meta Ads Sync).
+   Lane B in parallel: graph deletion + contract doc (R1) — ✅ SHIPPED: orchestrator.py,
+   nodes/ (9 files), and the graph test suite deleted (zero callers; full suite green,
+   failure set identical to main); `DURABLE_JOBS_CONTRACT.md` written (phase names,
+   checkpoint payload, idempotency keys, retry/cancel/approval semantics, claim-time caps,
+   and the sync-handler `asyncio.to_thread` constraint the starvation incident proved).
 1. **Snapshot + health section + lifecycle** (worker/, services/, migrations/) — R2, R4, R5,
-   R6, R8.
-2. **Link Impact card + backfill** (ui/, services/) — R7; live-check R9.
+   R6, R8. ✅ BUILT (PR #276, pending merge): `seo_link_coverage_snapshots` +
+   `seo_orphan_alerts` lifecycle + `interlink_exempt` (migration
+   `2026-06-09_seo_interlink_health.sql`, manual); scan health pass (non-fatal) + alarm
+   events; R5 publish-time self-check; hubless cyclic-ring Related fallback; Activity Feed +
+   Dashboard UI. Codex round: 6 findings (2 P1) fixed with regression tests.
+2. **Link Impact card + backfill** (ui/, services/) — R7; live-check R9. NOT built.
 
 ---
 
