@@ -916,19 +916,29 @@ class MetaAdsService:
                 if not creative_id:
                     continue
 
-                # Step 2: Fetch the creative with all relevant fields
+                # Step 2: Fetch the creative with all relevant fields.
+                # thumbnail_width/height params make thumbnail_url a FULL-RES render
+                # (up to the original size, e.g. 1080x1080) instead of Meta's 64x64
+                # default. This matters for page-post-backed ads where every other
+                # image source is empty and _fetch_post_image is blocked (no page
+                # role): the thumbnail fallback used to capture a 64x64 that the
+                # deep classifier can't read (low_res). Needs only ads_read — proven
+                # live 2026-06-09 (13/13 Martin 64x64 ads recovered via this param).
                 creative = AdCreative(creative_id)
-                creative_info = creative.api_get(fields=[
-                    "id",
-                    "thumbnail_url",
-                    "image_url",
-                    "image_hash",
-                    "video_id",
-                    "object_story_spec",
-                    "object_type",
-                    "asset_feed_spec",
-                    "effective_object_story_id"
-                ])
+                creative_info = creative.api_get(
+                    fields=[
+                        "id",
+                        "thumbnail_url",
+                        "image_url",
+                        "image_hash",
+                        "video_id",
+                        "object_story_spec",
+                        "object_type",
+                        "asset_feed_spec",
+                        "effective_object_story_id"
+                    ],
+                    params={"thumbnail_width": 1080, "thumbnail_height": 1080},
+                )
 
                 # Check if this is a video ad
                 # IMPORTANT: Use video_data.video_id (the uploaded asset) over top-level
