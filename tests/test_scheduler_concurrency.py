@@ -338,3 +338,30 @@ class TestRecoveryLoop:
             )
 
         assert any("recovery_loop reset" in r.message for r in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_extra_sweep_runs_and_errors_contained(self, mock_db):
+        """The worker injects heal_orphaned_recurring_jobs as extra_sweep —
+        it must run each tick, and a sweep exception must not kill the loop."""
+        mock_db.rpc.return_value.execute.return_value = MagicMock(data=[])
+        calls = {"n": 0}
+
+        def sweep():
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("sweep boom")  # first tick fails — loop survives
+            return []
+
+        async def stop_soon():
+            await asyncio.sleep(0.08)
+            sc.shutdown_requested.set()
+
+        await asyncio.gather(
+            sc.recovery_loop(
+                mock_db, interval_seconds=0.01, jitter_max_seconds=0.0,
+                extra_sweep=sweep,
+            ),
+            stop_soon(),
+        )
+        # Sweep ran at least twice: the failing tick did not end the loop.
+        assert calls["n"] >= 2

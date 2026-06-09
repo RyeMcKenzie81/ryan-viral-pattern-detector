@@ -233,3 +233,182 @@ class TestClaimAssertionAtHandlerEntry:
         }
         with pytest.raises(AssertionError, match="claim_next_job"):
             await execute_ad_creation_v2_job(bad_job)
+
+    @pytest.mark.asyncio
+    async def test_missing_job_transient_fetch_reschedules(self):
+        """_fetch_full_job returns None on ANY exception (transient blip), not
+        only a deleted row. The claim already cleared next_run_at, so bailing
+        without a reschedule kills a recurring job permanently (killed
+        seo_publish on 2026-06-05 after 2,725 runs). The fix retries a minimal
+        fetch and reschedules when the row exists."""
+        from viraltracker.worker import scheduler_worker as sw
+
+        job_row = {
+            "id": "22222222-2222-2222-2222-222222222222",
+            "job_type": "seo_publish",
+            "schedule_type": "recurring",
+            "cron_expression": "*/30 * * * *",
+            "max_retries": 3,
+            "name": "SEO Publish",
+        }
+        fake_db = MagicMock()
+        # The retry fetch in the job-None branch finds the row.
+        fake_db.table.return_value.select.return_value.eq.return_value.limit.return_value.execute.return_value = MagicMock(
+            data=[job_row]
+        )
+
+        with patch.object(sw, "_fetch_full_job", return_value=None), \
+             patch.object(sw, "update_job_run") as upd, \
+             patch.object(sw, "_reschedule_after_failure") as resched:
+            await sw._dispatch_claimed_job(fake_db, _claim_payload(job_type="seo_publish"))
+
+        upd.assert_called_once()  # run marked failed
+        resched.assert_called_once()
+        args = resched.call_args[0]
+        assert args[0] == job_row
+        assert args[1] == "22222222-2222-2222-2222-222222222222"
+
+    @pytest.mark.asyncio
+    async def test_missing_job_truly_gone_no_reschedule(self):
+        """Row absent on the retry fetch too — nothing to reschedule; must not
+        raise."""
+        from viraltracker.worker import scheduler_worker as sw
+
+        fake_db = MagicMock()
+        fake_db.table.return_value.select.return_value.eq.return_value.limit.return_value.execute.return_value = MagicMock(data=[])
+
+        with patch.object(sw, "_fetch_full_job", return_value=None), \
+             patch.object(sw, "update_job_run"), \
+             patch.object(sw, "_reschedule_after_failure") as resched:
+            await sw._dispatch_claimed_job(fake_db, _claim_payload())
+
+        resched.assert_not_called()
+
+
+class TestHealOrphanedRecurringJobs:
+    """Self-heal sweep: active recurring + next_run_at NULL + no live run =
+    orphaned-forever (invisible to claim_next_job). The sweep recomputes
+    next_run_at from cron. Covers the class behind BOTH live bugs found
+    2026-06-09 (analytics_sync never initialized; seo_publish killed by a
+    dispatch-time fetch failure)."""
+
+    def _db(self, orphans, live_runs, cas_wins=True):
+        """Router: scheduled_jobs select → orphans; scheduled_job_runs select
+        → live_runs; scheduled_jobs update recorded. cas_wins=False simulates
+        a concurrent reschedule winning the compare-and-swap (update matches
+        zero rows)."""
+        db = MagicMock()
+        updates = []
+
+        def table_side_effect(name):
+            chain = MagicMock()
+            for m in ["select", "eq", "is_", "in_", "limit", "order"]:
+                getattr(chain, m).return_value = chain
+            chain.not_ = chain
+            if name == "scheduled_jobs":
+                chain.execute.return_value = MagicMock(data=orphans)
+
+                def _update(payload):
+                    upd_chain = MagicMock()
+                    upd_chain.eq.return_value = upd_chain
+                    upd_chain.is_.return_value = upd_chain
+                    # CAS: PostgREST returns the updated rows; [] = lost the race.
+                    upd_chain.execute.return_value = MagicMock(
+                        data=[{"id": "j1"}] if cas_wins else []
+                    )
+                    updates.append(payload)
+                    return upd_chain
+
+                chain.update.side_effect = _update
+            elif name == "scheduled_job_runs":
+                chain.execute.return_value = MagicMock(data=live_runs)
+            return chain
+
+        db.table.side_effect = table_side_effect
+        return db, updates
+
+    def test_heals_orphan_with_no_live_run(self):
+        from datetime import datetime, timezone
+        from viraltracker.worker import scheduler_worker as sw
+
+        orphan = {
+            "id": "j1", "name": "Analytics Sync", "job_type": "analytics_sync",
+            "brand_id": "b1", "cron_expression": "0 2 * * *",
+        }
+        db, updates = self._db([orphan], live_runs=[])
+        fixed = datetime(2026, 6, 10, 2, 0, tzinfo=timezone.utc)
+
+        with patch.object(sw, "get_supabase_client", return_value=db), \
+             patch.object(sw, "calculate_next_run", return_value=fixed), \
+             patch.object(sw, "_emit_activity_event"):
+            healed = sw.heal_orphaned_recurring_jobs()
+
+        assert len(healed) == 1
+        assert healed[0]["job_id"] == "j1"
+        assert updates == [{"next_run_at": fixed.isoformat()}]
+
+    def test_skips_job_with_live_run(self):
+        """A claimed job has next_run_at NULL by design while running — the
+        sweep must not resurrect it mid-execution (double-run)."""
+        from viraltracker.worker import scheduler_worker as sw
+
+        orphan = {
+            "id": "j1", "name": "X", "job_type": "seo_publish",
+            "brand_id": "b1", "cron_expression": "*/30 * * * *",
+        }
+        db, updates = self._db([orphan], live_runs=[{"id": "r1"}])
+
+        with patch.object(sw, "get_supabase_client", return_value=db), \
+             patch.object(sw, "_emit_activity_event"):
+            healed = sw.heal_orphaned_recurring_jobs()
+
+        assert healed == []
+        assert updates == []
+
+    def test_skips_uncomputable_cron(self):
+        from viraltracker.worker import scheduler_worker as sw
+
+        orphan = {
+            "id": "j1", "name": "Bad", "job_type": "meta_sync",
+            "brand_id": "b1", "cron_expression": "not a cron",
+        }
+        db, updates = self._db([orphan], live_runs=[])
+
+        with patch.object(sw, "get_supabase_client", return_value=db), \
+             patch.object(sw, "calculate_next_run", return_value=None), \
+             patch.object(sw, "_emit_activity_event"):
+            healed = sw.heal_orphaned_recurring_jobs()
+
+        assert healed == []
+        assert updates == []
+
+    def test_no_orphans_no_writes(self):
+        from viraltracker.worker import scheduler_worker as sw
+
+        db, updates = self._db([], live_runs=[])
+        with patch.object(sw, "get_supabase_client", return_value=db):
+            assert sw.heal_orphaned_recurring_jobs() == []
+        assert updates == []
+
+    def test_cas_lost_to_concurrent_reschedule(self):
+        """If another path set next_run_at between our select and update, the
+        conditional update matches zero rows — do NOT report healed, do NOT
+        clobber."""
+        from datetime import datetime, timezone
+        from viraltracker.worker import scheduler_worker as sw
+
+        orphan = {
+            "id": "j1", "name": "X", "job_type": "seo_publish",
+            "brand_id": "b1", "cron_expression": "*/30 * * * *",
+        }
+        db, updates = self._db([orphan], live_runs=[], cas_wins=False)
+        fixed = datetime(2026, 6, 10, 2, 0, tzinfo=timezone.utc)
+
+        with patch.object(sw, "get_supabase_client", return_value=db), \
+             patch.object(sw, "calculate_next_run", return_value=fixed), \
+             patch.object(sw, "_emit_activity_event") as emit:
+            healed = sw.heal_orphaned_recurring_jobs()
+
+        assert healed == []
+        assert len(updates) == 1  # the attempt happened, but lost the CAS
+        emit.assert_not_called()  # no misleading "self-healed" event

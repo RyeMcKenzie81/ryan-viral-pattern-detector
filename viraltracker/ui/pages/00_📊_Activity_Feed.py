@@ -647,6 +647,31 @@ def _render_seo_weekly_report_card(details: Dict, key_prefix: str, event_id: str
 
     st.caption(f"{period} · {published} published · impressions {imp_delta} · clicks {click_delta}")
 
+    # Feed freshness — the correctness-observability line. A stale feed means
+    # every number above is old news; surface it in red, never silently.
+    freshness = details.get("feed_freshness") or {}
+    f_sources = freshness.get("sources") or {}
+    if f_sources:
+        stale = [s for s in freshness.get("stale_sources", [])]
+        if stale:
+            ages = []
+            for name in stale:
+                age = (f_sources.get(name) or {}).get("age_days")
+                ages.append(f"{name}: {'no data' if age is None else f'{age}d old'}")
+            st.error(
+                f"⚠️ Stale data feeds — {', '.join(ages)} "
+                f"(threshold {freshness.get('threshold_days', 7)}d). "
+                "Numbers above reflect the newest data available, not this week."
+            )
+        else:
+            fresh_bits = [
+                f"{name} {((f_sources.get(name) or {}).get('age_days'))}d"
+                for name in ("rankings", "gsc", "ga4", "shopify")
+                # Skip optional feeds that were never connected (configured=False)
+                if name in f_sources and (f_sources.get(name) or {}).get("configured", True)
+            ]
+            st.caption(f"Feeds fresh: {' · '.join(fresh_bits)}")
+
     top_opps = details.get("top_opportunities", [])
     milestones = details.get("rank_milestones", [])
 

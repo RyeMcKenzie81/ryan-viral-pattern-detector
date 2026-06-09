@@ -93,3 +93,12 @@
 **Context:** Current guardrails check for discounts, medical claims, guarantees, urgency language — all via English regex. Could either (a) add per-language regex sets, or (b) replace with a Claude validation call that works in any language. Option (b) is more robust but adds latency + cost.
 **Depends on:** Nothing, but only matters when Capability B is implemented.
 **Added:** 2026-04-22 from /plan-eng-review of Ad Translation feature (outside voice finding).
+
+## Consolidate GSC Stores — seo_article_rankings vs seo_article_analytics
+**What:** Migrate the opportunity miner to read `seo_article_analytics` and retire `seo_article_rankings` (or reduce it to a compatibility view). Both tables store GSC position/impressions/clicks today.
+**Why:** Two stores for one feed go stale independently — during the 2026-06-09 eng review one was 3 months stale and the other 8 weeks, and the split helped hide a total GSC-feed outage (analytics_sync had never run; the weekly opportunity scan silently produced 0 output for months).
+**Pros:** One feed to monitor, one freshness gate, simpler miner; kills the "which table is right" class of bugs.
+**Cons:** Miner query rewrite + data migration; `seo_article_rankings` holds ~10k rows including `source='manual'` entries that need a home.
+**Context:** Miner reads rankings via the batch fetch in `opportunity_miner_service.py` (~line 164); the Dashboard reads analytics. Increment 0 of the §7 Tier-2 work adds per-source freshness monitoring covering BOTH tables in the meantime, so this is debt, not an outage risk. Start at the miner's batch-fetch query. `seo_article_analytics` is canonical (proper daily grain, `UNIQUE(article_id, date, source)`).
+**Depends on:** §7 Tier-2 increment 0 (feed fixes + freshness monitoring) shipped.
+**Added:** 2026-06-09 from /plan-eng-review of hardening plan §4 + §7 Tier-2.
