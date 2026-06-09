@@ -1289,3 +1289,361 @@ class TestCountInboundLinks:
         chain = self._links_return(service, [])
         assert service.count_inbound_links([]) == {}
         chain.execute.assert_not_called()
+
+
+# =============================================================================
+# INTERLINK HEALTH (§7 increment 1 — R4/R6/R8)
+# =============================================================================
+
+def _articles_db(rows_by_table):
+    """Chainable mock supabase: table name -> execute().data rows. Captures
+    upserts/inserts/updates per table in the returned dict."""
+    db = MagicMock()
+    writes = {"upserts": [], "inserts": [], "updates": []}
+
+    def table_side_effect(name):
+        chain = MagicMock()
+        for m in ["select", "eq", "neq", "in_", "is_", "lt", "order", "limit"]:
+            getattr(chain, m).return_value = chain
+        chain.not_ = chain
+        data = rows_by_table.get(name, [])
+        result = MagicMock(data=data)
+        result.count = len(data)
+        chain.execute.return_value = result
+
+        def _upsert(payload, **kwargs):
+            writes["upserts"].append((name, payload, kwargs))
+            u = MagicMock(); u.execute.return_value = MagicMock(data=payload)
+            return u
+
+        def _insert(payload):
+            writes["inserts"].append((name, payload))
+            u = MagicMock(); u.execute.return_value = MagicMock(data=[payload])
+            return u
+
+        def _update(payload):
+            writes["updates"].append((name, payload))
+            u = MagicMock()
+            u.eq.return_value = u
+            u.neq.return_value = u
+            u.is_.return_value = u
+            u.execute.return_value = MagicMock(data=[{"id": "x"}])
+            return u
+
+        chain.upsert.side_effect = _upsert
+        chain.insert.side_effect = _insert
+        chain.update.side_effect = _update
+        return chain
+
+    db.table.side_effect = table_side_effect
+    return db, writes
+
+
+class TestCaptureCoverageSnapshots:
+    def test_captures_live_set_with_scoped_counts(self):
+        from datetime import datetime, timedelta, timezone
+        old = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+        db, writes = _articles_db({
+            "seo_articles": [
+                {"id": "a1", "keyword": "K1", "status": "published", "published_url": "https://x/1", "published_at": old},
+                {"id": "a2", "keyword": "K2", "status": "published", "published_url": "https://x/2", "published_at": old, "interlink_exempt": True},
+                {"id": "d1", "keyword": "Draft", "status": "published", "published_url": "", "published_at": None},
+            ],
+            # inbound query (count_inbound_links) + outbound query both hit
+            # seo_internal_links; rows serve both (a1 links to a2).
+            "seo_internal_links": [
+                {"source_article_id": "a1", "target_article_id": "a2"},
+            ],
+        })
+        svc = InterlinkingService(supabase_client=db)
+        result = svc.capture_coverage_snapshots("brand-1")
+
+        by_id = {a["article_id"]: a for a in result["articles"]}
+        assert set(by_id) == {"a1", "a2"}            # d1 (no url) excluded
+        assert by_id["a1"]["is_orphan"] is True      # nothing links to a1
+        assert by_id["a2"]["is_orphan"] is False     # a1 -> a2
+        assert by_id["a2"]["interlink_exempt"] is True  # raw fact captured
+        # Snapshot upsert is idempotent on (article_id, captured_on)
+        assert writes["upserts"], "snapshot upsert never happened"
+        _, payload, kwargs = writes["upserts"][0]
+        assert kwargs.get("on_conflict") == "article_id,captured_on"
+        assert {r["article_id"] for r in payload} == {"a1", "a2"}
+
+    def test_snapshot_write_failure_is_nonfatal(self):
+        from datetime import datetime, timedelta, timezone
+        old = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+        db, writes = _articles_db({
+            "seo_articles": [
+                {"id": "a1", "keyword": "K1", "status": "published", "published_url": "https://x/1", "published_at": old},
+            ],
+            "seo_internal_links": [],
+        })
+        # Make upserts raise (migration not applied)
+        orig = db.table.side_effect
+
+        def raising(name):
+            chain = orig(name)
+            if name == "seo_link_coverage_snapshots":
+                chain.upsert.side_effect = RuntimeError("relation does not exist")
+            return chain
+
+        db.table.side_effect = raising
+        svc = InterlinkingService(supabase_client=db)
+        result = svc.capture_coverage_snapshots("brand-1")  # must not raise
+        assert result["articles"]                  # health data still usable
+        assert result["captured"] == 0
+
+
+class TestProcessOrphanAlerts:
+    def _article(self, aid, days_old, orphan=True, exempt=False):
+        from datetime import datetime, timedelta, timezone
+        return {
+            "article_id": aid,
+            "keyword": f"kw-{aid}",
+            "is_orphan": orphan,
+            "interlink_exempt": exempt,
+            "published_at": (datetime.now(timezone.utc) - timedelta(days=days_old)).isoformat(),
+        }
+
+    def test_new_orphan_past_threshold_alarms(self):
+        db, writes = _articles_db({"seo_orphan_alerts": []})
+        svc = InterlinkingService(supabase_client=db)
+        result = svc.process_orphan_alerts("b1", [self._article("a1", days_old=10)])
+        assert [a["article_id"] for a in result["new_alarms"]] == ["a1"]
+        assert writes["inserts"] and writes["inserts"][0][0] == "seo_orphan_alerts"
+
+    def test_young_orphan_does_not_alarm(self):
+        db, writes = _articles_db({"seo_orphan_alerts": []})
+        svc = InterlinkingService(supabase_client=db)
+        result = svc.process_orphan_alerts("b1", [self._article("a1", days_old=2)])
+        assert result["new_alarms"] == []
+        assert writes["inserts"] == []
+
+    def test_open_alert_refreshes_without_realarm(self):
+        db, writes = _articles_db({
+            "seo_orphan_alerts": [{"id": "al1", "article_id": "a1", "status": "identified"}],
+        })
+        svc = InterlinkingService(supabase_client=db)
+        result = svc.process_orphan_alerts("b1", [self._article("a1", days_old=10)])
+        assert result["new_alarms"] == []          # no re-alarm
+        assert result["refreshed"] == 1
+        assert writes["updates"]                   # last_seen_at touched
+
+    def test_healthy_article_resolves_open_alert(self):
+        db, writes = _articles_db({
+            "seo_orphan_alerts": [{"id": "al1", "article_id": "a1", "status": "identified"}],
+        })
+        svc = InterlinkingService(supabase_client=db)
+        result = svc.process_orphan_alerts("b1", [self._article("a1", days_old=10, orphan=False)])
+        assert result["resolved"] == 1
+        resolved_payloads = [p for (t, p) in writes["updates"] if p.get("status") == "resolved"]
+        assert resolved_payloads
+
+    def test_exempt_article_never_alarms_and_resolves(self):
+        db, writes = _articles_db({
+            "seo_orphan_alerts": [{"id": "al1", "article_id": "a1", "status": "identified"}],
+        })
+        svc = InterlinkingService(supabase_client=db)
+        result = svc.process_orphan_alerts(
+            "b1", [self._article("a1", days_old=10, orphan=True, exempt=True)]
+        )
+        assert result["new_alarms"] == []
+        assert result["resolved"] == 1
+
+    def test_acknowledged_does_not_realarm(self):
+        db, writes = _articles_db({
+            "seo_orphan_alerts": [{"id": "al1", "article_id": "a1", "status": "acknowledged"}],
+        })
+        svc = InterlinkingService(supabase_client=db)
+        result = svc.process_orphan_alerts("b1", [self._article("a1", days_old=10)])
+        assert result["new_alarms"] == []
+        assert result["refreshed"] == 1
+
+
+class TestPublishTimeSelfCheck:
+    def test_alarm_when_cluster_pass_left_zero_inbound(self, service):
+        service._get_article = MagicMock(return_value={
+            "id": "a1", "keyword": "K", "published_url": "https://x/1",
+        })
+        service.count_inbound_links = MagicMock(return_value={})  # 0 inbound
+        service.process_orphan_alerts = MagicMock(
+            return_value={"new_alarms": [{"article_id": "a1"}]}
+        )
+        alarm = service.check_article_inbound_after_interlink("a1", "b1", cluster_published_count=4)
+        assert alarm is not None
+        assert alarm["article_id"] == "a1"
+        assert "0 inbound" in alarm["reason"]
+
+    def test_no_alarm_below_two_members(self, service):
+        # First article in a cluster is EXPECTED to be linkless — not noise.
+        assert service.check_article_inbound_after_interlink("a1", "b1", cluster_published_count=1) is None
+
+    def test_no_alarm_when_inbound_exists(self, service):
+        service._get_article = MagicMock(return_value={
+            "id": "a1", "keyword": "K", "published_url": "https://x/1",
+        })
+        service.count_inbound_links = MagicMock(return_value={"a1": 2})
+        assert service.check_article_inbound_after_interlink("a1", "b1", cluster_published_count=4) is None
+
+    def test_no_alarm_for_exempt(self, service):
+        service._get_article = MagicMock(return_value={
+            "id": "a1", "keyword": "K", "published_url": "https://x/1", "interlink_exempt": True,
+        })
+        assert service.check_article_inbound_after_interlink("a1", "b1", cluster_published_count=4) is None
+
+    def test_never_raises(self, service):
+        service._get_article = MagicMock(side_effect=RuntimeError("db down"))
+        assert service.check_article_inbound_after_interlink("a1", "b1", cluster_published_count=4) is None
+
+
+class TestBuildInterlinkHealth:
+    def test_health_block_counts_and_burn_down(self):
+        db, _ = _articles_db({
+            # burn-down lookup: previous capture day exists with 5 orphans
+            "seo_link_coverage_snapshots": [{"captured_on": "2026-06-02"}] * 5,
+        })
+        svc = InterlinkingService(supabase_client=db)
+        snap = {"articles": [
+            {"article_id": "a1", "is_orphan": False, "interlink_exempt": False},
+            {"article_id": "a2", "is_orphan": True, "interlink_exempt": False},
+            {"article_id": "a3", "is_orphan": True, "interlink_exempt": True},  # exempt
+        ]}
+        alerts = {"new_alarms": [{"article_id": "a2"}], "open_total": 3, "resolved": 1}
+        health = svc.build_interlink_health("b1", snap, alerts)
+
+        assert health["published_count"] == 2     # exempt excluded
+        assert health["orphan_count"] == 1        # a2 only (a3 exempt)
+        assert health["exempt_count"] == 1
+        assert health["coverage_pct"] == 50.0
+        assert health["previous_orphan_count"] == 5
+        assert health["new_alarm_count"] == 1
+        assert health["open_alert_count"] == 3
+        assert health["resolved_count"] == 1
+
+
+class TestInterlinkExemptGuards:
+    def test_auto_link_skips_exempt(self, service):
+        service._get_article = MagicMock(return_value={"id": "a1", "interlink_exempt": True})
+        result = service.auto_link_article("a1")
+        assert result.get("skipped") == "interlink_exempt"
+
+    def test_add_related_skips_exempt(self, service):
+        service._get_article = MagicMock(return_value={"id": "a1", "interlink_exempt": True})
+        result = service.add_related_section("a1", ["a2"])
+        assert result.get("skipped") == "interlink_exempt"
+
+    def test_set_interlink_exempt_resolves_open_alerts(self):
+        db, writes = _articles_db({})
+        svc = InterlinkingService(supabase_client=db)
+        assert svc.set_interlink_exempt("a1", True) is True
+        tables = [t for (t, p) in writes["updates"]]
+        assert "seo_articles" in tables
+        assert "seo_orphan_alerts" in tables
+
+
+class TestCodexFixesInc1:
+    """Regression tests for the codex review findings on increment 1."""
+
+    def test_hubless_ring_leaves_no_orphans(self, service):
+        """No published pillar (missing/unpublished/exempt): the cyclic-ring
+        fallback must give EVERY member at least one inbound related link —
+        the old first-N fallback orphaned members 6+ in large clusters."""
+        members = [{"id": f"a{i}"} for i in range(9)]
+        inbound = {m["id"]: 0 for m in members}
+        for m in members:
+            for target in service._build_related_ids(m["id"], None, members):
+                inbound[target] += 1
+            own = service._build_related_ids(m["id"], None, members)
+            assert m["id"] not in own
+            assert len(own) <= service.MAX_RELATED_LINKS
+        assert all(ct >= 1 for ct in inbound.values()), f"orphans in ring: {inbound}"
+
+    def test_r5_subset_does_not_resolve_other_alerts(self):
+        """full_set=False (publish-time single-article check) must NOT resolve
+        open alerts for articles absent from the subset."""
+        db, writes = _articles_db({
+            "seo_orphan_alerts": [
+                {"id": "al-b", "article_id": "b1", "status": "identified"},
+                {"id": "al-c", "article_id": "c1", "status": "identified"},
+            ],
+        })
+        svc = InterlinkingService(supabase_client=db)
+        from datetime import datetime, timedelta, timezone
+        result = svc.process_orphan_alerts("brand-1", [{
+            "article_id": "a1", "keyword": "A", "is_orphan": True,
+            "interlink_exempt": False,
+            "published_at": (datetime.now(timezone.utc) - timedelta(days=10)).isoformat(),
+        }], full_set=False)
+
+        assert result["resolved"] == 0  # b1/c1 untouched
+        resolved_payloads = [p for (t, p) in writes["updates"] if p.get("status") == "resolved"]
+        assert resolved_payloads == []
+        assert [a["article_id"] for a in result["new_alarms"]] == ["a1"]
+
+    def test_full_set_resolves_departed_articles(self):
+        """full_set=True: an open alert for an article gone from the live set
+        IS resolved (unpublished/deleted articles stop alerting)."""
+        db, writes = _articles_db({
+            "seo_orphan_alerts": [{"id": "al-b", "article_id": "gone1", "status": "identified"}],
+        })
+        svc = InterlinkingService(supabase_client=db)
+        result = svc.process_orphan_alerts("brand-1", [], full_set=True)
+        assert result["resolved"] == 1
+
+    def test_insert_race_downgrades_to_refresh(self):
+        """Losing the partial-unique-index race (concurrent weekly scan + R5)
+        must downgrade to a refresh — no duplicate alarm, pass continues."""
+        db, writes = _articles_db({"seo_orphan_alerts": []})
+        orig = db.table.side_effect
+
+        def racing(name):
+            chain = orig(name)
+            if name == "seo_orphan_alerts":
+                def _insert(payload):
+                    raise RuntimeError("duplicate key value violates unique constraint")
+                chain.insert.side_effect = _insert
+            return chain
+
+        db.table.side_effect = racing
+        svc = InterlinkingService(supabase_client=db)
+        from datetime import datetime, timedelta, timezone
+        old = (datetime.now(timezone.utc) - timedelta(days=10)).isoformat()
+        result = svc.process_orphan_alerts("brand-1", [
+            {"article_id": "a1", "keyword": "A", "is_orphan": True, "interlink_exempt": False, "published_at": old},
+            {"article_id": "a2", "keyword": "B", "is_orphan": True, "interlink_exempt": False, "published_at": old},
+        ])
+        assert result["new_alarms"] == []      # nobody double-alarms
+        assert result["refreshed"] == 2        # both downgraded, pass completed
+
+    def test_scope_article_skips_exempt_before_stripping(self, service):
+        service._get_article = MagicMock(return_value={"id": "a1", "interlink_exempt": True})
+        service.suggest_links = MagicMock()
+        service._remove_related_section = MagicMock()
+        result = service.interlink(scope="article", article_id="a1")
+        assert result.get("skipped") == "interlink_exempt"
+        service.suggest_links.assert_not_called()          # no saved suggestions
+        service._remove_related_section.assert_not_called()  # Related block intact
+
+    def test_remove_related_leaves_exempt_untouched(self, service):
+        html = "<p>Body</p><h2>Related Articles</h2><ul><li>x</li></ul>"
+        service._get_article = MagicMock(
+            return_value={"id": "a1", "interlink_exempt": True, "content_html": html}
+        )
+        service._update_article_html = MagicMock()
+        service._supabase = MagicMock()
+        assert service._remove_related_section("a1") == html
+        service._update_article_html.assert_not_called()
+
+    def test_project_articles_exclude_exempt_targets(self, service):
+        chain = MagicMock()
+        for m in ["select", "eq", "neq", "is_", "not_", "order", "limit"]:
+            getattr(chain, m, MagicMock()).return_value = chain
+        chain.not_ = chain
+        chain.execute.return_value = MagicMock(data=[
+            {"id": "a1", "published_url": "https://x/1"},
+            {"id": "a2", "published_url": "https://x/2", "interlink_exempt": True},
+        ])
+        service._supabase = MagicMock()
+        service._supabase.table.return_value = chain
+        result = service._get_project_articles("p1")
+        assert [a["id"] for a in result] == ["a1"]

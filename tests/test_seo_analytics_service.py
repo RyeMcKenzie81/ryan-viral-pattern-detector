@@ -501,7 +501,30 @@ class TestGetBrandOrphans:
     def test_no_published_returns_zero_state(self, service):
         self._setup_articles(service, [{"id": "a3", "published_url": None}])
         result = service.get_brand_orphans("brand-1", "org-1")
-        assert result == {"published_count": 0, "orphan_count": 0, "orphan_pct": 0.0, "orphans": []}
+        assert result == {
+            "published_count": 0, "orphan_count": 0, "orphan_pct": 0.0,
+            "exempt_count": 0, "orphans": [],
+        }
+
+    def test_exempt_articles_not_orphans(self, service):
+        """interlink_exempt articles (intentional standalones) are excluded
+        from orphan counts and the published denominator, reported separately."""
+        rows = [
+            {"id": "a1", "keyword": "Linked", "published_url": "https://x/1", "project_id": "p1"},
+            {"id": "a2", "keyword": "Standalone", "published_url": "https://x/2", "project_id": "p1", "interlink_exempt": True},
+            {"id": "a3", "keyword": "Real orphan", "published_url": "https://x/3", "project_id": "p1"},
+        ]
+        self._setup_articles(service, rows)
+        with patch(
+            "viraltracker.services.seo_pipeline.services.interlinking_service.InterlinkingService"
+        ) as MockIL:
+            MockIL.return_value.count_inbound_links.return_value = {"a1": 2}
+            result = service.get_brand_orphans("brand-1", "org-1")
+
+        assert result["exempt_count"] == 1
+        assert result["published_count"] == 2          # exempt excluded from denominator
+        assert [o["article_id"] for o in result["orphans"]] == ["a3"]  # a2 not an orphan
+        assert result["orphan_pct"] == 50.0
 
     def test_all_linked_superuser_all_org(self, service):
         rows = [{"id": "a1", "keyword": "k", "published_url": "https://x/1", "project_id": "p1"}]

@@ -20,6 +20,7 @@ import logging
 import random
 import re
 import time
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, Optional, List
 
 from viraltracker.services.seo_pipeline.models import (
@@ -43,6 +44,11 @@ class InterlinkingService:
     # link-stuffing). Contextual = in-body <a>; related = footer block entries.
     MAX_CONTEXTUAL_LINKS_PER_ARTICLE = 5
     MAX_RELATED_LINKS = 5
+    # R4: an article published at least this many days that still has zero
+    # inbound links is an orphan REGRESSION (the interlink machinery should
+    # have linked it by now) — alarm-worthy. Younger articles are expected to
+    # be temporarily linkless. 7 days = one weekly scan cycle of slack.
+    ORPHAN_REGRESSION_DAYS = 7
 
     def __init__(self, supabase_client=None, publisher_service=None):
         self._supabase = supabase_client
@@ -187,6 +193,10 @@ class InterlinkingService:
             # Human-owned body: don't insert links or rewrite it.
             return {"article_id": article_id, "links_added": 0, "skipped": "content_locked"}
 
+        if article.get("interlink_exempt"):
+            # Intentional standalone page (R6): leave it out of the link graph.
+            return {"article_id": article_id, "links_added": 0, "skipped": "interlink_exempt"}
+
         html = article.get("content_html", "")
         if not html and article.get("phase_c_output"):
             from viraltracker.services.seo_pipeline.services.cms_publisher_service import CMSPublisherService
@@ -307,6 +317,10 @@ class InterlinkingService:
         if article.get("content_locked"):
             # Human-owned body: don't append a Related section.
             return {"article_id": article_id, "articles_linked": 0, "skipped": "content_locked"}
+
+        if article.get("interlink_exempt"):
+            # Intentional standalone page (R6): no Related section either.
+            return {"article_id": article_id, "articles_linked": 0, "skipped": "interlink_exempt"}
 
         html = article.get("content_html", "")
         if not html and article.get("phase_c_output"):
@@ -451,11 +465,15 @@ class InterlinkingService:
         if not all_article_ids:
             return {"articles_processed": 0, "links_added": 0, "related_sections_added": 0, "errors": []}
 
-        # Filter to published articles with URLs
+        # Filter to published articles with URLs. interlink_exempt articles
+        # (intentional standalone pages, R6) are excluded ENTIRELY — neither
+        # source nor target nor Related-block entry. Unlike content_locked
+        # (which protects the body but keeps the article as a link target),
+        # exempt means "leave this page out of the link graph".
         published_articles = []
         for aid in all_article_ids:
             article = self._get_article(aid)
-            if article and article.get("published_url"):
+            if article and article.get("published_url") and not article.get("interlink_exempt"):
                 published_articles.append(article)
 
         if len(published_articles) < 2:
@@ -619,6 +637,18 @@ class InterlinkingService:
         if scope == "article":
             if not article_id:
                 raise ValueError("interlink(scope='article') requires article_id")
+            # R6: an exempt article is outside the link graph entirely — skip
+            # BEFORE saving suggestions or stripping its Related block (the
+            # downstream guards in auto_link/add_related fire too late for those).
+            _art = self._get_article(article_id)
+            if _art and _art.get("interlink_exempt"):
+                return {
+                    "scope": "article",
+                    "links_added": 0,
+                    "related_articles_linked": 0,
+                    "suggestion_count": 0,
+                    "skipped": "interlink_exempt",
+                }
             suggestions = self.suggest_links(article_id, save=True)
             auto = self.auto_link_article(
                 article_id,
@@ -660,18 +690,30 @@ class InterlinkingService:
         - Spoke: links UP to the pillar first, then up to (MAX_RELATED_LINKS - 1)
           sibling spokes. So every spoke links to the pillar (pillar gets inbound
           from all) and the pillar links back to every spoke (no orphans).
-        - No published pillar: fall back to capped siblings.
+        - No published pillar (none assigned, unpublished, or exempt): fall back
+          to a CYCLIC ring — article i links to the next MAX_RELATED_LINKS
+          members (wrapping). Every member receives inbound links from its
+          predecessors, so no tail orphans even in large hubless clusters.
+          (The old "first N siblings" fallback gave members 6+ zero inbound
+          related links — same orphan bug the pillar-hub fix solved, resurfacing
+          whenever the hub is missing.)
         """
-        others = [o["id"] for o in published_articles if o["id"] != aid]
+        ordered = [o["id"] for o in published_articles]
+        others = [oid for oid in ordered if oid != aid]
         if pillar_article_id and aid == pillar_article_id:
             return others
-        related = []
-        if pillar_article_id and aid != pillar_article_id:
-            related.append(pillar_article_id)
-        for oid in others:
-            if oid not in related:
-                related.append(oid)
-        return related[: cls.MAX_RELATED_LINKS]
+        if pillar_article_id:
+            related = [pillar_article_id]
+            for oid in others:
+                if oid not in related:
+                    related.append(oid)
+            return related[: cls.MAX_RELATED_LINKS]
+        # Hubless: cyclic ring starting after this article's own position.
+        if aid in ordered:
+            idx = ordered.index(aid)
+            ring = ordered[idx + 1:] + ordered[:idx]
+            return ring[: cls.MAX_RELATED_LINKS]
+        return others[: cls.MAX_RELATED_LINKS]
 
     @staticmethod
     def _varied_anchor(keyword: str) -> str:
@@ -1125,10 +1167,16 @@ class InterlinkingService:
         project_id: str,
         exclude_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """Get all linkable articles in a project (published with a URL)."""
+        """Get all linkable articles in a project (published with a URL).
+
+        interlink_exempt articles are filtered out — they are outside the link
+        graph (R6), so standalone auto-link / related flows must not target
+        them. Filtered in Python (not a PostgREST .eq) so a missing column
+        (migration not applied) degrades to not-exempt instead of erroring.
+        """
         query = (
             self.supabase.table("seo_articles")
-            .select("id, keyword, title, published_url, status, content_html, project_id")
+            .select("*")
             .eq("project_id", project_id)
             .neq("status", "discovered")
             .not_.is_("published_url", "null")
@@ -1136,7 +1184,7 @@ class InterlinkingService:
         if exclude_id:
             query = query.neq("id", exclude_id)
         result = query.execute()
-        return result.data or []
+        return [a for a in (result.data or []) if not a.get("interlink_exempt")]
 
     def _save_suggestions(
         self,
@@ -1226,8 +1274,9 @@ class InterlinkingService:
         # Locked = human owns the body on the CMS. Leave it untouched (do not
         # strip the Related block or delete link records). This guards both the
         # scope="article" interlink path and rerun_interlinking, which call this
-        # before the lock-aware add_related_section runs.
-        if article.get("content_locked"):
+        # before the lock-aware add_related_section runs. Exempt articles are
+        # likewise left untouched — they are outside the link graph (R6).
+        if article.get("content_locked") or article.get("interlink_exempt"):
             return article.get("content_html") or ""
 
         html = article.get("content_html", "")
@@ -1344,6 +1393,431 @@ class InterlinkingService:
                 tid = row["target_article_id"]
                 counts[tid] = counts.get(tid, 0) + 1
         return counts
+
+    # =========================================================================
+    # INTERLINK HEALTH (§7 Tier-2 increment 1 — R4/R6/R8)
+    # =========================================================================
+
+    def capture_coverage_snapshots(self, brand_id: str) -> Dict[str, Any]:
+        """R8: snapshot per-article inbound/outbound counts for the brand's
+        LIVE article set into seo_link_coverage_snapshots.
+
+        Written weekly by the seo_opportunity_scan job — the link-coverage time
+        axis for the Link Impact card. Live = status='published' AND
+        published_url present (a draft-publish or transient 'publishing' row
+        carries a url but is not live). Inbound is SOURCE-SCOPED to the same
+        live set (seo_internal_links has no brand column; a stale or
+        cross-brand 'implemented' row must not hide an orphan). is_orphan
+        stores the raw fact; exemption policy is applied at alert/report time.
+
+        Upserts on (article_id, captured_on) so a same-day re-run cannot
+        duplicate rows. Returns the per-article data so the caller can feed
+        process_orphan_alerts without re-querying.
+
+        Returns:
+            {"captured": int, "articles": [{article_id, keyword, inbound_count,
+              outbound_count, is_orphan, interlink_exempt, published_at}]}
+        """
+        rows = (
+            self.supabase.table("seo_articles")
+            # select("*") so a missing interlink_exempt column (migration not
+            # applied yet) reads as not-exempt instead of erroring.
+            .select("*")
+            .eq("brand_id", brand_id)
+            .eq("status", "published")
+            .execute()
+        )
+        live = [
+            a for a in (rows.data or [])
+            if (a.get("published_url") or "").strip()
+        ]
+        if not live:
+            return {"captured": 0, "articles": []}
+
+        live_ids = [a["id"] for a in live]
+        inbound = self.count_inbound_links(live_ids, source_ids=live_ids)
+
+        outbound: Dict[str, int] = {}
+        for start in range(0, len(live_ids), 100):
+            chunk = live_ids[start:start + 100]
+            try:
+                res = (
+                    self.supabase.table("seo_internal_links")
+                    .select("source_article_id")
+                    .in_("source_article_id", chunk)
+                    .eq("status", LinkStatus.IMPLEMENTED.value)
+                    .execute()
+                )
+                for row in (res.data or []):
+                    sid = row["source_article_id"]
+                    outbound[sid] = outbound.get(sid, 0) + 1
+            except Exception as e:
+                logger.warning(f"Coverage snapshot: outbound count failed: {e}")
+
+        now = datetime.now(timezone.utc)
+        today = now.date().isoformat()
+        articles = []
+        records = []
+        for a in live:
+            in_ct = inbound.get(a["id"], 0)
+            articles.append({
+                "article_id": a["id"],
+                "keyword": a.get("keyword") or "(untitled)",
+                "inbound_count": in_ct,
+                "outbound_count": outbound.get(a["id"], 0),
+                "is_orphan": in_ct == 0,
+                "interlink_exempt": bool(a.get("interlink_exempt")),
+                "published_at": a.get("published_at"),
+            })
+            records.append({
+                "brand_id": brand_id,
+                "article_id": a["id"],
+                "captured_at": now.isoformat(),
+                "captured_on": today,
+                "inbound_count": in_ct,
+                "outbound_count": outbound.get(a["id"], 0),
+                "is_orphan": in_ct == 0,
+                # Exemption AT CAPTURE TIME so historical counts (burn-down)
+                # can exclude intentional standalones.
+                "interlink_exempt": bool(a.get("interlink_exempt")),
+            })
+
+        captured = 0
+        try:
+            for start in range(0, len(records), 100):
+                self.supabase.table("seo_link_coverage_snapshots").upsert(
+                    records[start:start + 100],
+                    on_conflict="article_id,captured_on",
+                ).execute()
+                captured += len(records[start:start + 100])
+        except Exception as e:
+            # Non-fatal (failure budget): history is lost for this capture but
+            # the health/alert computation can still proceed from `articles`.
+            logger.error(
+                f"Coverage snapshot write failed for brand {brand_id} "
+                f"(migration applied?): {e}"
+            )
+
+        return {"captured": captured, "articles": articles}
+
+    def process_orphan_alerts(
+        self,
+        brand_id: str,
+        articles: List[Dict[str, Any]],
+        full_set: bool = True,
+    ) -> Dict[str, Any]:
+        """R4/R6: orphan-alarm lifecycle over the brand's live articles.
+
+        Alarm = a NEW orphan at least ORPHAN_REGRESSION_DAYS post-publish
+        (identity-level — the interlink machinery should have linked it by
+        now). Lifecycle (mirrors seo_opportunities.status):
+        - candidate with an OPEN alert (identified/acknowledged): refresh
+          last_seen_at, NO re-alarm — an open alert never nags weekly.
+        - candidate with no open alert: insert 'identified' → ALARM. An insert
+          that loses the partial-unique-index race (weekly scan vs publish-time
+          check) downgrades to a refresh — no duplicate alarm, no aborted pass.
+        - open alert whose article is now healthy or exempt: resolve it. A
+          later re-orphan inserts a fresh row and alarms again
+          (fixed-then-rebroken is news).
+        - open alert whose article is ABSENT from `articles`: resolved as
+          "left the live set" ONLY when full_set=True. The R5 publish-time
+          check passes a single article (full_set=False) — absence there means
+          nothing and must not resolve other articles' alerts.
+
+        Args:
+            brand_id: Brand UUID.
+            articles: capture_coverage_snapshots()["articles"], or a subset
+                (then pass full_set=False).
+            full_set: Whether `articles` is the brand's complete live set.
+
+        Returns:
+            {"new_alarms": [article dicts], "refreshed": int, "resolved": int,
+             "open_total": int}
+        """
+        now = datetime.now(timezone.utc)
+
+        def _age_days(published_at: Optional[str]) -> Optional[int]:
+            if not published_at:
+                return None
+            try:
+                raw = str(published_at).replace("Z", "+00:00")
+                dt = datetime.fromisoformat(raw)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                return (now - dt).days
+            except Exception:
+                return None
+
+        candidates = {
+            a["article_id"]: a for a in articles
+            if a.get("is_orphan")
+            and not a.get("interlink_exempt")
+            and (_age_days(a.get("published_at")) or 0) >= self.ORPHAN_REGRESSION_DAYS
+        }
+        healthy_or_exempt = {
+            a["article_id"] for a in articles
+            if not a.get("is_orphan") or a.get("interlink_exempt")
+        }
+        input_ids = {a["article_id"] for a in articles}
+
+        new_alarms: List[Dict[str, Any]] = []
+        refreshed = 0
+        resolved = 0
+        open_total = 0
+        try:
+            open_res = (
+                self.supabase.table("seo_orphan_alerts")
+                .select("id, article_id, status")
+                .eq("brand_id", brand_id)
+                .neq("status", "resolved")
+                .execute()
+            )
+            open_by_article = {r["article_id"]: r for r in (open_res.data or [])}
+
+            # Resolve: open alerts whose article is no longer an alarm-worthy
+            # orphan. Per-item containment: one failed write must not abort
+            # the rest of the pass.
+            for aid, alert in open_by_article.items():
+                if aid in candidates:
+                    continue
+                should_resolve = (
+                    aid in healthy_or_exempt
+                    or (full_set and aid not in input_ids)
+                )
+                if not should_resolve:
+                    continue
+                try:
+                    self.supabase.table("seo_orphan_alerts").update({
+                        "status": "resolved",
+                        "resolved_at": now.isoformat(),
+                        "updated_at": now.isoformat(),
+                    }).eq("id", alert["id"]).execute()
+                    resolved += 1
+                except Exception as e:
+                    logger.warning(f"Orphan alert resolve failed for {aid}: {e}")
+
+            for aid, art in candidates.items():
+                existing = open_by_article.get(aid)
+                try:
+                    if existing:
+                        self.supabase.table("seo_orphan_alerts").update({
+                            "last_seen_at": now.isoformat(),
+                            "updated_at": now.isoformat(),
+                        }).eq("id", existing["id"]).execute()
+                        refreshed += 1
+                    else:
+                        try:
+                            self.supabase.table("seo_orphan_alerts").insert({
+                                "brand_id": brand_id,
+                                "article_id": aid,
+                                "status": "identified",
+                                "first_seen_at": now.isoformat(),
+                                "last_seen_at": now.isoformat(),
+                            }).execute()
+                            new_alarms.append(art)
+                        except Exception:
+                            # Lost the partial-unique-index race (another pass
+                            # inserted the open alert between our select and
+                            # this insert): the alarm belongs to the winner.
+                            # Downgrade to a refresh.
+                            self.supabase.table("seo_orphan_alerts").update({
+                                "last_seen_at": now.isoformat(),
+                                "updated_at": now.isoformat(),
+                            }).eq("article_id", aid).neq("status", "resolved").execute()
+                            refreshed += 1
+                except Exception as e:
+                    logger.warning(f"Orphan alert upsert failed for {aid}: {e}")
+
+            open_total = len(open_by_article) - resolved + len(new_alarms)
+        except Exception as e:
+            # Non-fatal (failure budget). Without the alerts table the alarm
+            # lifecycle is unavailable but health reporting still works.
+            logger.error(
+                f"Orphan alert processing failed for brand {brand_id} "
+                f"(migration applied?): {e}"
+            )
+
+        return {
+            "new_alarms": new_alarms,
+            "refreshed": refreshed,
+            "resolved": resolved,
+            "open_total": open_total,
+        }
+
+    def build_interlink_health(
+        self,
+        brand_id: str,
+        snapshot_result: Dict[str, Any],
+        alert_result: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Compose the weekly interlink-health block (R2) from the snapshot +
+        alert passes. Burn-down compares today's orphan count against the most
+        recent PRIOR capture day (37 → 0 is progress the report should show).
+
+        Exempt articles are excluded from orphan counts and coverage (they are
+        intentionally outside the link graph) but reported as exempt_count so
+        they stay visible.
+        """
+        articles = snapshot_result.get("articles") or []
+        countable = [a for a in articles if not a.get("interlink_exempt")]
+        published_count = len(countable)
+        orphan_count = sum(1 for a in countable if a.get("is_orphan"))
+        exempt_count = len(articles) - published_count
+        coverage_pct = round(
+            (published_count - orphan_count) / published_count * 100, 1
+        ) if published_count else 0.0
+
+        previous_orphan_count: Optional[int] = None
+        try:
+            prev_day_res = (
+                self.supabase.table("seo_link_coverage_snapshots")
+                .select("captured_on")
+                .eq("brand_id", brand_id)
+                .lt("captured_on", datetime.now(timezone.utc).date().isoformat())
+                .order("captured_on", desc=True)
+                .limit(1)
+                .execute()
+            )
+            if prev_day_res.data:
+                prev_day = prev_day_res.data[0]["captured_on"]
+                prev_orphans = (
+                    self.supabase.table("seo_link_coverage_snapshots")
+                    .select("id", count="exact")
+                    .eq("brand_id", brand_id)
+                    .eq("captured_on", prev_day)
+                    .eq("is_orphan", True)
+                    # Same policy as the current count: exempt standalones
+                    # are not orphans, in history either.
+                    .eq("interlink_exempt", False)
+                    .execute()
+                )
+                previous_orphan_count = prev_orphans.count or 0
+        except Exception as e:
+            logger.warning(f"Interlink health: burn-down lookup failed: {e}")
+
+        return {
+            "published_count": published_count,
+            "orphan_count": orphan_count,
+            "exempt_count": exempt_count,
+            "coverage_pct": coverage_pct,
+            "previous_orphan_count": previous_orphan_count,
+            "new_alarm_count": len(alert_result.get("new_alarms") or []),
+            "open_alert_count": alert_result.get("open_total", 0),
+            "resolved_count": alert_result.get("resolved", 0),
+        }
+
+    def check_article_inbound_after_interlink(
+        self,
+        article_id: str,
+        brand_id: str,
+        cluster_published_count: int,
+    ) -> Optional[Dict[str, Any]]:
+        """R5: publish-time self-check — the post-publish interlink job checks
+        its own output. If the cluster pass just ran over >=2 published members
+        and this article STILL has zero implemented inbound links, the
+        machinery broke — alarm in minutes, not after the weekly scan.
+
+        Only meaningful when links were actually supposed to land
+        (cluster_published_count >= 2): a standalone article or the first
+        member of a cluster is EXPECTED to be linkless, and alarming on it
+        would be noise (the weekly R4 7-day rule covers those).
+
+        Creates/refreshes the alert row through the same lifecycle as the
+        weekly pass, so the weekly scan will NOT re-alarm for it.
+
+        Returns the alarm payload when an alarm should be emitted, else None.
+        Never raises (non-fatal to the publish chain).
+        """
+        try:
+            if cluster_published_count < 2:
+                return None
+            article = self._get_article(article_id)
+            if not article:
+                return None
+            if article.get("interlink_exempt"):
+                return None
+            if not (article.get("published_url") or "").strip():
+                return None
+            # Source-scope to the brand's live set — an unscoped count can be
+            # satisfied by a stale/cross-scope 'implemented' row and suppress a
+            # real alarm (the same reason the weekly snapshot scopes).
+            live_ids: List[str] = []
+            try:
+                live_res = (
+                    self.supabase.table("seo_articles")
+                    .select("id, published_url")
+                    .eq("brand_id", brand_id)
+                    .eq("status", "published")
+                    .execute()
+                )
+                live_ids = [
+                    r["id"] for r in (live_res.data or [])
+                    if (r.get("published_url") or "").strip()
+                ]
+            except Exception as e:
+                logger.warning(f"Self-check live-set fetch failed: {e}")
+            inbound = self.count_inbound_links(
+                [article_id], source_ids=live_ids or None
+            )
+            if inbound.get(article_id, 0) > 0:
+                return None
+
+            # full_set=False: this is a single-article subset — it must not
+            # resolve other articles' open alerts as "left the live set".
+            alert_result = self.process_orphan_alerts(brand_id, full_set=False, articles=[{
+                "article_id": article_id,
+                "keyword": article.get("keyword") or "(untitled)",
+                "is_orphan": True,
+                "interlink_exempt": False,
+                # Force candidacy: the cluster pass JUST ran, age gating does
+                # not apply — links were supposed to land minutes ago.
+                "published_at": (
+                    datetime.now(timezone.utc)
+                    - timedelta(days=self.ORPHAN_REGRESSION_DAYS)
+                ).isoformat(),
+            }])
+            if alert_result.get("new_alarms"):
+                return {
+                    "article_id": article_id,
+                    "keyword": article.get("keyword") or "(untitled)",
+                    "published_url": article.get("published_url"),
+                    "reason": (
+                        f"cluster interlink pass ran over {cluster_published_count} "
+                        "published members but this article still has 0 inbound links"
+                    ),
+                }
+            return None
+        except Exception as e:
+            logger.error(f"Publish-time orphan self-check failed for {article_id}: {e}")
+            return None
+
+    def set_interlink_exempt(self, article_id: str, exempt: bool) -> bool:
+        """Mark an article as an intentional standalone page (R6) or clear it.
+
+        Exempt articles never raise orphan alarms and the interlinker skips
+        them entirely. Exempting also resolves any OPEN orphan alert for the
+        article (the next scan would resolve it anyway; doing it here makes the
+        UI feedback immediate).
+
+        Returns True on success.
+        """
+        try:
+            self.supabase.table("seo_articles").update(
+                {"interlink_exempt": exempt}
+            ).eq("id", article_id).execute()
+            if exempt:
+                try:
+                    self.supabase.table("seo_orphan_alerts").update({
+                        "status": "resolved",
+                        "resolved_at": datetime.now(timezone.utc).isoformat(),
+                        "updated_at": datetime.now(timezone.utc).isoformat(),
+                    }).eq("article_id", article_id).neq("status", "resolved").execute()
+                except Exception as e:
+                    logger.warning(f"Exempt set but alert resolve failed for {article_id}: {e}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to set interlink_exempt for {article_id}: {e}")
+            return False
 
     def _update_article_html(self, article_id: str, html: str) -> None:
         """Update content_html in seo_articles."""
