@@ -25,6 +25,7 @@ from datetime import datetime
 
 from supabase import Client
 from ..core.database import get_supabase_client
+from ..core.genai_client import make_genai_client  # make_genai_client was called below but never imported (PR #180 regression sweep)
 from ..core.config import Config
 from pydantic_ai import Agent
 import asyncio

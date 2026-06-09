@@ -23,6 +23,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 from uuid import UUID
+from ...core.genai_client import make_genai_client  # make_genai_client was called below but never imported (PR #180 regression sweep)
 
 logger = logging.getLogger(__name__)
 

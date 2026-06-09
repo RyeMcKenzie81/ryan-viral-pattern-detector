@@ -17,6 +17,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 from viraltracker.core.database import get_supabase_client
+from viraltracker.core.genai_client import make_genai_client  # make_genai_client was called below but never imported (PR #180 regression sweep)
 
 logger = logging.getLogger(__name__)
 

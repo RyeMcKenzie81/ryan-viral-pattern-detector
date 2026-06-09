@@ -24,6 +24,7 @@ from google import genai
 from google.genai import types
 
 from ..core.config import Config
+from ..core.genai_client import make_genai_client  # make_genai_client was called below but never imported (PR #180 regression sweep)
 from ..core.database import get_supabase_client
 from .usage_tracker import UsageTracker, UsageRecord
 from .veo_models import (

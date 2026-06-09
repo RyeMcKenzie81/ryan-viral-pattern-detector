@@ -29,6 +29,7 @@ from uuid import UUID
 from supabase import Client
 
 from ..core.config import Config
+from ..core.genai_client import make_genai_client  # make_genai_client was called below but never imported (PR #180 regression sweep)
 from ..core.database import get_supabase_client
 
 logger = logging.getLogger(__name__)
