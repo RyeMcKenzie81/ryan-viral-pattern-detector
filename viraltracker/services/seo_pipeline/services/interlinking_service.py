@@ -511,15 +511,11 @@ class InterlinkingService:
                 added = auto_result.get("links_added", 0)
                 total_links += added
 
-                # Rebuild the Related block: pillar first (for spokes), then
-                # other members. These are real footer links.
-                related_ids = []
-                if pillar_article_id and aid != pillar_article_id:
-                    related_ids.append(pillar_article_id)
-                for other in published_articles:
-                    if other["id"] != aid and other["id"] not in related_ids:
-                        related_ids.append(other["id"])
-                related_ids = related_ids[: self.MAX_RELATED_LINKS]
+                # Rebuild the Related block (pillar = hub, links to all spokes;
+                # spoke = pillar first then capped siblings). See _build_related_ids.
+                related_ids = self._build_related_ids(
+                    aid, pillar_article_id, published_articles
+                )
 
                 related_linked = 0
                 if related_ids:
@@ -652,6 +648,30 @@ class InterlinkingService:
             }
 
         raise ValueError(f"Unknown interlink scope: {scope!r} (use 'cluster' or 'article')")
+
+    @classmethod
+    def _build_related_ids(cls, aid, pillar_article_id, published_articles):
+        """Related-block targets for one cluster member.
+
+        - Pillar (the hub): links DOWN to ALL published spokes, UNCAPPED. Capping
+          the pillar leaves tail spokes with zero inbound links (orphans) in
+          clusters larger than the cap, which breaks hub-and-spoke. A pillar
+          linking to all its spokes is correct.
+        - Spoke: links UP to the pillar first, then up to (MAX_RELATED_LINKS - 1)
+          sibling spokes. So every spoke links to the pillar (pillar gets inbound
+          from all) and the pillar links back to every spoke (no orphans).
+        - No published pillar: fall back to capped siblings.
+        """
+        others = [o["id"] for o in published_articles if o["id"] != aid]
+        if pillar_article_id and aid == pillar_article_id:
+            return others
+        related = []
+        if pillar_article_id and aid != pillar_article_id:
+            related.append(pillar_article_id)
+        for oid in others:
+            if oid not in related:
+                related.append(oid)
+        return related[: cls.MAX_RELATED_LINKS]
 
     @staticmethod
     def _varied_anchor(keyword: str) -> str:

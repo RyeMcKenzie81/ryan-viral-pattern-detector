@@ -1225,3 +1225,29 @@ class TestContentLockInterlink:
 
         assert "Related Articles" not in result
         service._update_article_html.assert_called_once()
+
+
+class TestBuildRelatedIds:
+    """Pillar=hub (links to all spokes, no orphans); spoke=pillar+capped."""
+
+    def _members(self, n):
+        return [{"id": f"a{i}"} for i in range(n)]
+
+    def test_pillar_links_to_all_spokes_uncapped(self, service):
+        members = self._members(10)
+        related = service._build_related_ids("a0", "a0", members)
+        assert set(related) == {f"a{i}" for i in range(1, 10)}  # all 9 others
+        assert "a0" not in related
+
+    def test_spoke_links_pillar_first_then_capped(self, service):
+        members = self._members(10)
+        related = service._build_related_ids("a5", "a0", members)
+        assert related[0] == "a0"  # pillar first
+        assert len(related) <= service.MAX_RELATED_LINKS
+        assert "a5" not in related
+
+    def test_no_pillar_falls_back_to_capped(self, service):
+        members = self._members(10)
+        related = service._build_related_ids("a3", None, members)
+        assert len(related) <= service.MAX_RELATED_LINKS
+        assert "a3" not in related
