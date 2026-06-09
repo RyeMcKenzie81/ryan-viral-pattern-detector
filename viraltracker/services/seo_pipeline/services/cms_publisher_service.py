@@ -718,6 +718,22 @@ class CMSPublisherService:
         if not article:
             raise ValueError(f"Article not found: {article_id}")
 
+        # Content lock: the body is human-owned on the CMS. Skip the publish so
+        # we never overwrite a manual Shopify edit with our re-rendered body.
+        # (First-publish articles are never locked; the flag is set after a human
+        # edits the live copy.)
+        if article.get("content_locked"):
+            logger.info(
+                f"Article {article_id} is content_locked; skipping CMS publish "
+                "(manual edit protected)"
+            )
+            return {
+                "skipped": "content_locked",
+                "cms_article_id": article.get("cms_article_id"),
+                "published_url": article.get("published_url"),
+                "status": article.get("status"),
+            }
+
         # Load author data
         author_data = self._get_author_data(article.get("author_id"))
         author_name = author_data.get("name", "")
@@ -938,6 +954,13 @@ class CMSPublisherService:
         if not article:
             return ""
 
+        # Content lock: don't regenerate the body of a human-owned article.
+        if article.get("content_locked"):
+            logger.info(
+                f"Article {article_id} is content_locked; skipping content_html re-render"
+            )
+            return article.get("content_html") or ""
+
         phase_c = article.get("phase_c_output") or ""
         if not phase_c:
             return ""
@@ -985,7 +1008,10 @@ class CMSPublisherService:
         # fixed before counting it.
         candidates = (
             self.supabase.table("seo_articles")
-            .select("id, keyword, content_html, phase_c_output, cms_article_id")
+            # select("*") (not a narrow list) so this stays graceful when the
+            # content_locked migration hasn't been applied yet: the missing
+            # column simply won't appear and row.get() reads as unlocked.
+            .select("*")
             .eq("brand_id", brand_id)
             .like("content_html", "%<pre><code>%")
             .execute()
@@ -1004,6 +1030,13 @@ class CMSPublisherService:
 
         for row in rows:
             article_id = row["id"]
+            # Content lock: never re-render/overwrite a human-owned article.
+            if row.get("content_locked"):
+                skipped += 1
+                logger.info(
+                    f"repair_markdown_html: article {article_id} is content_locked — skipping"
+                )
+                continue
             phase_c = row.get("phase_c_output") or ""
             if not phase_c:
                 skipped += 1

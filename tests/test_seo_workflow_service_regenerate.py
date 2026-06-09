@@ -79,3 +79,53 @@ def test_regenerate_dedup_collision_does_not_wipe_article():
     # The critical assertion: the article was never mutated, so a collision
     # leaves it fully intact and recoverable.
     assert updates_made == [], f"article was wiped on dedup collision: {updates_made}"
+
+
+def test_regenerate_refuses_locked_article():
+    """A content_locked article's body is human-owned on the CMS; regenerate
+    (which wipes phase_c_output/content_html in _execute_one_off) must refuse
+    and never insert a job, so a bulk 'regenerate failed' sweep can't clobber a
+    manual Shopify edit."""
+    mock_db = MagicMock()
+
+    article_row = MagicMock()
+    article_row.data = [{
+        "id": ARTICLE_ID,
+        "keyword": "best hiking boots",
+        "project_id": "p1",
+        "author_id": "auth1",
+        "tags": ["a", "b"],
+        "content_locked": True,
+    }]
+
+    inserted_jobs = []
+
+    def table_side_effect(name):
+        chain = MagicMock()
+        if name == "seo_articles":
+            chain.select.return_value = chain
+            chain.eq.return_value = chain
+            chain.limit.return_value = chain
+            chain.execute.return_value = article_row
+            return chain
+        if name == "seo_workflow_jobs":
+            def _insert(payload):
+                inserted_jobs.append(payload)
+                return chain
+            chain.insert.side_effect = _insert
+            chain.execute.return_value = MagicMock(data=[{"id": "job1"}])
+            return chain
+        return chain
+
+    mock_db.table.side_effect = table_side_effect
+
+    svc = _make_service(mock_db)
+
+    with pytest.raises(ValueError, match="content_locked"):
+        svc.regenerate_article(
+            article_id=ARTICLE_ID,
+            brand_id=BRAND_ID,
+            organization_id=ORG_ID,
+        )
+
+    assert inserted_jobs == [], "a job was queued for a locked article"

@@ -183,6 +183,10 @@ class InterlinkingService:
         if not article:
             raise ValueError(f"Article not found: {article_id}")
 
+        if article.get("content_locked"):
+            # Human-owned body: don't insert links or rewrite it.
+            return {"article_id": article_id, "links_added": 0, "skipped": "content_locked"}
+
         html = article.get("content_html", "")
         if not html and article.get("phase_c_output"):
             from viraltracker.services.seo_pipeline.services.cms_publisher_service import CMSPublisherService
@@ -299,6 +303,10 @@ class InterlinkingService:
         article = self._get_article(article_id)
         if not article:
             raise ValueError(f"Article not found: {article_id}")
+
+        if article.get("content_locked"):
+            # Human-owned body: don't append a Related section.
+            return {"article_id": article_id, "articles_linked": 0, "skipped": "content_locked"}
 
         html = article.get("content_html", "")
         if not html and article.get("phase_c_output"):
@@ -474,6 +482,11 @@ class InterlinkingService:
         for article in published_articles:
             aid = article["id"]
             try:
+                # Content lock: don't modify a human-owned article's body. It
+                # stays in published_articles so siblings can still link TO it as
+                # a target; we just never rewrite/push IT.
+                if article.get("content_locked"):
+                    continue
                 # Snapshot HTML before any change so we only push to CMS if it
                 # actually changed (D5.6 — avoid churning Shopify / clobbering
                 # manual edits on no-op passes).
@@ -1190,6 +1203,13 @@ class InterlinkingService:
         if not article:
             return ""
 
+        # Locked = human owns the body on the CMS. Leave it untouched (do not
+        # strip the Related block or delete link records). This guards both the
+        # scope="article" interlink path and rerun_interlinking, which call this
+        # before the lock-aware add_related_section runs.
+        if article.get("content_locked"):
+            return article.get("content_html") or ""
+
         html = article.get("content_html", "")
         if not html:
             return ""
@@ -1279,6 +1299,9 @@ class InterlinkingService:
                 self._publisher_service = CMSPublisherService(self._supabase)
 
             article = self._get_article(article_id)
+            if article and article.get("content_locked"):
+                logger.info(f"Article {article_id} is content_locked; skipping CMS push")
+                return False
             cms_id = article.get("cms_article_id") if article else None
             if not cms_id:
                 logger.warning(f"Article {article_id} has no cms_article_id, skipping CMS push")

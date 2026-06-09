@@ -1172,3 +1172,56 @@ class TestInterlinkDispatcher:
     def test_unknown_scope_raises(self, service):
         with pytest.raises(ValueError, match="scope"):
             service.interlink(scope="bogus", article_id="a")
+
+
+class TestContentLockInterlink:
+    """content_locked must skip interlink writes/pushes on a human-owned body."""
+
+    def test_auto_link_skips_when_locked(self, service):
+        service._get_article = MagicMock(return_value={"id": "a1", "content_locked": True})
+        result = service.auto_link_article("a1")
+        assert result.get("skipped") == "content_locked"
+        assert result["links_added"] == 0
+
+    def test_add_related_section_skips_when_locked(self, service):
+        service._get_article = MagicMock(return_value={"id": "a1", "content_locked": True})
+        result = service.add_related_section("a1", ["a2", "a3"])
+        assert result.get("skipped") == "content_locked"
+
+    def test_push_to_cms_skips_when_locked(self, service):
+        service._publisher_service = MagicMock()
+        service._get_article = MagicMock(return_value={"id": "a1", "content_locked": True, "cms_article_id": "9"})
+        assert service._push_html_to_cms("a1", "b", "o", "<p>x</p>") is False
+        service._publisher_service.get_publisher.assert_not_called()
+
+    def test_remove_related_section_leaves_locked_body_untouched(self, service):
+        # This chokepoint also protects interlink(scope="article") and
+        # rerun_interlinking, which strip the Related block before the
+        # lock-aware add_related_section runs.
+        html = (
+            "<p>Body</p><h2>Related Articles</h2><ul><li>x</li></ul>"
+        )
+        service._get_article = MagicMock(
+            return_value={"id": "a1", "content_locked": True, "content_html": html}
+        )
+        service._update_article_html = MagicMock()
+        service._supabase = MagicMock()
+
+        result = service._remove_related_section("a1")
+
+        assert result == html  # returned unchanged
+        service._update_article_html.assert_not_called()
+        service._supabase.table.assert_not_called()  # no link-record deletes
+
+    def test_remove_related_section_strips_when_unlocked(self, service):
+        html = "<p>Body</p><h2>Related Articles</h2><ul><li>x</li></ul>"
+        service._get_article = MagicMock(
+            return_value={"id": "a1", "content_locked": False, "content_html": html}
+        )
+        service._update_article_html = MagicMock()
+        service._supabase = MagicMock()
+
+        result = service._remove_related_section("a1")
+
+        assert "Related Articles" not in result
+        service._update_article_html.assert_called_once()
