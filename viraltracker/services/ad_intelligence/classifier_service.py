@@ -553,11 +553,19 @@ class ClassifierService:
                     break
 
                 video_budget = max_video - video_classification_count
+                # force=True is REQUIRED here: we only reach this point after the
+                # prefetch cache decision above (which DOES apply the video/image
+                # staleness gates) decided this ad needs (re)classification. classify_ad
+                # has its OWN legacy input_hash cache (_find_existing_classification) that
+                # is NOT staleness-aware — with force=False it would re-serve the very
+                # stale light row we just decided to replace (e.g. an image ad whose
+                # cached classification has no image_analysis_id), and the deep path would
+                # never run. The prefetch cache above is the single source of truth.
                 classification = await self.classify_ad(
                     meta_ad_id, brand_id, org_id, run_id,
                     video_budget_remaining=video_budget,
                     scrape_missing_lp=scrape_missing_lp,
-                    force=force,  # so batch force=True actually re-classifies cache-misses
+                    force=True,
                 )
                 classifications.append(classification)
 
@@ -1826,19 +1834,19 @@ class ClassifierService:
         """
         copy_level, copy_conf = self._classify_copy_awareness(caption)
 
-        # Map imagery_type -> creative_format (static formats)
+        # Map imagery_type -> creative_format. MUST stay within the DB CHECK constraint
+        # ad_creative_classifications_creative_format_check, whose only image values are
+        # image_static / image_before_after / image_testimonial / image_product. Anything
+        # else (lifestyle, infographic, ugc, meme, screenshot, unknown) maps to the
+        # generic image_static bucket — awareness (the digest signal) is unaffected; this
+        # is only the coarse format tag, matching the legacy light path's vocabulary.
         imagery_type = (result.visual_style or {}).get("imagery_type")
         format_mapping = {
             "product_hero": "image_product",
-            "lifestyle": "image_lifestyle",
             "before_after": "image_before_after",
-            "infographic": "image_infographic",
             "testimonial_card": "image_testimonial",
-            "ugc": "image_ugc",
-            "meme": "image_meme",
-            "screenshot": "image_screenshot",
         }
-        creative_format = format_mapping.get(imagery_type, "image")
+        creative_format = format_mapping.get(imagery_type, "image_static")
 
         raw_classification = {
             "messaging_theme": result.messaging_theme,

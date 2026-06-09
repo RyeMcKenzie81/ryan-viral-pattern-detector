@@ -98,19 +98,28 @@ class TestMappingCreativeVsCopy:
 
     def test_imagery_type_maps_to_creative_format(self):
         s = _classifier()
+        # creative_format MUST stay within the DB CHECK constraint's allowed image set.
+        ALLOWED = {"image_static", "image_before_after", "image_testimonial", "image_product"}
+        cases = {
+            "product_hero": "image_product",
+            "before_after": "image_before_after",
+            "testimonial_card": "image_testimonial",
+            "lifestyle": "image_static",        # not a distinct allowed value -> generic
+            "infographic": "image_static",
+            "ugc": "image_static",
+            "screenshot": "image_static",
+            "something_new": "image_static",     # unknown -> generic
+        }
         with patch.object(s, "_classify_copy_awareness", return_value=(None, None)):
-            m_prod = s._map_image_analysis_to_classification(
-                _img_result(visual_style={"imagery_type": "before_after"}), None
-            )
-            m_unknown = s._map_image_analysis_to_classification(
-                _img_result(visual_style={"imagery_type": "something_new"}), None
-            )
-            m_none = s._map_image_analysis_to_classification(
-                _img_result(visual_style=None), None
-            )
-        assert m_prod["creative_format"] == "image_before_after"
-        assert m_unknown["creative_format"] == "image"   # safe fallback
-        assert m_none["creative_format"] == "image"
+            for imagery, expected in cases.items():
+                m = s._map_image_analysis_to_classification(
+                    _img_result(visual_style={"imagery_type": imagery}), None
+                )
+                assert m["creative_format"] == expected, (imagery, m["creative_format"])
+                assert m["creative_format"] in ALLOWED
+            # visual_style None -> generic, still allowed
+            m_none = s._map_image_analysis_to_classification(_img_result(visual_style=None), None)
+            assert m_none["creative_format"] == "image_static"
 
     def test_links_image_analysis_id(self):
         s = _classifier()
