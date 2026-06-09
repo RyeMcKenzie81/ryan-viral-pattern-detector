@@ -491,6 +491,59 @@ race / write-amplification surface. These are in-scope sub-tasks of §6, NOT def
 
 ---
 
+## 10. Shopify edit protection (one-directional sync gap)
+
+Added 2026-06-08 after a verified audit (12/12 load-bearing claims confirmed).
+
+### The gap
+Content sync is **one-directional**: `phase_c_output → content_html → Shopify`. Nothing
+pulls a user's Shopify-side body edit back into our DB:
+- `sync_article_statuses` syncs **status only** (never `body_html`).
+- `import_from_shopify` writes `body_html` but is **insert-only for brand-new** articles
+  (skips anything already tracked by `cms_article_id`).
+- No `manually_edited` flag, content hash, or `updated_at`/`last_pushed_at` comparison — the
+  system **cannot detect** a human edited the Shopify copy.
+
+So every push (`publish_article`, the autopilot publish job, `rerun_phase_c(republish=True)`,
+`repair_markdown_html`, and the interlink `_push_html_to_cms`) is a **blind overwrite**. A
+manual Shopify edit is silently lost on the next push. (The markdown repair in this effort was
+exactly this — it overwrote hand-fixes; fine only because our repaired version was correct.)
+
+### Increment 1 — content lock (SHIPPED with this section)
+A `content_locked BOOLEAN` flag on `seo_articles`
+(`migrations/2026-06-08_seo_article_content_lock.sql`). When true, the body is human-owned;
+every body-write path skips it (but the article stays a valid link TARGET):
+- `publish_article` early-returns `skipped: content_locked`.
+- `sync_content_html` returns the existing `content_html` without re-rendering.
+- `repair_markdown_html` skips locked rows.
+- `interlink_cluster` skips locked members; `auto_link_article` / `add_related_section` /
+  `_push_html_to_cms` early-return.
+- `_remove_related_section` leaves a locked body untouched — chokepoint that also covers the
+  `interlink(scope="article")` and `rerun_interlinking` paths, which strip the Related block
+  *before* the lock-aware `add_related_section` runs.
+- `regenerate_article` refuses (raises) on a locked article — the regen wipe in
+  `_execute_one_off` would blank `phase_c_output`/`content_html`; the user must unlock first.
+  Stops a bulk "regenerate failed" sweep from clobbering a manual edit.
+- Autopilot publish worker honours `skipped: content_locked` — does not mark the article newly
+  published or chain an interlink job (retires the queue entry only if already live).
+Code degrades gracefully if the column is absent: every body-write path reads it via
+`select("*")`, so a missing column is simply treated as not-locked — safe to deploy before or
+after the migration. Tested (independent review pass).
+
+### Increment 2 (NOT built) — auto-detect + UI
+- **(b) auto-detection:** persist `last_pushed_at`; before any overwrite, `get_article(cms_id)`
+  (Shopify already returns `updated_at`) and skip + auto-set the lock when Shopify is newer than
+  our last push. Add a body content-hash to avoid false positives from our own non-body writes.
+- **UI toggle** to set/clear the lock (SEO Clusters / Pipeline Status).
+- **(d) eventual:** treat Shopify as source-of-truth for published articles (read-modify-write
+  interlinks), retiring the "phase_c is master, content_html disposable" model. Ties to §8 C6.
+
+### Not chosen
+- **(c) pull-back body sync** as a standalone fix — does NOT stop a `phase_c` re-render
+  (Source-A overwrites bypass it); only useful layered behind (a)/(b).
+
+---
+
 ## GSTACK REVIEW REPORT
 
 | Review | Trigger | Why | Runs | Status | Findings |

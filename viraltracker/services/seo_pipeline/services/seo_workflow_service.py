@@ -175,7 +175,10 @@ class SEOWorkflowService:
 
         article = (
             self.supabase.table("seo_articles")
-            .select("id, keyword, project_id, author_id, tags")
+            # select("*") (not a narrow column list) so this stays graceful when
+            # the content_locked migration hasn't been applied yet: a missing
+            # column simply won't appear and .get() reads as falsy/unlocked.
+            .select("*")
             .eq("id", article_id)
             .limit(1)
             .execute()
@@ -184,6 +187,19 @@ class SEOWorkflowService:
             raise ValueError(f"Article not found: {article_id}")
 
         a = article.data[0]
+
+        # Regeneration wipes phase_c_output / content_html (in _execute_one_off).
+        # A content_locked article's body is human-owned on the CMS, so refuse to
+        # blank it — even on an explicit regenerate — until the user unlocks it.
+        # This protects bulk "regenerate failed" sweeps from clobbering a manual
+        # Shopify edit. Degrades gracefully: if the column is absent the select
+        # omits it and .get() is falsy, so unlocked articles regenerate normally.
+        if a.get("content_locked"):
+            raise ValueError(
+                "Article is content_locked (body is human-owned on the CMS). "
+                "Unlock it before regenerating, or the manual edit will be lost."
+            )
+
         keyword = (a.get("keyword") or "").strip()
         if not keyword:
             raise ValueError(

@@ -6428,12 +6428,24 @@ async def execute_seo_publish_job(job: Dict) -> Dict[str, Any]:
                 # and passed tags as a list, silently dropping author and tags on
                 # every autopilot publish.
                 cms_was_existing = bool(full_article.get("cms_article_id"))
-                cms_service.publish_article(
+                pub_result = cms_service.publish_article(
                     article_id=article_id,
                     brand_id=entry_brand_id,
                     organization_id=entry_org_id,
                     draft=False,
-                )
+                ) or {}
+
+                # content_locked: the body is human-owned on the CMS, so
+                # publish_article pushed nothing. Don't claim we published it and
+                # don't chain an interlink job (it would no-op anyway). If it's
+                # already live, retire the queue entry so it stops retrying;
+                # otherwise leave it pending for manual handling.
+                if pub_result.get("skipped") == "content_locked":
+                    logs.append(f"SKIP (content_locked): {full_article.get('keyword', article_id)}")
+                    if cms_was_existing:
+                        queue_service.mark_published(queue_id, article_id)
+                    continue
+
                 logs.append(
                     f"PUBLISHED ({'draft→live' if cms_was_existing else 'new'}): "
                     f"{full_article.get('keyword', article_id)}"

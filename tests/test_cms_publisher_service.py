@@ -792,3 +792,27 @@ class TestUpdateDraftParam:
 
             payload = mock_api.call_args[0][2]
             assert list(payload["article"].keys()) == ["body_html"]
+
+
+class TestContentLock:
+    """content_locked must protect a human-owned body from our overwrites."""
+
+    def test_publish_article_skips_when_locked(self, publisher_service):
+        pub = MagicMock()
+        publisher_service.get_publisher = MagicMock(return_value=pub)
+        publisher_service._get_article = MagicMock(return_value={
+            "id": "a1", "content_locked": True, "cms_article_id": "999",
+            "published_url": "u", "status": "published",
+        })
+        result = publisher_service.publish_article("a1", "b", "o", draft=False)
+        assert result.get("skipped") == "content_locked"
+        pub.publish.assert_not_called()
+        pub.update.assert_not_called()
+
+    def test_sync_content_html_skips_when_locked(self, publisher_service):
+        publisher_service._get_article = MagicMock(return_value={
+            "id": "a1", "content_locked": True,
+            "content_html": "<p>human edited</p>", "phase_c_output": "# regenerate me",
+        })
+        out = publisher_service.sync_content_html("a1")
+        assert out == "<p>human edited</p>"  # returns existing, does not re-render
