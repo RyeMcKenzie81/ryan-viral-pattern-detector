@@ -91,6 +91,32 @@ def _market_line(markets: Dict[str, Dict[str, Any]]) -> str:
     return "Market: " + "  ·  ".join(parts)
 
 
+def _completeness_line(p: Dict[str, Any], currency: str) -> Optional[str]:
+    """Slack completeness footnote + the 'cannot classify' (low_res) line. Returns None
+    when everything is current and there is no low_res to report (a fully-clean product)."""
+    c = p.get("completeness") or {}
+    stale = c.get("stale_spend", 0.0) or 0.0
+    unclass = c.get("unclassified_spend", 0.0) or 0.0
+    low_res = c.get("low_res_spend", 0.0) or 0.0
+    if stale <= 0 and unclass <= 0 and low_res <= 0:
+        return None
+    pct = (c.get("current_pct") or 0.0) * 100
+    gap = []
+    if stale > 0:
+        gap.append(f"{_money(stale, currency)} stale")
+    if unclass > 0:
+        gap.append(f"{_money(unclass, currency)} not yet classified")
+    foot = f"_Classified: {pct:.0f}% of classifiable spend"
+    if gap:
+        foot += " · " + ", ".join(gap)
+    foot += "_"
+    lines = [foot]
+    if low_res > 0:
+        # low_res is excluded from the % above (can't be classified without a re-fetch).
+        lines.append(f":no_entry_sign: _Cannot classify (needs high-res re-fetch): {_money(low_res, currency)}_")
+    return "\n".join(lines)
+
+
 def _product_block(p: Dict[str, Any], currency: str) -> Dict[str, Any]:
     name = p.get("name", "Unnamed")
     if p.get("error"):
@@ -105,7 +131,30 @@ def _product_block(p: Dict[str, Any], currency: str) -> Dict[str, Any]:
     mline = _market_line(p.get("markets") or {})
     if mline:
         chunks.append(mline)
-    chunks.append(_awareness_table(p.get("awareness") or []))
+    # Publish gate: below the completeness threshold a partial sample would mislead as the
+    # headline mix, so show "pending" instead of the distribution. Everything else (CPA,
+    # completeness line, attribution coverage) still publishes.
+    if p.get("awareness_pending"):
+        c = p.get("completeness") or {}
+        if (c.get("classifiable_spend") or 0) <= 0:
+            # All spend is low_res — nothing to backfill (needs a high-res re-fetch); the
+            # "Cannot classify" line below carries the detail. Do NOT promise a backfill.
+            chunks.append(
+                ":no_entry_sign: *Awareness not classifiable this period* — all spend is on "
+                "images too low-res to read at the current resolution (see below)."
+            )
+        else:
+            pct = (c.get("current_pct") or 0.0) * 100
+            chunks.append(
+                f":hourglass_flowing_sand: *Awareness mix pending* — only {pct:.0f}% of "
+                f"classifiable spend is classified at the current version. The distribution "
+                f"appears once the backfill completes."
+            )
+    else:
+        chunks.append(_awareness_table(p.get("awareness") or []))
+    cl = _completeness_line(p, currency)
+    if cl:
+        chunks.append(cl)
     if p.get("insight"):
         chunks.append(f":bulb: {p['insight']}")
     text = "\n".join(chunks)
@@ -243,30 +292,66 @@ def _html_product(p: Dict[str, Any], currency: str) -> str:
     if mline:
         meta += " · " + _h(mline.replace("*", ""))
 
-    rows = p.get("awareness") or []
-    body = ""
-    for r in rows:
-        lvl = _h(str(r.get("level", "")).replace("_", " "))
-        spend_s = f"${r['spend']:,.0f}" if r.get("spend") is not None else "—"
-        body += (
-            f"<tr><td class='lvl'>{lvl}</td><td>{r.get('ads', 0)}</td><td>{spend_s}</td>"
-            f"{_roas_cell(r)}<td>{_pct(r.get('cvr'))}</td>"
-            f"{_c(r.get('agg_cpa'), 'grp')}{_c(r.get('prod_med_cpa'))}{_c(r.get('prod_p25_cpa'), 'tgt')}"
-            f"{_c(r.get('agg_catc'), 'grp')}{_c(r.get('prod_med_catc'))}{_c(r.get('prod_p25_catc'), 'tgt')}"
-            f"{_c(r.get('brand_med_cpa'), 'grp muted')}</tr>"
+    if p.get("awareness_pending"):
+        c = p.get("completeness") or {}
+        if (c.get("classifiable_spend") or 0) <= 0:
+            table = (
+                '<p class="dark">Awareness not classifiable this period — all spend is on '
+                'images too low-res to read at the current resolution (see below).</p>'
+            )
+        else:
+            pct = (c.get("current_pct") or 0.0) * 100
+            table = (
+                f'<p class="dark">Awareness mix pending — only {pct:.0f}% of classifiable '
+                f'spend is classified at the current version. The distribution appears once '
+                f'the backfill completes.</p>'
+            )
+    else:
+        rows = p.get("awareness") or []
+        body = ""
+        for r in rows:
+            lvl = _h(str(r.get("level", "")).replace("_", " "))
+            spend_s = f"${r['spend']:,.0f}" if r.get("spend") is not None else "—"
+            body += (
+                f"<tr><td class='lvl'>{lvl}</td><td>{r.get('ads', 0)}</td><td>{spend_s}</td>"
+                f"{_roas_cell(r)}<td>{_pct(r.get('cvr'))}</td>"
+                f"{_c(r.get('agg_cpa'), 'grp')}{_c(r.get('prod_med_cpa'))}{_c(r.get('prod_p25_cpa'), 'tgt')}"
+                f"{_c(r.get('agg_catc'), 'grp')}{_c(r.get('prod_med_catc'))}{_c(r.get('prod_p25_catc'), 'tgt')}"
+                f"{_c(r.get('brand_med_cpa'), 'grp muted')}</tr>"
+            )
+        table = (
+            "<table><thead>"
+            "<tr><th class='lvl' rowspan='2'>Level</th><th rowspan='2'>Ads</th><th rowspan='2'>Spend</th>"
+            "<th rowspan='2'>ROAS</th><th rowspan='2'>CVR</th>"
+            "<th class='grp' colspan='3'>CPA ($/purchase)</th><th class='grp' colspan='3'>Cost / add-to-cart</th>"
+            "<th class='grp' rowspan='2'>Brand CPA</th></tr>"
+            "<tr><th class='grp'>Agg</th><th>Med</th><th>P25</th>"
+            "<th class='grp'>Agg</th><th>Med</th><th>P25</th></tr></thead>"
+            f"<tbody>{body}</tbody></table>"
         )
-    table = (
-        "<table><thead>"
-        "<tr><th class='lvl' rowspan='2'>Level</th><th rowspan='2'>Ads</th><th rowspan='2'>Spend</th>"
-        "<th rowspan='2'>ROAS</th><th rowspan='2'>CVR</th>"
-        "<th class='grp' colspan='3'>CPA ($/purchase)</th><th class='grp' colspan='3'>Cost / add-to-cart</th>"
-        "<th class='grp' rowspan='2'>Brand CPA</th></tr>"
-        "<tr><th class='grp'>Agg</th><th>Med</th><th>P25</th>"
-        "<th class='grp'>Agg</th><th>Med</th><th>P25</th></tr></thead>"
-        f"<tbody>{body}</tbody></table>"
-    )
+    comp = _completeness_html(p, currency)
     insight = f'<div class="insight">💡 {_h(p["insight"])}</div>' if p.get("insight") else ""
-    return f'<section class="product"><h2>{name}</h2><p class="meta">{meta}</p>{table}{insight}</section>'
+    return f'<section class="product"><h2>{name}</h2><p class="meta">{meta}</p>{table}{comp}{insight}</section>'
+
+
+def _completeness_html(p: Dict[str, Any], currency: str) -> str:
+    """HTML completeness footnote + 'cannot classify' line; '' when fully clean."""
+    c = p.get("completeness") or {}
+    stale = c.get("stale_spend", 0.0) or 0.0
+    unclass = c.get("unclassified_spend", 0.0) or 0.0
+    low_res = c.get("low_res_spend", 0.0) or 0.0
+    if stale <= 0 and unclass <= 0 and low_res <= 0:
+        return ""
+    pct = (c.get("current_pct") or 0.0) * 100
+    bits = [f"Classified: {pct:.0f}% of classifiable spend"]
+    if stale > 0:
+        bits.append(f"{_money(stale, currency)} stale")
+    if unclass > 0:
+        bits.append(f"{_money(unclass, currency)} not yet classified")
+    out = f'<p class="dark">{" · ".join(_h(b) for b in bits)}</p>'
+    if low_res > 0:
+        out += f'<p class="dark">Cannot classify (needs high-res re-fetch): {_h(_money(low_res, currency))}</p>'
+    return out
 
 
 def render_brand_digest_html(data: Dict[str, Any]) -> str:
