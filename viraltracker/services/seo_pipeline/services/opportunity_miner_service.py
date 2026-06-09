@@ -22,6 +22,12 @@ logger = logging.getLogger(__name__)
 class OpportunityMinerService:
     """Detect near-ranking SEO opportunities and generate weekly reports."""
 
+    # A feed older than this is STALE. STALE keys on INPUT age (not output
+    # count): a scan that finds zero opportunities against fresh data is
+    # healthy; a scan running against weeks-old data only LOOKS healthy.
+    # 7 days = one scan cycle of slack on top of GSC's 2-3 day lag.
+    FEED_STALE_DAYS = 7
+
     def __init__(self, supabase_client=None):
         self._supabase = supabase_client
 
@@ -501,6 +507,113 @@ class OpportunityMinerService:
     # WEEKLY REPORT
     # =========================================================================
 
+    def get_feed_freshness(self, brand_id: str) -> Dict[str, Any]:
+        """Data-age per analytics source for a brand (the §7 feed-health signal).
+
+        The miner and the dashboards are only as honest as their inputs. In the
+        2026-06 outage every feed was weeks stale while the scan kept reporting
+        'completed' — this makes that state visible. Checks the newest row the
+        brand has in:
+        - seo_article_rankings (the miner's scoring input)
+        - seo_article_analytics per source: gsc / ga4 / shopify
+
+        A source with no rows at all, or whose newest row is older than
+        FEED_STALE_DAYS, is STALE.
+
+        Returns:
+            {
+              "threshold_days": int,
+              "sources": {name: {"newest": iso|None, "age_days": int|None, "stale": bool}},
+              "stale_sources": [names...],
+              "any_stale": bool,
+            }
+        """
+        now = datetime.now(timezone.utc)
+
+        # Brand article ids (both tables key on article_id, not brand_id).
+        art_ids: List[str] = []
+        try:
+            res = (
+                self.supabase.table("seo_articles")
+                .select("id")
+                .eq("brand_id", brand_id)
+                .execute()
+            )
+            art_ids = [a["id"] for a in (res.data or [])]
+        except Exception as e:
+            logger.warning(f"Feed freshness: failed to fetch brand articles: {e}")
+
+        def _newest(table: str, ts_col: str, source: Optional[str]) -> Optional[str]:
+            """Newest timestamp across chunked article-id batches."""
+            best: Optional[str] = None
+            for i in range(0, len(art_ids), 50):
+                batch = art_ids[i:i + 50]
+                try:
+                    q = (
+                        self.supabase.table(table)
+                        .select(ts_col)
+                        .in_("article_id", batch)
+                    )
+                    if source:
+                        q = q.eq("source", source)
+                    rows = q.order(ts_col, desc=True).limit(1).execute()
+                    if rows.data:
+                        ts = rows.data[0].get(ts_col)
+                        # ISO-8601 strings compare correctly; dates too.
+                        if ts and (best is None or ts > best):
+                            best = ts
+                except Exception as e:
+                    logger.warning(f"Feed freshness: {table}/{source or '-'} query failed: {e}")
+            return best
+
+        feeds = {
+            "rankings": _newest("seo_article_rankings", "checked_at", None),
+            "gsc": _newest("seo_article_analytics", "date", "gsc"),
+            "ga4": _newest("seo_article_analytics", "date", "ga4"),
+            "shopify": _newest("seo_article_analytics", "date", "shopify"),
+        }
+        # rankings + gsc are REQUIRED (the scan only runs for GSC-connected
+        # brands, and rankings is the miner's input): no data ever = stale.
+        # ga4 + shopify are OPTIONAL integrations: no data EVER means "not
+        # configured", not "broken" — flagging those weekly would be permanent
+        # alarm noise for every GSC-only brand. A feed that HAS history but
+        # stopped (rows exist, all old) is genuinely stale either way.
+        optional_feeds = {"ga4", "shopify"}
+
+        sources: Dict[str, Any] = {}
+        stale_sources: List[str] = []
+        for name, newest in feeds.items():
+            age_days: Optional[int] = None
+            if newest:
+                try:
+                    raw = str(newest).replace("Z", "+00:00")
+                    dt = datetime.fromisoformat(raw)
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    age_days = max(0, (now - dt).days)
+                except Exception:
+                    age_days = None
+            configured = newest is not None or name not in optional_feeds
+            if not configured:
+                stale = False  # not connected — nothing to be stale
+            else:
+                stale = age_days is None or age_days > self.FEED_STALE_DAYS
+            sources[name] = {
+                "newest": str(newest) if newest else None,
+                "age_days": age_days,
+                "stale": stale,
+                "configured": configured,
+            }
+            if stale:
+                stale_sources.append(name)
+
+        return {
+            "threshold_days": self.FEED_STALE_DAYS,
+            "sources": sources,
+            "stale_sources": stale_sources,
+            "any_stale": bool(stale_sources),
+        }
+
     def generate_weekly_report(
         self,
         brand_id: str,
@@ -509,7 +622,7 @@ class OpportunityMinerService:
         """Generate a weekly SEO performance report for a brand.
 
         Aggregates: articles published this week, ranking movements,
-        top opportunities, impression/click trends.
+        top opportunities, impression/click trends, feed freshness.
 
         Args:
             brand_id: Brand UUID
@@ -630,6 +743,14 @@ class OpportunityMinerService:
         except Exception as e:
             logger.warning(f"Failed to fetch rank milestones: {e}")
 
+        # Feed freshness — non-fatal: a freshness failure must never block the
+        # report (the report is how staleness gets SEEN).
+        feed_freshness: Dict[str, Any] = {}
+        try:
+            feed_freshness = self.get_feed_freshness(brand_id)
+        except Exception as e:
+            logger.warning(f"Failed to compute feed freshness: {e}")
+
         report = {
             "period": f"{period_start} to {period_end}",
             "articles_published": articles_published,
@@ -639,6 +760,7 @@ class OpportunityMinerService:
             "clicks_this_week": clicks_this_week,
             "top_opportunities": top_opportunities,
             "rank_milestones": rank_milestones,
+            "feed_freshness": feed_freshness,
         }
 
         logger.info(

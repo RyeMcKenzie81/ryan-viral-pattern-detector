@@ -131,7 +131,7 @@ B9-B11 (observability layer — its own effort), B12/B14 (architectural — §4)
 
 ---
 
-## 4. Architectural decision — execution model + MCP-readiness (run /plan-eng-review on this)
+## 4. Architectural decision — execution model + MCP-readiness ✅ DECIDED (see §11, R1)
 
 ### The question
 We have one dead orchestration path (pydantic-graph) and one live one (threaded
@@ -565,15 +565,113 @@ after the migration. Tested (independent review pass).
 
 ---
 
+## 11. Eng review round 2 — locked decisions (§4 + §7 Tier-2, 2026-06-09)
+
+`/plan-eng-review` over §4 + §7 Tier-2, with a Codex outside-voice pass (20 findings: 3
+tensions resolved by decision, the hardening folded in below, 2 rejected with reasons).
+Decisions are locked; prefixed R to avoid colliding with §9's D-series.
+
+### Live-system evidence that shaped the review (verified in prod 2026-06-09)
+- `analytics_sync` job: ACTIVE, **never executed once** (0 run rows).
+- `seo_article_rankings` (miner's input): stale since **2026-03-14**.
+- `seo_article_analytics` (GSC): stale since **2026-04-13** (last manual Sync All).
+- `seo_opportunity_scan`: "completes" weekly, **0 opportunities ever written**.
+- One `seo_publish` row: active + last run failed ("parent row not found") + `next_run_at` NULL.
+
+A job reporting success while producing zero output for months is the §7 thesis live:
+failure observability ≠ correctness observability.
+
+### Locked decisions
+- **R1 — §4 = Option A (imperative worker-driven).** Delete the dead graph now
+  (`seo_pipeline/orchestrator.py`, 263 lines + 9 `nodes/` files — zero callers; the
+  `pydantic-graph` dependency stays, `ad_creation`/`brand_onboarding` use it live). The
+  execution move to scheduler-worker durable jobs happens at the API-foundation phase.
+  Sub-answers: per-phase checkpoints (A/B/C/images — matches PAUSE_POINTS + LLM cost
+  boundaries); `Semaphore(3)` becomes a per-brand cap enforced at claim time; the bridge until
+  then is the durable `seo_workflow_jobs` row + B2/B3 reapers (shipped). **Deliverable now
+  (Codex):** a durable-job CONTRACT doc — phase names, checkpoint payload shape, idempotency
+  keys, retry/cancellation/approval semantics, lease/heartbeat for the per-brand cap — written
+  alongside the graph deletion so the API-foundation build isn't designed from scratch.
+- **R2 — Tier-2 host = extend the existing weekly `seo_opportunity_scan`.** No new jobs,
+  services, or alert channels. The scan (Feedback Loop Phase 1: `opportunity_miner_service`,
+  `seo_opportunities`, 3 Activity Feed events) gains: `seo_link_coverage_snapshots` writes, an
+  interlink-health section in the weekly report event, and the sampled live-link check.
+  Rationale: a second weekly analytics pipeline is the §6 two-paths-drift pattern. Each
+  sub-section is non-fatally wrapped with partial-success status (Codex failure-budget) so a
+  flaky fetch can't block opportunity mining.
+- **R3 — Feed health FIRST; increment 0 fixes the dead feeds.** Fix `analytics_sync`
+  never-dispatched (audit the scheduler dispatch path as one system, not row-by-row), the
+  stuck `seo_publish` row (reaper case: active + failed + `next_run_at` NULL), and the scan's
+  silent no-op. Add per-source feed freshness (data age) to the weekly health section. STALE
+  keys on **input** age — zero output with fresh input and genuinely no opportunities is
+  healthy (Codex). The Link Impact card ships after, gated: stale feeds ⇒ red badge AND the
+  correlation claim suppressed (not just badged).
+- **R4 — Orphan alarm = regression-triggered + baseline burn-down.** Alarm fires only for a
+  NEW orphan ≥7 days post-publish (identity-level, I10's definition); the existing 37 render
+  as a burn-down metric. Weekly cadence dedups the report; lifecycle dedups the alarm (R6).
+- **R5 — Publish-time self-check + weekly net (Codex tension 1).** The post-publish interlink
+  job checks its own output (article still 0-inbound after the cluster pass ⇒ immediate
+  alarm-styled event), non-fatal to the publish itself. The weekly scan remains the drift net.
+  Detection: minutes for breakage, ≤7 days for drift.
+- **R6 — Alert lifecycle + exemption (Codex tension 2).** Orphan alerts carry status
+  (identified/acknowledged/resolved, mirroring `seo_opportunities.status`) so an acknowledged
+  orphan doesn't re-alarm; `seo_articles.interlink_exempt` flag exempts intentional standalone
+  pages from BOTH the alarm and the interlinker.
+- **R7 — Card framing = directional telemetry + labeled approximate backfill (Codex
+  tension 3).** No "+N links ≈ +M positions" causal coefficient — movement deltas grouped by
+  link-gain, framed as directional. Cold start: approximate history reconstructed from AUTO
+  link `created_at` (idempotent writes preserved them; Related-block records churn and
+  undercount — labeled "approximate"), visibly switching to "measured" as real snapshots accrue.
+- **R8 — Snapshot design.** `seo_link_coverage_snapshots(id, brand_id, article_id,
+  captured_at, inbound_count, outbound_count, is_orphan)`; unique on `(article_id,
+  captured_at::date)` (idempotent re-runs, D5.2 lesson); counts via the #271 source-scoped
+  primitive against the brand's live set, materialized at capture time; index
+  `(brand_id, captured_at DESC)`; card defaults to a 90-day window.
+- **R9 — Live-check design.** Fetch by `cms_article_id` via the Shopify API (no URL
+  scraping — kills canonicalization false-negatives, Codex); targeted sample =
+  recently-interlinked + coverage-flagged, capped ~10/brand/scan, `cms_delay`-paced; network
+  error ≠ missing link; `content_locked` ⇒ flag-not-fail. Output feeds the health section's
+  "verified vs recorded" split (DB `implemented` rows are recorded; live-check upgrades a
+  sample to verified).
+
+### Codex findings rejected (with reasons)
+- Intra-day snapshot timing loss — capture cadence is weekly; daily grain loses nothing the
+  system possesses.
+- Burn-down "no owner/SLA" — solo operator; the weekly report's burn-down list IS the queue.
+
+### Test coverage required (from the review's coverage trace — all 21 specified; 2 CRITICAL)
+- **CRITICAL (iron rule):** extended scan leaves existing outputs unchanged (opportunities +
+  3 events) both when the health section runs AND when it throws (non-fatal wrap).
+- **CRITICAL:** snapshot idempotency — same-day re-run upserts, no dup rows.
+- Increment 0: root-cause test per fixed bug (analytics_sync dispatches via claim path;
+  zero-output+fresh-input ≠ STALE; stale-input ⇒ STALE; stuck-publish-row reaped).
+- R4/R6: new-orphan-post-publish alarms; baseline orphan doesn't; acknowledged doesn't;
+  re-orphaned (fixed-then-broken) alarms again; `interlink_exempt` suppresses alarm + interlinker.
+- R5: publish-time self-check emits on 0-inbound; never blocks publish.
+- R7/R8: join correctness (snapshot week × analytics, aligned dates); stale ⇒ red badge +
+  suppressed claim; zero snapshots ⇒ explicit empty state; backfill labeled approximate.
+- R9: missing-live-link flagged; network error distinct; locked flag-not-fail; cap respected.
+- R1: import-clean suite post graph deletion.
+
+### Increments (sequencing)
+0. **Feed health + fixes** (worker/) — the three live bugs + freshness in the weekly report.
+   Lane B in parallel: graph deletion + contract doc (R1).
+1. **Snapshot + health section + lifecycle** (worker/, services/, migrations/) — R2, R4, R5,
+   R6, R8.
+2. **Link Impact card + backfill** (ui/, services/) — R7; live-check R9.
+
+---
+
 ## GSTACK REVIEW REPORT
 
 | Review | Trigger | Why | Runs | Status | Findings |
 |--------|---------|-----|------|--------|----------|
 | CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | — |
-| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 1 | CLEAR (PLAN) | 5 decisions locked (D1–D5), 0 critical gaps remaining; minimum bar adopted into §6 |
+| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 2 | CLEAR (PLAN) | Round 2 (2026-06-09): 9 decisions locked (R1–R9), 8 issues raised, 0 critical gaps remaining, 21 test specs added |
 | Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | — |
-| Outside Voice | `codex-plan-review` | Independent challenge | 1 | issues_found → folded | 13 gaps; coordination/idempotency/validation adopted as D5 minimum bar |
+| Outside Voice | `codex-plan-review` | Independent challenge | 2 | issues_found → resolved | Round 2: 20 findings — 3 tensions resolved by decision (R5/R6/R7), hardening folded into R1–R3/R8/R9, 2 rejected with reasons |
 
-- **CODEX:** found D1/D2 created a race/write-amplification surface; idempotency, cluster-lock, cluster-scope, order, body-validation, only-changed push, and D2 recursion-guard all adopted into §6 (D5).
-- **CROSS-MODEL:** tension on D4 — agreed execution-*model* can defer, but coordination requirements cannot; resolved by adopting the minimum bar now.
-- **VERDICT:** ENG CLEARED — interlinking workstream (§6) ready to implement with D1–D5 as the spec. §4 deferred (non-blocking).
+- **CODEX:** round 2 found the weekly-cadence blind window, missing alert lifecycle/exemptions, correlation overclaim + cold start, failure-budget and contract-doc gaps — all adopted (adapted) into R1–R9.
+- **CROSS-MODEL:** 3 tension points, each resolved by explicit user decision (D6–D8 in review session); no unresolved tension.
+- **UNRESOLVED:** 0 — all 9 questions answered during the session.
+- **VERDICT:** ENG CLEARED — §4 decided (R1); §7 Tier-2 ready to implement with R2–R9 as the spec and §11's increments as the sequence. Live-bug increment 0 is the entry point.

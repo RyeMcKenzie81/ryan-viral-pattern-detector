@@ -336,11 +336,17 @@ async def recovery_loop(
     interval_seconds: float = RECOVERY_INTERVAL_SECONDS,
     jitter_max_seconds: float = RECOVERY_JITTER_MAX_SECONDS,
     fallback_runtime_seconds: int = 3600,
+    extra_sweep: Optional[Callable[[], Any]] = None,
 ) -> None:
     """Single owner. Runs recover_stuck_runs_v2 every ~interval_seconds.
 
     Initial sleep is randomized in [0, jitter_max_seconds] so multiple
     containers (or a fast restart) don't fire at the same instant.
+
+    extra_sweep: optional sync callable run (in the executor) after the stuck-
+    run RPC each tick — the worker injects heal_orphaned_recurring_jobs here
+    (defined in scheduler_worker; passed in to avoid a circular import). Any
+    exception is contained: the sweep must never take the recovery loop down.
 
     Dormant in PR 1.
     """
@@ -363,6 +369,12 @@ async def recovery_loop(
                 )
         except Exception:
             logger.exception("recovery_loop error")
+        if extra_sweep is not None:
+            try:
+                loop = asyncio.get_running_loop()
+                await loop.run_in_executor(None, extra_sweep)
+            except Exception:
+                logger.exception("recovery_loop extra_sweep error")
         # Use wait_for on shutdown so a graceful stop doesn't wait the full
         # interval before exiting.
         try:

@@ -599,6 +599,120 @@ def recover_stuck_runs(stuck_threshold_minutes: int = 30):
         logger.error(f"Error in recover_stuck_runs: {e}")
 
 
+def heal_orphaned_recurring_jobs() -> List[Dict[str, Any]]:
+    """Self-heal recurring jobs orphaned with next_run_at NULL.
+
+    claim_next_job atomically clears next_run_at on claim; the recompute after
+    a run can be skipped by ANY of: a dispatch-time fetch failure (the job-None
+    branch used to return without rescheduling — this killed seo_publish on
+    2026-06-05 after 2,725 clean runs), a worker crash mid-run, a bad cron
+    expression making calculate_next_run return None, or a creation path that
+    never initialized next_run_at at all (analytics_sync sat invisible for 3
+    months). In every case the job shows status='active' in the UI while being
+    permanently invisible to the claim query — dead silently.
+
+    An active recurring job with a cron expression, next_run_at NULL, and no
+    live (running/pending) run row is not executing — it is orphaned. Recompute
+    next_run_at from cron, log loudly, and emit an activity event so the heal
+    itself is visible.
+
+    Runs on the recovery loop's cadence (~60s); the orphan query is one cheap
+    indexed select that normally returns nothing.
+
+    Returns:
+        List of healed-job summaries (for logs/tests).
+    """
+    healed: List[Dict[str, Any]] = []
+    try:
+        db = get_supabase_client()
+        orphans = (
+            db.table("scheduled_jobs")
+            .select("id, name, job_type, brand_id, cron_expression")
+            .eq("status", "active")
+            .eq("schedule_type", "recurring")
+            .is_("next_run_at", "null")
+            .not_.is_("cron_expression", "null")
+            .execute()
+        )
+        for job in (orphans.data or []):
+            job_id = job["id"]
+            # A currently-executing job legitimately has next_run_at NULL
+            # (claim cleared it). Only heal when no run is live.
+            live = (
+                db.table("scheduled_job_runs")
+                .select("id")
+                .eq("scheduled_job_id", job_id)
+                .in_("status", ["running", "pending"])
+                .limit(1)
+                .execute()
+            )
+            if live.data:
+                continue
+
+            next_run = calculate_next_run(job["cron_expression"])
+            if not next_run:
+                logger.error(
+                    f"Orphaned recurring job {job_id} ({job.get('name')}) has an "
+                    f"uncomputable cron expression {job.get('cron_expression')!r}; "
+                    "cannot self-heal — fix the cron."
+                )
+                continue
+
+            # Compare-and-swap: only write if the job is STILL an orphan
+            # (active recurring with next_run_at NULL). A concurrent manual
+            # or recovery reschedule between our select and this update would
+            # otherwise be clobbered. PostgREST returns the updated rows, so
+            # an empty result means someone else got there first — skip.
+            updated = (
+                db.table("scheduled_jobs")
+                .update({"next_run_at": next_run.isoformat()})
+                .eq("id", job_id)
+                .eq("status", "active")
+                .eq("schedule_type", "recurring")
+                .is_("next_run_at", "null")
+                .execute()
+            )
+            if not (updated.data or []):
+                logger.info(
+                    f"Orphan heal for {job_id} skipped — rescheduled "
+                    "concurrently by another path."
+                )
+                continue
+            summary = {
+                "job_id": job_id,
+                "job_type": job.get("job_type"),
+                "name": job.get("name"),
+                "next_run_at": next_run.isoformat(),
+            }
+            healed.append(summary)
+            logger.warning(
+                f"Self-healed orphaned recurring job {job_id} "
+                f"({job.get('job_type')}: {job.get('name')}) — was active with "
+                f"next_run_at NULL and no live run; rescheduled for {next_run}"
+            )
+            try:
+                _emit_activity_event(
+                    event_type='job_self_healed',
+                    severity='warning',
+                    title=f"{_humanize_job_type(job.get('job_type', ''))} self-healed (was orphaned)",
+                    brand_id=job.get('brand_id'),
+                    details={
+                        'job_id': job_id,
+                        'job_name': job.get('name', ''),
+                        'next_run_at': next_run.isoformat(),
+                        'reason': 'active recurring job with next_run_at NULL and no live run',
+                    },
+                    source_id=job_id,
+                    link_page=JOB_TYPE_PAGE_SLUGS.get(job.get('job_type'), 'ad_scheduler'),
+                    link_params={'job_id': job_id},
+                )
+            except Exception:
+                pass  # Emission failure is non-fatal
+    except Exception as e:
+        logger.error(f"Error in heal_orphaned_recurring_jobs: {e}")
+    return healed
+
+
 def get_unused_templates(product_id: str, count: int) -> List[str]:
     """Get templates not yet used for this product, deduplicated by original filename."""
     try:
@@ -4946,15 +5060,39 @@ async def _dispatch_claimed_job(db, claimed: Dict[str, Any]) -> None:
     try:
         job = _fetch_full_job(db, job_id)
         if job is None:
+            # _fetch_full_job returns None on ANY exception — a transient
+            # network/DB blip, not only a truly-deleted row. The claim already
+            # cleared next_run_at, so returning without rescheduling kills a
+            # recurring job permanently (this killed seo_publish on 2026-06-05
+            # after 2,725 clean runs). Mark the run failed, then attempt a
+            # minimal re-fetch and reschedule; heal_orphaned_recurring_jobs is
+            # the backstop if even that fails.
             logger.error(
-                f"Claimed run {run_id} for job {job_id} but job row not found "
-                "(deleted between queue insert and claim?). Marking run as failed."
+                f"Claimed run {run_id} for job {job_id} but job fetch failed "
+                "(transient error or row deleted). Marking run failed and "
+                "attempting reschedule."
             )
             update_job_run(run_id, {
                 "status": "failed",
                 "completed_at": datetime.now(PST).isoformat(),
                 "error_message": "parent scheduled_jobs row not found at dispatch time",
             })
+            try:
+                retry = (
+                    db.table("scheduled_jobs").select("*")
+                    .eq("id", job_id).limit(1).execute()
+                )
+                if retry.data:
+                    _reschedule_after_failure(retry.data[0], job_id, attempt)
+                else:
+                    logger.error(
+                        f"Job {job_id} row truly gone — nothing to reschedule."
+                    )
+            except Exception:
+                logger.exception(
+                    f"Reschedule after fetch failure also failed for {job_id}; "
+                    "heal_orphaned_recurring_jobs will recover it."
+                )
             return
 
         # Threading markers consumed by the swept execute_*_job functions.
@@ -5033,7 +5171,14 @@ async def run_scheduler():
 
     tasks = [
         asyncio.create_task(_watch_shutdown_bool(), name="watch_shutdown"),
-        asyncio.create_task(recovery_loop(db), name="recovery_loop"),
+        asyncio.create_task(
+            # heal_orphaned_recurring_jobs rides the recovery owner's cadence:
+            # active recurring jobs stranded with next_run_at NULL (crash /
+            # dispatch failure / bad cron / uninitialized creation) get their
+            # schedule recomputed instead of staying invisible forever.
+            recovery_loop(db, extra_sweep=heal_orphaned_recurring_jobs),
+            name="recovery_loop",
+        ),
     ]
     for slot in range(pool_size):
         tasks.append(asyncio.create_task(
@@ -6807,11 +6952,20 @@ async def execute_seo_opportunity_scan_job(job: Dict) -> Dict[str, Any]:
                 # 5. Emit Activity Feed events
                 duration_ms = int((_time.time() - start_time) * 1000)
 
-                # Weekly report event
+                # Weekly report event. Stale feeds escalate severity + title so
+                # the problem is visible in the feed WITHOUT expanding the card
+                # (a report computed from weeks-old data is not an "info").
+                _stale = (report.get("feed_freshness") or {}).get("stale_sources") or []
+                _report_title = (
+                    f"SEO Weekly Report: {report['articles_published']} published, "
+                    f"{report['total_impressions_delta']} impressions"
+                )
+                if _stale:
+                    _report_title += f" — ⚠️ stale feeds: {', '.join(_stale)}"
                 _emit_activity_event(
                     event_type="seo_weekly_report",
-                    severity="info",
-                    title=f"SEO Weekly Report: {report['articles_published']} published, {report['total_impressions_delta']} impressions",
+                    severity="warning" if _stale else "info",
+                    title=_report_title,
                     brand_id=brand_id,
                     organization_id=org_id,
                     details=report,

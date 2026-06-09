@@ -735,3 +735,157 @@ class TestResolveOrgId:
         """'all' falls back to 'all' if brand not found."""
         mock_supabase.table.return_value.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = []
         assert service._resolve_org_id("all", "nonexistent") == "all"
+
+
+# =============================================================================
+# FEED FRESHNESS (§7 increment 0 — input-age health signal)
+# =============================================================================
+
+class TestGetFeedFreshness:
+    """STALE keys on INPUT age: a feed with no rows or rows older than
+    FEED_STALE_DAYS is stale. This is what makes the 2026-06 outage class
+    (every feed weeks old while jobs report 'completed') visible."""
+
+    def _db(self, article_ids, rankings_newest, analytics_by_source):
+        db = MagicMock()
+
+        def table_side_effect(name):
+            chain = MagicMock()
+            state = {"source": None}
+
+            def _eq(col, val):
+                if col == "source":
+                    state["source"] = val
+                return chain
+
+            for m in ["select", "in_", "order", "limit"]:
+                getattr(chain, m).return_value = chain
+            chain.eq.side_effect = _eq
+
+            def _execute():
+                if name == "seo_articles":
+                    return MagicMock(data=[{"id": a} for a in article_ids])
+                if name == "seo_article_rankings":
+                    return MagicMock(
+                        data=[{"checked_at": rankings_newest}] if rankings_newest else []
+                    )
+                if name == "seo_article_analytics":
+                    val = analytics_by_source.get(state["source"])
+                    return MagicMock(data=[{"date": val}] if val else [])
+                return MagicMock(data=[])
+
+            chain.execute.side_effect = _execute
+            return chain
+
+        db.table.side_effect = table_side_effect
+        return db
+
+    def test_fresh_and_stale_sources(self, mock_supabase):
+        now = datetime.now(timezone.utc)
+        fresh = (now - timedelta(days=2)).isoformat()
+        old = (now - timedelta(days=60)).isoformat()
+        db = self._db(
+            article_ids=["a1", "a2"],
+            rankings_newest=old,                      # 60d → stale
+            analytics_by_source={"gsc": fresh},        # 2d → fresh; ga4/shopify none
+        )
+        svc = OpportunityMinerService(supabase_client=db)
+        result = svc.get_feed_freshness("brand-1")
+
+        assert result["sources"]["rankings"]["stale"] is True
+        assert result["sources"]["rankings"]["age_days"] >= 59
+        assert result["sources"]["gsc"]["stale"] is False
+        # ga4 has no data EVER → optional integration not configured, NOT
+        # stale (a GSC-only brand must not get a permanent weekly warning).
+        assert result["sources"]["ga4"]["stale"] is False
+        assert result["sources"]["ga4"]["configured"] is False
+        assert result["sources"]["ga4"]["age_days"] is None
+        assert "ga4" not in result["stale_sources"]
+        assert "rankings" in result["stale_sources"]
+        assert "gsc" not in result["stale_sources"]
+        assert result["any_stale"] is True
+        assert result["threshold_days"] == OpportunityMinerService.FEED_STALE_DAYS
+
+    def test_optional_feed_with_old_history_is_stale(self, mock_supabase):
+        """An optional feed that HAD data and stopped is genuinely stale —
+        it was working, something broke."""
+        now = datetime.now(timezone.utc)
+        fresh = (now - timedelta(days=1)).isoformat()
+        old = (now - timedelta(days=30)).isoformat()
+        db = self._db(
+            article_ids=["a1"],
+            rankings_newest=fresh,
+            analytics_by_source={"gsc": fresh, "ga4": old},
+        )
+        svc = OpportunityMinerService(supabase_client=db)
+        result = svc.get_feed_freshness("brand-1")
+        assert result["sources"]["ga4"]["configured"] is True
+        assert result["sources"]["ga4"]["stale"] is True
+        assert "ga4" in result["stale_sources"]
+
+    def test_all_fresh(self, mock_supabase):
+        now = datetime.now(timezone.utc)
+        fresh = (now - timedelta(days=1)).isoformat()
+        db = self._db(
+            article_ids=["a1"],
+            rankings_newest=fresh,
+            analytics_by_source={"gsc": fresh, "ga4": fresh, "shopify": fresh},
+        )
+        svc = OpportunityMinerService(supabase_client=db)
+        result = svc.get_feed_freshness("brand-1")
+        assert result["any_stale"] is False
+        assert result["stale_sources"] == []
+
+    def test_no_articles_required_feeds_stale(self, mock_supabase):
+        db = self._db(article_ids=[], rankings_newest=None, analytics_by_source={})
+        svc = OpportunityMinerService(supabase_client=db)
+        result = svc.get_feed_freshness("brand-1")
+        # No data anywhere: REQUIRED feeds (rankings, gsc) are stale; the
+        # optional ones (ga4, shopify) read as not-configured, not stale.
+        assert result["any_stale"] is True
+        assert set(result["stale_sources"]) == {"rankings", "gsc"}
+        assert result["sources"]["shopify"]["configured"] is False
+
+    def test_date_only_strings_parse(self, mock_supabase):
+        """seo_article_analytics.date is a DATE (e.g. '2026-04-13'), not a
+        timestamptz — parsing must handle both."""
+        db = self._db(
+            article_ids=["a1"],
+            rankings_newest=None,
+            analytics_by_source={"gsc": "2026-04-13"},
+        )
+        svc = OpportunityMinerService(supabase_client=db)
+        result = svc.get_feed_freshness("brand-1")
+        assert result["sources"]["gsc"]["age_days"] is not None
+        assert result["sources"]["gsc"]["stale"] is True  # weeks old
+
+
+class TestWeeklyReportFreshness:
+    def test_report_includes_feed_freshness(self, service, mock_supabase):
+        with patch.object(service, "get_feed_freshness", return_value={"any_stale": True, "stale_sources": ["gsc"], "sources": {}, "threshold_days": 7}):
+            # All DB queries can return empty — report still builds.
+            chain = MagicMock()
+            for m in ["select", "eq", "gte", "lt", "lte", "gt", "in_", "order", "limit"]:
+                getattr(chain, m).return_value = chain
+            chain.execute.return_value = MagicMock(data=[], count=0)
+            mock_supabase.table.return_value = chain
+
+            report = service.generate_weekly_report("brand-1", "org-1")
+
+        assert report["feed_freshness"]["any_stale"] is True
+        assert report["feed_freshness"]["stale_sources"] == ["gsc"]
+
+    def test_freshness_failure_is_nonfatal(self, service, mock_supabase):
+        """The report is how staleness gets SEEN — a freshness error must not
+        block it."""
+        with patch.object(service, "get_feed_freshness", side_effect=RuntimeError("boom")):
+            chain = MagicMock()
+            for m in ["select", "eq", "gte", "lt", "lte", "gt", "in_", "order", "limit"]:
+                getattr(chain, m).return_value = chain
+            chain.execute.return_value = MagicMock(data=[], count=0)
+            mock_supabase.table.return_value = chain
+
+            report = service.generate_weekly_report("brand-1", "org-1")
+
+        assert report["feed_freshness"] == {}
+        assert "period" in report
