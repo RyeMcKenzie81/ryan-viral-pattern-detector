@@ -19,18 +19,23 @@ Run with: pytest tests/test_static_awareness.py -v
 """
 from __future__ import annotations
 
+import asyncio
+import io
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 from viraltracker.services.ad_intelligence.classifier_service import (
     ClassifierService,
     COPY_AWARENESS_PROMPT,
     IMAGE_ANALYSIS_PROMPT_VERSION,
+    IMAGE_CREATIVE_FORMATS,
 )
 from viraltracker.services.image_analysis_service import (
+    ImageAnalysisService,
     ImageAnalysisResult,
     PROMPT_VERSION as IMAGE_PROMPT_VERSION,
+    _normalize_awareness_level,
 )
 from viraltracker.services.awareness_rubric import AWARENESS_RUBRIC
 
@@ -99,7 +104,8 @@ class TestMappingCreativeVsCopy:
     def test_imagery_type_maps_to_creative_format(self):
         s = _classifier()
         # creative_format MUST stay within the DB CHECK constraint's allowed image set.
-        ALLOWED = {"image_static", "image_before_after", "image_testimonial", "image_product"}
+        # Bind to the production constant (single source of truth), not a re-typed literal.
+        ALLOWED = IMAGE_CREATIVE_FORMATS
         cases = {
             "product_hero": "image_product",
             "before_after": "image_before_after",
@@ -268,6 +274,148 @@ class TestImageStaleness:
         assert s._image_analysis_is_stale(
             {"image_analysis_id": str(uuid4())}, {"is_video": False}, {}
         ) is True
+
+
+# ---------------------------------------------------------------------------
+# Awareness normalization at the trust boundary: off-rubric Gemini labels must
+# degrade to a CHECK-safe value (recoverable variant or NULL), never hit the DB raw.
+# ---------------------------------------------------------------------------
+class TestAwarenessNormalization:
+    def test_normalize_helper_recovers_variants_and_nulls_garbage(self):
+        assert _normalize_awareness_level("Product Aware") == "product_aware"
+        assert _normalize_awareness_level("  SOLUTION_AWARE ") == "solution_aware"
+        assert _normalize_awareness_level("most_aware") == "most_aware"
+        for bad in ("aware", "unknown", "very_aware", "", None, 5):
+            assert _normalize_awareness_level(bad) is None
+
+    def test_mapper_normalizes_creative_awareness(self):
+        s = _classifier()
+        with patch.object(s, "_classify_copy_awareness", return_value=(None, None)):
+            # casing/spacing variant is recovered to a valid enum
+            m1 = s._map_image_analysis_to_classification(
+                _img_result(awareness_level="Product Aware"), None
+            )
+            # true garbage degrades to NULL (column is nullable) — not a CHECK violation
+            m2 = s._map_image_analysis_to_classification(
+                _img_result(awareness_level="totally_made_up"), None
+            )
+        assert m1["creative_awareness_level"] == "product_aware"
+        assert m2["creative_awareness_level"] is None
+
+
+# ---------------------------------------------------------------------------
+# classify_batch -> classify_ad(force=True) contract + cached-branch convergence.
+# Guards the exact ship-then-fix regression: the prefetch staleness gate is the
+# authority, so a stale-light row must re-classify (force=True), and a current-
+# version-linked row must be served from cache WITHOUT calling classify_ad.
+# ---------------------------------------------------------------------------
+def _fake_cls(source):
+    from viraltracker.services.ad_intelligence.models import CreativeClassification
+    return CreativeClassification(meta_ad_id="a", brand_id=uuid4(), source=source)
+
+
+def _batch_classifier():
+    clf = ClassifierService(MagicMock(), image_analysis_service=MagicMock())
+    clf._get_ad_spend_order = AsyncMock(return_value={})
+    clf._row_to_model = MagicMock(return_value=_fake_cls("cached"))
+    clf.classify_ad = AsyncMock(return_value=_fake_cls("gemini_image_deep"))
+    return clf
+
+
+def _cls_row(**kw):
+    base = {
+        "prompt_version": "v2", "schema_version": "1.0",
+        "image_analysis_id": None, "video_analysis_id": None,
+        "creative_format": "image_static",
+    }
+    base.update(kw)
+    return base
+
+
+class TestClassifyBatchForceAndCache:
+    def test_stale_light_row_reclassifies_with_force_true(self):
+        clf = _batch_classifier()
+        # current-version classification but UNLINKED (image_analysis_id None) => stale
+        clf._batch_prefetch = AsyncMock(return_value=(
+            {"adA": {"is_video": False}},
+            {"adA": [_cls_row(image_analysis_id=None)]},
+            {},   # video versions
+            {},   # image versions
+        ))
+        res = asyncio.run(clf.classify_batch(
+            brand_id=uuid4(), org_id=uuid4(), run_id=uuid4(), meta_ad_ids=["adA"],
+        ))
+        clf.classify_ad.assert_awaited_once()
+        assert clf.classify_ad.await_args.kwargs["force"] is True
+        assert res.new_count == 1 and res.cached_count == 0
+
+    def test_current_version_linked_row_is_served_from_cache(self):
+        clf = _batch_classifier()
+        iid = str(uuid4())
+        clf._batch_prefetch = AsyncMock(return_value=(
+            {"adB": {"is_video": False}},
+            {"adB": [_cls_row(image_analysis_id=iid)]},
+            {},
+            {iid: IMAGE_ANALYSIS_PROMPT_VERSION},   # linked analysis is current
+        ))
+        res = asyncio.run(clf.classify_batch(
+            brand_id=uuid4(), org_id=uuid4(), run_id=uuid4(), meta_ad_ids=["adB"],
+        ))
+        clf.classify_ad.assert_not_awaited()
+        assert res.cached_count == 1 and res.new_count == 0
+
+
+# ---------------------------------------------------------------------------
+# Deep-or-SKIP persistence semantics at the classify_ad level: when deep can't
+# run it SKIPS (never the light path), and nothing is persisted.
+# ---------------------------------------------------------------------------
+def _classify_ad_setup(image_result):
+    clf = ClassifierService(MagicMock(), image_analysis_service=MagicMock())
+    clf._fetch_ad_data = AsyncMock(return_value={
+        "is_video": False, "ad_copy": "", "thumbnail_url": "",
+        "landing_page_id": None, "meta_video_id": None, "has_video_in_storage": False,
+    })
+    clf._get_latest_caption = MagicMock(return_value=None)
+    clf._classify_image_with_analysis_service = MagicMock(return_value=image_result)
+    clf._classify_with_gemini = AsyncMock(return_value={"creative_awareness_level": "problem_aware"})
+    return clf
+
+
+class TestDeepOrSkipPersistence:
+    def test_deep_unavailable_skips_without_light_fallback(self):
+        clf = _classify_ad_setup(image_result=None)
+        c = asyncio.run(clf.classify_ad("ad1", uuid4(), uuid4(), uuid4(), video_budget_remaining=0, force=True))
+        assert c.source == "skipped_image_deep_unavailable"
+        clf._classify_with_gemini.assert_not_awaited()      # never the light path
+        clf.supabase.table.assert_not_called()              # not persisted
+
+    def test_low_res_skips_without_light_fallback(self):
+        clf = _classify_ad_setup(image_result="low_res")
+        c = asyncio.run(clf.classify_ad("ad1", uuid4(), uuid4(), uuid4(), video_budget_remaining=0, force=True))
+        assert c.source == "skipped_image_low_res"
+        clf._classify_with_gemini.assert_not_awaited()
+        clf.supabase.table.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _image_too_small (the low_res gate decider) — pure, exercise the real thresholds.
+# ---------------------------------------------------------------------------
+class TestImageTooSmall:
+    @staticmethod
+    def _png(w, h):
+        from PIL import Image
+        buf = io.BytesIO()
+        Image.new("RGB", (w, h), (200, 0, 0)).save(buf, format="PNG")
+        return buf.getvalue()
+
+    def test_64x64_is_too_small_512_is_not(self):
+        assert ImageAnalysisService._image_too_small(self._png(64, 64)) is True
+        assert ImageAnalysisService._image_too_small(self._png(512, 512)) is False
+
+    def test_bytesize_fallback_when_not_an_image(self):
+        # non-image bytes -> PIL fails -> byte-length fallback (<12000 => too small)
+        assert ImageAnalysisService._image_too_small(b"x" * 5000) is True
+        assert ImageAnalysisService._image_too_small(b"x" * 20000) is False
 
 
 # ---------------------------------------------------------------------------

@@ -59,6 +59,27 @@ Adversarial design pass (multi-agent) + a read-only live run on a grounded 18-ad
 - **A $12,104 ad (POV - Emoji) is a 64×64 thumbnail.** The **completeness gate (step 8) MUST count low_res/skipped spend as STALE/unclassified, not silently exclude it**, or a $12k ad vanishes from the awareness mix and the digest is materially wrong. This is the #1 rollout gate.
 - **No clean image no-asset case exists on live Martin** (98% storage coverage): the "deep returns None (no image)" branch is effectively untestable live; the realistic skip path is low_res.
 
+## E2E Tier 2 findings (persisting run-twice, 2026-06-08)
+Ran the REAL `classify_batch` on a 16-ad Martin image sample, twice. It caught **two blocking bugs invisible to mocks + the read-only Tier 1** (both stopped the deep path from ever persisting a row), now fixed:
+1. **`classify_ad`'s legacy input_hash cache overrode `classify_batch`'s staleness decision.** Batch flagged stale light rows (no `image_analysis_id`) → called `classify_ad(force=False)` → `_find_existing_classification` re-served the same stale row → deep branch never ran. Fix: `classify_batch` passes `force=True` (it is the cache authority via the prefetch + `_video/_image_analysis_is_stale` gates; the prefetch cache is intentionally not input_hash-gated). Only other prod caller (congruence_reanalysis) already used `force=True`.
+2. **`creative_format` CHECK constraint** allows only `image_static / image_before_after / image_testimonial / image_product` among image formats; the mapping emitted `image_lifestyle / image_infographic / image_screenshot / …` → every non-{product,before_after,testimonial} deep INSERT failed. Fix: map within the allowed vocabulary (unknown → `image_static`), matching the legacy light path. Test locks creative_format to the allowed set.
+
+**Verified after fixes (run-twice):** all 12 full-res sample ads → `gemini_image_deep` with a linked current-v2 `image_analysis_id`; **run 2 cached=12, new=0, zero new `ad_image_analysis` rows** (classify-once converges, no Gemini re-billing); 4 low_res correctly skipped (no deep row, old row remains). Tier 2: 19/19. The ~12 deep classifications it persisted are correct and a legitimate slice of the Martin backfill (kept).
+
+## Code review (PR #267, multi-agent adversarial — 18 confirmed, verified)
+**Fixed in-PR:**
+- **Awareness normalization at the trust boundary** (the one consensus real bug, flagged by 3 reviewers): the deep path wrote Gemini's `awareness_level` raw, so an off-canonical label ("Product Aware", trailing space, hallucination) would violate the CHECK constraint → INSERT throws → ad never classified + re-bills every run. Fix: `ImageAnalysisService._normalize_awareness_level` normalizes at parse (recovers casing/spacing variants, NULLs true garbage) so the stored row is always valid and `_check_existing` then short-circuits re-bills; plus defense-in-depth `self._normalize_awareness(...)` in the classifier mapper. Copy awareness was already safe (goes through `_parse_gemini_response`).
+- **Stale docstring/comments** on `_classify_image_with_analysis_service` said "falls back to the light path" — the caller actually deep-or-SKIPs. Corrected (a real maintenance trap).
+- **`creative_format` constraint guardrail**: extracted `IMAGE_CREATIVE_FORMATS` constant (single source of truth), mapper clamps to it, test binds to it (not a re-typed literal).
+- **`classify_ad` force=True footgun note**: documented that all prod callers pass force=True and the legacy input_hash cache is not staleness-aware.
+- **Regression tests** (the highest-value gaps): `classify_batch`→`classify_ad(force=True)` for a stale-light row + cached-branch convergence; deep-or-skip persistence (None→`skipped_image_deep_unavailable`, low_res→`skipped_image_low_res`, light path never called); awareness normalization; `_image_too_small`. Static suite 22→30; 49 classifier tests green.
+
+**Deferred (verifiers agreed: tech-debt, not blockers):**
+- low_res / no-asset image ads re-download + re-decode every batch (skips never persist a settling row → never converge). Bounded, cheap, NO Gemini spend, NO budget. Fold into the completeness-gate follow-up (which re-fetches low_res assets full-res).
+- `_get_latest_caption` is +1 query per newly-classified image ad; could be folded into prefetch Query 1. Marginal (classify_ad already does ~4 per-ad queries; cached ads never hit it). Optional cleanup.
+- Copy-awareness uses `gemini-pro-latest` (via VIDEO_ANALYSIS_MODEL) for a text-only task; a `gemini-flash-latest` swap ~halves pro cost per image ad. Deferred because it would change the copy judgment and deserves its own validation.
+- video vs image staleness-gate / prefetch duplication → natural shared seam for the FOLLOW-UP #1 template-classifier unification.
+
 ## Build status
 - **S1-S5: done.** #180 fix, rubric refactor (+ video regression gate), deep ImageAnalysisService wiring (PROMPT_VERSION v2), static sub-rules, before/after harness — all committed in `cba45a0d` and hand-validated on ~50 Martin ads.
 - **S4: done.** Classifier image branch routed INLINE through ImageAnalysisService (deep-or-skip), creative/copy split (D3), `image_analysis_id` link + migration, image-version staleness gate (`_image_analysis_is_stale`), Query 6 bulk prefetch (4-tuple). Wired into all production ClassifierService constructions.

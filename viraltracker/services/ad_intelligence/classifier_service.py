@@ -132,6 +132,15 @@ Return ONLY valid JSON, no other text:
 }}"""
 
 
+# The ONLY image creative_format values allowed by the DB CHECK constraint
+# ad_creative_classifications_creative_format_check. The static deep path must map
+# every imagery_type into this set (unknown -> image_static), or the INSERT fails.
+# Single source of truth shared with the mapper and its test.
+IMAGE_CREATIVE_FORMATS = frozenset(
+    {"image_static", "image_before_after", "image_testimonial", "image_product"}
+)
+
+
 class ClassifierService:
     """Classifies ad creatives by awareness level and format.
 
@@ -232,7 +241,14 @@ class ClassifierService:
             video_id=video_id,
         )
 
-        # Check for existing classification
+        # Check for existing classification.
+        # NOTE: this legacy input_hash cache is NOT deep-analysis-staleness-aware (it does
+        # not consult _video/_image_analysis_is_stale), so it could re-serve a stale light
+        # row whose linked deep analysis is outdated. Every PRODUCTION caller therefore
+        # passes force=True — classify_batch (its prefetch + staleness gates are the cache
+        # authority) and the congruence_reanalysis job. The default force=False path is
+        # used only by standalone scripts; if you add a new force=False caller for image/
+        # video ads, route through classify_batch or make this block staleness-aware first.
         if not force:
             existing = await self._find_existing_classification(
                 meta_ad_id, brand_id, current_hash
@@ -1788,12 +1804,12 @@ class ClassifierService:
         awareness bucket can never leak from the caption. copy awareness is judged
         separately from the caption (the genuine FB caption, or None).
 
-        Returns:
+        Returns (the caller is deep-or-SKIP — it does NOT fall back to the light path):
             - a classification dict on success,
             - the sentinel string "low_res" when the image is too small to read (caller
               skips the ad rather than persist a guessed bucket),
-            - None when there is no image / a hard failure (caller falls back to the
-              light image+copy path).
+            - None when there is no image / a hard failure / an off-enum awareness
+              (caller SKIPS the ad; it is retried next run once the asset is available).
         """
         try:
             result = self._image_analysis.analyze_image(
@@ -1807,12 +1823,14 @@ class ClassifierService:
             return None
 
         if result is None:
-            # No image in storage / hard failure — let the light path try.
+            # No image in storage / hard failure — caller SKIPS this ad (deep-or-skip);
+            # it does NOT fall back to the light path when the deep service is wired.
             return None
         if getattr(result, "status", None) == "low_res":
             return "low_res"
         if getattr(result, "status", None) != "ok" or not result.awareness_level:
-            # Parse error or empty awareness — fall back to the light path.
+            # Parse error or an off-enum/empty awareness (normalized to None) — caller
+            # SKIPS (retried next run); never the light path.
             return None
 
         return self._map_image_analysis_to_classification(result, caption)
@@ -1847,6 +1865,9 @@ class ClassifierService:
             "testimonial_card": "image_testimonial",
         }
         creative_format = format_mapping.get(imagery_type, "image_static")
+        # Belt-and-suspenders: never emit a value outside the DB CHECK constraint.
+        if creative_format not in IMAGE_CREATIVE_FORMATS:
+            creative_format = "image_static"
 
         raw_classification = {
             "messaging_theme": result.messaging_theme,
@@ -1866,8 +1887,12 @@ class ClassifierService:
         }
 
         return {
-            # Creative awareness from the on-image text/visual (calibrated rubric)
-            "creative_awareness_level": result.awareness_level,
+            # Creative awareness from the on-image text/visual (calibrated rubric).
+            # Normalize defensively: ImageAnalysisService already normalizes, but a row
+            # stored before that fix (or any off-enum value) must degrade to NULL rather
+            # than violate the creative_awareness_level CHECK constraint on insert —
+            # matching how every legacy path handles awareness.
+            "creative_awareness_level": self._normalize_awareness(result.awareness_level),
             "creative_awareness_confidence": result.awareness_confidence,
             "creative_format": creative_format,
             "creative_angle": result.messaging_theme,
