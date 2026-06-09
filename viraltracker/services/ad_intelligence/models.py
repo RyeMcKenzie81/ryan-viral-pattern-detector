@@ -146,6 +146,8 @@ class CreativeClassification(BaseModel):
 
     # Deep video analysis link
     video_analysis_id: Optional[UUID] = None
+    # Deep image (static) analysis link
+    image_analysis_id: Optional[UUID] = None
 
     # Versioning & provenance
     source: str = "gemini_light"

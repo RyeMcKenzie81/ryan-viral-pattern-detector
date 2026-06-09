@@ -45,6 +45,7 @@ from ..video_analysis_service import (
     PROMPT_VERSION as VIDEO_ANALYSIS_PROMPT_VERSION,
     VIDEO_ANALYSIS_MODEL,
 )
+from ..image_analysis_service import PROMPT_VERSION as IMAGE_ANALYSIS_PROMPT_VERSION
 from ..awareness_rubric import AWARENESS_RUBRIC
 
 logger = logging.getLogger(__name__)
@@ -112,6 +113,34 @@ Return ONLY valid JSON with these fields:
 Return ONLY the JSON object, no other text."""
 
 
+# Text-only awareness judgment of the Facebook caption (COPY), used by the static-image
+# path so copy awareness is judged INDEPENDENTLY of the on-image creative (D3). The model
+# sees only the caption text — never the image — so creative<->copy congruence stays real.
+COPY_AWARENESS_PROMPT = """Classify the awareness level of the PRIMARY TEXT / caption of a
+Facebook ad — the copy that runs ABOVE the creative in the feed. Judge this text on its own,
+as a standalone message, using the rubric below.
+
+{awareness_rubric}
+
+AD CAPTION (copy):
+{ad_copy}
+
+Return ONLY valid JSON, no other text:
+{{
+    "copy_awareness_level": "unaware|problem_aware|solution_aware|product_aware|most_aware",
+    "copy_awareness_confidence": 0.0-1.0
+}}"""
+
+
+# The ONLY image creative_format values allowed by the DB CHECK constraint
+# ad_creative_classifications_creative_format_check. The static deep path must map
+# every imagery_type into this set (unknown -> image_static), or the INSERT fails.
+# Single source of truth shared with the mapper and its test.
+IMAGE_CREATIVE_FORMATS = frozenset(
+    {"image_static", "image_before_after", "image_testimonial", "image_product"}
+)
+
+
 class ClassifierService:
     """Classifies ad creatives by awareness level and format.
 
@@ -129,6 +158,7 @@ class ClassifierService:
         meta_ads_service=None,
         video_analysis_service=None,
         congruence_analyzer=None,
+        image_analysis_service=None,
     ):
         """Initialize with Supabase client and optional services.
 
@@ -152,6 +182,9 @@ class ClassifierService:
         self._meta_ads = meta_ads_service
         self._video_analysis = video_analysis_service
         self._congruence_analyzer = congruence_analyzer
+        # Deep static-image analysis (creative awareness from on-image text, calibrated
+        # rubric). When present, image ads route through it instead of the light path.
+        self._image_analysis = image_analysis_service
 
     async def classify_ad(
         self,
@@ -208,7 +241,14 @@ class ClassifierService:
             video_id=video_id,
         )
 
-        # Check for existing classification
+        # Check for existing classification.
+        # NOTE: this legacy input_hash cache is NOT deep-analysis-staleness-aware (it does
+        # not consult _video/_image_analysis_is_stale), so it could re-serve a stale light
+        # row whose linked deep analysis is outdated. Every PRODUCTION caller therefore
+        # passes force=True — classify_batch (its prefetch + staleness gates are the cache
+        # authority) and the congruence_reanalysis job. The default force=False path is
+        # used only by standalone scripts; if you add a new force=False caller for image/
+        # video ads, route through classify_batch or make this block staleness-aware first.
         if not force:
             existing = await self._find_existing_classification(
                 meta_ad_id, brand_id, current_hash
@@ -277,7 +317,53 @@ class ClassifierService:
                 raw_classification={"skip_reason": skip_reason},
             )
 
-        # 3. Fallback to image+copy classification (for non-video ads only)
+        # 2c. Deep image classification (non-video ads), symmetric to the video path.
+        # When the deep image service is wired this is the ONLY image path: creative
+        # awareness comes from ImageAnalysisService reading the ON-IMAGE text (calibrated
+        # rubric); copy awareness is judged SEPARATELY from ad_copy (D3 — the two never
+        # see each other's input, so creative<->copy congruence stays meaningful).
+        #
+        # Deep-or-SKIP (no light fallback when deep is wired): if the deep path can't run
+        # — no full-res asset in storage, too low-res to read, or a transient parse
+        # failure — we SKIP rather than fall back to the light thumbnail+caption path.
+        # The light path leans on ad_copy (the caption = COPY, not the creative), which
+        # conflates copy into creative awareness and corrupts congruence. A skip is NOT
+        # persisted, so the ad keeps its previous classification for the digest and
+        # re-runs once the asset is downloaded / becomes readable (same graceful
+        # degradation as video's not-in-storage path).
+        if not classification_data and not is_video and self._image_analysis is not None:
+            # Copy awareness is judged from the GENUINE caption only (most-recent
+            # non-empty ad_copy across perf rows), NOT the `ad_copy` variable above:
+            # _fetch_ad_data falls back to the internal ad_name when the latest row's
+            # ad_copy is empty, and judging an ad name's awareness is noise. None here
+            # means "no caption" -> copy awareness is skipped, congruence not computed.
+            caption = self._get_latest_caption(meta_ad_id, brand_id)
+            image_result = self._classify_image_with_analysis_service(
+                meta_ad_id, brand_id, org_id, caption,
+            )
+            if image_result and image_result != "low_res":
+                classification_data = image_result
+                source = "gemini_image_deep"
+            else:
+                skip_reason = (
+                    "image_low_res" if image_result == "low_res"
+                    else "image_deep_unavailable"  # no stored asset / transient failure
+                )
+                logger.info(f"Skipping image ad {meta_ad_id}: {skip_reason}")
+                return CreativeClassification(
+                    meta_ad_id=meta_ad_id,
+                    brand_id=brand_id,
+                    organization_id=org_id,
+                    run_id=run_id,
+                    source=f"skipped_{skip_reason}",
+                    prompt_version=self.CURRENT_PROMPT_VERSION,
+                    schema_version=self.CURRENT_SCHEMA_VERSION,
+                    input_hash=current_hash,
+                    raw_classification={"skip_reason": skip_reason},
+                )
+
+        # 3. Fallback to image+copy classification (only when the deep image service is
+        # NOT wired — preserves the legacy light path for callers without it).
         if not classification_data:
             classification_data = await self._classify_with_gemini(
                 ad_data=ad_data,
@@ -324,6 +410,8 @@ class ClassifierService:
             "congruence_notes": classification_data.get("congruence_notes"),
             # Deep video analysis link (Phase 2 - populated when VideoAnalysisService is used)
             "video_analysis_id": classification_data.get("video_analysis_id"),
+            # Deep image analysis link (static path — populated when ImageAnalysisService is used)
+            "image_analysis_id": classification_data.get("image_analysis_id"),
             # Per-dimension congruence (Phase 5 - populated by CongruenceAnalyzer)
             "congruence_components": classification_data.get("congruence_components", []),
             "source": source,
@@ -418,14 +506,18 @@ class ClassifierService:
         spend_order = await self._get_ad_spend_order(brand_id, meta_ad_ids)
         sorted_ids = sorted(meta_ad_ids, key=lambda x: spend_order.get(x, 0), reverse=True)
 
-        # Batch-prefetch all ad data, classifications, and video-analysis versions
-        # in bulk (5 queries instead of ~5 per ad). The ad-data map (is_video) and
-        # the video-analysis version map ARE consulted in the cache decision so a
-        # video-prompt bump invalidates video classify-once (see the cache block
-        # below + _video_analysis_is_stale); the classification map drives the rest.
-        prefetched_ads, prefetched_classifications, video_analysis_versions = await self._batch_prefetch(
-            brand_id, sorted_ids
-        )
+        # Batch-prefetch all ad data, classifications, and deep-analysis versions
+        # in bulk (queries instead of ~5 per ad). The ad-data map (is_video) and the
+        # video/image analysis version maps ARE consulted in the cache decision so a
+        # video- OR image-prompt bump invalidates the corresponding classify-once (see
+        # the cache block below + _video_analysis_is_stale / _image_analysis_is_stale);
+        # the classification map drives the rest.
+        (
+            prefetched_ads,
+            prefetched_classifications,
+            video_analysis_versions,
+            image_analysis_versions,
+        ) = await self._batch_prefetch(brand_id, sorted_ids)
 
         skipped_count = 0
         for i, meta_ad_id in enumerate(sorted_ids):
@@ -445,11 +537,22 @@ class ClassifierService:
                 # linked deep analysis is at the current video-analysis prompt
                 # version. Otherwise the awareness was judged by a stale video prompt
                 # (or the analysis row was never linked) — fall through to re-analyze.
-                # Image/other ads are unaffected and stay cached.
-                if existing and not self._video_analysis_is_stale(
-                    existing,
-                    prefetched_ads.get(meta_ad_id, {}),
-                    video_analysis_versions,
+                # 1B (symmetric): an IMAGE ad's cached classification is only reusable
+                # if its linked deep image analysis is at the current image-analysis
+                # prompt version. A PROMPT_VERSION bump on ImageAnalysisService thus
+                # re-runs only image ads; video + light-path ads stay cached.
+                if (
+                    existing
+                    and not self._video_analysis_is_stale(
+                        existing,
+                        prefetched_ads.get(meta_ad_id, {}),
+                        video_analysis_versions,
+                    )
+                    and not self._image_analysis_is_stale(
+                        existing,
+                        prefetched_ads.get(meta_ad_id, {}),
+                        image_analysis_versions,
+                    )
                 ):
                     classifications.append(self._row_to_model(existing))
                     cached_count += 1
@@ -466,11 +569,19 @@ class ClassifierService:
                     break
 
                 video_budget = max_video - video_classification_count
+                # force=True is REQUIRED here: we only reach this point after the
+                # prefetch cache decision above (which DOES apply the video/image
+                # staleness gates) decided this ad needs (re)classification. classify_ad
+                # has its OWN legacy input_hash cache (_find_existing_classification) that
+                # is NOT staleness-aware — with force=False it would re-serve the very
+                # stale light row we just decided to replace (e.g. an image ad whose
+                # cached classification has no image_analysis_id), and the deep path would
+                # never run. The prefetch cache above is the single source of truth.
                 classification = await self.classify_ad(
                     meta_ad_id, brand_id, org_id, run_id,
                     video_budget_remaining=video_budget,
                     scrape_missing_lp=scrape_missing_lp,
-                    force=force,  # so batch force=True actually re-classifies cache-misses
+                    force=True,
                 )
                 classifications.append(classification)
 
@@ -522,11 +633,14 @@ class ClassifierService:
             meta_ad_ids: List of meta ad IDs.
 
         Returns:
-            Tuple of (ad_data_map, classifications_map, video_analysis_versions):
+            Tuple of (ad_data_map, classifications_map, video_analysis_versions,
+            image_analysis_versions):
             - ad_data_map: Dict[meta_ad_id] -> ad_data dict (same shape as _fetch_ad_data)
             - classifications_map: Dict[meta_ad_id] -> List[classification rows]
             - video_analysis_versions: Dict[analysis_id(str)] -> prompt_version, for
               the video classify-once staleness check.
+            - image_analysis_versions: Dict[analysis_id(str)] -> prompt_version, for
+              the image classify-once staleness check.
         """
         brand_str = str(brand_id)
         ad_data_map: Dict[str, Dict[str, Any]] = {
@@ -705,15 +819,47 @@ class ClassifierService:
         except Exception as e:
             logger.warning(f"Batch prefetch video-analysis versions failed: {e}")
 
+        # --- Query 6: CURRENT-version ad_image_analysis ids (image classify-once) ---
+        # Symmetric to Query 5 for static images. ImageAnalysisService versions its
+        # prompt independently of this classifier, so an image-prompt bump must
+        # invalidate classify-once for image ads (see _image_analysis_is_stale).
+        # Scoped to the current version: ad_image_analysis is append-only (one row per
+        # prompt version per ad), so the map stays ~1 row/ad and a linked-but-OLD
+        # analysis is simply absent (-> correctly treated as stale).
+        image_analysis_versions: Dict[str, str] = {}
+        try:
+            ia_limit = max(1000, len(meta_ad_ids) * 3)
+            ia_result = self.supabase.table("ad_image_analysis").select(
+                "id, prompt_version"
+            ).eq(
+                "brand_id", brand_str
+            ).eq(
+                "prompt_version", IMAGE_ANALYSIS_PROMPT_VERSION
+            ).in_(
+                "meta_ad_id", meta_ad_ids
+            ).limit(ia_limit).execute()
+            for row in (ia_result.data or []):
+                iid = row.get("id")
+                if iid:
+                    image_analysis_versions[str(iid)] = row.get("prompt_version")
+        except Exception as e:
+            logger.warning(f"Batch prefetch image-analysis versions failed: {e}")
+
         logger.info(
             f"Batch prefetch complete for {len(meta_ad_ids)} ads: "
             f"{len(canonical_urls)} destinations, "
             f"{len(video_ad_ids)} video ads, "
             f"{sum(len(v) for v in classifications_map.values())} cached classifications, "
-            f"{len(video_analysis_versions)} video analyses"
+            f"{len(video_analysis_versions)} video analyses, "
+            f"{len(image_analysis_versions)} image analyses"
         )
 
-        return ad_data_map, classifications_map, video_analysis_versions
+        return (
+            ad_data_map,
+            classifications_map,
+            video_analysis_versions,
+            image_analysis_versions,
+        )
 
     def _match_prefetched_classification(
         self,
@@ -785,6 +931,46 @@ class ClassifierService:
             return True
         # Missing from the map (deleted/other-brand) or an older version -> stale.
         return video_analysis_versions.get(str(va_id)) != VIDEO_ANALYSIS_PROMPT_VERSION
+
+    def _image_analysis_is_stale(
+        self,
+        cached_row: Dict,
+        ad_data: Dict,
+        image_analysis_versions: Dict[str, str],
+    ) -> bool:
+        """True if this cached classification is for a STATIC (image) ad whose linked
+        deep image analysis is NOT at the current image-analysis prompt version (so it
+        must be re-analyzed despite being a current-version classification).
+
+        Symmetric to _video_analysis_is_stale. ImageAnalysisService versions its prompt
+        INDEPENDENTLY of this classifier's CURRENT_PROMPT_VERSION, so an image-prompt bump
+        (or an OLD light/legacy classification that predates the deep path) must invalidate
+        image classify-once. Because the wired image path is deep-or-SKIP, the only
+        PERSISTED non-video outcome is a current-version deep row, so this converges:
+          - current deep row -> fresh (cached),
+          - bumped/legacy/unlinked -> stale -> re-run -> deep success persists a current
+            row (then fresh), or skip (NOT persisted: the old row remains and is re-checked
+            cheaply each run — no Gemini call, no max_new budget, same as video's
+            not-in-storage path).
+
+        Returns False when the deep image service is NOT wired (no upgrade is possible —
+        re-running would only hit the light path again) and for video ads (governed by
+        _video_analysis_is_stale). O(1), never touches the network.
+        """
+        if self._image_analysis is None:
+            return False
+        is_video = bool(ad_data.get("is_video")) or str(
+            cached_row.get("creative_format") or ""
+        ).startswith("video")
+        if is_video:
+            return False
+        ia_id = cached_row.get("image_analysis_id")
+        if not ia_id:
+            # Image ad with no linked deep analysis -> a legacy/light classification;
+            # upgrade it to the deep path.
+            return True
+        # Missing from the map (deleted/other-brand) or an older version -> stale.
+        return image_analysis_versions.get(str(ia_id)) != IMAGE_ANALYSIS_PROMPT_VERSION
 
     async def get_latest_classification(
         self,
@@ -1580,6 +1766,184 @@ class ClassifierService:
             "raw_classification": raw_classification,
         }
 
+    def _get_latest_caption(self, meta_ad_id: str, brand_id: UUID) -> Optional[str]:
+        """Return the most-recent NON-EMPTY Facebook caption (ad_copy) for this ad.
+
+        For copy-awareness only. Deliberately does NOT apply the ad_name fallback that
+        _fetch_ad_data uses — an internal ad name (e.g. 'POV - Emoji- cortisol reducer')
+        is not a caption, and judging its awareness is noise. Scans recent perf rows
+        because Martin's LATEST row is often a placeholder refresh with empty ad_copy
+        while the real caption lives in an earlier row. Returns None when the ad genuinely
+        has no caption (copy awareness is then skipped and congruence is not computed).
+        """
+        try:
+            rows = self.supabase.table("meta_ads_performance").select(
+                "ad_copy, date"
+            ).eq("brand_id", str(brand_id)).eq(
+                "meta_ad_id", meta_ad_id
+            ).order("date", desc=True).limit(60).execute()
+            for row in (rows.data or []):
+                cap = (row.get("ad_copy") or "").strip()
+                if cap:
+                    return cap
+        except Exception as e:
+            logger.warning(f"Caption lookup failed for {meta_ad_id}: {e}")
+        return None
+
+    def _classify_image_with_analysis_service(
+        self,
+        meta_ad_id: str,
+        brand_id,
+        org_id,
+        caption: Optional[str],
+    ):
+        """Deep static-image classification via ImageAnalysisService (D1 inline, D3 split).
+
+        creative_awareness comes from the ON-IMAGE text/visual ONLY — the caption is NOT
+        passed to the image call (exactly how the rubric was hand-calibrated), so the
+        awareness bucket can never leak from the caption. copy awareness is judged
+        separately from the caption (the genuine FB caption, or None).
+
+        Returns (the caller is deep-or-SKIP — it does NOT fall back to the light path):
+            - a classification dict on success,
+            - the sentinel string "low_res" when the image is too small to read (caller
+              skips the ad rather than persist a guessed bucket),
+            - None when there is no image / a hard failure / an off-enum awareness
+              (caller SKIPS the ad; it is retried next run once the asset is available).
+        """
+        try:
+            result = self._image_analysis.analyze_image(
+                meta_ad_id=meta_ad_id,
+                brand_id=UUID(str(brand_id)),
+                organization_id=UUID(str(org_id)),
+                ad_copy=None,  # D3: creative awareness must be image-pure
+            )
+        except Exception as e:
+            logger.error(f"ImageAnalysisService failed for {meta_ad_id}: {e}")
+            return None
+
+        if result is None:
+            # No image in storage / hard failure — caller SKIPS this ad (deep-or-skip);
+            # it does NOT fall back to the light path when the deep service is wired.
+            return None
+        if getattr(result, "status", None) == "low_res":
+            return "low_res"
+        if getattr(result, "status", None) != "ok" or not result.awareness_level:
+            # Parse error or an off-enum/empty awareness (normalized to None) — caller
+            # SKIPS (retried next run); never the light path.
+            return None
+
+        return self._map_image_analysis_to_classification(result, caption)
+
+    def _map_image_analysis_to_classification(self, result, caption: Optional[str]) -> Dict:
+        """Map an ImageAnalysisResult to the classification schema.
+
+        creative_awareness <- the deep image analysis (on-image text/visual). copy_awareness
+        is a SEPARATE text-only judgment of the caption (D3 — the two never see each other's
+        input). Static ads are a single moment: no opening/ending, no duration.
+
+        Args:
+            result: ImageAnalysisResult from deep analysis.
+            caption: The genuine Facebook caption (or None), judged separately for copy
+                awareness.
+
+        Returns:
+            Dict with classification fields.
+        """
+        copy_level, copy_conf = self._classify_copy_awareness(caption)
+
+        # Map imagery_type -> creative_format. MUST stay within the DB CHECK constraint
+        # ad_creative_classifications_creative_format_check, whose only image values are
+        # image_static / image_before_after / image_testimonial / image_product. Anything
+        # else (lifestyle, infographic, ugc, meme, screenshot, unknown) maps to the
+        # generic image_static bucket — awareness (the digest signal) is unaffected; this
+        # is only the coarse format tag, matching the legacy light path's vocabulary.
+        imagery_type = (result.visual_style or {}).get("imagery_type")
+        format_mapping = {
+            "product_hero": "image_product",
+            "before_after": "image_before_after",
+            "testimonial_card": "image_testimonial",
+        }
+        creative_format = format_mapping.get(imagery_type, "image_static")
+        # Belt-and-suspenders: never emit a value outside the DB CHECK constraint.
+        if creative_format not in IMAGE_CREATIVE_FORMATS:
+            creative_format = "image_static"
+
+        raw_classification = {
+            "messaging_theme": result.messaging_theme,
+            "headline_text": result.headline_text,
+            "body_text": result.body_text,
+            "text_overlays": result.text_overlays,
+            "hook_pattern": result.hook_pattern,
+            "cta_style": result.cta_style,
+            "benefits_shown": result.benefits_shown,
+            "pain_points_addressed": result.pain_points_addressed,
+            "claims_made": result.claims_made,
+            "visual_style": result.visual_style,
+            "awareness_level": result.awareness_level,
+            "awareness_confidence": result.awareness_confidence,
+            "input_hash": result.input_hash,
+            "prompt_version": result.prompt_version,
+        }
+
+        return {
+            # Creative awareness from the on-image text/visual (calibrated rubric).
+            # Normalize defensively: ImageAnalysisService already normalizes, but a row
+            # stored before that fix (or any off-enum value) must degrade to NULL rather
+            # than violate the creative_awareness_level CHECK constraint on insert —
+            # matching how every legacy path handles awareness.
+            "creative_awareness_level": self._normalize_awareness(result.awareness_level),
+            "creative_awareness_confidence": result.awareness_confidence,
+            "creative_format": creative_format,
+            "creative_angle": result.messaging_theme,
+            # Copy awareness judged separately from the FB caption (D3)
+            "copy_awareness_level": copy_level,
+            "copy_awareness_confidence": copy_conf,
+            "hook_type": result.hook_pattern,
+            "primary_cta": result.cta_style,
+            # Link to the deep image-analysis row (parallel to video_analysis_id)
+            "image_analysis_id": str(result.analysis_id) if result.analysis_id else None,
+            "model_used": "gemini_image_deep",
+            "raw_classification": raw_classification,
+        }
+
+    def _classify_copy_awareness(self, ad_copy: Optional[str]):
+        """Judge the awareness level of the Facebook caption (copy) as text only.
+
+        Kept separate from the image's creative awareness (D3) so creative<->copy
+        congruence stays meaningful. Returns (level, confidence), or (None, None) when
+        there is no copy or the call fails (congruence then simply isn't computed).
+        """
+        if not ad_copy or not ad_copy.strip():
+            return None, None
+        try:
+            from ...core.genai_client import make_genai_client
+
+            api_key = os.getenv("GEMINI_API_KEY")
+            if not api_key:
+                logger.warning("GEMINI_API_KEY not set — skipping copy awareness")
+                return None, None
+
+            client = make_genai_client(api_key)
+            prompt = COPY_AWARENESS_PROMPT.format(
+                awareness_rubric=AWARENESS_RUBRIC,
+                ad_copy=ad_copy[:4000],
+            )
+            response = client.models.generate_content(
+                model=VIDEO_ANALYSIS_MODEL,
+                contents=[prompt],
+            )
+            parsed = self._parse_gemini_response(response.text or "")
+            if not parsed:
+                return None, None
+            return (
+                parsed.get("copy_awareness_level"),
+                parsed.get("copy_awareness_confidence"),
+            )
+        except Exception as e:
+            logger.warning(f"Copy awareness classification failed: {e}")
+            return None, None
+
     async def _classify_video_with_gemini_legacy(
         self,
         video_id: str,
@@ -2134,6 +2498,7 @@ class ClassifierService:
             congruence_notes=row.get("congruence_notes"),
             congruence_components=row.get("congruence_components", []),
             video_analysis_id=UUID(row["video_analysis_id"]) if row.get("video_analysis_id") else None,
+            image_analysis_id=UUID(row["image_analysis_id"]) if row.get("image_analysis_id") else None,
             source=row.get("source", "gemini_light"),
             prompt_version=row.get("prompt_version", "v1"),
             schema_version=row.get("schema_version", "1.0"),
@@ -2169,6 +2534,7 @@ class ClassifierService:
             video_duration_sec=record.get("video_duration_sec"),
             congruence_components=record.get("congruence_components", []),
             video_analysis_id=UUID(record["video_analysis_id"]) if record.get("video_analysis_id") else None,
+            image_analysis_id=UUID(record["image_analysis_id"]) if record.get("image_analysis_id") else None,
             source=record.get("source", "gemini_light"),
             prompt_version=record.get("prompt_version", "v1"),
             schema_version=record.get("schema_version", "1.0"),

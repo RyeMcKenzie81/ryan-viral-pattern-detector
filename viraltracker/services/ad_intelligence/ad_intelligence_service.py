@@ -21,6 +21,7 @@ from .diagnostic_engine import DiagnosticEngine
 from .fatigue_detector import FatigueDetector
 from .helpers import get_active_ad_ids, resolve_product_ad_ids, validate_org_brand, _safe_numeric
 from ..video_analysis_service import VideoAnalysisService
+from ..image_analysis_service import ImageAnalysisService
 from .models import (
     AccountAnalysisResult,
     AnalysisRun,
@@ -63,6 +64,9 @@ class AdIntelligenceService:
         # Create video analysis service for deep video analysis with hooks
         video_analysis_service = VideoAnalysisService(supabase_client)
 
+        # Create image analysis service for deep static-image awareness (calibrated rubric)
+        image_analysis_service = ImageAnalysisService(supabase_client=supabase_client)
+
         # Create congruence analyzer for per-dimension congruence evaluation
         congruence_analyzer = CongruenceAnalyzer(gemini_service)
 
@@ -72,6 +76,7 @@ class AdIntelligenceService:
             meta_ads_service=meta_ads_service,
             video_analysis_service=video_analysis_service,
             congruence_analyzer=congruence_analyzer,
+            image_analysis_service=image_analysis_service,
         )
         self.baselines = BaselineService(supabase_client)
         self.diagnostics = DiagnosticEngine(supabase_client)

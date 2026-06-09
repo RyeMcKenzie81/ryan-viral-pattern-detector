@@ -589,7 +589,13 @@ class DiagnosticEngine:
         """Lazy-init classifier to avoid circular imports."""
         if self._classifier is None:
             from .classifier_service import ClassifierService
-            self._classifier = ClassifierService(self.supabase)
+            from ..image_analysis_service import ImageAnalysisService
+            # Wire the deep image service so any on-demand image classification uses the
+            # calibrated deep path (deep-or-skip), consistent with the batch classifier.
+            self._classifier = ClassifierService(
+                self.supabase,
+                image_analysis_service=ImageAnalysisService(supabase_client=self.supabase),
+            )
         return self._classifier
 
     async def diagnose_ad(

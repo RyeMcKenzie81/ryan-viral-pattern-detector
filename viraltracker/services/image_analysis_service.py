@@ -18,9 +18,39 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID
 
+from .awareness_rubric import AWARENESS_RUBRIC
+
 logger = logging.getLogger(__name__)
 
-PROMPT_VERSION = "v1"
+# v2: awareness_level is now judged by the shared Schwartz AWARENESS_RUBRIC, from the
+# ON-IMAGE text/visual only (creative awareness; the surrounding FB caption is judged
+# separately as copy awareness). Bumping this re-analyzes image ads onto the calibrated
+# rubric (the image-version staleness gate in the classifier keys on it).
+PROMPT_VERSION = "v2"
+
+# Image awareness model. Was hardcoded gemini-2.5-flash; promoted to a named constant
+# and upgraded to gemini-pro-latest for consistency with the video path and to honor
+# the rubric calibration (which was hand-validated on pro-latest).
+IMAGE_ANALYSIS_MODEL = "gemini-pro-latest"
+
+# The 5 canonical Schwartz awareness levels — the ONLY values allowed by the
+# ad_image_analysis.awareness_level and ad_creative_classifications.creative_awareness_level
+# DB CHECK constraints. Gemini occasionally drifts off-format (e.g. "Product Aware",
+# a trailing space, a hallucinated 6th label); normalizing at the trust boundary keeps
+# the stored row valid (NULL on a miss) instead of throwing a CHECK violation — which
+# would otherwise drop the analysis row, leave analysis_id unset, and re-bill every run.
+VALID_AWARENESS_LEVELS = frozenset(
+    {"unaware", "problem_aware", "solution_aware", "product_aware", "most_aware"}
+)
+
+
+def _normalize_awareness_level(value):
+    """Lower/strip/space->underscore an awareness label; return None if not canonical."""
+    if not value or not isinstance(value, str):
+        return None
+    norm = value.strip().lower().replace(" ", "_")
+    return norm if norm in VALID_AWARENESS_LEVELS else None
+
 
 IMAGE_ANALYSIS_PROMPT = """Analyze this image advertisement and extract detailed structured data.
 
@@ -88,6 +118,24 @@ IMAGE_ANALYSIS_PROMPT = """Analyze this image advertisement and extract detailed
 }}
 ```
 
+**AWARENESS — how to set `awareness_level` (read carefully):**
+A static ad is a SINGLE moment (no opening/ending). Judge `awareness_level` by what the DOMINANT readable on-image element presumes the viewer knows — the headline / hero text / offer in its visual hierarchy, NOT every tiny text block weighted equally. Judge from the ON-IMAGE text + visual ONLY: the AD COPY above is the surrounding Facebook caption — use it for messaging_theme / persona context, but do NOT let it set `awareness_level` (caption awareness is judged separately). If the on-image text is too small or dense to read reliably, LOWER `awareness_confidence` and do NOT hallucinate text you cannot actually see.
+
+Static-format tells:
+- PROMINENT BRANDED PRODUCT (decisive): when the visual CENTER is a branded product shot (the bottle/pack is the hero, with a brand name or logo visible), tag product_aware — EVEN IF the headline is a problem hook ("Feeling tired?", "IBS?"), a solution mechanism ("reduce cortisol", "not a sleep pill"), or an educational listicle ("7 Reasons... this supplement"). Showing the specific branded bottle ties the problem/mechanism directly to THIS product instead of teaching the category, so it is the DOMINANT signal. Product-level proof (specific claims, a customer review like "Karen T., Ohio", authority markers like "Doctor-formulated" or a founder signature, competitor differentiation, or a listicle/"This [product]" reference) reinforces it, but the prominent branded product shot alone is enough. Scan the WHOLE frame for it: a prominent branded bottle/pack is decisive even when it sits ALONGSIDE a cartoon, before/after panels, or a lifestyle scene (a composite ad is still product_aware if it features the branded bottle). (Still not most_aware unless the LEAD is an explicit offer/price/urgency.)
+- COUNTER-EXAMPLES (no prominent branded product): the same mechanism/category message ("not a sleep pill", "natural cortisol supplement") on a LIFESTYLE image with NO bottle and no brand/logo stays solution_aware. A PURE SYMPTOM visual (a 3 AM clock, an exhausted person) with NO text, mechanism, or product/brand is problem_aware.
+- product-hero (product + name): only the product on a neutral background -> judge by visual context (paired with a PROBLEM visual = problem_aware; with a DESIRED-STATE visual or shown as the answer = product_aware; bare packshot led by a price/offer = most_aware).
+- before/after: if a prominent branded product/bottle appears anywhere in the frame, product_aware (the bottle overrides the before/after framing, per the decisive rule above). With NO product shown: a visual transformation alone = product_aware; a mechanism / explanatory lead = solution_aware.
+- pure offer (discount / %-off / urgency / "back in stock" as the LEAD) = most_aware.
+- listicle / article-style headline ("5 signs your gut is damaged", "the real reason you're tired") = problem_aware (or unaware if pure curiosity with no felt problem).
+- long advertorial / sales image: judge by the HEADLINE / lead, not the body.
+- review or testimonial screenshot: route by CONTENT — pain only = problem_aware; a category/ingredient = solution_aware; the BRAND named = product_aware.
+- blind hook (meme / relatable / emotional narrative — e.g. a bathroom-embarrassment sticky note — that explicitly NAMES a solution category or mechanism like "Probiotics" or "cortisol reducer" but shows NO brand, logo, or identifiable product packaging): solution_aware. The named category/mechanism overrides the emotional/symptom framing, and the hidden brand keeps it below product. (A meme that names NO category and shows no product stays problem_aware.)
+- objection-handling / hidden-product authority: if the copy's primary job is to DEFEND or DIFFERENTIATE a specific product — "what makes THIS one different?", unique authority / manufacturing claims ("crafted from 45 years of patient care by a real clinic", "doctor-formulated"), or pitting "this one" against the rest of the market — tag product_aware EVEN IF the brand, logo, and bottle are intentionally hidden (a curiosity / retargeting play). Distinguish from the blind hook above: a blind hook NAMES a category to sell the concept (-> solution); this DEFENDS a specific product's uniqueness/authority (-> product).
+- comparison chart (this product vs named rivals) = product_aware.
+
+{awareness_rubric}
+
 **IMPORTANT:**
 - Be specific about messaging_theme — what is this ad actually saying?
 - For people_in_ad, describe what you see: role, approximate age, gender, what they're doing
@@ -136,6 +184,7 @@ class ImageAnalysisResult:
     awareness_confidence: Optional[float] = None
 
     # Provenance
+    analysis_id: Optional[UUID] = None  # ad_image_analysis row id (set on save/fetch; links the classification)
     raw_analysis: Optional[Dict] = None
     model_used: Optional[str] = None
     source_url: Optional[str] = None
@@ -157,6 +206,7 @@ class ImageAnalysisService:
         brand_id: UUID,
         organization_id: UUID,
         ad_copy: Optional[str] = None,
+        store: bool = True,
     ) -> Optional[ImageAnalysisResult]:
         """Analyze a single image ad with Gemini.
 
@@ -178,6 +228,24 @@ class ImageAnalysisService:
             if not image_bytes:
                 return None
 
+            # 1b. Guard against low-res thumbnails. Some early-batch assets were stored
+            # as 64x64 (the captured thumbnail_url IS 64x64) — unreadable, so a confident
+            # awareness off them is garbage. Mark low_res and emit NO awareness; the
+            # classifier treats this like a missing image (skip), and the digest never
+            # buckets it. These ads need a high-res re-fetch from Meta to classify.
+            if self._image_too_small(image_bytes):
+                logger.info(f"Image too low-res to classify for {meta_ad_id}")
+                return ImageAnalysisResult(
+                    meta_ad_id=meta_ad_id,
+                    brand_id=brand_id,
+                    input_hash=hashlib.sha256(image_bytes[:10000]).hexdigest(),
+                    prompt_version=PROMPT_VERSION,
+                    status="low_res",
+                    error_message="image too low-res to classify (likely a 64x64 thumbnail)",
+                    awareness_confidence=0.0,
+                    source_url=source_url,
+                )
+
             # 2. Compute input hash for dedup
             input_hash = hashlib.sha256(image_bytes[:10000]).hexdigest()
 
@@ -188,8 +256,11 @@ class ImageAnalysisService:
                 return existing
 
             # 4. Call Gemini
-            from google import genai
+            # NOTE: make_genai_client was used below but never imported (PR #180
+            # regression, same as video_analysis_service + classifier_service) —
+            # left this whole service raising NameError on every call.
             from google.genai import types
+            from ..core.genai_client import make_genai_client
 
             api_key = os.getenv("GEMINI_API_KEY")
             if not api_key:
@@ -204,7 +275,8 @@ class ImageAnalysisService:
 
             client = make_genai_client(api_key)
             prompt = IMAGE_ANALYSIS_PROMPT.format(
-                ad_copy=ad_copy or "(no copy available)"
+                ad_copy=ad_copy or "(no copy available)",
+                awareness_rubric=AWARENESS_RUBRIC,
             )
 
             # Detect mime type
@@ -215,7 +287,7 @@ class ImageAnalysisService:
                 mime_type = "image/webp"
 
             response = client.models.generate_content(
-                model="gemini-2.5-flash",
+                model=IMAGE_ANALYSIS_MODEL,
                 contents=[
                     types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
                     prompt,
@@ -257,15 +329,18 @@ class ImageAnalysisService:
                 people_in_ad=parsed.get("people_in_ad", []),
                 target_persona_signals=parsed.get("target_persona_signals"),
                 visual_style=parsed.get("visual_style"),
-                awareness_level=parsed.get("awareness_level"),
+                # Normalize to a canonical enum value (or None) so the stored row and
+                # every downstream insert satisfy the awareness_level CHECK constraints.
+                awareness_level=_normalize_awareness_level(parsed.get("awareness_level")),
                 awareness_confidence=parsed.get("awareness_confidence"),
                 raw_analysis=parsed,
-                model_used="gemini-2.5-flash",
+                model_used=IMAGE_ANALYSIS_MODEL,
                 source_url=source_url,
             )
 
-            # 7. Store result
-            self._store_result(result, organization_id)
+            # 7. Store result (skipped for preview/eval runs)
+            if store:
+                self._store_result(result, organization_id)
 
             logger.info(
                 f"Image analysis complete for {meta_ad_id}: "
@@ -466,6 +541,7 @@ class ImageAnalysisService:
                 visual_style=row.get("visual_style"),
                 awareness_level=row.get("awareness_level"),
                 awareness_confidence=row.get("awareness_confidence"),
+                analysis_id=UUID(row["id"]) if row.get("id") else None,
                 raw_analysis=row.get("raw_analysis"),
                 model_used=row.get("model_used"),
                 source_url=row.get("source_url"),
@@ -480,9 +556,9 @@ class ImageAnalysisService:
         result: ImageAnalysisResult,
         organization_id: UUID,
     ) -> None:
-        """Store analysis result in ad_image_analysis table."""
+        """Store analysis result in ad_image_analysis table; set result.analysis_id."""
         try:
-            self.supabase.table("ad_image_analysis").insert({
+            resp = self.supabase.table("ad_image_analysis").insert({
                 "organization_id": str(organization_id),
                 "brand_id": str(result.brand_id),
                 "meta_ad_id": result.meta_ad_id,
@@ -509,9 +585,20 @@ class ImageAnalysisService:
                 "model_used": result.model_used,
                 "source_url": result.source_url,
             }).execute()
+            if resp.data:
+                result.analysis_id = UUID(resp.data[0]["id"])
         except Exception as e:
-            if "23505" in str(e):  # unique violation — already exists
-                pass
+            if "23505" in str(e):  # unique violation — already exists; fetch its id so the link resolves
+                try:
+                    ex = self.supabase.table("ad_image_analysis").select("id").eq(
+                        "meta_ad_id", result.meta_ad_id
+                    ).eq("brand_id", str(result.brand_id)).eq(
+                        "input_hash", result.input_hash
+                    ).eq("prompt_version", result.prompt_version).limit(1).execute()
+                    if ex.data:
+                        result.analysis_id = UUID(ex.data[0]["id"])
+                except Exception:
+                    pass
             else:
                 logger.error(f"Failed to store image analysis for {result.meta_ad_id}: {e}")
 
@@ -541,3 +628,18 @@ class ImageAnalysisService:
 
             logger.warning(f"Failed to parse Gemini response as JSON: {cleaned[:200]}")
             return None
+
+    @staticmethod
+    def _image_too_small(image_bytes: bytes, min_dim: int = 256) -> bool:
+        """True if the image's largest side is < min_dim px (an unreadable thumbnail).
+
+        Some early-batch assets were stored as 64x64. Falls back to a byte-size proxy
+        if PIL is unavailable (64x64 thumbnails are ~4-12 KB; real creatives are 50KB+).
+        """
+        try:
+            import io as _io
+            from PIL import Image
+            with Image.open(_io.BytesIO(image_bytes)) as im:
+                return max(im.width, im.height) < min_dim
+        except Exception:
+            return len(image_bytes) < 12000

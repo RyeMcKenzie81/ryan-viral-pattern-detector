@@ -3592,6 +3592,7 @@ async def execute_congruence_reanalysis_job(job: Dict) -> Dict[str, Any]:
         from viraltracker.services.ad_intelligence.classifier_service import ClassifierService
         from viraltracker.services.ad_intelligence.congruence_analyzer import CongruenceAnalyzer
         from viraltracker.services.video_analysis_service import VideoAnalysisService
+        from viraltracker.services.image_analysis_service import ImageAnalysisService
         from viraltracker.services.gemini_service import GeminiService
         from uuid import UUID
 
@@ -3604,6 +3605,10 @@ async def execute_congruence_reanalysis_job(job: Dict) -> Dict[str, Any]:
         # VideoAnalysisService.__init__ requires the supabase client; the no-arg
         # call raised TypeError and broke this job before classification began.
         video_analysis_service = VideoAnalysisService(db)
+        # Deep static-image analysis (calibrated awareness rubric). Wiring this in
+        # routes image ads through the deep path (creative awareness from on-image text)
+        # instead of the legacy light thumbnail+caption path.
+        image_analysis_service = ImageAnalysisService(supabase_client=db)
 
         # Initialize classifier with congruence analyzer
         classifier = ClassifierService(
@@ -3611,6 +3616,7 @@ async def execute_congruence_reanalysis_job(job: Dict) -> Dict[str, Any]:
             gemini_service=gemini_service,
             video_analysis_service=video_analysis_service,
             congruence_analyzer=congruence_analyzer,
+            image_analysis_service=image_analysis_service,
         )
 
         # Get eligible ads
@@ -3771,6 +3777,7 @@ async def _run_classification_for_brand(
     from viraltracker.services.ad_intelligence.congruence_analyzer import CongruenceAnalyzer
     from viraltracker.services.ad_intelligence.helpers import get_active_ad_ids, get_spending_ad_ids
     from viraltracker.services.video_analysis_service import VideoAnalysisService
+    from viraltracker.services.image_analysis_service import ImageAnalysisService
 
     db = get_supabase_client()
 
@@ -3787,12 +3794,14 @@ async def _run_classification_for_brand(
     # Initialize services
     gemini_service = GeminiService()
     video_analysis_service = VideoAnalysisService(db)
+    image_analysis_service = ImageAnalysisService(supabase_client=db)
     congruence_analyzer = CongruenceAnalyzer(gemini_service)
     classifier = ClassifierService(
         supabase_client=db,
         gemini_service=gemini_service,
         video_analysis_service=video_analysis_service,
         congruence_analyzer=congruence_analyzer,
+        image_analysis_service=image_analysis_service,
     )
 
     # Get the target ad set (active-only vs spend-scoped — see ``scope`` docstring)
