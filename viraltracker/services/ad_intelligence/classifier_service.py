@@ -47,6 +47,7 @@ from ..video_analysis_service import (
 )
 from ..image_analysis_service import PROMPT_VERSION as IMAGE_ANALYSIS_PROMPT_VERSION
 from ..awareness_rubric import AWARENESS_RUBRIC
+from .awareness_currency import image_link_is_current
 
 logger = logging.getLogger(__name__)
 
@@ -517,11 +518,30 @@ class ClassifierService:
             prefetched_classifications,
             video_analysis_versions,
             image_analysis_versions,
+            low_res_marker_ids,
         ) = await self._batch_prefetch(brand_id, sorted_ids)
 
         skipped_count = 0
         for i, meta_ad_id in enumerate(sorted_ids):
             try:
+                # 0. Settled low_res: this image ad has a current-version low_res marker
+                # (64x64 thumbnail we can't read). Skip it entirely — do NOT call
+                # classify_ad, which would re-download + re-decode the same thumbnail
+                # every run for no result. It stays settled until a future high-res
+                # re-fetch clears the marker. We only skip when there is no current deep
+                # classification to serve (there normally isn't — low_res never produces
+                # one); if a real classification exists, fall through and let the cache
+                # decision below handle it.
+                if meta_ad_id in low_res_marker_ids:
+                    existing_lr = self._match_prefetched_classification(
+                        prefetched_classifications.get(meta_ad_id, []), force=force,
+                    )
+                    if not (existing_lr and not self._image_analysis_is_stale(
+                        existing_lr, prefetched_ads.get(meta_ad_id, {}), image_analysis_versions,
+                    )):
+                        skipped_count += 1
+                        continue
+
                 # Cache hit: any prefetched classification for this ad is already at
                 # the CURRENT prompt+schema version (the prefetch filters on both),
                 # and Meta ad creatives are immutable — so it's reusable. We do NOT
@@ -634,13 +654,15 @@ class ClassifierService:
 
         Returns:
             Tuple of (ad_data_map, classifications_map, video_analysis_versions,
-            image_analysis_versions):
+            image_analysis_versions, low_res_marker_ids):
             - ad_data_map: Dict[meta_ad_id] -> ad_data dict (same shape as _fetch_ad_data)
             - classifications_map: Dict[meta_ad_id] -> List[classification rows]
             - video_analysis_versions: Dict[analysis_id(str)] -> prompt_version, for
               the video classify-once staleness check.
             - image_analysis_versions: Dict[analysis_id(str)] -> prompt_version, for
               the image classify-once staleness check.
+            - low_res_marker_ids: Set[meta_ad_id] with a current-version low_res marker
+              (the classify loop skips these to stop the re-download churn).
         """
         brand_str = str(brand_id)
         ad_data_map: Dict[str, Dict[str, Any]] = {
@@ -845,13 +867,42 @@ class ClassifierService:
         except Exception as e:
             logger.warning(f"Batch prefetch image-analysis versions failed: {e}")
 
+        # --- Query 7: CURRENT-version low_res markers (image churn-stop) ---
+        # ImageAnalysisService persists a status='low_res' marker for 64x64-thumbnail
+        # ads it can't read. An ad with a current-version low_res marker is SETTLED: the
+        # classify loop skips it so we stop re-downloading + re-decoding it every run. The
+        # marker is permanent until a future high-res re-fetch clears it (no timestamp
+        # re-open: meta_ad_assets has no downloaded_at and the asset job does not
+        # re-download). No classification row is involved, so no consumer is poisoned.
+        low_res_marker_ids: set = set()
+        try:
+            lr_limit = max(1000, len(meta_ad_ids) * 3)
+            lr_result = self.supabase.table("ad_image_analysis").select(
+                "meta_ad_id"
+            ).eq(
+                "brand_id", brand_str
+            ).eq(
+                "status", "low_res"
+            ).eq(
+                "prompt_version", IMAGE_ANALYSIS_PROMPT_VERSION
+            ).in_(
+                "meta_ad_id", meta_ad_ids
+            ).limit(lr_limit).execute()
+            for row in (lr_result.data or []):
+                mid = row.get("meta_ad_id")
+                if mid:
+                    low_res_marker_ids.add(mid)
+        except Exception as e:
+            logger.warning(f"Batch prefetch low_res markers failed: {e}")
+
         logger.info(
             f"Batch prefetch complete for {len(meta_ad_ids)} ads: "
             f"{len(canonical_urls)} destinations, "
             f"{len(video_ad_ids)} video ads, "
             f"{sum(len(v) for v in classifications_map.values())} cached classifications, "
             f"{len(video_analysis_versions)} video analyses, "
-            f"{len(image_analysis_versions)} image analyses"
+            f"{len(image_analysis_versions)} image analyses, "
+            f"{len(low_res_marker_ids)} low_res markers"
         )
 
         return (
@@ -859,6 +910,7 @@ class ClassifierService:
             classifications_map,
             video_analysis_versions,
             image_analysis_versions,
+            low_res_marker_ids,
         )
 
     def _match_prefetched_classification(
@@ -964,13 +1016,13 @@ class ClassifierService:
         ).startswith("video")
         if is_video:
             return False
-        ia_id = cached_row.get("image_analysis_id")
-        if not ia_id:
-            # Image ad with no linked deep analysis -> a legacy/light classification;
-            # upgrade it to the deep path.
-            return True
-        # Missing from the map (deleted/other-brand) or an older version -> stale.
-        return image_analysis_versions.get(str(ia_id)) != IMAGE_ANALYSIS_PROMPT_VERSION
+        # Shared rule (no drift with the digest completeness gate): an image ad is stale
+        # iff its cached classification does NOT link a CURRENT-version deep image
+        # analysis. image_analysis_versions is the current-version {id: prompt_version}
+        # map (Query 6 filters to the current version), so membership == current. A missing
+        # link (legacy/light row) -> not current -> stale; an older/deleted link -> not in
+        # the map -> stale.
+        return not image_link_is_current(cached_row, image_analysis_versions)
 
     async def get_latest_classification(
         self,

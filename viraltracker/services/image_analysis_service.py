@@ -231,20 +231,37 @@ class ImageAnalysisService:
             # 1b. Guard against low-res thumbnails. Some early-batch assets were stored
             # as 64x64 (the captured thumbnail_url IS 64x64) — unreadable, so a confident
             # awareness off them is garbage. Mark low_res and emit NO awareness; the
-            # classifier treats this like a missing image (skip), and the digest never
-            # buckets it. These ads need a high-res re-fetch from Meta to classify.
+            # classifier treats this like a missing image (skip), and the digest counts it
+            # on a separate "cannot classify" line. These ads need a high-res re-fetch.
+            #
+            # PERSIST the low_res result as a SETTLING MARKER (status='low_res',
+            # awareness NULL): the classifier prefetch reads these markers to STOP
+            # re-downloading + re-decoding the same 64x64 thumbnail every run, and the
+            # digest reads them to bucket the spend. We dedup via _check_existing (same
+            # input_hash + prompt_version) so a re-entry is a no-op. No
+            # ad_creative_classifications row is EVER written for it (the classifier still
+            # returns an unpersisted skip), so latest-classification consumers
+            # (baselines/congruence/winner_dna/get_latest) are never poisoned.
             if self._image_too_small(image_bytes):
                 logger.info(f"Image too low-res to classify for {meta_ad_id}")
-                return ImageAnalysisResult(
+                low_res_hash = hashlib.sha256(image_bytes[:10000]).hexdigest()
+                existing_marker = self._check_existing(meta_ad_id, brand_id, low_res_hash)
+                if existing_marker:
+                    return existing_marker
+                low_res_result = ImageAnalysisResult(
                     meta_ad_id=meta_ad_id,
                     brand_id=brand_id,
-                    input_hash=hashlib.sha256(image_bytes[:10000]).hexdigest(),
+                    input_hash=low_res_hash,
                     prompt_version=PROMPT_VERSION,
                     status="low_res",
                     error_message="image too low-res to classify (likely a 64x64 thumbnail)",
+                    awareness_level=None,
                     awareness_confidence=0.0,
                     source_url=source_url,
                 )
+                if store:
+                    self._store_result(low_res_result, organization_id)  # sets analysis_id
+                return low_res_result
 
             # 2. Compute input hash for dedup
             input_hash = hashlib.sha256(image_bytes[:10000]).hexdigest()

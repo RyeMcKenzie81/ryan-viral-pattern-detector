@@ -38,6 +38,9 @@ from viraltracker.services.image_analysis_service import (
     _normalize_awareness_level,
 )
 from viraltracker.services.awareness_rubric import AWARENESS_RUBRIC
+from viraltracker.services.ad_intelligence.awareness_currency import (
+    awareness_state, CURRENT, STALE, LOW_RES, UNCLASSIFIED,
+)
 
 
 def _classifier(with_image=True):
@@ -263,10 +266,13 @@ class TestImageStaleness:
         ) is False
 
     def test_old_version_link_is_stale(self):
+        # A link to an OLD-version analysis: Query 6 only loads CURRENT-version ids, so an
+        # old-version link is ABSENT from the map -> stale (must re-classify). The shared
+        # currency rule is membership-based (present in the current-version map == current).
         s = _classifier()
         aid = str(uuid4())
         assert s._image_analysis_is_stale(
-            {"image_analysis_id": aid}, {"is_video": False}, {aid: "v1"}
+            {"image_analysis_id": aid}, {"is_video": False}, {}  # old-version id filtered out
         ) is True
 
     def test_missing_from_map_is_stale(self):
@@ -339,8 +345,9 @@ class TestClassifyBatchForceAndCache:
         clf._batch_prefetch = AsyncMock(return_value=(
             {"adA": {"is_video": False}},
             {"adA": [_cls_row(image_analysis_id=None)]},
-            {},   # video versions
-            {},   # image versions
+            {},      # video versions
+            {},      # image versions
+            set(),   # low_res markers
         ))
         res = asyncio.run(clf.classify_batch(
             brand_id=uuid4(), org_id=uuid4(), run_id=uuid4(), meta_ad_ids=["adA"],
@@ -357,6 +364,7 @@ class TestClassifyBatchForceAndCache:
             {"adB": [_cls_row(image_analysis_id=iid)]},
             {},
             {iid: IMAGE_ANALYSIS_PROMPT_VERSION},   # linked analysis is current
+            set(),                                  # low_res markers
         ))
         res = asyncio.run(clf.classify_batch(
             brand_id=uuid4(), org_id=uuid4(), run_id=uuid4(), meta_ad_ids=["adB"],
@@ -416,6 +424,91 @@ class TestImageTooSmall:
         # non-image bytes -> PIL fails -> byte-length fallback (<12000 => too small)
         assert ImageAnalysisService._image_too_small(b"x" * 5000) is True
         assert ImageAnalysisService._image_too_small(b"x" * 20000) is False
+
+
+# ---------------------------------------------------------------------------
+# Shared awareness-currency rule (used by both the classifier gate and the digest).
+# ---------------------------------------------------------------------------
+class TestAwarenessCurrency:
+    IMG = {"iaX"}
+    VID = {"vaX"}
+    LR = {"adLR"}
+
+    def _s(self, mid, row):
+        return awareness_state(mid, row, self.IMG, self.VID, self.LR)
+
+    def test_current_image_and_video(self):
+        assert self._s("a", {"creative_awareness_level": "product_aware",
+                             "image_analysis_id": "iaX", "creative_format": "image_static"}) == CURRENT
+        assert self._s("a", {"creative_awareness_level": "solution_aware",
+                             "video_analysis_id": "vaX", "creative_format": "video_ugc"}) == CURRENT
+
+    def test_stale_light_and_old_link(self):
+        # light row, no deep link
+        assert self._s("a", {"creative_awareness_level": "problem_aware", "creative_format": "image_static"}) == STALE
+        # links an OLD analysis id (not in the current set)
+        assert self._s("a", {"creative_awareness_level": "problem_aware", "image_analysis_id": "old"}) == STALE
+
+    def test_low_res_marker(self):
+        assert self._s("adLR", None) == LOW_RES
+        # low_res beats a stale light row (the CURRENT image can't be classified)
+        assert self._s("adLR", {"creative_awareness_level": "problem_aware"}) == LOW_RES
+        # ...but a CURRENT deep link wins over the marker
+        assert self._s("adLR", {"creative_awareness_level": "product_aware", "image_analysis_id": "iaX"}) == CURRENT
+
+    def test_unclassified(self):
+        assert self._s("zzz", None) == UNCLASSIFIED
+        # current link but NULL awareness is not usable -> unclassified
+        assert self._s("a", {"creative_awareness_level": None, "image_analysis_id": "iaX"}) == UNCLASSIFIED
+
+
+# ---------------------------------------------------------------------------
+# ImageAnalysisService persists a low_res MARKER (and short-circuits on re-entry).
+# ---------------------------------------------------------------------------
+class TestLowResMarkerStore:
+    def test_low_res_stores_marker(self):
+        svc = ImageAnalysisService(supabase_client=MagicMock())
+        with patch.object(svc, "_get_image", return_value=(b"x" * 100, "http://u")), \
+             patch.object(svc, "_image_too_small", return_value=True), \
+             patch.object(svc, "_check_existing", return_value=None), \
+             patch.object(svc, "_store_result") as store:
+            r = svc.analyze_image(meta_ad_id="m1", brand_id=uuid4(), organization_id=uuid4())
+        assert r is not None and r.status == "low_res" and r.awareness_level is None
+        store.assert_called_once()   # the marker is persisted
+
+    def test_low_res_reentry_short_circuits(self):
+        svc = ImageAnalysisService(supabase_client=MagicMock())
+        existing = ImageAnalysisResult(
+            meta_ad_id="m1", brand_id=uuid4(), input_hash="h",
+            prompt_version=IMAGE_PROMPT_VERSION, status="low_res",
+        )
+        with patch.object(svc, "_get_image", return_value=(b"x" * 100, "http://u")), \
+             patch.object(svc, "_image_too_small", return_value=True), \
+             patch.object(svc, "_check_existing", return_value=existing), \
+             patch.object(svc, "_store_result") as store:
+            r = svc.analyze_image(meta_ad_id="m1", brand_id=uuid4(), organization_id=uuid4())
+        assert r is existing
+        store.assert_not_called()    # no re-store on re-entry (dedup)
+
+
+# ---------------------------------------------------------------------------
+# classify_batch SKIPS a low_res-marked ad (stops the re-download churn) and never
+# persists a skip classification row.
+# ---------------------------------------------------------------------------
+class TestPrefetchSkipsLowRes:
+    def test_low_res_marked_ad_is_skipped_no_classify(self):
+        clf = _batch_classifier()
+        clf._batch_prefetch = AsyncMock(return_value=(
+            {"adLR": {"is_video": False}},
+            {"adLR": []},      # no classification row exists
+            {}, {},
+            {"adLR"},          # low_res marker present
+        ))
+        res = asyncio.run(clf.classify_batch(
+            brand_id=uuid4(), org_id=uuid4(), run_id=uuid4(), meta_ad_ids=["adLR"],
+        ))
+        clf.classify_ad.assert_not_awaited()    # not re-classified -> no re-download
+        assert res.skipped_count == 1 and res.new_count == 0
 
 
 # ---------------------------------------------------------------------------
