@@ -30,7 +30,6 @@ from viraltracker.worker.scheduler_concurrency import (
     dispatch_job,
     make_worker_id,
     boot_id,
-    recovery_loop,
     register_job_handler,
     shutdown_requested as _concurrency_shutdown_event,
     worker_loop,
@@ -711,6 +710,71 @@ def heal_orphaned_recurring_jobs() -> List[Dict[str, Any]]:
     except Exception as e:
         logger.error(f"Error in heal_orphaned_recurring_jobs: {e}")
     return healed
+
+
+def _recovery_tick(fallback_runtime_seconds: int = 3600) -> None:
+    """One recovery pass: stuck-run reset RPC + orphaned-recurring-job heal.
+
+    All calls are synchronous; each half is independently contained so one
+    failing never blocks the other.
+    """
+    try:
+        db = get_supabase_client()
+        result = db.rpc(
+            "recover_stuck_runs_v2",
+            {"fallback_seconds": fallback_runtime_seconds},
+        ).execute()
+        rows = getattr(result, "data", None) or []
+        if rows:
+            logger.warning(
+                f"recovery thread reset {len(rows)} stuck run(s): "
+                f"{[(r.get('job_type'), r.get('runtime_seconds')) for r in rows]}"
+            )
+    except Exception:
+        logger.exception("recovery thread: recover_stuck_runs_v2 error")
+    try:
+        heal_orphaned_recurring_jobs()
+    except Exception:
+        logger.exception("recovery thread: heal_orphaned_recurring_jobs error")
+
+
+def start_recovery_thread(
+    interval_seconds: float = 60.0,
+    jitter_max_seconds: float = 30.0,
+) -> threading.Thread:
+    """Run the recovery owner in a dedicated daemon THREAD, not an asyncio task.
+
+    WHY A THREAD: job handlers are async-def but do their real work through the
+    SYNCHRONOUS Supabase / Gemini clients, so a long job (creative deep analysis
+    runs for hours) blocks the shared asyncio event loop for the length of every
+    sync call. Verified live 2026-06-09: a deep-analysis job claimed at boot
+    froze the asyncio recovery_loop AND both worker slots for 20+ minutes —
+    exactly two claim_next_job calls at boot, zero afterwards, zero
+    recover_stuck_runs_v2 calls ever. An event-loop-hosted recovery owner is
+    dead precisely when it is needed most (during long-running work). A daemon
+    thread with its own sync loop is immune to that starvation, and every call
+    the recovery owner makes is sync anyway.
+
+    Exits when the module-level `shutdown_requested` bool flips (SIGTERM
+    handler); daemon=True is the backstop on hard kill.
+    """
+    import random
+    import time as _time
+
+    def _loop():
+        _time.sleep(random.uniform(0, jitter_max_seconds))
+        while not shutdown_requested:
+            _recovery_tick()
+            slept = 0.0
+            while slept < interval_seconds and not shutdown_requested:
+                _time.sleep(1.0)
+                slept += 1.0
+        logger.info("recovery thread stopped")
+
+    t = threading.Thread(target=_loop, name="recovery-thread", daemon=True)
+    t.start()
+    logger.info(f"recovery thread started (interval={interval_seconds}s)")
+    return t
 
 
 def get_unused_templates(product_id: str, count: int) -> List[str]:
@@ -5133,13 +5197,16 @@ async def run_scheduler():
       - N worker_loop tasks (N = SCHEDULER_POOL_SIZE env var; default 2).
         Each loop: claim → dispatch via _dispatch_claimed_job → repeat.
         Claim is atomic via the claim_next_job RPC (advisory-lock-protected).
-      - One recovery_loop task with 0-30s startup jitter, ticking every 60s
-        and calling recover_stuck_runs_v2 (per-job-type cutoffs from
-        job_runtime_limits).
+      - One recovery THREAD (start_recovery_thread, 0-30s startup jitter,
+        ~60s tick) running recover_stuck_runs_v2 + heal_orphaned_recurring_jobs.
+        A thread, not an asyncio task: long handlers block the event loop with
+        sync DB/LLM calls, which starves any loop-hosted recovery exactly when
+        it's needed (verified live 2026-06-09).
       - One watchdog task that bridges the legacy `shutdown_requested` bool
         (set by the SIGTERM handler at module level) to the asyncio.Event
-        consumed by worker_loop / recovery_loop. The signal handler can't
-        safely touch asyncio objects, so the bridge runs as a regular task.
+        consumed by worker_loop. The signal handler can't safely touch asyncio
+        objects, so the bridge runs as a regular task. The recovery thread
+        reads the bool directly.
 
     Graceful shutdown:
       SIGTERM → bool set → bridge task sees it → asyncio.Event set → workers
@@ -5169,16 +5236,15 @@ async def run_scheduler():
     async def _execute_one(claimed: Dict[str, Any]) -> None:
         await _dispatch_claimed_job(db, claimed)
 
+    # Recovery owner runs in a dedicated DAEMON THREAD (stuck-run RPC + the
+    # heal_orphaned_recurring_jobs sweep). NOT an asyncio task: long handlers
+    # block the event loop with sync DB/LLM calls, which starved the asyncio
+    # recovery_loop (and the worker slots) for the whole length of a deep-
+    # analysis job — verified live 2026-06-09. See start_recovery_thread().
+    start_recovery_thread()
+
     tasks = [
         asyncio.create_task(_watch_shutdown_bool(), name="watch_shutdown"),
-        asyncio.create_task(
-            # heal_orphaned_recurring_jobs rides the recovery owner's cadence:
-            # active recurring jobs stranded with next_run_at NULL (crash /
-            # dispatch failure / bad cron / uninitialized creation) get their
-            # schedule recomputed instead of staying invisible forever.
-            recovery_loop(db, extra_sweep=heal_orphaned_recurring_jobs),
-            name="recovery_loop",
-        ),
     ]
     for slot in range(pool_size):
         tasks.append(asyncio.create_task(
