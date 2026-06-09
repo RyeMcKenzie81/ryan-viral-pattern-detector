@@ -2077,22 +2077,47 @@ st.caption(
 
 try:
     _orphan_report = get_analytics_service().get_brand_orphans(brand_id, org_id)
-    hc1, hc2, hc3 = st.columns(3)
+    hc1, hc2, hc3, hc4 = st.columns(4)
     with hc1:
         st.metric("Published", _orphan_report["published_count"])
     with hc2:
         st.metric("Orphans", _orphan_report["orphan_count"])
     with hc3:
         st.metric("Orphan rate", f"{_orphan_report['orphan_pct']}%")
+    with hc4:
+        st.metric(
+            "Exempt",
+            _orphan_report.get("exempt_count", 0),
+            help="Intentional standalone pages — excluded from orphan counts; "
+                 "the interlinker skips them entirely.",
+        )
 
     if _orphan_report["orphans"]:
         with st.expander(f"View {_orphan_report['orphan_count']} orphaned articles"):
+            st.caption(
+                "🔕 Exempt marks a page as intentionally standalone: no orphan "
+                "alarms, and the interlinker leaves it out of the link graph."
+            )
             for _o in _orphan_report["orphans"]:
-                _url = _o.get("published_url")
-                if _url:
-                    st.markdown(f"- [{_o['keyword']}]({_url})")
-                else:
-                    st.caption(f"- {_o['keyword']}")
+                _oc1, _oc2 = st.columns([5, 1])
+                with _oc1:
+                    _url = _o.get("published_url")
+                    if _url:
+                        st.markdown(f"[{_o['keyword']}]({_url})")
+                    else:
+                        st.caption(_o["keyword"])
+                with _oc2:
+                    if st.button(
+                        "🔕 Exempt",
+                        key=f"seo_dash_exempt_{_o['article_id']}",
+                        help="Intentionally standalone — stop flagging this page",
+                    ):
+                        if get_interlinking_service().set_interlink_exempt(
+                            _o["article_id"], True
+                        ):
+                            st.rerun()
+                        else:
+                            st.error("Failed — is the interlink_exempt migration applied?")
     elif _orphan_report["published_count"]:
         st.success(
             "No orphans — every published article receives at least one inbound "

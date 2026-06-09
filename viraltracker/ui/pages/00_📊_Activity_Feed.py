@@ -672,6 +672,25 @@ def _render_seo_weekly_report_card(details: Dict, key_prefix: str, event_id: str
             ]
             st.caption(f"Feeds fresh: {' · '.join(fresh_bits)}")
 
+    # Interlink health (§7 increment 1): coverage + orphan burn-down. New
+    # regressions are alarm-styled; steady state is one quiet caption line.
+    ih = details.get("interlink_health") or {}
+    if ih:
+        prev = ih.get("previous_orphan_count")
+        burn = f" (was {prev})" if prev is not None else ""
+        line = (
+            f"Interlink health: {ih.get('coverage_pct', 0)}% coverage · "
+            f"{ih.get('orphan_count', 0)} orphans{burn}"
+        )
+        if ih.get("exempt_count"):
+            line += f" · {ih.get('exempt_count')} exempt"
+        if ih.get("resolved_count"):
+            line += f" · {ih.get('resolved_count')} resolved this week"
+        if ih.get("new_alarm_count"):
+            st.error(f"🚨 {ih['new_alarm_count']} new orphan regression(s). {line}")
+        else:
+            st.caption(line)
+
     top_opps = details.get("top_opportunities", [])
     milestones = details.get("rank_milestones", [])
 
@@ -759,6 +778,23 @@ def render_event_card(event: Dict, brand_names: Dict[str, str], key_prefix: str 
         from_pos = details.get("from", "?")
         to_pos = details.get("to", "?")
         st.success(f"**{keyword}** moved from position {from_pos} to **{to_pos}**")
+
+    elif event_type == "seo_orphan_alert":
+        # Orphan regression (R4/R5): a published article the interlink
+        # machinery should have linked is still at 0 inbound. The alert
+        # lifecycle dedups — this card appears once per regression, not weekly.
+        keyword = details.get("keyword", "")
+        reason = details.get("reason", "0 inbound internal links ≥7 days after publish")
+        url = details.get("published_url")
+        if url:
+            st.markdown(f"🚨 **[{keyword}]({url})** — {reason}")
+        else:
+            st.markdown(f"🚨 **{keyword}** — {reason}")
+        st.caption(
+            "Fix: run Interlink Cluster on its cluster (SEO Clusters page), or "
+            "mark it exempt in SEO Dashboard → Content Health if it is "
+            "intentionally standalone."
+        )
 
     # Metadata for completed jobs
     elif details.get("metadata") and isinstance(details["metadata"], dict):

@@ -475,3 +475,137 @@ class TestRecoveryThread:
                 assert ticks["n"] >= 2  # ticked repeatedly before shutdown
         finally:
             sw.shutdown_requested = saved_flag
+
+
+class TestScanHealthRegression:
+    """CRITICAL (iron rule, plan §11): the interlink-health extension must
+    leave the scan's existing outputs unchanged — opportunities upserted and
+    the weekly report event emitted — even when the health section THROWS
+    (non-fatal wrap / failure budget)."""
+
+    @pytest.mark.asyncio
+    async def test_scan_completes_when_health_section_throws(self):
+        from viraltracker.worker import scheduler_worker as sw
+
+        # One GSC-connected brand; brands lookup resolves org.
+        def table_side_effect(name):
+            chain = MagicMock()
+            for m in ["select", "eq", "neq", "in_", "is_", "lt", "order", "limit"]:
+                getattr(chain, m).return_value = chain
+            if name == "brand_integrations":
+                chain.execute.return_value = MagicMock(
+                    data=[{"brand_id": "b1", "organization_id": "o1"}]
+                )
+            else:
+                chain.execute.return_value = MagicMock(data=[])
+            return chain
+
+        fake_db = MagicMock()
+        fake_db.table.side_effect = table_side_effect
+
+        fake_miner = MagicMock()
+        fake_miner.scan_opportunities.return_value = [{"keyword": "k", "opportunity_score": 50}]
+        fake_miner.upsert_opportunities.return_value = 1
+        fake_miner.update_rank_deltas.return_value = 0
+        fake_miner.generate_weekly_report.return_value = {
+            "articles_published": 3,
+            "total_impressions_delta": "+100",
+            "feed_freshness": {},
+        }
+
+        # Health section blows up (e.g. migration missing in a bad way).
+        fake_il = MagicMock()
+        fake_il.capture_coverage_snapshots.side_effect = RuntimeError("health boom")
+
+        events = []
+        job = {
+            "id": "job-1", "name": "scan", "_claimed": True,
+            "_run_id": "run-1", "_attempt_number": 1,
+            "schedule_type": "recurring", "cron_expression": "0 13 * * 0",
+        }
+
+        with patch.object(sw, "get_supabase_client", return_value=fake_db), \
+             patch("viraltracker.services.seo_pipeline.services.opportunity_miner_service.OpportunityMinerService", return_value=fake_miner), \
+             patch("viraltracker.services.seo_pipeline.services.interlinking_service.InterlinkingService", return_value=fake_il), \
+             patch.object(sw, "_emit_activity_event", side_effect=lambda **kw: events.append(kw)), \
+             patch.object(sw, "update_job_run") as upd_run, \
+             patch.object(sw, "_update_job_next_run"):
+            result = await sw.execute_seo_opportunity_scan_job(job)
+
+        # Existing outputs unchanged: opportunities upserted, report emitted,
+        # run completed — the health failure was contained.
+        assert result["success"] is True
+        fake_miner.upsert_opportunities.assert_called_once()
+        report_events = [e for e in events if e.get("event_type") == "seo_weekly_report"]
+        assert len(report_events) == 1
+        final_updates = upd_run.call_args[0][1]
+        assert final_updates["status"] == "completed"
+        # No orphan alarms emitted (health failed before alerts).
+        assert not [e for e in events if e.get("event_type") == "seo_orphan_alert"]
+
+    @pytest.mark.asyncio
+    async def test_scan_emits_orphan_alarms_when_health_finds_regressions(self):
+        from viraltracker.worker import scheduler_worker as sw
+
+        def table_side_effect(name):
+            chain = MagicMock()
+            for m in ["select", "eq", "neq", "in_", "is_", "lt", "order", "limit"]:
+                getattr(chain, m).return_value = chain
+            if name == "brand_integrations":
+                chain.execute.return_value = MagicMock(
+                    data=[{"brand_id": "b1", "organization_id": "o1"}]
+                )
+            else:
+                chain.execute.return_value = MagicMock(data=[])
+            return chain
+
+        fake_db = MagicMock()
+        fake_db.table.side_effect = table_side_effect
+
+        fake_miner = MagicMock()
+        fake_miner.scan_opportunities.return_value = []
+        fake_miner.upsert_opportunities.return_value = 0
+        fake_miner.update_rank_deltas.return_value = 0
+        fake_miner.generate_weekly_report.return_value = {
+            "articles_published": 0,
+            "total_impressions_delta": "+0",
+            "feed_freshness": {},
+        }
+
+        fake_il = MagicMock()
+        fake_il.capture_coverage_snapshots.return_value = {"captured": 2, "articles": []}
+        fake_il.process_orphan_alerts.return_value = {
+            "new_alarms": [{"article_id": "a9", "keyword": "lonely page"}],
+            "refreshed": 0, "resolved": 0, "open_total": 1,
+        }
+        fake_il.build_interlink_health.return_value = {
+            "published_count": 2, "orphan_count": 1, "exempt_count": 0,
+            "coverage_pct": 50.0, "previous_orphan_count": None,
+            "new_alarm_count": 1, "open_alert_count": 1, "resolved_count": 0,
+        }
+
+        events = []
+        job = {
+            "id": "job-1", "name": "scan", "_claimed": True,
+            "_run_id": "run-1", "_attempt_number": 1,
+            "schedule_type": "recurring", "cron_expression": "0 13 * * 0",
+        }
+
+        with patch.object(sw, "get_supabase_client", return_value=fake_db), \
+             patch("viraltracker.services.seo_pipeline.services.opportunity_miner_service.OpportunityMinerService", return_value=fake_miner), \
+             patch("viraltracker.services.seo_pipeline.services.interlinking_service.InterlinkingService", return_value=fake_il), \
+             patch.object(sw, "_emit_activity_event", side_effect=lambda **kw: events.append(kw)), \
+             patch.object(sw, "update_job_run"), \
+             patch.object(sw, "_update_job_next_run"):
+            result = await sw.execute_seo_opportunity_scan_job(job)
+
+        assert result["success"] is True
+        report_events = [e for e in events if e.get("event_type") == "seo_weekly_report"]
+        assert len(report_events) == 1
+        # Health block landed in the report payload
+        assert report_events[0]["details"]["interlink_health"]["orphan_count"] == 1
+        # Exactly one alarm-styled orphan event for the NEW regression
+        alarms = [e for e in events if e.get("event_type") == "seo_orphan_alert"]
+        assert len(alarms) == 1
+        assert alarms[0]["severity"] == "error"
+        assert alarms[0]["details"]["article_id"] == "a9"

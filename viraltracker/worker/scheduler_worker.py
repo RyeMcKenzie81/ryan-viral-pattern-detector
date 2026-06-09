@@ -6875,6 +6875,35 @@ async def execute_seo_auto_interlink_job(job: Dict) -> Dict[str, Any]:
             related_sections_added = result.get("related_sections_added", 0)
             for err in result.get("errors", []):
                 logs.append(f"  warn: {err}")
+
+            # R5: publish-time self-check — the job checks its own homework.
+            # If the cluster pass ran over >=2 published members and this
+            # article STILL has 0 inbound links, the machinery broke; alarm in
+            # minutes instead of waiting for the weekly scan. Never blocks the
+            # publish chain (the helper is non-raising) and routes through the
+            # same alert lifecycle, so the weekly scan won't re-alarm.
+            alarm = interlink_service.check_article_inbound_after_interlink(
+                article_id, brand_id,
+                cluster_published_count=result.get("articles_processed", 0),
+            )
+            if alarm:
+                logs.append(f"ORPHAN ALARM: {alarm.get('reason', '')}")
+                try:
+                    _emit_activity_event(
+                        event_type="seo_orphan_alert",
+                        severity="error",
+                        title=(
+                            f"SEO orphan: \"{alarm.get('keyword', '?')}\" got 0 "
+                            "inbound links from its cluster interlink pass"
+                        ),
+                        brand_id=brand_id,
+                        organization_id=organization_id,
+                        details=alarm,
+                        source_id=article_id,
+                        link_page="seo_dashboard",
+                    )
+                except Exception:
+                    pass  # Emission failure is non-fatal
         else:
             logs.append("Standalone article interlink (no cluster)")
             result = interlink_service.interlink(
@@ -7015,6 +7044,33 @@ async def execute_seo_opportunity_scan_job(job: Dict) -> Dict[str, Any]:
                 # 4. Generate weekly report
                 report = miner.generate_weekly_report(brand_id, org_id)
 
+                # 4b. Interlink health (§7 increment 1 — R2/R4/R6/R8):
+                # coverage snapshots + orphan-alarm lifecycle + health block.
+                # Non-fatal per the failure budget — a health failure must
+                # never block opportunity mining or the report itself.
+                _new_orphan_alarms = []
+                try:
+                    from viraltracker.services.seo_pipeline.services.interlinking_service import (
+                        InterlinkingService as _ILSvc,
+                    )
+                    _il = _ILSvc()
+                    _snap = _il.capture_coverage_snapshots(brand_id)
+                    _alerts = _il.process_orphan_alerts(brand_id, _snap["articles"])
+                    report["interlink_health"] = _il.build_interlink_health(
+                        brand_id, _snap, _alerts
+                    )
+                    _new_orphan_alarms = _alerts.get("new_alarms") or []
+                    logs.append(
+                        f"Brand {brand_id}: interlink health — "
+                        f"{_snap['captured']} snapshots, "
+                        f"{report['interlink_health']['orphan_count']} orphans, "
+                        f"{len(_new_orphan_alarms)} new alarms, "
+                        f"{_alerts.get('resolved', 0)} resolved"
+                    )
+                except Exception as e:
+                    logs.append(f"Brand {brand_id}: interlink health failed (non-fatal) — {e}")
+                    logger.error(f"Interlink health failed for brand {brand_id}: {e}")
+
                 # 5. Emit Activity Feed events
                 duration_ms = int((_time.time() - start_time) * 1000)
 
@@ -7038,6 +7094,25 @@ async def execute_seo_opportunity_scan_job(job: Dict) -> Dict[str, Any]:
                     source_id=run_id,
                     link_page="seo_dashboard",
                 )
+
+                # Orphan-regression alarms (R4): fire ONLY for NEW alert rows
+                # (open alerts were refreshed silently — the lifecycle is the
+                # dedup). These are alarm-styled because a new orphan >=7 days
+                # post-publish means the interlink machinery broke.
+                for _alarm in _new_orphan_alarms:
+                    _emit_activity_event(
+                        event_type="seo_orphan_alert",
+                        severity="error",
+                        title=(
+                            f"SEO orphan: \"{_alarm.get('keyword', '?')}\" has 0 "
+                            "inbound links ≥7 days after publish"
+                        ),
+                        brand_id=brand_id,
+                        organization_id=org_id,
+                        details=_alarm,
+                        source_id=_alarm.get("article_id"),
+                        link_page="seo_dashboard",
+                    )
 
                 # High-score opportunity events (score > 80)
                 for opp in opportunities:

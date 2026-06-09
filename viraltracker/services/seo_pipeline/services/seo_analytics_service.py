@@ -343,6 +343,7 @@ class SEOAnalyticsService:
             "published_count": 0,
             "orphan_count": 0,
             "orphan_pct": 0.0,
+            "exempt_count": 0,
             "orphans": [],
         }
 
@@ -353,7 +354,9 @@ class SEOAnalyticsService:
         # false orphans. The url check is a defensive co-filter.
         article_query = (
             self.supabase.table("seo_articles")
-            .select("id, keyword, published_url, project_id")
+            # select("*") so a missing interlink_exempt column (migration not
+            # applied yet) reads as not-exempt instead of erroring.
+            .select("*")
             .eq("brand_id", brand_id)
             .eq("status", "published")
         )
@@ -375,6 +378,10 @@ class SEOAnalyticsService:
             published_ids, source_ids=published_ids
         )
 
+        # interlink_exempt articles (intentional standalones, R6) are not
+        # orphans — they are deliberately outside the link graph. Counted
+        # separately so they stay visible without polluting the orphan rate.
+        exempt_count = sum(1 for a in published if a.get("interlink_exempt"))
         orphans = [
             {
                 "article_id": a["id"],
@@ -383,14 +390,15 @@ class SEOAnalyticsService:
                 "project_id": a.get("project_id"),
             }
             for a in published
-            if inbound.get(a["id"], 0) == 0
+            if inbound.get(a["id"], 0) == 0 and not a.get("interlink_exempt")
         ]
-        published_count = len(published)
+        published_count = len(published) - exempt_count
         orphan_count = len(orphans)
         orphan_pct = round(orphan_count / published_count * 100, 1) if published_count else 0.0
         return {
             "published_count": published_count,
             "orphan_count": orphan_count,
             "orphan_pct": orphan_pct,
+            "exempt_count": exempt_count,
             "orphans": orphans,
         }
