@@ -148,6 +148,19 @@ class PublishQueueService:
             {"status": "published"}
         ).eq("id", article_id).execute()
 
+        # Stamp the ARTICLE's published_at too — previously only the queue row
+        # got it, leaving seo_articles.published_at NULL for every autopilot
+        # publish. That NULL silently disabled the orphan-alarm age gate (R4:
+        # age None reads as 0 days, never >=7) and the opportunity miner's
+        # content-age refresh rule. Guarded with IS NULL so a re-publish never
+        # clobbers the original publish date.
+        try:
+            self.supabase.table("seo_articles").update(
+                {"published_at": now}
+            ).eq("id", article_id).is_("published_at", "null").execute()
+        except Exception as e:
+            logger.warning(f"Failed to stamp published_at for {article_id}: {e}")
+
     def mark_failed(self, queue_id: str, error_message: str) -> bool:
         """
         Mark a queue entry as failed. Returns True if retries remain.
