@@ -123,6 +123,23 @@ Explicitly NOT in the do-now set: B4-heavy (resume), B7 (threshold consolidation
 config decision), B8 (eval fail-open policy — needs a product call on fail-open vs fail-closed),
 B9-B11 (observability layer — its own effort), B12/B14 (architectural — §4).
 
+**UPDATE 2026-06-10 — B7 + B8 SHIPPED (commit 9d664fae, direct to main per Ryan):**
+- **B7** (decision: keep the SEO-optimal 50-60/150-160, single source of truth): new
+  `seo_thresholds.py` (DEFAULT + resolve_seo_thresholds(policy)); QA, checklist, and auto-fix
+  (prompt + validation) all read the resolved set; eval resolves once from policy. Brand-override
+  column `brand_content_policies.seo_thresholds` (migration `2026-06-10_seo_thresholds_policy.sql`,
+  OPTIONAL — code is graceful via select(*)). Auto-fix validation aligned to QA (reject only
+  empty / >= hard_max). KNOWN follow-up: `phase_c_optimize.txt` generation prompt still hardcodes
+  150-160 (matches the default; only diverges under a brand override — templating the static
+  prompt is a separate change).
+- **B8** (decision: split by failure mode): `_fetch_image` retries transient (timeout/5xx), fails
+  fast on 4xx; a broken image (`fetch_failed`) BLOCKS (real defect, surfaces in Exceptions); an
+  evaluator error (`eval_error`) is non-blocking (our flakiness, recorded + surfaced); empty rules
+  while enabled records a `config_note`. All three rendered in the Exceptions image-eval card.
+- Both shipped without a PR (committed to main directly by mistake; Ryan chose to leave it —
+  it was Codex-reviewed + 429 tests green). B14's eval-claim and B13's word-boundary also shipped
+  (PR #283).
+
 ### Noted while here (NOT fixed — separate follow-up)
 - `test_qa_validation_service.py` has 5 pre-existing failures (TestHeadingStructure x3,
   TestKeywordPlacement x2) that are red on `main`, unrelated to the do-now changes. Likely
