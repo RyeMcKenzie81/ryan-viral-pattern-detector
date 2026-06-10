@@ -303,6 +303,10 @@ class ShopifyPublisher(CMSPublisher):
             "admin_url": f"https://{self.store_domain}/admin/articles/{article_id}",
             "status": "draft" if draft else "published",
             "created_at": article.get("created_at"),
+            # §10 inc 2: what Shopify STORED + its own updated_at, for the
+            # manual-edit detection baseline (hash this, not what we sent).
+            "cms_body_html": article.get("body_html"),
+            "cms_updated_at": article.get("updated_at"),
         }
 
         logger.info(
@@ -353,6 +357,10 @@ class ShopifyPublisher(CMSPublisher):
             "admin_url": f"https://{self.store_domain}/admin/articles/{cms_article_id}",
             "status": "published" if article.get("published_at") else "draft",
             "updated_at": article.get("updated_at"),
+            # §10 inc 2: what Shopify STORED + its own updated_at, for the
+            # manual-edit detection baseline (hash this, not what we sent).
+            "cms_body_html": article.get("body_html"),
+            "cms_updated_at": article.get("updated_at"),
         }
 
         logger.info(f"Updated Shopify article: {cms_article_id}")
@@ -769,6 +777,22 @@ class CMSPublisherService:
         # Check if already published (update vs create)
         cms_article_id = article.get("cms_article_id")
         if cms_article_id:
+            # §10 inc 2: before overwriting an existing live article, detect a
+            # manual Shopify edit since our last push. If found, auto-lock and
+            # skip — protects the human's work without them having to remember
+            # to lock first. (First publishes skip this — nothing to protect.)
+            if self.detect_manual_edit(article, publisher):
+                self.set_content_locked(article_id, True)
+                logger.warning(
+                    f"Article {article_id} edited on Shopify since our last push; "
+                    "auto-locked and skipping publish to protect the manual edit."
+                )
+                return {
+                    "skipped": "manual_edit",
+                    "cms_article_id": cms_article_id,
+                    "published_url": article.get("published_url"),
+                    "status": article.get("status"),
+                }
             result = publisher.update(
                 cms_article_id, article_data,
                 draft=draft if not draft else None,
@@ -781,6 +805,9 @@ class CMSPublisherService:
 
         # Save CMS data back to article
         self._update_article_cms_data(article_id, result, draft)
+        # Refresh the manual-edit baseline from what Shopify stored (non-fatal,
+        # separate from the critical writeback above).
+        self.record_push_baseline(article_id, result)
 
         # Update spoke status in clusters (non-fatal)
         try:
@@ -900,6 +927,92 @@ class CMSPublisherService:
         except Exception as e:
             logger.warning(f"Failed to load author {author_id}: {e}")
         return {}
+
+    # =========================================================================
+    # MANUAL-EDIT DETECTION (§10 increment 2)
+    # =========================================================================
+
+    @staticmethod
+    def _body_hash(html: Optional[str]) -> str:
+        """sha256 of a CMS body, for manual-edit detection."""
+        import hashlib
+        return hashlib.sha256((html or "").encode("utf-8")).hexdigest()
+
+    def detect_manual_edit(self, article: Dict[str, Any], publisher) -> bool:
+        """True if the live Shopify body differs from what we last pushed —
+        the caller must then SKIP the push and auto-lock to protect the edit.
+
+        The decision is a pure BODY-HASH comparison: hash the live body and
+        compare to last_pushed_body_hash (the hash of the body Shopify STORED
+        on our last push). This is exactly right because:
+        - our own non-body writes (metafields, author, status) don't change the
+          stored body, so the hash still matches -> no false lock;
+        - a human body edit changes the stored body -> hash differs -> detected.
+        We deliberately do NOT gate on `updated_at`: comparing a TIMESTAMPTZ
+        (DB-normalized to UTC) against Shopify's store-offset timestamp as
+        strings can misorder the same instant and skip the hash check, silently
+        overwriting an edit. The hash needs no clock.
+
+        Conservative by construction — returns False (proceed) on EVERY
+        uncertainty so we never block legitimate publishing or auto-lock on
+        noise:
+        - no cms_article_id (never pushed — nothing to protect)
+        - no last_pushed_body_hash baseline (pre-migration / pre-first-push;
+          self-heals on the next push)
+        - live fetch fails (transient infra must not freeze the article)
+        """
+        cms_id = article.get("cms_article_id")
+        if not cms_id:
+            return False
+        baseline_hash = article.get("last_pushed_body_hash")
+        if not baseline_hash:
+            return False
+        try:
+            live = publisher.get_article(str(cms_id))
+        except Exception as e:
+            logger.warning(f"Manual-edit detect: live fetch failed for {cms_id}: {e}")
+            return False
+        if not live:
+            return False
+        return self._body_hash(live.get("body_html")) != baseline_hash
+
+    def set_content_locked(self, article_id: str, locked: bool) -> bool:
+        """Set/clear the content lock (UI toggle / auto-lock). Returns success."""
+        try:
+            self.supabase.table("seo_articles").update(
+                {"content_locked": locked}
+            ).eq("id", article_id).execute()
+            return True
+        except Exception as e:
+            logger.error(f"Failed to set content_locked={locked} for {article_id}: {e}")
+            return False
+
+    def record_push_baseline(self, article_id: str, push_result: Dict[str, Any]) -> None:
+        """Stamp last_pushed_at + last_pushed_body_hash from what Shopify STORED
+        on a successful push (its own updated_at + the body it returned).
+
+        Called by EVERY path that pushes a body to Shopify (publish, interlink,
+        repair) so the next detect_manual_edit compares against what we just
+        wrote — otherwise our own push reads as an "edit" and auto-locks a clean
+        article. Its OWN non-fatal try/except (and separate from the critical
+        cms-id writeback) so a missing baseline column pre-migration can't break
+        publishing.
+        """
+        try:
+            patch: Dict[str, Any] = {}
+            if push_result.get("cms_updated_at"):
+                patch["last_pushed_at"] = push_result["cms_updated_at"]
+            if push_result.get("cms_body_html") is not None:
+                patch["last_pushed_body_hash"] = self._body_hash(push_result["cms_body_html"])
+            if patch:
+                self.supabase.table("seo_articles").update(patch).eq(
+                    "id", article_id
+                ).execute()
+        except Exception as e:
+            logger.warning(
+                f"Failed to record push baseline for {article_id} "
+                f"(migration applied?): {e}"
+            )
 
     def _update_article_cms_data(
         self,
@@ -1073,10 +1186,23 @@ class CMSPublisherService:
 
             cms_id = row.get("cms_article_id")
             if push_to_cms and publisher and cms_id:
+                # §10 inc 2: a repair push is a body overwrite too — detect a
+                # manual Shopify edit first (don't clobber a hand-fix), and
+                # refresh the baseline after pushing (else this clean repair
+                # leaves a stale baseline that auto-locks the article next run).
+                if self.detect_manual_edit(row, publisher):
+                    self.set_content_locked(article_id, True)
+                    skipped += 1
+                    logger.warning(
+                        f"repair_markdown_html: article {article_id} edited on "
+                        "Shopify since our last push — auto-locked, not repushing."
+                    )
+                    continue
                 try:
-                    publisher.update(
+                    push_result = publisher.update(
                         cms_id, {"body_html": new_html}, body_only=True
                     )
+                    self.record_push_baseline(article_id, push_result)
                     repushed += 1
                 except Exception as e:
                     errors.append(f"{article_id}: CMS push failed: {e}")

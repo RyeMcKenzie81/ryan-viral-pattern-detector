@@ -2125,6 +2125,37 @@ try:
         )
     else:
         st.info("No published articles yet.")
+
+    # Locked articles (§10 inc 2): body human-owned on the CMS — set
+    # deliberately or auto-locked when a manual Shopify edit was detected.
+    # Automated re-renders / interlinks / repairs skip these until unlocked.
+    _locked = get_analytics_service().get_locked_articles(brand_id, org_id)
+    if _locked:
+        with st.expander(f"🔒 Locked articles ({len(_locked)}) — manual edits protected"):
+            st.caption(
+                "These articles' bodies are protected from automated updates "
+                "(re-render, interlink, repair). Auto-locked when we detect a "
+                "Shopify-side edit since our last push. Unlock to resume "
+                "automated updates — the next push will overwrite the live body."
+            )
+            for _la in _locked:
+                _lc1, _lc2 = st.columns([5, 1])
+                with _lc1:
+                    _u = _la.get("published_url")
+                    _when = (_la.get("last_pushed_at") or "")[:10]
+                    _suffix = f"  ·  last pushed {_when}" if _when else ""
+                    if _u:
+                        st.markdown(f"[{_la['keyword']}]({_u}){_suffix}")
+                    else:
+                        st.caption(f"{_la['keyword']}{_suffix}")
+                with _lc2:
+                    if st.button("🔓 Unlock", key=f"seo_dash_unlock_{_la['id']}",
+                                 help="Resume automated updates (next push overwrites the live body)"):
+                        from viraltracker.services.seo_pipeline.services.cms_publisher_service import CMSPublisherService
+                        if CMSPublisherService().set_content_locked(_la["id"], False):
+                            st.rerun()
+                        else:
+                            st.error("Unlock failed.")
 except Exception as e:
     st.warning(f"Could not load content health: {str(e)[:200]}")
 

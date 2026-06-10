@@ -682,3 +682,24 @@ class TestGetLinkImpact:
         by_id = {a["article_id"]: a for a in result["articles"]}
         assert by_id["a1"]["provenance"] == "approximate"  # stale end rejected
         assert by_id["a1"]["links_now"] == 0               # approx, not the stale 9
+
+
+class TestGetLockedArticles:
+    def test_lists_locked_for_brand(self, service):
+        chain = MagicMock()
+        for m in ["select", "eq", "neq", "in_", "is_", "order"]:
+            getattr(chain, m).return_value = chain
+        chain.execute.return_value = MagicMock(data=[
+            {"id": "a1", "keyword": "Locked one", "published_url": "u", "last_pushed_at": "2026-06-10T00:00:00Z"},
+        ])
+        service.supabase.table.return_value = chain
+        result = service.get_locked_articles("b1", "o1")
+        assert [a["id"] for a in result] == ["a1"]
+
+    def test_missing_column_degrades_to_empty(self, service):
+        chain = MagicMock()
+        for m in ["select", "eq"]:
+            getattr(chain, m).return_value = chain
+        chain.execute.side_effect = RuntimeError("column content_locked does not exist")
+        service.supabase.table.return_value = chain
+        assert service.get_locked_articles("b1", "o1") == []

@@ -109,3 +109,13 @@
 **Context:** Card code in `48_🔍_SEO_Dashboard.py` (Link Impact section); data method `SEOAnalyticsService.get_link_impact`; live-check `InterlinkingService.verify_live_links`. Snapshots accrue every Sunday scan (seo_opportunity_scan, next runs 06-16 and 06-23 — two data points by the due date). Plan: §11 R7/R9.
 **Depends on:** Two weekly scans having run (06-16, 06-23).
 **Added:** 2026-06-09, per Ryan's "build it now and make a note to review in 1-2 weeks."
+
+## Provider Token-Bucket Rate Limiter (layer 3 — gate before scaling past pool 4)
+**What:** A process-wide token bucket per upstream provider (`gemini`, `meta`, `openai`, `anthropic`) in `viraltracker/core/`, acquired inside `genai_client` / `core/embeddings` / the Meta request path. Caps requests-per-minute ACROSS ALL concurrent jobs, not per-job.
+**Why:** Today's three layers protect us at the current scale: claim-time concurrency caps (`job_concurrency_limits`), Gemini's per-call 429 retry + adaptive RPM limiter (ad-creation only), and the Meta SDK lock. The gap is layer 3 — caps limit JOBS, not REQUESTS, so N polite jobs can still sum to an impolite QPS. Fine now (I/O-bound mix, Gemini retry absorbs the occasional 429); becomes necessary the moment we push pool past 4, raise per-type caps, or add autopilot brands.
+**Gate (do it BEFORE, not after):** build this before `SCHEDULER_POOL_SIZE` > 4, before raising any `job_concurrency_limits.max_concurrent`, or before onboarding more brands to publish-autopilot. Whichever comes first.
+**Pros:** pool/cap changes become safe by construction instead of safe-by-tuning; one shared limiter replaces the scattered per-service ad-hoc backoff; thread-friendly now that jobs run in their own threads (#281).
+**Cons:** ~half day; needs a sane per-provider RPM number (start from each provider's documented tier, leave headroom); a global bucket adds a tiny lock on every LLM/Meta call.
+**Context:** Existing pieces to reuse/replace — `gemini_service.RateLimitError` + retry loop, the ad-creation `PipelineRateLimiter`, Meta code 4/17 detection in `meta_ads_service`. Spend governance (`UsageTracker`) is a SEPARATE concern (dollars, not RPM) — do not conflate. Surfaced during the pool-size-4 discussion 2026-06-10.
+**Depends on:** nothing; independent. Just sequence it ahead of the next scale step.
+**Added:** 2026-06-10, per Ryan — "mark the token bucket as a todo."
