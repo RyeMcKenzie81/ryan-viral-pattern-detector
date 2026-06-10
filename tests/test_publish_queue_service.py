@@ -328,3 +328,49 @@ class TestGetQueueStats:
         svc = _make_service(mock_db)
         stats = svc.get_queue_stats()
         assert all(v == 0 for v in stats.values())
+
+
+class TestMarkPublishedStampsArticle:
+    """mark_published must stamp seo_articles.published_at (NULL-guarded) —
+    leaving it NULL disabled the R4 orphan age gate and the miner's
+    content-age rule for every autopilot-published article (81/114 affected
+    before the 2026-06-10 backfill)."""
+
+    def test_article_published_at_stamped_null_guarded(self):
+        mock_db = MagicMock()
+        calls = []
+
+        def table_side_effect(name):
+            chain = MagicMock()
+
+            def _update(payload):
+                u = MagicMock()
+                rec = {"table": name, "payload": payload, "filters": []}
+
+                def _eq(col, val):
+                    rec["filters"].append(("eq", col, val))
+                    return u
+
+                def _is(col, val):
+                    rec["filters"].append(("is", col, val))
+                    return u
+
+                u.eq.side_effect = _eq
+                u.is_.side_effect = _is
+                u.execute.side_effect = lambda: calls.append(rec) or MagicMock(data=[])
+                return u
+
+            chain.update.side_effect = _update
+            return chain
+
+        mock_db.table.side_effect = table_side_effect
+        svc = _make_service(mock_db)
+        svc.mark_published("q1", "a1")
+
+        art_updates = [c for c in calls if c["table"] == "seo_articles"]
+        # Status update + published_at stamp
+        assert any("status" in c["payload"] for c in art_updates)
+        stamp = [c for c in art_updates if "published_at" in c["payload"]]
+        assert stamp, "published_at never stamped on the article"
+        # NULL-guarded: a re-publish must not clobber the original date
+        assert ("is", "published_at", "null") in stamp[0]["filters"]
