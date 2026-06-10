@@ -91,20 +91,26 @@ class TestRubricTripwire:
             "purpose: even whitespace edits force a bump.)"
         )
 
-    def test_ads_image_prompt_unchanged_by_tells_extraction(self):
-        # STATIC_AWARENESS_TELLS was EXTRACTED from the ads image prompt; the
-        # composed prompt must render byte-identical to the pre-refactor text, or
-        # every cached ad image analysis would silently go stale. An INTENTIONAL
-        # ads prompt change requires bumping image PROMPT_VERSION and re-pinning here.
-        from viraltracker.services.image_analysis_service import IMAGE_ANALYSIS_PROMPT
+    def test_ads_image_prompt_pinned_to_its_version(self):
+        # STATIC_AWARENESS_TELLS is shared with the ads image prompt; any change to
+        # the rendered ads prompt MUST ride an image PROMPT_VERSION bump (staling +
+        # re-classifying image ads), never ship silently. Pin history:
+        #   v2: dc625b6c... (pre-extraction original)
+        #   v3: e12ba69f... (hand-review tells corrections 2026-06-10: before/after
+        #       no-product -> solution_aware; multi-panel reading-order lead;
+        #       risk-reversal lead -> product_aware)
+        from viraltracker.services.image_analysis_service import (
+            IMAGE_ANALYSIS_PROMPT, PROMPT_VERSION,
+        )
         assert STATIC_AWARENESS_TELLS in IMAGE_ANALYSIS_PROMPT
+        assert PROMPT_VERSION == "v3"
         assert hashlib.sha256(IMAGE_ANALYSIS_PROMPT.encode()).hexdigest() == (
-            "dc625b6c353c700b50e81df69ebcb09807ced58d3188c6447eb2cfc18e9d0de9"
+            "e12ba69fc1a5664b7f8c3939c49583aff42ce4041edc758fb473f24f89ffec58"
         ), (
-            "IMAGE_ANALYSIS_PROMPT no longer renders byte-identical to its pinned "
-            "pre-extraction form. If this change is intentional, bump "
-            "image_analysis_service.PROMPT_VERSION (staling + re-classifying all "
-            "image ads) and update this pin."
+            "IMAGE_ANALYSIS_PROMPT changed without an image PROMPT_VERSION bump. "
+            "If this change is intentional, bump image_analysis_service."
+            "PROMPT_VERSION (staling + re-classifying all image ads) and update "
+            "this pin + the pin history above."
         )
 
     def test_every_pin_version_is_unique_hash(self):

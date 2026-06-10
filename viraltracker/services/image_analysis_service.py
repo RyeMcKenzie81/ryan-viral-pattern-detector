@@ -26,7 +26,11 @@ logger = logging.getLogger(__name__)
 # ON-IMAGE text/visual only (creative awareness; the surrounding FB caption is judged
 # separately as copy awareness). Bumping this re-analyzes image ads onto the calibrated
 # rubric (the image-version staleness gate in the classifier keys on it).
-PROMPT_VERSION = "v2"
+# v3: STATIC_AWARENESS_TELLS corrections from the template-unification hand review
+# (2026-06-10): before/after with NO identifiable product is solution_aware (was
+# product_aware — a viewer cannot presume a product they cannot see); new tells for
+# multi-panel reading-order leads and risk-reversal (guarantee) leads = product_aware.
+PROMPT_VERSION = "v3"
 
 # Image awareness model. Was hardcoded gemini-2.5-flash; promoted to a named constant
 # and upgraded to gemini-pro-latest for consistency with the video path and to honor
