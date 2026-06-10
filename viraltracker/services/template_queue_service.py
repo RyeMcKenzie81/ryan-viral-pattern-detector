@@ -24,6 +24,7 @@ from .awareness_rubric import (
     AWARENESS_RUBRIC,
     AWARENESS_LEVEL_LABELS,
     AWARENESS_LEVEL_ORDER,
+    STATIC_AWARENESS_TELLS,
     normalize_awareness_level,
 )
 from ..core.database import get_supabase_client
@@ -46,13 +47,15 @@ TEMPLATE_ANALYSIS_PROMPT_VERSION = "v2"
 # GeminiService's global default stays flash for unrelated callers.
 TEMPLATE_AWARENESS_MODEL = "gemini-pro-latest"
 
-# Rubric hash pins, keyed by template prompt version (BYTE-stable on purpose: even a
-# whitespace edit to the rubric must force a version bump). The tripwire test compares
-# the live AWARENESS_RUBRIC hash against the pin for the CURRENT version — editing the
-# rubric without bumping TEMPLATE_ANALYSIS_PROMPT_VERSION (and re-pinning) fails CI,
+# Awareness-definition hash pins, keyed by template prompt version (BYTE-stable on
+# purpose: even a whitespace edit must force a version bump). The pin covers BOTH
+# shared constants that define awareness judgment — AWARENESS_RUBRIC and
+# STATIC_AWARENESS_TELLS (sha256 of their concatenation). The tripwire test compares
+# the live hash against the pin for the CURRENT version — editing either constant
+# without bumping TEMPLATE_ANALYSIS_PROMPT_VERSION (and re-pinning) fails CI,
 # which is what keeps ads and templates on one definition forever.
 RUBRIC_HASH_PINS = {
-    "v2": "92ccf1b7c39c17e7e82c09d0e0b6d8e0330f3afe62b5b0e35c24b7f531d9ce33",
+    "v2": "ee73928ca2e07cf35156cce25e09d79aab8e05ded9089262e08b3f5c707650ec",
 }
 
 TEMPLATE_ANALYSIS_PROMPT = """Analyze this Facebook ad image and extract metadata for a template library.
@@ -80,8 +83,11 @@ Analyze the visual content and return a JSON response with the following structu
 AWARENESS — how to set `awareness_level`:
 A template is a STATIC single moment. Judge by what the DOMINANT readable on-image element
 (headline / hero text / offer in its visual hierarchy) PRESUMES the viewer knows, using the
-rubric below. If the on-image text is too small or dense to read reliably, judge what you
-can actually see and say so in the reasoning — do NOT hallucinate text.
+rubric below. Judge text AND visuals TOGETHER — never the text alone. If the on-image text
+is too small or dense to read reliably, judge what you can actually see and say so in the
+reasoning — do NOT hallucinate text.
+
+""" + STATIC_AWARENESS_TELLS + """
 
 {awareness_rubric}
 

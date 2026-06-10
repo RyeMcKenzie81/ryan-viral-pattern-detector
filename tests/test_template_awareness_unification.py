@@ -26,6 +26,7 @@ from viraltracker.services.awareness_rubric import (
     AWARENESS_LEVEL_ORDER,
     AWARENESS_INT_TO_LEVEL,
     AWARENESS_LEVEL_LABELS,
+    STATIC_AWARENESS_TELLS,
     VALID_AWARENESS_LEVELS,
     normalize_awareness_level,
 )
@@ -74,17 +75,36 @@ class TestMappingLock:
 # No-drift tripwire: rubric hash pinned to the template prompt version.
 # ---------------------------------------------------------------------------
 class TestRubricTripwire:
-    def test_rubric_hash_matches_pin_for_current_version(self):
-        live = hashlib.sha256(AWARENESS_RUBRIC.encode()).hexdigest()
+    def test_awareness_definition_hash_matches_pin_for_current_version(self):
+        # The pin covers BOTH shared awareness constants: the core rubric AND the
+        # static tells layer (bottle-as-hero etc.) — editing either must force a bump.
+        live = hashlib.sha256((AWARENESS_RUBRIC + STATIC_AWARENESS_TELLS).encode()).hexdigest()
         pinned = RUBRIC_HASH_PINS.get(TEMPLATE_ANALYSIS_PROMPT_VERSION)
         assert pinned == live, (
-            "AWARENESS_RUBRIC changed but TEMPLATE_ANALYSIS_PROMPT_VERSION was not "
-            "bumped/re-pinned. Bump the version in template_queue_service.py, add the "
-            "new hash to RUBRIC_HASH_PINS, and plan a template re-classification "
+            "AWARENESS_RUBRIC or STATIC_AWARENESS_TELLS changed but "
+            "TEMPLATE_ANALYSIS_PROMPT_VERSION was not bumped/re-pinned. Bump the "
+            "version in template_queue_service.py, add the new hash to "
+            "RUBRIC_HASH_PINS, and plan a template re-classification "
             "(stale set: WHERE awareness_prompt_version IS DISTINCT FROM the new "
             "version). This coupling is what keeps ads and templates on ONE "
             "awareness definition — do not bypass it. (Hashing is byte-stable on "
             "purpose: even whitespace edits force a bump.)"
+        )
+
+    def test_ads_image_prompt_unchanged_by_tells_extraction(self):
+        # STATIC_AWARENESS_TELLS was EXTRACTED from the ads image prompt; the
+        # composed prompt must render byte-identical to the pre-refactor text, or
+        # every cached ad image analysis would silently go stale. An INTENTIONAL
+        # ads prompt change requires bumping image PROMPT_VERSION and re-pinning here.
+        from viraltracker.services.image_analysis_service import IMAGE_ANALYSIS_PROMPT
+        assert STATIC_AWARENESS_TELLS in IMAGE_ANALYSIS_PROMPT
+        assert hashlib.sha256(IMAGE_ANALYSIS_PROMPT.encode()).hexdigest() == (
+            "dc625b6c353c700b50e81df69ebcb09807ced58d3188c6447eb2cfc18e9d0de9"
+        ), (
+            "IMAGE_ANALYSIS_PROMPT no longer renders byte-identical to its pinned "
+            "pre-extraction form. If this change is intentional, bump "
+            "image_analysis_service.PROMPT_VERSION (staling + re-classifying all "
+            "image ads) and update this pin."
         )
 
     def test_every_pin_version_is_unique_hash(self):
@@ -101,6 +121,7 @@ class TestPromptContract:
             page_name="Brand", link_url="https://x", awareness_rubric=AWARENESS_RUBRIC,
         )
         assert AWARENESS_RUBRIC in rendered          # no fork, no paraphrase
+        assert STATIC_AWARENESS_TELLS in rendered    # the shared static-tells layer too
         assert "Choose ONE: unaware | problem_aware | solution_aware | product_aware | most_aware" in rendered
         assert "<integer 1-5>" not in rendered        # the old bare scale is gone
 
