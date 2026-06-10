@@ -241,24 +241,34 @@ class TestMetaDescription:
 
 
 class TestHeadingStructure:
-    def test_good_structure(self, service):
+    # The check was redesigned: the CMS (Shopify) renders the article TITLE as
+    # the page H1, so the body should have NO H1 — a body H1 is flagged, and
+    # "no body H1" is the healthy state. (Tests updated 2026-06-10; were stale.)
+    def test_good_structure_no_body_h1(self, service):
         from bs4 import BeautifulSoup
-        md = "# Main Title\n\n## Section One\n\n## Section Two\n\n### Subsection\n"
+        md = "## Section One\n\n## Section Two\n\n### Subsection\n"
         soup = BeautifulSoup("", "html.parser")
         check = service._check_heading_structure(soup, md)
         assert check.passed is True
-        assert check.details["h1"] == 1
+        assert check.details["h1_in_body"] == 0
         assert check.details["h2"] == 2
 
-    def test_no_h1(self, service):
+    def test_body_h1_flagged(self, service):
+        from bs4 import BeautifulSoup
+        md = "# Main Title\n\n## Section One\n\n## Section Two\n"
+        soup = BeautifulSoup("", "html.parser")
+        check = service._check_heading_structure(soup, md)
+        assert check.passed is False
+        assert "H1 found in body" in check.message
+
+    def test_no_h1_in_body_is_ok(self, service):
         from bs4 import BeautifulSoup
         md = "## Only H2 headings\n\n## Another H2\n"
         soup = BeautifulSoup("", "html.parser")
         check = service._check_heading_structure(soup, md)
-        assert check.passed is False
-        assert check.severity == "error"
+        assert check.passed is True  # CMS provides the H1
 
-    def test_multiple_h1(self, service):
+    def test_multiple_h1_flagged(self, service):
         from bs4 import BeautifulSoup
         md = "# First H1\n\n# Second H1\n\n## Section\n"
         soup = BeautifulSoup("", "html.parser")
@@ -267,17 +277,17 @@ class TestHeadingStructure:
 
     def test_no_h2(self, service):
         from bs4 import BeautifulSoup
-        md = "# Title Only\n\nJust paragraphs with no sections.\n"
+        md = "Just paragraphs with no sections.\n"
         soup = BeautifulSoup("", "html.parser")
         check = service._check_heading_structure(soup, md)
         assert check.passed is False
 
-    def test_html_headings_detected(self, service):
+    def test_html_body_h1_flagged(self, service):
         from bs4 import BeautifulSoup
         html = "<h1>Title</h1><h2>Section</h2><h2>Section 2</h2>"
         soup = BeautifulSoup(html, "html.parser")
         check = service._check_heading_structure(soup, "")
-        assert check.passed is True
+        assert check.passed is False  # body H1 duplicates the CMS title H1
 
 
 # ---------------------------------------------------------------------------
@@ -353,7 +363,7 @@ class TestKeywordPlacement:
             soup=soup,
         )
         assert check.passed is False
-        assert "title" in check.details["missing"]
+        assert "title/h1" in check.details["missing"]  # key is "title/h1"
 
     def test_no_keyword_skips(self, service):
         from bs4 import BeautifulSoup
@@ -372,7 +382,24 @@ class TestKeywordPlacement:
             content_md=md,
             soup=soup,
         )
-        assert check.details["placements"]["h1"] is True
+        assert check.details["placements"]["title/h1"] is True  # key is "title/h1"
+
+    def test_keyword_whole_word_not_substring(self, service):
+        """B13: a keyword must match as a whole word — 'game' present only as
+        'games' must NOT count as placed."""
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup("", "html.parser")
+        check = service._check_keyword_placement(
+            keyword="game",
+            seo_title="Best Board Games for Kids",       # 'games', not 'game'
+            meta_description="The top board games to play.",  # 'games'
+            content_md="Board games are great for families.\n",  # 'games'
+            soup=soup,
+        )
+        # Substring matching would have marked all three present; whole-word
+        # must report the keyword missing everywhere.
+        assert check.passed is False
+        assert set(check.details["missing"]) == {"title/h1", "meta_description", "first_paragraph"}
 
 
 # ---------------------------------------------------------------------------

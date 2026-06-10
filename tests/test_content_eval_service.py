@@ -343,3 +343,83 @@ class TestFetchImage:
         b64, media_type = svc._fetch_image("https://example.com/img.jpg")
         assert b64 is None
         assert media_type is None
+
+
+class TestClaimForEval:
+    """B14: atomic per-article claim prevents two concurrent eval runs from
+    double-processing the same article."""
+
+    def _svc(self, update_returns):
+        from viraltracker.services.seo_pipeline.services.content_eval_service import ContentEvalService
+        db = MagicMock()
+        chain = MagicMock()
+        for m in ["update", "eq", "in_", "or_"]:
+            getattr(chain, m).return_value = chain
+        chain.execute.return_value = MagicMock(data=update_returns)
+        db.table.return_value = chain
+        svc = ContentEvalService(supabase_client=db)
+        return svc, chain
+
+    def test_winner_claims(self):
+        svc, _ = self._svc([{"id": "a1"}])   # update matched the row
+        assert svc.claim_for_eval("a1") is True
+
+    def test_loser_skips(self):
+        svc, _ = self._svc([])               # row already claimed -> 0 updated
+        assert svc.claim_for_eval("a1") is False
+
+    def test_claim_filters_pending_and_unclaimed(self):
+        svc, chain = self._svc([{"id": "a1"}])
+        svc.claim_for_eval("a1")
+        # only pending statuses are claimable
+        chain.in_.assert_any_call("status", ["qa_passed", "optimized"])
+        # null-or-stale claim guard present
+        assert chain.or_.called
+
+    def test_missing_column_degrades_to_proceed(self):
+        from viraltracker.services.seo_pipeline.services.content_eval_service import ContentEvalService
+        db = MagicMock()
+        chain = MagicMock()
+        for m in ["update", "eq", "in_", "or_"]:
+            getattr(chain, m).return_value = chain
+        chain.execute.side_effect = RuntimeError("column eval_claimed_at does not exist")
+        db.table.return_value = chain
+        svc = ContentEvalService(supabase_client=db)
+        # pre-migration: proceed (return True) rather than block evaluation
+        assert svc.claim_for_eval("a1") is True
+
+
+class TestReleaseEvalClaim:
+    def test_release_clears_claim(self):
+        from viraltracker.services.seo_pipeline.services.content_eval_service import ContentEvalService
+        db = MagicMock()
+        chain = MagicMock()
+        chain.update.return_value = chain
+        chain.eq.return_value = chain
+        db.table.return_value = chain
+        ContentEvalService(supabase_client=db).release_eval_claim("a1")
+        chain.update.assert_called_once_with({"eval_claimed_at": None})
+
+    def test_release_nonfatal(self):
+        from viraltracker.services.seo_pipeline.services.content_eval_service import ContentEvalService
+        db = MagicMock()
+        db.table.side_effect = RuntimeError("column missing")
+        ContentEvalService(supabase_client=db).release_eval_claim("a1")  # must not raise
+
+    def test_claim_or_filter_quotes_timestamp(self):
+        """codex P1: the stale-cutoff timestamp in the PostgREST or_ filter must
+        be double-quoted (':' '+' '.' are reserved) or the request errors."""
+        svc, chain = self._svc([{"id": "a1"}])
+        svc.claim_for_eval("a1")
+        or_arg = chain.or_.call_args[0][0]
+        assert 'eval_claimed_at.lt."' in or_arg and or_arg.rstrip().endswith('"')
+
+    def _svc(self, update_returns):
+        from viraltracker.services.seo_pipeline.services.content_eval_service import ContentEvalService
+        db = MagicMock()
+        chain = MagicMock()
+        for m in ["update", "eq", "in_", "or_"]:
+            getattr(chain, m).return_value = chain
+        chain.execute.return_value = MagicMock(data=update_returns)
+        db.table.return_value = chain
+        return ContentEvalService(supabase_client=db), chain

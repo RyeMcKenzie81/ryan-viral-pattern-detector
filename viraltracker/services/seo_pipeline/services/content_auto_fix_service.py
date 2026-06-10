@@ -253,7 +253,11 @@ class ContentAutoFixService:
 
                 if "first_paragraph" in ai_result.get("fixes", {}):
                     new_para = ai_result["fixes"]["first_paragraph"]
-                    if keyword.lower() in new_para.lower():
+                    # B13: whole-word match, consistent with QA's placement
+                    # check — else auto-fix accepts a paragraph QA will still
+                    # reject (e.g. "games" for keyword "game"), looping forever.
+                    from viraltracker.services.seo_pipeline.text_match import keyword_in_text
+                    if keyword_in_text(keyword, new_para):
                         old_para = tier2_needed["first_paragraph"]
                         content_md = content_md.replace(old_para, new_para, 1)
                         report["fixes_applied"].append({
