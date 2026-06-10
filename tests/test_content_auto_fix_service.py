@@ -151,13 +151,15 @@ class TestValidation:
         result = service._validate_seo_title("Cooperative Games for Siblings Guide", "cooperative games")
         assert result["valid"]
 
-    def test_title_too_short(self, service):
+    def test_short_title_now_accepted(self, service):
+        # B7: validation mirrors QA — a short non-empty title is ACCEPTED (QA
+        # warns on it; next cycle re-fixes) rather than discarded back to the
+        # worse original. Only empty / >= hard cap are rejected.
         result = service._validate_seo_title("Short", "games")
-        assert not result["valid"]
-        assert "too short" in result["reason"]
+        assert result["valid"]
 
     def test_title_too_long(self, service):
-        result = service._validate_seo_title("A" * 75, "games")
+        result = service._validate_seo_title("A" * 75, "games")  # >= hard_max 70
         assert not result["valid"]
         assert "too long" in result["reason"]
 
@@ -169,12 +171,12 @@ class TestValidation:
         result = service._validate_meta_description("A" * 155)
         assert result["valid"]
 
-    def test_meta_too_short(self, service):
-        result = service._validate_meta_description("Too short")
-        assert not result["valid"]
+    def test_short_meta_now_accepted(self, service):
+        result = service._validate_meta_description("Too short")  # short but non-empty
+        assert result["valid"]
 
     def test_meta_too_long(self, service):
-        result = service._validate_meta_description("A" * 210)
+        result = service._validate_meta_description("A" * 210)  # >= hard_max 200
         assert not result["valid"]
 
 

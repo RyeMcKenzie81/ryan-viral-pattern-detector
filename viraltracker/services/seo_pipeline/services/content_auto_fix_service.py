@@ -37,6 +37,10 @@ class ContentAutoFixService:
         self._supabase = supabase_client
         self._usage_tracker = usage_tracker
         self._anthropic = None
+        # B7: resolved per fix_article from the brand policy; default to the
+        # shared module thresholds so prompt + validation never disagree with QA.
+        from viraltracker.services.seo_pipeline.seo_thresholds import DEFAULT_SEO_THRESHOLDS
+        self._thresholds = dict(DEFAULT_SEO_THRESHOLDS)
 
     @property
     def supabase(self):
@@ -61,6 +65,7 @@ class ContentAutoFixService:
         article_id: str,
         brand_id: str,
         organization_id: str,
+        thresholds: Optional[Dict[str, int]] = None,
     ) -> Dict[str, Any]:
         """
         Run all applicable auto-fixes on an article.
@@ -106,9 +111,32 @@ class ContentAutoFixService:
             })
             return report
 
+        # B7: use the brand-resolved thresholds for QA, the AI prompt, and
+        # output validation so all three agree on the target length. Resolve
+        # from the brand policy when the caller didn't pass an explicit set
+        # (autopilot path) — non-fatal, defaults already loaded in __init__.
+        if thresholds:
+            self._thresholds = thresholds
+        else:
+            try:
+                from viraltracker.services.seo_pipeline.seo_thresholds import resolve_seo_thresholds
+                # select("*") (not the narrow column) so a brand_content_policies
+                # table WITHOUT the optional seo_thresholds column degrades to
+                # defaults instead of erroring on a missing column.
+                policy = (
+                    self.supabase.table("brand_content_policies")
+                    .select("*")
+                    .eq("brand_id", brand_id)
+                    .limit(1)
+                    .execute()
+                ).data
+                self._thresholds = resolve_seo_thresholds(policy[0] if policy else None)
+            except Exception as e:
+                logger.warning(f"Auto-fix threshold resolve failed; using defaults: {e}")
+
         # Run QA checks to identify what needs fixing
         from viraltracker.services.seo_pipeline.services.qa_validation_service import QAValidationService
-        qa_svc = QAValidationService()
+        qa_svc = QAValidationService(thresholds=self._thresholds)
 
         content_md = article.get("content_markdown") or article.get("phase_c_output") or article.get("phase_b_output") or ""
         seo_title = article.get("seo_title") or article.get("title") or ""
@@ -470,6 +498,10 @@ class ContentAutoFixService:
             or {"error": "..."} on failure
         """
         reasons = reasons or {}
+        # B7: target ranges from the shared thresholds, not hardcoded literals.
+        _t = self._thresholds
+        title_range = f"{_t['title_ideal_min']}-{_t['title_ideal_max']}"
+        meta_range = f"{_t['meta_ideal_min']}-{_t['meta_ideal_max']}"
         prompt_parts = [
             f"You are an SEO optimization expert. Fix the following fields for an article targeting the keyword \"{keyword}\".",
             f"CRITICAL: The keyword \"{keyword}\" MUST appear in every field you return. This is the #1 priority.",
@@ -483,13 +515,13 @@ class ContentAutoFixService:
                 prompt_parts.append(
                     f"SEO TITLE (current: \"{fields_to_fix['seo_title']}\"): "
                     f"The keyword \"{keyword}\" is missing from the title. "
-                    f"Rewrite to naturally include the keyword while keeping a similar length (50-60 chars). "
+                    f"Rewrite to naturally include the keyword while keeping a similar length ({title_range} chars). "
                     f"The keyword should appear near the front."
                 )
             else:
                 prompt_parts.append(
                     f"SEO TITLE (current: \"{fields_to_fix['seo_title']}\"): "
-                    f"Rewrite to be 50-60 characters. Include the keyword \"{keyword}\" near the front. "
+                    f"Rewrite to be {title_range} characters. Include the keyword \"{keyword}\" near the front. "
                     f"Preserve the meaning. Make it compelling for search results."
                 )
             prompt_parts.append("")
@@ -502,19 +534,19 @@ class ContentAutoFixService:
                     prompt_parts.append(
                         f"META DESCRIPTION (current: \"{current}\"): "
                         f"The keyword \"{keyword}\" is missing. "
-                        f"Rewrite to naturally include the keyword while keeping 150-160 characters. "
+                        f"Rewrite to naturally include the keyword while keeping {meta_range} characters. "
                         f"Use action-oriented, natural language."
                     )
                 else:
                     prompt_parts.append(
                         f"META DESCRIPTION (current: \"{current}\"): "
-                        f"Rewrite to be 150-160 characters. Include the keyword \"{keyword}\". "
+                        f"Rewrite to be {meta_range} characters. Include the keyword \"{keyword}\". "
                         f"Use action-oriented, natural language."
                     )
             else:
                 prompt_parts.append(
                     f"META DESCRIPTION (missing): "
-                    f"Write a meta description of 150-160 characters for this article about \"{keyword}\". "
+                    f"Write a meta description of {meta_range} characters for this article about \"{keyword}\". "
                     f"Include the keyword. Use action-oriented, natural language."
                 )
             prompt_parts.append("")
@@ -584,25 +616,26 @@ class ContentAutoFixService:
     # =========================================================================
 
     def _validate_seo_title(self, title: str, keyword: str) -> Dict[str, Any]:
-        """Validate AI-generated SEO title."""
+        """Validate AI-generated SEO title. B7: reject only empty or over the
+        hard cap (mirrors QA, which errors only on empty / >= title_hard_max) —
+        a slightly-short rewrite is kept (QA warns, next cycle re-fixes) rather
+        than discarded back to the original."""
         if not title or not title.strip():
             return {"valid": False, "reason": "Empty title returned"}
         length = len(title.strip())
-        if length < 30:
-            return {"valid": False, "reason": f"Title too short: {length} chars (min 30)"}
-        if length > 70:
-            return {"valid": False, "reason": f"Title too long: {length} chars (max 70)"}
+        hard = self._thresholds["title_hard_max"]
+        if length >= hard:
+            return {"valid": False, "reason": f"Title too long: {length} chars (max {hard - 1})"}
         return {"valid": True}
 
     def _validate_meta_description(self, description: str) -> Dict[str, Any]:
-        """Validate AI-generated meta description."""
+        """Validate AI-generated meta description (B7: empty or over hard cap)."""
         if not description or not description.strip():
             return {"valid": False, "reason": "Empty description returned"}
         length = len(description.strip())
-        if length < 120:
-            return {"valid": False, "reason": f"Description too short: {length} chars (min 120)"}
-        if length > 200:
-            return {"valid": False, "reason": f"Description too long: {length} chars (max 200)"}
+        hard = self._thresholds["meta_hard_max"]
+        if length >= hard:
+            return {"valid": False, "reason": f"Description too long: {length} chars (max {hard - 1})"}
         return {"valid": True}
 
     # =========================================================================

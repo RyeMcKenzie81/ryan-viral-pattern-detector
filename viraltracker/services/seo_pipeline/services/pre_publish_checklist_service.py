@@ -34,8 +34,13 @@ class PrePublishChecklistService:
 
     UNIQUENESS_THRESHOLD = 0.85  # Block if >=85% similar to existing article
 
-    def __init__(self, supabase_client=None):
+    def __init__(self, supabase_client=None, thresholds=None):
         self._supabase = supabase_client
+        # B7: title/meta length thresholds share the single source of truth with
+        # QA + auto-fix (was an independent 30-70 / 70-200 that disagreed with
+        # QA's 50-60 / 150-160). Caller (eval) passes the brand-resolved set.
+        from viraltracker.services.seo_pipeline.seo_thresholds import DEFAULT_SEO_THRESHOLDS
+        self.thresholds = thresholds or dict(DEFAULT_SEO_THRESHOLDS)
 
     @property
     def supabase(self):
@@ -129,18 +134,20 @@ class PrePublishChecklistService:
     def _check_seo_title(self, article: Dict) -> Dict:
         title = article.get("seo_title", "") or ""
         length = len(title)
-        if 30 <= length <= 70:
+        lo, hi = self.thresholds["title_ideal_min"], self.thresholds["title_ideal_max"]
+        if lo <= length <= hi:
             return {"name": "seo_title", "passed": True, "severity": "warning", "message": ""}
         return {"name": "seo_title", "passed": False, "severity": "warning",
-                "message": f"SEO title length {length} (ideal: 50-60 chars)"}
+                "message": f"SEO title length {length} (ideal: {lo}-{hi} chars)"}
 
     def _check_meta_description(self, article: Dict) -> Dict:
         desc = article.get("meta_description", "") or ""
         length = len(desc)
-        if 70 <= length <= 200:
+        lo, hi = self.thresholds["meta_ideal_min"], self.thresholds["meta_ideal_max"]
+        if lo <= length <= hi:
             return {"name": "meta_description", "passed": True, "severity": "warning", "message": ""}
         return {"name": "meta_description", "passed": False, "severity": "warning",
-                "message": f"Meta description length {length} (ideal: 150-160 chars)"}
+                "message": f"Meta description length {length} (ideal: {lo}-{hi} chars)"}
 
     def _check_schema_markup(self, article: Dict) -> Dict:
         schema = article.get("schema_markup")
@@ -228,7 +235,8 @@ class PrePublishChecklistService:
         """Run stateless QA checks (does NOT mutate article status)."""
         try:
             from viraltracker.services.seo_pipeline.services.qa_validation_service import QAValidationService
-            qa_svc = QAValidationService(supabase_client=self.supabase)
+            # B7: same thresholds as the rest of this checklist run.
+            qa_svc = QAValidationService(supabase_client=self.supabase, thresholds=self.thresholds)
 
             # Load article content for stateless checks
             article = self._load_article(article_id)

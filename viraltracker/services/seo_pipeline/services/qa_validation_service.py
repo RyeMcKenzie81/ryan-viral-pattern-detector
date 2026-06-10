@@ -36,15 +36,23 @@ class QAValidationService:
     """Service for running pre-publish QA checks on SEO articles."""
 
     MIN_WORD_COUNT = 500
-    IDEAL_TITLE_MIN = 50
-    IDEAL_TITLE_MAX = 60
-    IDEAL_META_MIN = 150
-    IDEAL_META_MAX = 160
     IDEAL_FLESCH_MIN = 60.0
     IDEAL_FLESCH_MAX = 70.0
+    # B7: title/meta length thresholds now live in the shared seo_thresholds
+    # module (single source of truth across QA, checklist, and auto-fix). These
+    # class constants stay as back-compat aliases for the DEFAULTS.
+    from viraltracker.services.seo_pipeline.seo_thresholds import DEFAULT_SEO_THRESHOLDS as _DEF
+    IDEAL_TITLE_MIN = _DEF["title_ideal_min"]
+    IDEAL_TITLE_MAX = _DEF["title_ideal_max"]
+    IDEAL_META_MIN = _DEF["meta_ideal_min"]
+    IDEAL_META_MAX = _DEF["meta_ideal_max"]
 
-    def __init__(self, supabase_client=None):
+    def __init__(self, supabase_client=None, thresholds=None):
         self._supabase = supabase_client
+        # B7: per-brand override resolved by the caller (eval/auto-fix); falls
+        # back to the module defaults for standalone use.
+        from viraltracker.services.seo_pipeline.seo_thresholds import DEFAULT_SEO_THRESHOLDS
+        self.thresholds = thresholds or dict(DEFAULT_SEO_THRESHOLDS)
 
     @property
     def supabase(self):
@@ -221,20 +229,25 @@ class QAValidationService:
                 details={"length": 0},
             )
 
-        if self.IDEAL_TITLE_MIN <= length <= self.IDEAL_TITLE_MAX:
+        lo, hi, hard = (
+            self.thresholds["title_ideal_min"],
+            self.thresholds["title_ideal_max"],
+            self.thresholds["title_hard_max"],
+        )
+        if lo <= length <= hi:
             return QACheck(
                 name="title_length",
                 passed=True,
-                message=f"Title length: {length} chars (ideal: {self.IDEAL_TITLE_MIN}-{self.IDEAL_TITLE_MAX})",
+                message=f"Title length: {length} chars (ideal: {lo}-{hi})",
                 details={"length": length},
             )
 
-        severity = "warning" if length < 70 else "error"
+        severity = "warning" if length < hard else "error"
         return QACheck(
             name="title_length",
             passed=False,
             severity=severity,
-            message=f"Title length: {length} chars (ideal: {self.IDEAL_TITLE_MIN}-{self.IDEAL_TITLE_MAX})",
+            message=f"Title length: {length} chars (ideal: {lo}-{hi})",
             details={"length": length},
         )
 
@@ -251,20 +264,25 @@ class QAValidationService:
                 details={"length": 0},
             )
 
-        if self.IDEAL_META_MIN <= length <= self.IDEAL_META_MAX:
+        lo, hi, hard = (
+            self.thresholds["meta_ideal_min"],
+            self.thresholds["meta_ideal_max"],
+            self.thresholds["meta_hard_max"],
+        )
+        if lo <= length <= hi:
             return QACheck(
                 name="meta_description",
                 passed=True,
-                message=f"Meta description: {length} chars (ideal: {self.IDEAL_META_MIN}-{self.IDEAL_META_MAX})",
+                message=f"Meta description: {length} chars (ideal: {lo}-{hi})",
                 details={"length": length},
             )
 
-        severity = "warning" if length < 200 else "error"
+        severity = "warning" if length < hard else "error"
         return QACheck(
             name="meta_description",
             passed=False,
             severity=severity,
-            message=f"Meta description: {length} chars (ideal: {self.IDEAL_META_MIN}-{self.IDEAL_META_MAX})",
+            message=f"Meta description: {length} chars (ideal: {lo}-{hi})",
             details={"length": length},
         )
 

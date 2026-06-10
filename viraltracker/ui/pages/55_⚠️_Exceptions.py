@@ -361,9 +361,24 @@ with tab1:
 
                 # Image Eval Results
                 image_result = _parse_json_field(eval_result.get("image_eval_result"))
-                if image_result and image_result.get("evaluations"):
+                if image_result and (image_result.get("evaluations") or image_result.get("config_note")):
                     st.markdown("**Image Evaluation:**")
-                    for img_eval in image_result["evaluations"]:
+                    # B8: config gap — eval "on" but no rules => images unvalidated.
+                    if image_result.get("config_note"):
+                        st.warning(f"⚙️ {image_result['config_note']}")
+                    for img_eval in image_result.get("evaluations", []):
+                        # B8: distinguish a broken image (real defect, blocks) from
+                        # our evaluator's own error (non-blocking) from a verdict.
+                        _st = img_eval.get("status")
+                        if _st == "fetch_failed":
+                            st.error(f"🖼️ **{img_eval.get('image_type', 'image').title()}** — broken / unfetchable: {img_eval.get('image_url', '?')}")
+                            continue
+                        if _st == "eval_error":
+                            st.warning(
+                                f"🖼️ **{img_eval.get('image_type', 'image').title()}** — could not be evaluated "
+                                f"(our vision check errored, not the article): {str(img_eval.get('reason', ''))[:120]}"
+                            )
+                            continue
                         img_status = "✅" if img_eval.get("passed") else ("❓" if img_eval.get("uncertain") else "❌")
                         st.markdown(f"{img_status} **{img_eval.get('image_type', 'image').title()}**")
 

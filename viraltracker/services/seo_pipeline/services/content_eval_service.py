@@ -14,10 +14,12 @@ import base64
 import hashlib
 import json
 import logging
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 import httpx
+from httpx import HTTPStatusError  # imported by name so `except` survives tests that patch the httpx module
 
 logger = logging.getLogger(__name__)
 
@@ -73,14 +75,20 @@ class ContentEvalService:
         # Load brand content policy
         policy = self._get_policy(brand_id)
 
+        # B7: resolve the single source of truth for length thresholds once
+        # (brand override or defaults) and hand the SAME set to QA + checklist
+        # so they can't disagree.
+        from viraltracker.services.seo_pipeline.seo_thresholds import resolve_seo_thresholds
+        thresholds = resolve_seo_thresholds(policy)
+
         # Run QA checks (stateless — does NOT mutate article status)
         from viraltracker.services.seo_pipeline.services.qa_validation_service import QAValidationService
-        qa_service = QAValidationService(supabase_client=self.supabase)
+        qa_service = QAValidationService(supabase_client=self.supabase, thresholds=thresholds)
         qa_result = self._run_qa_checks(qa_service, article_id)
 
         # Run pre-publish checklist
         from viraltracker.services.seo_pipeline.services.pre_publish_checklist_service import PrePublishChecklistService
-        checklist_service = PrePublishChecklistService(supabase_client=self.supabase)
+        checklist_service = PrePublishChecklistService(supabase_client=self.supabase, thresholds=thresholds)
         checklist_result = checklist_service.run_checklist(article_id)
 
         # Run AI image evaluation if enabled
@@ -91,6 +99,20 @@ class ContentEvalService:
             if rules:
                 image_eval_result = self._evaluate_images(
                     article_id, rules, min_confidence
+                )
+            else:
+                # B8: image eval is "enabled" but no rules are configured, so
+                # images pass trivially with ZERO validation. Surface that as a
+                # config note (recorded, non-blocking) so it's not invisible.
+                image_eval_result = {
+                    "images_evaluated": 0, "images_passed": 0, "images_failed": 0,
+                    "uncertain_count": 0, "fetch_failures": 0, "eval_errors": 0,
+                    "config_note": "image_eval_enabled but no image_eval_rules configured — images were NOT validated",
+                    "evaluations": [],
+                }
+                logger.warning(
+                    f"Article {article_id}: image eval enabled but no rules — "
+                    "images published without validation."
                 )
 
         # Aggregate verdict
@@ -441,6 +463,8 @@ class ContentEvalService:
         images_passed = 0
         images_failed = 0
         uncertain_count = 0
+        fetch_failures = 0   # B8: broken images — block (real defect)
+        eval_errors = 0      # B8: our evaluator hiccuped — surface, don't block
 
         article_context = f"Article: {article.get('title', 'Unknown')} | Keyword: {article.get('keyword', '')}"
 
@@ -448,8 +472,14 @@ class ContentEvalService:
             eval_result = self._evaluate_single_image(
                 img_info["url"], img_info["type"], rules, min_confidence, article_context
             )
-            if eval_result is None:
-                # API failure — skip this image (transient error)
+            status = (eval_result or {}).get("status")
+            if status == "fetch_failed":
+                fetch_failures += 1
+                evaluations.append(eval_result)
+                continue
+            if status == "eval_error":
+                eval_errors += 1
+                evaluations.append(eval_result)
                 continue
 
             evaluations.append(eval_result)
@@ -461,10 +491,13 @@ class ContentEvalService:
                 images_failed += 1
 
         return {
-            "images_evaluated": len(evaluations),
+            # Only genuinely-evaluated images count toward the verdict's checks.
+            "images_evaluated": images_passed + images_failed + uncertain_count,
             "images_passed": images_passed,
             "images_failed": images_failed,
             "uncertain_count": uncertain_count,
+            "fetch_failures": fetch_failures,
+            "eval_errors": eval_errors,
             "evaluations": evaluations,
         }
 
@@ -481,11 +514,14 @@ class ContentEvalService:
 
         Returns None on transient API failure (image will be skipped, not failed).
         """
-        # Fetch image as base64
+        # Fetch image as base64. B8: a genuinely unfetchable image (after the
+        # transient retries inside _fetch_image) is a REAL content defect — the
+        # reader sees a broken image — so it FAILS the article rather than being
+        # silently skipped.
         image_base64, media_type = self._fetch_image(image_url)
         if not image_base64:
-            logger.warning(f"Could not fetch image: {image_url}")
-            return None
+            logger.warning(f"Could not fetch image (broken): {image_url}")
+            return {"status": "fetch_failed", "image_url": image_url, "image_type": image_type}
 
         # Build rules text
         rules_text = "\n".join(
@@ -515,51 +551,60 @@ Respond with ONLY a JSON array, no other text:
   }}
 ]"""
 
-        try:
-            response = self.anthropic.messages.create(
-                model="claude-sonnet-4-20250514",
-                max_tokens=1024,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "image",
-                                "source": {
-                                    "type": "base64",
-                                    "media_type": media_type,
-                                    "data": image_base64,
+        # B8: the image fetched fine; a failure HERE is OUR evaluator's problem,
+        # not the article's. Retry transient/parse errors, then return an
+        # 'eval_error' (recorded + surfaced, but NON-blocking) rather than
+        # silently skipping or failing the article on our own flakiness.
+        rule_results = None
+        last_err = None
+        for attempt in range(3):
+            try:
+                response = self.anthropic.messages.create(
+                    model="claude-sonnet-4-20250514",
+                    max_tokens=1024,
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "image",
+                                    "source": {
+                                        "type": "base64",
+                                        "media_type": media_type,
+                                        "data": image_base64,
+                                    },
                                 },
-                            },
-                            {
-                                "type": "text",
-                                "text": prompt,
-                            },
-                        ],
-                    }
-                ],
-            )
+                                {
+                                    "type": "text",
+                                    "text": prompt,
+                                },
+                            ],
+                        }
+                    ],
+                )
 
-            response_text = response.content[0].text.strip()
-            # Clean markdown fences if present
-            if response_text.startswith("```"):
-                response_text = response_text.split("```")[1]
-                if response_text.startswith("json"):
-                    response_text = response_text[4:]
-                response_text = response_text.strip()
+                response_text = response.content[0].text.strip()
+                # Clean markdown fences if present
+                if response_text.startswith("```"):
+                    response_text = response_text.split("```")[1]
+                    if response_text.startswith("json"):
+                        response_text = response_text[4:]
+                    response_text = response_text.strip()
 
-            rule_results = json.loads(response_text)
-
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse image eval response: {e}")
-            return None
-        except Exception as e:
-            error_str = str(e).lower()
-            if any(kw in error_str for kw in ["rate", "timeout", "connection", "503", "529"]):
-                logger.warning(f"Transient API error evaluating image: {e}")
-                return None  # Skip — retry next cycle
-            logger.error(f"Image evaluation failed: {e}")
-            return None
+                rule_results = json.loads(response_text)
+                break
+            except Exception as e:
+                last_err = e
+                if attempt < 2:
+                    time.sleep(2 ** attempt)
+        if rule_results is None:
+            logger.error(f"Image evaluation failed after retries for {image_url}: {last_err}")
+            return {
+                "status": "eval_error",
+                "image_url": image_url,
+                "image_type": image_type,
+                "reason": str(last_err)[:200],
+            }
 
         # Apply confidence gating and determine pass/fail
         image_passed = True
@@ -601,6 +646,7 @@ Respond with ONLY a JSON array, no other text:
             })
 
         return {
+            "status": "ok",
             "image_url": image_url,
             "image_type": image_type,
             "passed": image_passed and not uncertain,
@@ -608,12 +654,19 @@ Respond with ONLY a JSON array, no other text:
             "rules": processed_rules,
         }
 
-    def _fetch_image(self, url: str) -> tuple:
-        """Fetch image from URL and return (base64_data, media_type)."""
-        try:
-            with httpx.Client(timeout=30.0) as client:
-                response = client.get(url)
-                response.raise_for_status()
+    def _fetch_image(self, url: str, max_attempts: int = 3) -> tuple:
+        """Fetch image from URL and return (base64_data, media_type), or
+        (None, None) if the image is genuinely unfetchable.
+
+        B8: retries TRANSIENT failures (timeout / connection / 5xx) so a CDN
+        blip doesn't read as a broken image and block the article. A 4xx
+        (404/410 — the image is actually gone) fails fast: no retry, it's a
+        real defect."""
+        for attempt in range(max_attempts):
+            try:
+                with httpx.Client(timeout=30.0) as client:
+                    response = client.get(url)
+                    response.raise_for_status()
 
                 content_type = response.headers.get("content-type", "image/png")
                 if "jpeg" in content_type or "jpg" in content_type:
@@ -629,9 +682,18 @@ Respond with ONLY a JSON array, no other text:
 
                 b64 = base64.b64encode(response.content).decode("utf-8")
                 return b64, media_type
-        except Exception as e:
-            logger.error(f"Failed to fetch image from {url}: {e}")
-            return None, None
+            except HTTPStatusError as e:
+                if 400 <= e.response.status_code < 500:
+                    logger.error(f"Image gone ({e.response.status_code}) at {url}")
+                    return None, None  # permanent — broken image, don't retry
+                # 5xx: transient, fall through to retry
+                last_err = e
+            except Exception as e:
+                last_err = e  # timeout / connection — transient
+            if attempt < max_attempts - 1:
+                time.sleep(2 ** attempt)
+        logger.error(f"Failed to fetch image from {url} after {max_attempts} attempts: {last_err}")
+        return None, None
 
     # =========================================================================
     # PRIVATE — Verdict aggregation
@@ -674,6 +736,11 @@ Respond with ONLY a JSON array, no other text:
             failed_checks += image_eval_result.get("images_failed", 0)
             # Uncertain images count as warnings
             warning_count += image_eval_result.get("uncertain_count", 0)
+            # B8: a broken (unfetchable) image is a real defect — block.
+            failed_checks += image_eval_result.get("fetch_failures", 0)
+            # B8: an evaluator error is OUR flakiness — recorded + surfaced in
+            # the stored result, but it does NOT block the article (would punish
+            # the article for our hiccup, and max_warnings is often 0).
 
         # Determine verdict
         has_errors = failed_checks > 0

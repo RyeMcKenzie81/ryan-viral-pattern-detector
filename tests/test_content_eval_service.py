@@ -331,18 +331,21 @@ class TestFetchImage:
         assert media_type == "image/jpeg"
         assert b64 is not None
 
+    @patch("viraltracker.services.seo_pipeline.services.content_eval_service.time.sleep", lambda *_: None)
     @patch("viraltracker.services.seo_pipeline.services.content_eval_service.httpx")
-    def test_fetch_failure_returns_none(self, mock_httpx):
+    def test_fetch_failure_returns_none_after_retries(self, mock_httpx):
         mock_client = MagicMock()
         mock_client.__enter__ = MagicMock(return_value=mock_client)
         mock_client.__exit__ = MagicMock(return_value=False)
-        mock_client.get.side_effect = Exception("timeout")
+        mock_client.get.side_effect = Exception("timeout")  # transient -> retried
         mock_httpx.Client.return_value = mock_client
 
         svc = _make_service()
         b64, media_type = svc._fetch_image("https://example.com/img.jpg")
         assert b64 is None
         assert media_type is None
+        # B8: a transient error is retried (3 attempts) before giving up.
+        assert mock_client.get.call_count == 3
 
 
 class TestClaimForEval:
@@ -423,3 +426,46 @@ class TestReleaseEvalClaim:
         chain.execute.return_value = MagicMock(data=update_returns)
         db.table.return_value = chain
         return ContentEvalService(supabase_client=db), chain
+
+
+class TestImageEvalFailModes:
+    """B8: split image-eval failures — broken image BLOCKS (real defect);
+    our evaluator's own error is recorded but NON-blocking."""
+
+    def test_broken_image_counts_as_failed_check(self):
+        svc = _make_service()
+        image_result = {
+            "images_evaluated": 0, "images_passed": 0, "images_failed": 0,
+            "uncertain_count": 0, "fetch_failures": 1, "eval_errors": 0,
+        }
+        v = svc._aggregate_verdict({}, {}, image_result, {"max_warnings_for_auto_publish": 0})
+        assert v["failed_checks"] == 1
+        assert v["verdict"] == "failed"   # broken image blocks publish
+
+    def test_eval_error_does_not_block(self):
+        svc = _make_service()
+        image_result = {
+            "images_evaluated": 0, "images_passed": 0, "images_failed": 0,
+            "uncertain_count": 0, "fetch_failures": 0, "eval_errors": 2,
+        }
+        # max_warnings 0 (zero-tolerance) — eval_errors must NOT trip the gate.
+        v = svc._aggregate_verdict({}, {}, image_result, {"max_warnings_for_auto_publish": 0})
+        assert v["failed_checks"] == 0
+        assert v["warning_count"] == 0
+        assert v["verdict"] == "passed"   # our flakiness doesn't fail the article
+
+    def test_single_image_fetch_failed_status(self):
+        svc = _make_service()
+        with patch.object(svc, "_fetch_image", return_value=(None, None)):
+            r = svc._evaluate_single_image("https://x/broken.jpg", "hero", [{"rule": "r", "severity": "error"}], 0.8, "ctx")
+        assert r["status"] == "fetch_failed"
+
+    def test_single_image_eval_error_status_after_retries(self):
+        svc = _make_service()
+        svc._anthropic = MagicMock()
+        svc._anthropic.messages.create.side_effect = Exception("503 overloaded")
+        with patch.object(svc, "_fetch_image", return_value=("b64", "image/png")), \
+             patch("viraltracker.services.seo_pipeline.services.content_eval_service.time.sleep", lambda *_: None):
+            r = svc._evaluate_single_image("https://x/ok.jpg", "hero", [{"rule": "r", "severity": "error"}], 0.8, "ctx")
+        assert r["status"] == "eval_error"
+        assert svc._anthropic.messages.create.call_count == 3  # retried

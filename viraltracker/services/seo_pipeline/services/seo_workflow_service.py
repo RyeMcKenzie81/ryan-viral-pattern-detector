@@ -1782,10 +1782,13 @@ class SEOWorkflowService:
         # Truncate content for context (meta desc doesn't need full article)
         context = content[:2000]
 
+        # B7: target range from the shared source of truth, not a hardcoded literal.
+        from viraltracker.services.seo_pipeline.seo_thresholds import DEFAULT_SEO_THRESHOLDS as _ST
+        _mlo, _mhi = _ST["meta_ideal_min"], _ST["meta_ideal_max"]
         prompt = (
             f"Write a meta description for the following article.\n\n"
             f"Requirements:\n"
-            f"- MUST be between 150 and 160 characters (this is critical)\n"
+            f"- MUST be between {_mlo} and {_mhi} characters (this is critical)\n"
             f"- MUST contain the keyword: \"{kw}\"\n"
             f"- Should be compelling and encourage clicks\n"
             f"- Do NOT use em dashes (\u2014) or en dashes (\u2013)\n"
