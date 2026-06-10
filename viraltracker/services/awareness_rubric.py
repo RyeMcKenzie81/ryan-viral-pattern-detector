@@ -43,3 +43,44 @@ Worked examples (opening unless noted):
 - "My wife got very unwell - exhausted, brain fog, trouble sleeping" (a personal story enumerating specific recognizable symptoms) -> problem_aware (symptom callout presumes a felt problem; the story framing does not make it unaware).
 - "Always tired moms... STOP SCROLLING!" -> skip the grab; classify the first substantive line ("always tired moms" = problem_aware).
 - ENDING example: shows the branded bottle, lists the product's specific benefits + proof, with a "click the link" CTA and a results timeline but NO discount/urgency/deal -> product_aware (selling on the product's MERIT), NOT most_aware (which LEADS with the offer/deal)."""
+
+
+# ---------------------------------------------------------------------------
+# Shared awareness VOCABULARY — the one-definition home.
+# Every consumer (ads image/video classifiers, the TEMPLATE classifier, scorers,
+# UI labels) derives from these constants. Do NOT define a second copy anywhere:
+# duplicated vocabularies are exactly the drift this module exists to prevent.
+# ---------------------------------------------------------------------------
+
+# Canonical enum order: least-aware -> most-aware. The INDEX+1 is the canonical
+# 1-5 ordinal used wherever awareness is stored/compared as an INT
+# (scraped_templates.awareness_level, SelectionContext.awareness_stage).
+AWARENESS_LEVELS_ORDERED = (
+    "unaware", "problem_aware", "solution_aware", "product_aware", "most_aware",
+)
+
+# The ONLY values allowed by the awareness CHECK constraints
+# (ad_image_analysis.awareness_level, ad_creative_classifications.*_awareness_level).
+VALID_AWARENESS_LEVELS = frozenset(AWARENESS_LEVELS_ORDERED)
+
+# enum <-> INT ordinal (lossless both ways; locked by a tripwire test).
+AWARENESS_LEVEL_ORDER = {lvl: i + 1 for i, lvl in enumerate(AWARENESS_LEVELS_ORDERED)}
+AWARENESS_INT_TO_LEVEL = {i + 1: lvl for i, lvl in enumerate(AWARENESS_LEVELS_ORDERED)}
+
+# INT -> human display label ("Problem Aware") — drives all UI labels/badges.
+AWARENESS_LEVEL_LABELS = {
+    i + 1: lvl.replace("_", " ").title() for i, lvl in enumerate(AWARENESS_LEVELS_ORDERED)
+}
+
+
+def normalize_awareness_level(value):
+    """Lower/strip/space->underscore an awareness label; return None if not canonical.
+
+    The trust-boundary normalizer for ALL Gemini-returned awareness labels: recovers
+    casing/spacing variants ("Product Aware" -> product_aware), nulls true garbage so
+    off-rubric output degrades to None instead of violating a DB CHECK constraint.
+    """
+    if not value or not isinstance(value, str):
+        return None
+    norm = value.strip().lower().replace(" ", "_")
+    return norm if norm in VALID_AWARENESS_LEVELS else None

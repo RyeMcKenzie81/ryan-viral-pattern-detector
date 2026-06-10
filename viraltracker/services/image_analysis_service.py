@@ -33,23 +33,13 @@ PROMPT_VERSION = "v2"
 # the rubric calibration (which was hand-validated on pro-latest).
 IMAGE_ANALYSIS_MODEL = "gemini-pro-latest"
 
-# The 5 canonical Schwartz awareness levels — the ONLY values allowed by the
-# ad_image_analysis.awareness_level and ad_creative_classifications.creative_awareness_level
-# DB CHECK constraints. Gemini occasionally drifts off-format (e.g. "Product Aware",
-# a trailing space, a hallucinated 6th label); normalizing at the trust boundary keeps
-# the stored row valid (NULL on a miss) instead of throwing a CHECK violation — which
-# would otherwise drop the analysis row, leave analysis_id unset, and re-bill every run.
-VALID_AWARENESS_LEVELS = frozenset(
-    {"unaware", "problem_aware", "solution_aware", "product_aware", "most_aware"}
+# Shared awareness vocabulary moved to awareness_rubric (the one-definition home);
+# re-exported here for back-compat with existing callers/tests. The private alias
+# keeps the original name this module's call sites and tests use.
+from .awareness_rubric import (  # noqa: F401 (re-exports)
+    VALID_AWARENESS_LEVELS,
+    normalize_awareness_level as _normalize_awareness_level,
 )
-
-
-def _normalize_awareness_level(value):
-    """Lower/strip/space->underscore an awareness label; return None if not canonical."""
-    if not value or not isinstance(value, str):
-        return None
-    norm = value.strip().lower().replace(" ", "_")
-    return norm if norm in VALID_AWARENESS_LEVELS else None
 
 
 IMAGE_ANALYSIS_PROMPT = """Analyze this image advertisement and extract detailed structured data.
