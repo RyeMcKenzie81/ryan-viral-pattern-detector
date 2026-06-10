@@ -14,6 +14,7 @@ import base64
 import hashlib
 import json
 import logging
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -114,11 +115,15 @@ class ContentEvalService:
         }
         self._save_eval_result(eval_record)
 
-        # Update article status
+        # Update article status (critical — kept free of the B14 column so a
+        # pre-migration deploy can't break the status write).
         new_status = "eval_passed" if result["verdict"] == "passed" else "eval_failed"
         self.supabase.table("seo_articles").update(
             {"status": new_status}
         ).eq("id", article_id).execute()
+
+        # Clear the B14 eval claim so a future re-eval can re-claim immediately.
+        self.release_eval_claim(article_id)
 
         logger.info(
             f"Article {article_id} evaluation: {result['verdict']} "
@@ -179,6 +184,60 @@ class ContentEvalService:
         already_evaluated = {r["article_id"] for r in existing}
 
         return [a for a in articles if a["id"] not in already_evaluated]
+
+    def claim_for_eval(self, article_id: str, stale_after_minutes: int = 30) -> bool:
+        """Atomically claim an article for evaluation (B14). Returns True iff WE
+        claimed it; a concurrent eval run claiming the same article gets False,
+        so the batch is never double-processed.
+
+        Atomicity: a conditional UPDATE that only matches a still-pending,
+        un-claimed (or stale-claimed) row. Postgres row-locks during UPDATE, so
+        under two concurrent claims exactly one matches and writes; the other
+        re-evaluates its WHERE after the lock, finds eval_claimed_at now set,
+        and updates 0 rows -> False.
+
+        Re-claimable after `stale_after_minutes` (a crashed run that never
+        cleared its claim) and immediately once the article completes
+        (evaluate_article clears the claim).
+
+        Degrades gracefully: if the eval_claimed_at column is absent
+        (pre-migration), returns True so evaluation still runs — just without
+        the concurrency guard — until the migration is applied.
+        """
+        now = datetime.now(timezone.utc)
+        stale_cutoff = (now - timedelta(minutes=stale_after_minutes)).isoformat()
+        try:
+            result = (
+                self.supabase.table("seo_articles")
+                .update({"eval_claimed_at": now.isoformat()})
+                .eq("id", article_id)
+                .in_("status", ["qa_passed", "optimized"])
+                # The timestamp literal MUST be double-quoted — PostgREST treats
+                # ':' '+' '.' as reserved in filter values; unquoted, the whole
+                # claim request errors (then the catch returns True, silently
+                # disabling B14).
+                .or_(f'eval_claimed_at.is.null,eval_claimed_at.lt."{stale_cutoff}"')
+                .execute()
+            )
+            return bool(result.data)
+        except Exception as e:
+            logger.warning(
+                f"claim_for_eval failed for {article_id} (migration applied?); "
+                f"proceeding without the concurrency guard: {e}"
+            )
+            return True
+
+    def release_eval_claim(self, article_id: str) -> None:
+        """Clear the B14 eval claim (non-fatal). Called whenever an eval attempt
+        ends — success, failure, or skip — so a later re-eval (e.g. after
+        remediation resets the article to qa_passed) can re-claim immediately
+        instead of waiting out the stale window."""
+        try:
+            self.supabase.table("seo_articles").update(
+                {"eval_claimed_at": None}
+            ).eq("id", article_id).execute()
+        except Exception as e:
+            logger.warning(f"Failed to release eval claim for {article_id}: {e}")
 
     def get_eval_result(self, article_id: str) -> Optional[Dict[str, Any]]:
         """Get the most recent evaluation result for an article."""

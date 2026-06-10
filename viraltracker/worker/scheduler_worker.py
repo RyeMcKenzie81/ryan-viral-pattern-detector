@@ -6423,85 +6423,99 @@ async def execute_seo_content_eval_job(job: Dict) -> Dict[str, Any]:
             art_org_id = article.get("organization_id", "")
             keyword = article.get("keyword", article_id)
 
-            # Phase 1: Auto-fix
+            # B14: atomically claim before any work. A concurrent eval run that
+            # fetched the same pending list loses the claim and skips this
+            # article — no duplicate eval rows, no double-applied body fixes.
+            if not eval_service.claim_for_eval(article_id):
+                logs.append(f"SKIP (claimed by concurrent eval): {keyword}")
+                continue
+
             try:
-                fix_report = auto_fix_service.fix_article(article_id, art_brand_id, art_org_id)
+                # Phase 1: Auto-fix
+                try:
+                    fix_report = auto_fix_service.fix_article(article_id, art_brand_id, art_org_id)
 
-                if fix_report["fixes_applied"]:
-                    articles_fixed += 1
-                    logs.append(f"AUTO-FIX: {keyword}")
-                    for fix in fix_report["fixes_applied"]:
-                        logs.append(f"  - {fix['check']}: {fix.get('before', '')} → {fix.get('after', '')}")
+                    if fix_report["fixes_applied"]:
+                        articles_fixed += 1
+                        logs.append(f"AUTO-FIX: {keyword}")
+                        for fix in fix_report["fixes_applied"]:
+                            logs.append(f"  - {fix['check']}: {fix.get('before', '')} → {fix.get('after', '')}")
 
-                if fix_report["fixes_failed"]:
-                    for ff in fix_report["fixes_failed"]:
-                        logs.append(f"  FIX-FAILED: {ff['check']} - {ff.get('reason', '')}")
+                    if fix_report["fixes_failed"]:
+                        for ff in fix_report["fixes_failed"]:
+                            logs.append(f"  FIX-FAILED: {ff['check']} - {ff.get('reason', '')}")
 
-                    # Check if any critical fixes failed (Tier 2 AI rewrites)
-                    critical_failures = [
-                        f for f in fix_report["fixes_failed"]
-                        if f.get("check") in ("load_article", "save_to_db")
-                    ]
-                    if critical_failures:
-                        # Can't proceed with eval — mark failed and emit activity event
-                        try:
-                            eval_service.supabase.table("seo_articles").update(
-                                {"status": "eval_failed"}
-                            ).eq("id", article_id).execute()
-                        except Exception:
-                            pass
-                        _emit_activity_event(
-                            event_type="seo_auto_fix_failed",
-                            severity="warning",
-                            title=f"Auto-fix failed: {keyword}",
-                            brand_id=art_brand_id,
-                            organization_id=art_org_id,
-                            details={
-                                "article_id": article_id,
-                                "failures": fix_report["fixes_failed"],
-                            },
-                            link_page="Exceptions",
-                        )
-                        fix_failures += 1
-                        failed += 1
-                        continue
-
-            except Exception as e:
-                logger.error(f"Auto-fix error for {article_id}: {e}")
-                logs.append(f"AUTO-FIX ERROR: {keyword} - {e}")
-
-            # Phase 2: Evaluate (now against potentially fixed content)
-            try:
-                result = eval_service.evaluate_article(article_id, art_brand_id, art_org_id)
-                evaluated += 1
-
-                if result["verdict"] == "passed":
-                    passed += 1
-                    logs.append(f"PASS: {keyword}")
-
-                    # Enqueue for publishing
-                    full_article = eval_service._get_article(article_id)
-                    if full_article:
-                        content_hash = ContentEvalService.compute_content_hash(full_article)
-                        policy = eval_service._get_policy(art_brand_id)
-                        if policy.get("publish_enabled", False):
-                            queue_service.enqueue_article(
-                                article_id, art_brand_id, art_org_id,
-                                content_hash, policy,
+                        # Check if any critical fixes failed (Tier 2 AI rewrites)
+                        critical_failures = [
+                            f for f in fix_report["fixes_failed"]
+                            if f.get("check") in ("load_article", "save_to_db")
+                        ]
+                        if critical_failures:
+                            # Can't proceed with eval — mark failed and emit activity event
+                            try:
+                                eval_service.supabase.table("seo_articles").update(
+                                    {"status": "eval_failed"}
+                                ).eq("id", article_id).execute()
+                            except Exception:
+                                pass
+                            _emit_activity_event(
+                                event_type="seo_auto_fix_failed",
+                                severity="warning",
+                                title=f"Auto-fix failed: {keyword}",
+                                brand_id=art_brand_id,
+                                organization_id=art_org_id,
+                                details={
+                                    "article_id": article_id,
+                                    "failures": fix_report["fixes_failed"],
+                                },
+                                link_page="Exceptions",
                             )
-                            logs.append(f"  → Enqueued for publishing")
-                        else:
-                            logs.append(f"  → Publishing disabled for brand, skipping enqueue")
-                else:
-                    failed += 1
-                    logs.append(
-                        f"FAIL: {keyword} "
-                        f"({result['failed_checks']} errors, {result['warning_count']} warnings)"
-                    )
+                            fix_failures += 1
+                            failed += 1
+                            continue
 
-            except Exception as e:
-                logs.append(f"ERROR evaluating {keyword}: {e}")
-                logger.error(f"Error evaluating article {article_id}: {e}")
+                except Exception as e:
+                    logger.error(f"Auto-fix error for {article_id}: {e}")
+                    logs.append(f"AUTO-FIX ERROR: {keyword} - {e}")
+
+                # Phase 2: Evaluate (now against potentially fixed content)
+                try:
+                    result = eval_service.evaluate_article(article_id, art_brand_id, art_org_id)
+                    evaluated += 1
+
+                    if result["verdict"] == "passed":
+                        passed += 1
+                        logs.append(f"PASS: {keyword}")
+
+                        # Enqueue for publishing
+                        full_article = eval_service._get_article(article_id)
+                        if full_article:
+                            content_hash = ContentEvalService.compute_content_hash(full_article)
+                            policy = eval_service._get_policy(art_brand_id)
+                            if policy.get("publish_enabled", False):
+                                queue_service.enqueue_article(
+                                    article_id, art_brand_id, art_org_id,
+                                    content_hash, policy,
+                                )
+                                logs.append(f"  → Enqueued for publishing")
+                            else:
+                                logs.append(f"  → Publishing disabled for brand, skipping enqueue")
+                    else:
+                        failed += 1
+                        logs.append(
+                            f"FAIL: {keyword} "
+                            f"({result['failed_checks']} errors, {result['warning_count']} warnings)"
+                        )
+
+                except Exception as e:
+                    logs.append(f"ERROR evaluating {keyword}: {e}")
+                    logger.error(f"Error evaluating article {article_id}: {e}")
+            finally:
+                # B14: always release the claim, however this iteration ended
+                # (auto-fix-fail continue, exception, success). Without this the
+                # claim leaks until the 30min stale window, and a fast
+                # remediation reset to qa_passed couldn't be re-evaluated.
+                eval_service.release_eval_claim(article_id)
 
         metadata = {
             "evaluated": evaluated, "passed": passed, "failed": failed,

@@ -355,11 +355,13 @@ class QAValidationService:
                 message="No keyword specified — skipping placement check",
             )
 
-        kw_lower = keyword.lower()
-        title_has_kw = kw_lower in seo_title.lower()
+        # B13: whole-word matching, not substring — "game" must not count as
+        # present just because "games" appears.
+        from viraltracker.services.seo_pipeline.text_match import keyword_in_text
+        title_has_kw = keyword_in_text(keyword, seo_title)
         placements = {
             "title/h1": title_has_kw,  # seo_title = page H1 in CMS
-            "meta_description": kw_lower in meta_description.lower(),
+            "meta_description": keyword_in_text(keyword, meta_description),
             "first_paragraph": False,
         }
 
@@ -368,7 +370,7 @@ class QAValidationService:
         for p in paragraphs:
             stripped = p.strip()
             if stripped and not stripped.startswith("#") and not stripped.startswith("![") and not stripped.startswith("<img") and not stripped.startswith("<figure"):
-                placements["first_paragraph"] = kw_lower in stripped.lower()
+                placements["first_paragraph"] = keyword_in_text(keyword, stripped)
                 break
 
         found = [k for k, v in placements.items() if v]
