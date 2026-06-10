@@ -551,13 +551,27 @@ Code degrades gracefully if the column is absent: every body-write path reads it
 `select("*")`, so a missing column is simply treated as not-locked — safe to deploy before or
 after the migration. Tested (independent review pass).
 
-### Increment 2 (NOT built) — auto-detect + UI
-- **(b) auto-detection:** persist `last_pushed_at`; before any overwrite, `get_article(cms_id)`
-  (Shopify already returns `updated_at`) and skip + auto-set the lock when Shopify is newer than
-  our last push. Add a body content-hash to avoid false positives from our own non-body writes.
-- **UI toggle** to set/clear the lock (SEO Clusters / Pipeline Status).
-- **(d) eventual:** treat Shopify as source-of-truth for published articles (read-modify-write
-  interlinks), retiring the "phase_c is master, content_html disposable" model. Ties to §8 C6.
+### Increment 2 — auto-detect + UI (SHIPPED 2026-06-10, PR #283)
+Migration `2026-06-10_seo_push_baseline.sql` (manual): `last_pushed_at` +
+`last_pushed_body_hash` on `seo_articles`.
+- **(b) auto-detection** — `CMSPublisherService.detect_manual_edit(article, publisher)`: before
+  re-pushing an already-published article, fetch the live copy and compare a **body hash** to
+  `last_pushed_body_hash` (the hash of what Shopify STORED on our last push, captured from the
+  push response). Differs ⇒ a human edited it ⇒ **skip + auto-set `content_locked`**. The hash
+  IS the decision (not `updated_at`): our own non-body writes (metafields/author/status) don't
+  change the stored body so they hash-match; and a `TIMESTAMPTZ`-vs-store-offset string compare
+  could misorder the same instant and overwrite an edit (codex). Every body-write path
+  (`publish_article` update branch, interlink `_push_html_to_cms`, `repair_markdown_html`)
+  detects-then-pushes and refreshes the baseline via `record_push_baseline` (non-fatal, separate
+  from the critical cms-id writeback — graceful pre-migration). Conservative: proceeds on every
+  uncertainty (no cms_id / no baseline / fetch error) so it never blocks publishing or
+  auto-locks on noise.
+- **Worker + UI:** the autopilot publish loop honours `skipped: manual_edit` (doesn't mark
+  published, emits `seo_manual_edit_protected`); Activity Feed card + a "Locked articles" unlock
+  list in Dashboard → Content Health.
+- **(d) eventual (NOT built):** treat Shopify as source-of-truth for published articles
+  (read-modify-write interlinks), retiring the "phase_c is master, content_html disposable"
+  model. Ties to §8 C6.
 
 ### Not chosen
 - **(c) pull-back body sync** as a standalone fix — does NOT stop a `phase_c` re-render

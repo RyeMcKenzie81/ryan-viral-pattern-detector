@@ -1794,3 +1794,45 @@ class TestVerifyLiveLinks:
             result = svc.verify_live_links("b1", "o1", delay_seconds=0)
         assert result["verified"] == 0
         assert len(result["missing"]) == 1
+
+
+class TestInterlinkManualEditGuard:
+    """§10 inc 2: the interlink body-only push (Source B) must also detect a
+    manual Shopify edit, auto-lock, and skip — not just the publish path."""
+
+    def test_push_detects_manual_edit_and_locks(self, service):
+        pub = MagicMock()
+        pubsvc = MagicMock()
+        pubsvc.get_publisher.return_value = pub
+        pubsvc.detect_manual_edit.return_value = True
+        service._publisher_service = pubsvc
+        service._get_article = MagicMock(return_value={
+            "id": "a1", "content_locked": False, "cms_article_id": "999",
+        })
+        ok = service._push_html_to_cms("a1", "b", "o", "<p>links</p>")
+        assert ok is False
+        pubsvc.set_content_locked.assert_called_once_with("a1", True)
+        pub.update.assert_not_called()  # the overwrite was prevented
+
+    def test_push_records_baseline_on_success(self, service):
+        push_result = {
+            "cms_updated_at": "2026-06-11T10:00:00-07:00",
+            "cms_body_html": "<p>stored</p>",
+        }
+        pub = MagicMock()
+        pub.update.return_value = push_result
+        pubsvc = MagicMock()
+        pubsvc.get_publisher.return_value = pub
+        pubsvc.detect_manual_edit.return_value = False
+        service._publisher_service = pubsvc
+        service._get_article = MagicMock(return_value={
+            "id": "a1", "content_locked": False, "cms_article_id": "999",
+        })
+
+        ok = service._push_html_to_cms("a1", "b", "o", "<p>links</p>")
+
+        assert ok is True
+        pub.update.assert_called_once()
+        # baseline refreshed via the shared helper so our own write isn't read
+        # as an edit next time.
+        pubsvc.record_push_baseline.assert_called_once_with("a1", push_result)

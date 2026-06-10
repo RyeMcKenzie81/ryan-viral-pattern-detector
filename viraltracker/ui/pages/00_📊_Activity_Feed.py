@@ -816,6 +816,19 @@ def render_event_card(event: Dict, brand_names: Dict[str, str], key_prefix: str 
             "intentionally standalone."
         )
 
+    elif event_type == "seo_manual_edit_protected":
+        # §10 inc 2: a manual Shopify edit was detected before a re-push and the
+        # article was auto-locked so the edit isn't clobbered.
+        details = details or {}
+        url = details.get("published_url")
+        reason = details.get("reason", "edited on Shopify; auto-locked to protect the edit.")
+        label = event.get("title", "Manual edit protected")
+        if url:
+            st.markdown(f"🔒 **[{label}]({url})**")
+        else:
+            st.markdown(f"🔒 **{label}**")
+        st.caption(reason)
+
     # Metadata for completed jobs
     elif details.get("metadata") and isinstance(details["metadata"], dict):
         meta_parts = []

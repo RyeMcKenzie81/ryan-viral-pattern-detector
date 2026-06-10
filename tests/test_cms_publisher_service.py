@@ -816,3 +816,183 @@ class TestContentLock:
         })
         out = publisher_service.sync_content_html("a1")
         assert out == "<p>human edited</p>"  # returns existing, does not re-render
+
+
+class TestManualEditDetection:
+    """§10 inc 2: detect a manual Shopify edit before a re-push and auto-lock,
+    so a human's edit isn't blindly overwritten."""
+
+    def _article(self, **over):
+        a = {
+            "id": "a1", "cms_article_id": "999", "content_locked": False,
+            "last_pushed_at": "2026-06-10T00:00:00-07:00",
+            "last_pushed_body_hash": CMSPublisherService._body_hash("<p>ours</p>"),
+            "published_url": "u", "status": "published",
+        }
+        a.update(over)
+        return a
+
+    def test_body_hash_deterministic(self):
+        h = CMSPublisherService._body_hash("<p>x</p>")
+        assert h == CMSPublisherService._body_hash("<p>x</p>")
+        assert h != CMSPublisherService._body_hash("<p>y</p>")
+
+    def test_no_cms_id_proceeds(self, publisher_service):
+        assert publisher_service.detect_manual_edit(self._article(cms_article_id=None), MagicMock()) is False
+
+    def test_no_baseline_hash_proceeds(self, publisher_service):
+        assert publisher_service.detect_manual_edit(self._article(last_pushed_body_hash=None), MagicMock()) is False
+
+    def test_fetch_failure_proceeds(self, publisher_service):
+        pub = MagicMock()
+        pub.get_article.side_effect = RuntimeError("shopify down")
+        assert publisher_service.detect_manual_edit(self._article(), pub) is False
+
+    def test_timestamp_irrelevant_body_matches_proceeds(self, publisher_service):
+        pub = MagicMock()
+        # Even with an "older"-looking timestamp (offset skew), a body matching
+        # the baseline proceeds — detection is pure body-hash, no clock gate.
+        pub.get_article.return_value = {"updated_at": "2026-06-09T00:00:00-07:00", "body_html": "<p>ours</p>"}
+        assert publisher_service.detect_manual_edit(self._article(), pub) is False
+
+    def test_offset_skew_does_not_overwrite_real_edit(self, publisher_service):
+        """Regression for the timestamp-string-compare bug: a real edit whose
+        live timestamp lexically sorts BELOW the UTC-normalized baseline must
+        still be detected (the old string gate would have skipped it)."""
+        pub = MagicMock()
+        art = self._article(last_pushed_at="2026-06-10T17:00:00+00:00")
+        pub.get_article.return_value = {
+            "updated_at": "2026-06-10T10:30:00-07:00",  # lexically '10' < '17'
+            "body_html": "<p>HUMAN EDITED</p>",
+        }
+        assert publisher_service.detect_manual_edit(art, pub) is True
+
+    def test_metadata_only_change_proceeds(self, publisher_service):
+        pub = MagicMock()
+        # updated_at moved, but body identical to our baseline -> our own write
+        pub.get_article.return_value = {"updated_at": "2026-06-11T00:00:00-07:00", "body_html": "<p>ours</p>"}
+        assert publisher_service.detect_manual_edit(self._article(), pub) is False
+
+    def test_real_body_edit_detected(self, publisher_service):
+        pub = MagicMock()
+        pub.get_article.return_value = {"updated_at": "2026-06-11T00:00:00-07:00", "body_html": "<p>HUMAN EDITED</p>"}
+        assert publisher_service.detect_manual_edit(self._article(), pub) is True
+
+    def test_publish_article_autolocks_on_manual_edit(self, publisher_service):
+        pub = MagicMock()
+        pub.get_article.return_value = {"updated_at": "2026-06-11T00:00:00-07:00", "body_html": "<p>HUMAN EDITED</p>"}
+        publisher_service.get_publisher = MagicMock(return_value=pub)
+        publisher_service._get_article = MagicMock(return_value=self._article())
+        publisher_service._get_author_data = MagicMock(return_value={})
+        publisher_service.set_content_locked = MagicMock(return_value=True)
+
+        result = publisher_service.publish_article("a1", "b", "o", draft=False)
+
+        assert result.get("skipped") == "manual_edit"
+        publisher_service.set_content_locked.assert_called_once_with("a1", True)
+        pub.update.assert_not_called()   # the overwrite was prevented
+        pub.publish.assert_not_called()
+
+    def test_first_publish_skips_detection(self, publisher_service):
+        """No cms_article_id -> brand-new article, nothing to protect; detection
+        must not run (no get_article fetch) and we publish normally."""
+        pub = MagicMock()
+        pub.publish.return_value = {"cms_article_id": "new1", "published_url": "u", "status": "published"}
+        publisher_service.get_publisher = MagicMock(return_value=pub)
+        publisher_service._get_article = MagicMock(return_value=self._article(cms_article_id=None))
+        publisher_service._get_author_data = MagicMock(return_value={})
+        publisher_service._update_article_cms_data = MagicMock()
+        publisher_service.detect_manual_edit = MagicMock(return_value=True)  # would block if called
+
+        publisher_service.publish_article("a1", "b", "o", draft=False)
+
+        publisher_service.detect_manual_edit.assert_not_called()
+        pub.publish.assert_called_once()
+
+    def test_record_push_baseline_stamps_from_stored_body(self, publisher_service):
+        captured = {}
+        chain = MagicMock()
+        chain.eq.return_value = chain
+        def _upd(payload):
+            captured.update(payload)
+            return chain
+        chain.update.side_effect = _upd
+        publisher_service._supabase = MagicMock()
+        publisher_service._supabase.table.return_value = chain
+
+        publisher_service.record_push_baseline("a1", {
+            "cms_updated_at": "2026-06-11T10:00:00-07:00",
+            "cms_body_html": "<p>stored by shopify</p>",
+        })
+
+        assert captured["last_pushed_at"] == "2026-06-11T10:00:00-07:00"
+        assert captured["last_pushed_body_hash"] == CMSPublisherService._body_hash("<p>stored by shopify</p>")
+
+    def test_record_push_baseline_nonfatal_on_missing_column(self, publisher_service):
+        """Pre-migration: a missing baseline column must NOT raise (the push
+        already happened; the critical cms-id writeback must not be undone)."""
+        chain = MagicMock()
+        chain.eq.return_value = chain
+        chain.update.return_value = chain
+        chain.execute.side_effect = RuntimeError("column last_pushed_at does not exist")
+        publisher_service._supabase = MagicMock()
+        publisher_service._supabase.table.return_value = chain
+        # Must not raise.
+        publisher_service.record_push_baseline("a1", {
+            "cms_updated_at": "t", "cms_body_html": "<p>x</p>",
+        })
+
+    def test_set_content_locked(self, publisher_service):
+        chain = MagicMock()
+        chain.eq.return_value = chain
+        publisher_service._supabase = MagicMock()
+        publisher_service._supabase.table.return_value = chain
+        assert publisher_service.set_content_locked("a1", False) is True
+        chain.update.assert_called_once_with({"content_locked": False})
+
+
+class TestRepairManualEditGuard:
+    """§10 inc 2 (codex finding 1): repair_markdown_html is a body overwrite
+    too — it must detect a manual edit before repushing AND refresh the
+    baseline after, or every repaired article auto-locks on its next push."""
+
+    def _candidates(self, publisher_service, rows):
+        chain = MagicMock()
+        chain.select.return_value = chain
+        chain.eq.return_value = chain
+        chain.like.return_value = chain
+        chain.update.return_value = chain
+        chain.execute.return_value = MagicMock(data=rows)
+        publisher_service._supabase = MagicMock()
+        publisher_service._supabase.table.return_value = chain
+
+    def test_repair_autolocks_on_manual_edit(self, publisher_service):
+        row = {"id": "a1", "cms_article_id": "999", "content_locked": False,
+               "phase_c_output": "# clean", "content_html": "<pre><code>x</code></pre>"}
+        self._candidates(publisher_service, [row])
+        pub = MagicMock()
+        publisher_service.get_publisher = MagicMock(return_value=pub)
+        publisher_service.detect_manual_edit = MagicMock(return_value=True)
+        publisher_service.set_content_locked = MagicMock(return_value=True)
+        with patch("viraltracker.services.seo_pipeline.services.cms_publisher_service.render_markdown_to_html",
+                   return_value="<p>clean</p>"):
+            result = publisher_service.repair_markdown_html("b", "o", push_to_cms=True)
+        publisher_service.set_content_locked.assert_called_once_with("a1", True)
+        pub.update.assert_not_called()
+        assert result["repushed"] == 0
+
+    def test_repair_refreshes_baseline_after_push(self, publisher_service):
+        row = {"id": "a1", "cms_article_id": "999", "content_locked": False,
+               "phase_c_output": "# clean", "content_html": "<pre><code>x</code></pre>"}
+        self._candidates(publisher_service, [row])
+        pub = MagicMock()
+        pub.update.return_value = {"cms_updated_at": "t", "cms_body_html": "<p>clean</p>"}
+        publisher_service.get_publisher = MagicMock(return_value=pub)
+        publisher_service.detect_manual_edit = MagicMock(return_value=False)
+        publisher_service.record_push_baseline = MagicMock()
+        with patch("viraltracker.services.seo_pipeline.services.cms_publisher_service.render_markdown_to_html",
+                   return_value="<p>clean</p>"):
+            result = publisher_service.repair_markdown_html("b", "o", push_to_cms=True)
+        pub.update.assert_called_once()
+        publisher_service.record_push_baseline.assert_called_once()
+        assert result["repushed"] == 1

@@ -403,6 +403,32 @@ class SEOAnalyticsService:
             "orphans": orphans,
         }
 
+    def get_locked_articles(
+        self,
+        brand_id: str,
+        organization_id: str,
+    ) -> List[Dict[str, Any]]:
+        """List content_locked published articles for a brand (§10 inc 2 UI).
+
+        Locked = body human-owned on the CMS: either set deliberately or
+        auto-locked when a manual Shopify edit was detected. The UI lists these
+        so the user can unlock to resume automated updates.
+        """
+        query = (
+            self.supabase.table("seo_articles")
+            .select("id, keyword, published_url, last_pushed_at")
+            .eq("brand_id", brand_id)
+            .eq("content_locked", True)
+        )
+        if organization_id and organization_id != "all":
+            query = query.eq("organization_id", organization_id)
+        try:
+            return query.execute().data or []
+        except Exception as e:
+            # content_locked column missing (pre-migration) -> nothing locked.
+            logger.warning(f"get_locked_articles failed (migration applied?): {e}")
+            return []
+
     # =========================================================================
     # LINK IMPACT (§7 increment 2 — R7: directional telemetry)
     # =========================================================================

@@ -2018,11 +2018,26 @@ class InterlinkingService:
                 return False
 
             publisher = self._publisher_service.get_publisher(brand_id, organization_id)
-            if publisher:
-                publisher.update(cms_id, {"body_html": html}, body_only=True)
-                logger.info(f"Pushed updated HTML to CMS for article {article_id}")
-                return True
-            return False
+            if not publisher:
+                return False
+
+            # §10 inc 2: a manual Shopify edit since our last push must not be
+            # clobbered by an interlink body-only overwrite (Source B). Detect,
+            # auto-lock, and skip — same protection as the publish path.
+            if self._publisher_service.detect_manual_edit(article, publisher):
+                self._publisher_service.set_content_locked(article_id, True)
+                logger.warning(
+                    f"Article {article_id} edited on Shopify since our last push; "
+                    "auto-locked and skipping interlink push."
+                )
+                return False
+
+            push_result = publisher.update(cms_id, {"body_html": html}, body_only=True)
+            # Refresh the push baseline so the NEXT detection compares against
+            # what we just stored (else our own interlink write reads as an edit).
+            self._publisher_service.record_push_baseline(article_id, push_result)
+            logger.info(f"Pushed updated HTML to CMS for article {article_id}")
+            return True
         except Exception as e:
             logger.error(f"Failed to push HTML to CMS for {article_id}: {e}")
             return False

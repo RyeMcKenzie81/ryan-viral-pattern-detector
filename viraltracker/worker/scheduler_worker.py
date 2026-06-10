@@ -6686,13 +6686,42 @@ async def execute_seo_publish_job(job: Dict) -> Dict[str, Any]:
                     draft=False,
                 ) or {}
 
-                # content_locked: the body is human-owned on the CMS, so
-                # publish_article pushed nothing. Don't claim we published it and
-                # don't chain an interlink job (it would no-op anyway). If it's
-                # already live, retire the queue entry so it stops retrying;
-                # otherwise leave it pending for manual handling.
-                if pub_result.get("skipped") == "content_locked":
-                    logs.append(f"SKIP (content_locked): {full_article.get('keyword', article_id)}")
+                # Body is human-owned on the CMS (content_locked), or §10 inc 2
+                # just detected a manual Shopify edit and auto-locked. Either
+                # way publish_article pushed nothing — don't claim we published
+                # it, don't chain an interlink job (it would no-op). If already
+                # live, retire the queue entry; else leave it pending.
+                _skip = pub_result.get("skipped")
+                if _skip in ("content_locked", "manual_edit"):
+                    logs.append(f"SKIP ({_skip}): {full_article.get('keyword', article_id)}")
+                    if _skip == "manual_edit":
+                        # The article was edited in Shopify since our last push;
+                        # surface that we detected + protected it (and that it's
+                        # now frozen from automated updates until unlocked).
+                        try:
+                            _emit_activity_event(
+                                event_type="seo_manual_edit_protected",
+                                severity="warning",
+                                title=(
+                                    f"Manual Shopify edit protected: "
+                                    f"\"{full_article.get('keyword', article_id)}\""
+                                ),
+                                brand_id=entry_brand_id,
+                                organization_id=entry_org_id,
+                                details={
+                                    "article_id": article_id,
+                                    "published_url": full_article.get("published_url"),
+                                    "reason": (
+                                        "edited on Shopify since our last push; auto-locked "
+                                        "and skipped to protect the edit. Unlock in SEO "
+                                        "Dashboard -> Content Health to resume automated updates."
+                                    ),
+                                },
+                                source_id=article_id,
+                                link_page="seo_dashboard",
+                            )
+                        except Exception:
+                            pass  # event emission is non-fatal
                     if cms_was_existing:
                         queue_service.mark_published(queue_id, article_id)
                     continue
