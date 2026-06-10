@@ -119,11 +119,14 @@ Rules:
 - Lease/heartbeat: run rows already carry `started_at` + per-job-type runtime
   limits (`job_runtime_limits`) consumed by `recover_stuck_runs_v2` — that IS the
   lease. No second mechanism.
-- KNOWN CONSTRAINT (verified live 2026-06-09): async handlers doing sync
-  Supabase/LLM work serialize the worker event loop — pool slots do not give true
-  concurrency for sync work. The SEO job handlers must run their phase bodies via
-  `asyncio.to_thread` (or the dispatcher gains a thread-per-job mode) BEFORE
-  per-brand cap 3 means anything. This is the §4 concurrency work item.
+- ~~KNOWN CONSTRAINT~~ **RESOLVED 2026-06-10**: the dispatcher gained
+  thread-per-job mode. `_dispatch_claimed_job` runs every handler via
+  `run_coroutine_in_thread` (scheduler_concurrency) — a daemon thread with its
+  own event loop, so a handler's sync Supabase/LLM calls block only that job.
+  pool_size=N now gives N truly concurrent jobs; the recovery thread, claim
+  loops, and timers stay live during long jobs. (Originally: async handlers
+  doing sync work serialized the shared loop — verified live 2026-06-09 when a
+  deep-analysis job froze both slots for hours.)
 
 ## 8. MCP surface (later phase, shape only)
 

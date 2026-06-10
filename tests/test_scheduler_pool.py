@@ -609,3 +609,70 @@ class TestScanHealthRegression:
         assert len(alarms) == 1
         assert alarms[0]["severity"] == "error"
         assert alarms[0]["details"]["article_id"] == "a9"
+
+
+class TestMetaSdkSerialization:
+    """Meta SDK jobs switch process-global FacebookAdsApi state — under
+    thread-per-job dispatch they must SERIALIZE (lock held in the job thread)
+    while non-Meta jobs still run in parallel."""
+
+    def _claim(self, n, job_type):
+        return {
+            "job_id": f"job-{n}", "run_id": f"run-{n}", "attempt_number": 1,
+            "job_type": job_type,
+        }
+
+    def _wire(self, sw, job_type, handler):
+        fake_db = MagicMock()
+        job_row = {"id": "j", "job_type": job_type, "schedule_type": "one_time"}
+        return fake_db, job_row, handler
+
+    @pytest.mark.asyncio
+    async def test_meta_jobs_serialize_non_meta_overlap(self):
+        import time as _t
+        from viraltracker.worker import scheduler_worker as sw
+
+        running = {"meta": 0, "max_meta": 0}
+
+        async def meta_handler(_job):
+            running["meta"] += 1
+            running["max_meta"] = max(running["max_meta"], running["meta"])
+            _t.sleep(0.25)
+            running["meta"] -= 1
+
+        job_row = {"id": "j", "job_type": "meta_sync", "schedule_type": "one_time"}
+        with patch.object(sw, "_fetch_full_job", return_value=job_row), \
+             patch.object(sw, "_emit_job_started_event"), \
+             patch.object(sw, "dispatch_job", return_value=meta_handler), \
+             patch.object(sw, "update_job_run"):
+            start = _t.monotonic()
+            await asyncio.gather(
+                sw._dispatch_claimed_job(MagicMock(), self._claim(1, "meta_sync")),
+                sw._dispatch_claimed_job(MagicMock(), self._claim(2, "meta_sync")),
+            )
+            elapsed = _t.monotonic() - start
+
+        assert running["max_meta"] == 1, "two Meta SDK jobs overlapped — token race"
+        assert elapsed >= 0.45, f"meta jobs did not serialize ({elapsed:.2f}s)"
+
+    @pytest.mark.asyncio
+    async def test_non_meta_jobs_still_parallel(self):
+        import time as _t
+        from viraltracker.worker import scheduler_worker as sw
+
+        async def blocking_handler(_job):
+            _t.sleep(0.3)
+
+        job_row = {"id": "j", "job_type": "seo_publish", "schedule_type": "one_time"}
+        with patch.object(sw, "_fetch_full_job", return_value=job_row), \
+             patch.object(sw, "_emit_job_started_event"), \
+             patch.object(sw, "dispatch_job", return_value=blocking_handler), \
+             patch.object(sw, "update_job_run"):
+            start = _t.monotonic()
+            await asyncio.gather(
+                sw._dispatch_claimed_job(MagicMock(), self._claim(1, "seo_publish")),
+                sw._dispatch_claimed_job(MagicMock(), self._claim(2, "seo_publish")),
+            )
+            elapsed = _t.monotonic() - start
+
+        assert elapsed < 0.55, f"non-meta jobs serialized ({elapsed:.2f}s) — starvation regressed"

@@ -26,6 +26,7 @@ import logging
 import os
 import random
 import secrets
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Dict, Optional, Tuple
@@ -246,6 +247,13 @@ async def claim_next_job(db: Any, worker_id_text: str) -> Optional[Dict[str, Any
     """
     loop = asyncio.get_running_loop()
     try:
+        # NOTE (pre-existing, reviewed 2026-06-10): `db` is created on the main
+        # thread and this RPC executes on a default-executor thread, which is
+        # looser than core/database.py's thread-local contract. Accepted: the
+        # postgrest request builder is constructed per-call and httpx.Client is
+        # thread-safe for sending; this path has run since the pool shipped.
+        # Job HANDLERS (the long-lived work) resolve their own thread-local
+        # clients via get_supabase_client() inside their job thread.
         result = await loop.run_in_executor(
             None,
             lambda: db.rpc("claim_next_job", {"worker_id_text": worker_id_text}).execute(),
@@ -264,6 +272,70 @@ async def claim_next_job(db: Any, worker_id_text: str) -> Optional[Dict[str, Any
 # Worker loop (skeleton)
 # ============================================================================
 
+async def run_coroutine_in_thread(
+    coro_fn: Callable[..., Awaitable[Any]],
+    *args: Any,
+    name: str = "job-thread",
+) -> Any:
+    """Run an async callable in its OWN daemon thread with its OWN event loop,
+    awaiting completion WITHOUT blocking the caller's loop.
+
+    Why this exists (verified live 2026-06-09): job handlers are async-def but
+    do their real work through synchronous Supabase/Gemini/httpx clients. On a
+    shared event loop, every sync call blocks ALL worker slots and every timer
+    for its duration — a deep-analysis job froze the whole worker for hours
+    (exactly two claim_next_job calls at boot, zero after). Running each
+    handler under `asyncio.run` in its own thread confines the blocking to
+    that job: other slots keep claiming, timers keep firing.
+
+    Properties:
+    - Exceptions propagate to the awaiter unchanged (dispatcher failure
+      handling — mark run failed + reschedule — keeps working).
+    - The thread is DAEMON: at SIGTERM drain-timeout the process can still
+      exit; the orphaned run is recovered by recover_stuck_runs_v2 on the next
+      boot (the documented shutdown contract). A non-daemon thread (e.g. the
+      asyncio default executor used by asyncio.to_thread) would block process
+      exit behind an hours-long job.
+    - If the awaiting task is CANCELLED (shutdown), the thread keeps running
+      as a daemon — identical to today's in-flight-work-at-shutdown behavior.
+
+    Returns the coroutine's result.
+    """
+    loop = asyncio.get_running_loop()
+    done = asyncio.Event()
+    outcome: Dict[str, Any] = {}
+
+    def _runner() -> None:
+        try:
+            outcome["result"] = asyncio.run(coro_fn(*args))
+        except BaseException as e:  # noqa: BLE001 — must propagate everything
+            outcome["exc"] = e
+        finally:
+            try:
+                loop.call_soon_threadsafe(done.set)
+            except RuntimeError:
+                # Caller's loop already closed (shutdown) — nothing to notify.
+                pass
+
+    t = threading.Thread(target=_runner, name=name, daemon=True)
+    t.start()
+    await done.wait()
+    if "exc" in outcome:
+        exc = outcome["exc"]
+        if isinstance(exc, asyncio.CancelledError):
+            # A CancelledError raised INSIDE the handler's own loop is a job
+            # failure, not a cancellation of the awaiting task (our own
+            # cancellation raises at `await done.wait()` above, never through
+            # this dict). Re-raising it raw would slip past the dispatcher's
+            # `except Exception` failure handling — the run would never be
+            # marked failed/rescheduled and the worker task would die.
+            raise RuntimeError(
+                f"handler raised CancelledError internally ({name})"
+            ) from exc
+        raise exc
+    return outcome.get("result")
+
+
 async def worker_loop(
     db: Any,
     slot: int,
@@ -279,10 +351,10 @@ async def worker_loop(
         slot: integer slot index, used to build worker_id.
         execute_fn: async callable `(claimed_row: Dict) -> Awaitable`. The
                     claimed row is the dict returned by the claim_next_job RPC.
-                    Called via plain `await` — the caller is responsible for
-                    threading sync DB calls (if any) off the event loop. PR 2
-                    handlers stay async; sync portions inside block briefly
-                    but explicit awaits release the loop for other workers.
+                    The dispatcher runs the actual job handler in its own
+                    daemon thread (run_coroutine_in_thread), so a handler's
+                    sync DB/LLM calls block only that job — never this loop,
+                    the sibling slots, or the timers.
 
     PR 2 callsite: viraltracker/worker/scheduler_worker.py::run_scheduler().
     """
