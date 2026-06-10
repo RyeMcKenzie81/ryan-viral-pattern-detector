@@ -102,3 +102,10 @@
 **Context:** Miner reads rankings via the batch fetch in `opportunity_miner_service.py` (~line 164); the Dashboard reads analytics. Increment 0 of the §7 Tier-2 work adds per-source freshness monitoring covering BOTH tables in the meantime, so this is debt, not an outage risk. Start at the miner's batch-fetch query. `seo_article_analytics` is canonical (proper daily grain, `UNIQUE(article_id, date, source)`).
 **Depends on:** §7 Tier-2 increment 0 (feed fixes + freshness monitoring) shipped.
 **Added:** 2026-06-09 from /plan-eng-review of hardening plan §4 + §7 Tier-2.
+
+## Review Link Impact Card Against Measured Data (DUE ~2026-06-23)
+**What:** Validate the Link Impact card (SEO Dashboard) once 2+ weekly scans have written real coverage snapshots. Check: (1) the approximate backfill series roughly agrees with measured snapshots where they overlap (it should UNDERCOUNT — Related-block links churn timestamps; large divergence means the reconstruction is misleading and should be dropped); (2) provenance labels switch from approximate/mixed → measured as history accrues; (3) bucket medians are stable enough to be readable (if gained-links bucket has <5 articles, consider widening the window from 90d); (4) the live-check sample (10/brand) is catching anything — if verified is always 100%, consider dropping the cap to 5 to save Shopify calls.
+**Why:** The card shipped against zero measured history by design (built 2026-06-09 instead of waiting 2 weeks; approximate backfill made it useful day one). This review closes the loop on whether the cold-start approximations were honest.
+**Context:** Card code in `48_🔍_SEO_Dashboard.py` (Link Impact section); data method `SEOAnalyticsService.get_link_impact`; live-check `InterlinkingService.verify_live_links`. Snapshots accrue every Sunday scan (seo_opportunity_scan, next runs 06-16 and 06-23 — two data points by the due date). Plan: §11 R7/R9.
+**Depends on:** Two weekly scans having run (06-16, 06-23).
+**Added:** 2026-06-09, per Ryan's "build it now and make a note to review in 1-2 weeks."

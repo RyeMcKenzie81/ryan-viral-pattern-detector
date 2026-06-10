@@ -7067,6 +7067,20 @@ async def execute_seo_opportunity_scan_job(job: Dict) -> Dict[str, Any]:
                         f"{len(_new_orphan_alarms)} new alarms, "
                         f"{_alerts.get('resolved', 0)} resolved"
                     )
+
+                    # R9: live-link spot check — verified vs recorded. Own
+                    # inner try so a CMS hiccup can't drop the health block
+                    # already attached to the report above.
+                    try:
+                        _live = _il.verify_live_links(brand_id, org_id)
+                        report["interlink_health"]["live_check"] = _live
+                        logs.append(
+                            f"Brand {brand_id}: live-check — "
+                            f"{_live['verified']}/{_live['links_checked']} verified, "
+                            f"{len(_live['missing'])} missing, {_live['errors']} errors"
+                        )
+                    except Exception as e:
+                        logs.append(f"Brand {brand_id}: live-check failed (non-fatal) — {e}")
                 except Exception as e:
                     logs.append(f"Brand {brand_id}: interlink health failed (non-fatal) — {e}")
                     logger.error(f"Interlink health failed for brand {brand_id}: {e}")

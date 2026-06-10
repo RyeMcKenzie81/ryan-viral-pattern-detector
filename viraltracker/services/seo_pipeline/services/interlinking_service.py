@@ -1819,6 +1819,166 @@ class InterlinkingService:
             logger.error(f"Failed to set interlink_exempt for {article_id}: {e}")
             return False
 
+    def verify_live_links(
+        self,
+        brand_id: str,
+        organization_id: str,
+        sample_size: int = 10,
+        delay_seconds: float = 1.0,
+    ) -> Dict[str, Any]:
+        """R9: spot-check that DB-recorded 'implemented' links exist in the
+        LIVE Shopify-rendered body — the "verified vs recorded" split.
+
+        A link record is what we WROTE; the live body is what Google SEES.
+        Pushes can fail silently or be overwritten, so a sample of recorded
+        links is verified against the CMS every scan.
+
+        Design (eng-reviewed):
+        - Fetch by cms_article_id via the Shopify API — never by scraping
+          published_url (redirects/locales/trailing slashes create false
+          negatives). Link PRESENCE is checked by the target URL's PATH
+          appearing in the body, which tolerates domain/protocol variants.
+        - TARGETED sample, not random: source articles with the most recently
+          created implemented links first — verify what the machinery just
+          claims to have done. Capped at sample_size articles per brand and
+          paced by delay_seconds (Shopify rate limit).
+        - content_locked sources: a human owns the body and may legitimately
+          have removed links — missing links there are FLAGGED (locked_flags),
+          not failed.
+        - Fetch/network errors are counted as errors, never as missing links.
+        - Never raises (non-fatal to the scan's failure budget).
+
+        Returns:
+            {"articles_checked": int, "links_checked": int, "verified": int,
+             "missing": [{source_article_id, source_keyword, target_url}],
+             "locked_flags": int, "errors": int, "skipped": str|None}
+        """
+        result: Dict[str, Any] = {
+            "articles_checked": 0, "links_checked": 0, "verified": 0,
+            "missing": [], "locked_flags": 0, "errors": 0, "skipped": None,
+        }
+        try:
+            # Live article set for the brand (id -> row).
+            live_res = (
+                self.supabase.table("seo_articles")
+                .select("*")
+                .eq("brand_id", brand_id)
+                .eq("status", "published")
+                .execute()
+            )
+            live = {
+                a["id"]: a for a in (live_res.data or [])
+                if (a.get("published_url") or "").strip()
+            }
+            if not live:
+                result["skipped"] = "no published articles"
+                return result
+
+            # Recorded implemented links among THIS brand's live articles,
+            # newest first — the targeted sample is "what did the machinery
+            # write most recently". seo_internal_links has no brand column, so
+            # the query is scoped by source_article_id IN the brand's live set
+            # (chunked); a global newest-500 fetch would let another brand's
+            # recent links crowd this brand out of its own sample.
+            live_ids_list = list(live.keys())
+            link_rows: List[Dict[str, Any]] = []
+            for i in range(0, len(live_ids_list), 50):
+                batch = live_ids_list[i:i + 50]
+                try:
+                    res = (
+                        self.supabase.table("seo_internal_links")
+                        .select("source_article_id, target_article_id, created_at")
+                        .eq("status", LinkStatus.IMPLEMENTED.value)
+                        .in_("source_article_id", batch)
+                        .order("created_at", desc=True)
+                        .limit(200)
+                        .execute()
+                    )
+                    link_rows.extend(res.data or [])
+                except Exception as e:
+                    logger.warning(f"Live-check link fetch failed: {e}")
+            link_rows.sort(key=lambda r: str(r.get("created_at") or ""), reverse=True)
+
+            by_source: Dict[str, List[str]] = {}
+            source_order: List[str] = []
+            for r in link_rows:
+                sid, tid = r.get("source_article_id"), r.get("target_article_id")
+                if sid in live and tid in live:
+                    if sid not in by_source:
+                        by_source[sid] = []
+                        source_order.append(sid)
+                    by_source[sid].append(tid)
+            if not source_order:
+                result["skipped"] = "no recorded implemented links among live articles"
+                return result
+
+            from viraltracker.services.seo_pipeline.services.cms_publisher_service import (
+                CMSPublisherService,
+            )
+            publisher = CMSPublisherService(
+                supabase_client=self.supabase
+            ).get_publisher(brand_id, organization_id)
+            if publisher is None:
+                result["skipped"] = "no CMS publisher configured"
+                return result
+
+            def _path_of(url: str) -> str:
+                # Compare by path: tolerant of domain/protocol/locale prefixes.
+                try:
+                    from urllib.parse import urlparse
+                    return urlparse(url).path.rstrip("/")
+                except Exception:
+                    return url
+
+            def _href_paths(body_html: str) -> set:
+                # Verify actual <a href> targets with EXACT path equality — a
+                # raw substring check would let /blogs/news/foo "verify" inside
+                # /blogs/news/foobar, and plain-text mentions would count as
+                # links.
+                hrefs = re.findall(r'href=["\']([^"\']+)["\']', body_html or "")
+                return {_path_of(h) for h in hrefs if h}
+
+            for sid in source_order[:sample_size]:
+                source = live[sid]
+                cms_id = source.get("cms_article_id")
+                if not cms_id:
+                    continue
+                cms_article = None
+                try:
+                    cms_article = publisher.get_article(str(cms_id))
+                except Exception as e:
+                    logger.warning(f"Live-check fetch failed for {sid}: {e}")
+                if not cms_article:
+                    result["errors"] += 1
+                    time.sleep(delay_seconds)
+                    continue
+
+                live_paths = _href_paths(cms_article.get("body_html") or "")
+                result["articles_checked"] += 1
+                locked = bool(source.get("content_locked"))
+                for tid in set(by_source[sid]):
+                    target_url = (live.get(tid) or {}).get("published_url") or ""
+                    path = _path_of(target_url)
+                    if not path:
+                        continue
+                    result["links_checked"] += 1
+                    if path in live_paths:
+                        result["verified"] += 1
+                    elif locked:
+                        # Human-owned body — the removal may be intentional.
+                        result["locked_flags"] += 1
+                    else:
+                        result["missing"].append({
+                            "source_article_id": sid,
+                            "source_keyword": source.get("keyword") or "(untitled)",
+                            "target_url": target_url,
+                        })
+                time.sleep(delay_seconds)
+        except Exception as e:
+            logger.error(f"Live link verification failed for brand {brand_id}: {e}")
+            result["errors"] += 1
+        return result
+
     def _update_article_html(self, article_id: str, html: str) -> None:
         """Update content_html in seo_articles."""
         try:
