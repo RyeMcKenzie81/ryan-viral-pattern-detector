@@ -483,21 +483,36 @@ def are_cookies_ready() -> bool:
     controller = _get_cookie_controller()
     all_cookies = controller.getAll()
 
-    # Non-empty dict means iframe has loaded with real cookies
+    # Non-empty dict means the iframe has loaded with real cookies — this is the
+    # ONLY genuine "ready" signal. The common (logged-in) case exits here as
+    # soon as the iframe loads, regardless of the cap below.
     if all_cookies:
         return True
 
-    # After OAuth redirect, give the iframe up to 3 render cycles instead of 1.
-    # Cross-domain redirects (e.g. facebook.com → our app) reset the Streamlit
-    # websocket, and the cookie iframe needs more time to initialize.
-    max_wait_cycles = 3 if st.session_state.get("_oauth_return") else 1
+    # getAll() == {} is AMBIGUOUS: either the iframe hasn't loaded yet, or the
+    # user is genuinely logged out. After a cross-domain OAuth redirect
+    # (accounts.google.com → our app) the Streamlit websocket is reset and the
+    # cookie iframe can take several seconds to initialize — well past the old
+    # 3-cycle (~1.5s) budget. When we gave up at 3 and returned True with cookies
+    # still empty, _restore_session() read an empty cookie and require_auth()
+    # showed the LOGIN FORM — bouncing a logged-in user mid-OAuth and dropping
+    # the in-flight GSC token/property flow (so GSC never reconnects). This was
+    # the 4th recurrence of that race (commits 25f0112a, 8bffe7e1, 19d0ad41).
+    #
+    # Fix: on the OAuth-return path WAIT for the real non-empty signal with a
+    # generous cap (~6s). The user just authenticated with Google, so they were
+    # logged in — their session cookie IS in the browser and WILL load; we must
+    # not pre-empt it. The cap is only a safety net for a genuinely-logged-out
+    # user (rare here), who then waits out the cap and sees login.
+    OAUTH_WAIT_CYCLES = 12   # ~6s at require_auth's 0.5s/cycle
+    max_wait_cycles = OAUTH_WAIT_CYCLES if st.session_state.get("_oauth_return") else 1
     cookie_check_count = st.session_state.get("_cookies_check_count", 0)
 
     if cookie_check_count < max_wait_cycles:
         st.session_state["_cookies_check_count"] = cookie_check_count + 1
         return False  # Wait for iframe
 
-    # Clear the oauth return flag after we've waited
+    # Waited out the cap with cookies still empty — treat as genuinely logged out.
     st.session_state.pop("_oauth_return", None)
     st.session_state.pop("_cookies_check_count", None)
     return True
