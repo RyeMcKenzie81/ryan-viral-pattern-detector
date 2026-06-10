@@ -365,3 +365,106 @@ class TestRecoveryLoop:
         )
         # Sweep ran at least twice: the failing tick did not end the loop.
         assert calls["n"] >= 2
+
+
+# ============================================================================
+# run_coroutine_in_thread — thread-per-job dispatch (starvation fix)
+# ============================================================================
+
+class TestRunCoroutineInThread:
+    """Job handlers do sync work inside async-def; on a shared loop that
+    starves every other slot/timer (verified live 2026-06-09). These prove the
+    thread-per-job primitive actually fixes it."""
+
+    @pytest.mark.asyncio
+    async def test_sync_blocking_handlers_run_in_parallel(self):
+        """Two handlers that BLOCK (time.sleep) must overlap — on a shared
+        loop they would serialize (>=0.7s); in threads they take ~0.35s."""
+        import time as _t
+        from viraltracker.worker.scheduler_concurrency import run_coroutine_in_thread
+
+        async def blocking_handler(_job):
+            _t.sleep(0.35)  # sync block, like a Supabase/Gemini call
+            return "done"
+
+        start = _t.monotonic()
+        r1, r2 = await asyncio.gather(
+            run_coroutine_in_thread(blocking_handler, {"id": 1}),
+            run_coroutine_in_thread(blocking_handler, {"id": 2}),
+        )
+        elapsed = _t.monotonic() - start
+        assert (r1, r2) == ("done", "done")
+        assert elapsed < 0.6, f"handlers serialized ({elapsed:.2f}s) — loop still starved"
+
+    @pytest.mark.asyncio
+    async def test_event_loop_stays_responsive_during_sync_block(self):
+        """While a handler sync-blocks in its thread, a timer on the MAIN loop
+        must fire promptly — this is the recovery-loop/claim-loop guarantee."""
+        import time as _t
+        from viraltracker.worker.scheduler_concurrency import run_coroutine_in_thread
+
+        async def blocking_handler(_job):
+            _t.sleep(0.5)
+
+        task = asyncio.create_task(run_coroutine_in_thread(blocking_handler, {}))
+        start = _t.monotonic()
+        await asyncio.sleep(0.05)  # would wait the full 0.5s on a starved loop
+        timer_latency = _t.monotonic() - start
+        await task
+        assert timer_latency < 0.25, f"main loop starved: timer took {timer_latency:.2f}s"
+
+    @pytest.mark.asyncio
+    async def test_exception_propagates_to_awaiter(self):
+        from viraltracker.worker.scheduler_concurrency import run_coroutine_in_thread
+
+        async def failing_handler(_job):
+            raise ValueError("handler blew up")
+
+        with pytest.raises(ValueError, match="handler blew up"):
+            await run_coroutine_in_thread(failing_handler, {})
+
+    @pytest.mark.asyncio
+    async def test_thread_is_daemon_and_named(self):
+        """Daemon so SIGTERM drain-timeout can exit the process behind an
+        hours-long job (recover_stuck_runs_v2 picks up the orphan next boot)."""
+        import threading as _th
+        from viraltracker.worker.scheduler_concurrency import run_coroutine_in_thread
+
+        seen = {}
+
+        async def introspect_handler(_job):
+            t = _th.current_thread()
+            seen["daemon"] = t.daemon
+            seen["name"] = t.name
+
+        await run_coroutine_in_thread(introspect_handler, {}, name="job-test-abc")
+        assert seen["daemon"] is True
+        assert seen["name"] == "job-test-abc"
+
+    @pytest.mark.asyncio
+    async def test_handler_gets_its_own_event_loop(self):
+        """asyncio primitives inside the handler must work (own loop), and it
+        must NOT be the caller's loop."""
+        from viraltracker.worker.scheduler_concurrency import run_coroutine_in_thread
+
+        caller_loop = asyncio.get_running_loop()
+
+        async def loop_handler(_job):
+            await asyncio.sleep(0.01)  # asyncio works in the thread's loop
+            return asyncio.get_running_loop() is not caller_loop
+
+        assert await run_coroutine_in_thread(loop_handler, {}) is True
+
+    @pytest.mark.asyncio
+    async def test_handler_cancelled_error_becomes_failure(self):
+        """A CancelledError raised INSIDE the handler's own loop must surface
+        as a normal failure (RuntimeError) so the dispatcher's
+        `except Exception` marks the run failed + reschedules — re-raising it
+        raw would bypass cleanup and kill the worker task (codex finding)."""
+        from viraltracker.worker.scheduler_concurrency import run_coroutine_in_thread
+
+        async def cancelling_handler(_job):
+            raise asyncio.CancelledError()
+
+        with pytest.raises(RuntimeError, match="CancelledError internally"):
+            await run_coroutine_in_thread(cancelling_handler, {}, name="job-x")

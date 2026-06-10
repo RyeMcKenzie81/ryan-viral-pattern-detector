@@ -31,6 +31,7 @@ from viraltracker.worker.scheduler_concurrency import (
     make_worker_id,
     boot_id,
     register_job_handler,
+    run_coroutine_in_thread,
     shutdown_requested as _concurrency_shutdown_event,
     worker_loop,
 )
@@ -508,6 +509,23 @@ def update_job(job_id: str, updates: Dict):
     # Job types that legitimately run longer than 30 minutes (e.g., full
     # 4-layer analysis for large ad accounts). Use 120-minute threshold instead.
 LONG_RUNNING_JOB_TYPES = {"ad_intelligence_analysis", "seo_opportunity_scan", "competitor_intel_analysis"}
+
+# Job types whose handlers construct MetaAdsService, which switches PROCESS-
+# GLOBAL Facebook SDK state (FacebookAdsApi.init sets the default api/token).
+# Under thread-per-job dispatch these would otherwise run truly in parallel and
+# clobber each other's token/account — brand A's sync writing under brand B's
+# token. Serialized via _META_SDK_LOCK (held inside the job's own thread, so
+# waiting blocks only that job) until MetaAdsService is refactored to
+# per-instance FacebookAdsApi objects. (Pre-existing latent race: the starved
+# single event loop accidentally serialized these before.)
+META_SDK_JOB_TYPES = {
+    "meta_sync",
+    "demographic_backfill",
+    "destination_sync",
+    "weekly_product_digest",
+    "asset_download",
+}
+_META_SDK_LOCK = threading.Lock()
 
 
 def recover_stuck_runs(stuck_threshold_minutes: int = 30):
@@ -5167,7 +5185,24 @@ async def _dispatch_claimed_job(db, claimed: Dict[str, Any]) -> None:
         _emit_job_started_event(job, run_id, attempt)
 
         handler = dispatch_job(job_type)
-        await handler(job)
+        # Run the handler in its OWN daemon thread + event loop. Handlers do
+        # sync Supabase/LLM work inside async-def; on the shared loop that
+        # starved every other slot and timer for the job's whole duration
+        # (verified live 2026-06-09: a deep-analysis job froze the worker for
+        # hours). Confined to a thread, a long job blocks only itself.
+        if job_type in META_SDK_JOB_TYPES:
+            # Meta SDK jobs must not overlap (process-global token state) —
+            # the lock is taken inside the job's thread so waiting blocks
+            # only this job, never the loop or the other slot.
+            original_handler = handler
+
+            async def handler(j):  # noqa: F811 — deliberate wrap
+                with _META_SDK_LOCK:
+                    return await original_handler(j)
+
+        await run_coroutine_in_thread(
+            handler, job, name=f"job-{job_type}-{str(run_id)[:8]}"
+        )
 
     except Exception:
         logger.exception(
@@ -5197,6 +5232,11 @@ async def run_scheduler():
       - N worker_loop tasks (N = SCHEDULER_POOL_SIZE env var; default 2).
         Each loop: claim → dispatch via _dispatch_claimed_job → repeat.
         Claim is atomic via the claim_next_job RPC (advisory-lock-protected).
+        The job HANDLER runs in its own daemon thread with its own event loop
+        (run_coroutine_in_thread): handlers do sync DB/LLM work inside
+        async-def, which on the shared loop starved every other slot + timer
+        for the job's whole duration (verified live 2026-06-09). With
+        thread-per-job, pool_size=N gives N truly concurrent jobs.
       - One recovery THREAD (start_recovery_thread, 0-30s startup jitter,
         ~60s tick) running recover_stuck_runs_v2 + heal_orphaned_recurring_jobs.
         A thread, not an asyncio task: long handlers block the event loop with
