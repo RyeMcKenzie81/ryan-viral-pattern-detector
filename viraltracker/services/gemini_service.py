@@ -100,6 +100,12 @@ class GeminiService:
             rpm = 9
         self._requests_per_minute = max(1, rpm)
         self._min_delay = 60.0 / self._requests_per_minute
+        # Reservation-based limiter state (see _rate_limit). threading.Lock so
+        # the arithmetic is safe across threads AND event loops; never held
+        # across a sleep.
+        import threading as _threading
+        self._slot_lock = _threading.Lock()
+        self._next_free_slot = 0.0
 
         # Usage tracking (optional)
         self._usage_tracker = None
@@ -326,15 +332,23 @@ class GeminiService:
         return False
 
     async def _rate_limit(self) -> None:
-        """Enforce rate limiting between API calls"""
-        now = time.time()
-        elapsed = now - self._last_call_time
+        """Enforce rate limiting between API calls.
 
-        if elapsed < self._min_delay:
-            wait_time = self._min_delay - elapsed
-            logger.debug(f"Rate limiting: waiting {wait_time:.1f}s")
-            await asyncio.sleep(wait_time)
-
+        Reservation under a lock: each caller atomically claims the next free
+        slot, then sleeps until its slot outside the lock. The old check-then-
+        act on a shared timestamp let N concurrent callers read the same value,
+        sleep in parallel, and wake as a BURST (review finding on PR #290 —
+        true-async call sites made the race live). threading.Lock (held only
+        for the arithmetic, never across the sleep) is deliberate: it also
+        protects callers on other threads/event loops sharing this instance.
+        """
+        with self._slot_lock:
+            slot = max(time.monotonic(), self._next_free_slot)
+            self._next_free_slot = slot + self._min_delay
+        delay = slot - time.monotonic()
+        if delay > 0:
+            logger.debug(f"Rate limiting: waiting {delay:.1f}s")
+            await asyncio.sleep(delay)
         self._last_call_time = time.time()
 
     def _build_hook_prompt(self, tweet_text: str) -> str:

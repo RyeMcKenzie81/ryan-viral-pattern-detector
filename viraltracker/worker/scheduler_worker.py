@@ -92,20 +92,42 @@ def _fail_runs_for_this_boot():
             .eq("status", "running")
             .execute()
         )
-        n = len(result.data or [])
-        if n:
-            logger.info(f"Shutdown hygiene: marked {n} in-flight run(s) failed")
+        affected = result.data or []
+        if affected:
+            # RE-ARM the parents: job handlers NULL next_run_at at start (to
+            # prevent duplicate execution) and claim_next_job requires
+            # next_run_at IS NOT NULL — without this, a deploy-killed job is
+            # permanently dead (review finding on PR #291). Mirrors the reaper's
+            # 'rearmed' CTE: re-queue immediately, the next claim re-attempts.
+            job_ids = sorted({r["scheduled_job_id"] for r in affected if r.get("scheduled_job_id")})
+            if job_ids:
+                db.table("scheduled_jobs").update(
+                    {"next_run_at": datetime.now(PST).isoformat()}
+                ).in_("id", job_ids).execute()
+            logger.info(
+                f"Shutdown hygiene: marked {len(affected)} in-flight run(s) failed, "
+                f"re-armed {len(job_ids)} parent job(s)"
+            )
     except Exception as e:
         logger.warning(f"Shutdown hygiene failed (non-fatal): {e}")
 
 
 def handle_shutdown(signum, frame):
-    """Handle shutdown signals gracefully."""
+    """Handle shutdown signals: set the flag, spawn hygiene OFF the signal frame.
+
+    The handler itself must stay minimal — a sync HTTP call inside the signal
+    frame can re-enter httpx/logging locks held by the interrupted main thread
+    (deadlock) or eat the whole Railway grace window if the DB call stalls
+    (review finding on PR #291). A daemon thread does the DB work instead: it
+    runs concurrently with graceful drain and dies with the process if SIGKILL
+    arrives first (worst case we are back to the reaper, never worse off).
+    """
     global shutdown_requested
     logger.info(f"Received signal {signum}, initiating graceful shutdown...")
     shutdown_requested = True
-    # Free this boot's concurrency slots immediately — see _fail_runs_for_this_boot.
-    _fail_runs_for_this_boot()
+    threading.Thread(
+        target=_fail_runs_for_this_boot, name="shutdown-hygiene", daemon=True
+    ).start()
 
 
 # Register signal handlers (only when running as main entry point,

@@ -53,7 +53,7 @@ def test_concurrent_dispatch_tallies_and_caps(monkeypatch):
 def test_video_slots_preallocated(monkeypatch):
     monkeypatch.setenv("CLASSIFIER_MAX_CONCURRENCY", "8")
     ids = ["v1", "v2", "v3"]
-    svc = _svc({a: {"meta_ad_id": a, "is_video": True} for a in ids})
+    svc = _svc({a: {"meta_ad_id": a, "is_video": True, "has_video_in_storage": True} for a in ids})
     seen = {}
 
     async def fake_classify(ad_id, *a, video_budget_remaining=0, **k):
@@ -99,3 +99,39 @@ def test_default_is_sequential(monkeypatch):
     svc.classify_ad = tracking
     _run(svc, ids, max_new=10)
     assert peak == 1  # default stays strictly sequential
+
+
+def test_storageless_videos_preskipped_without_burning_caps(monkeypatch):
+    # Review finding: file-less videos are guaranteed skipped_missing_video_file —
+    # they must not consume max_new dispatch slots or max_video budget.
+    monkeypatch.setenv("CLASSIFIER_MAX_CONCURRENCY", "4")
+    ids = ["nofile1", "nofile2", "hasfile"]
+    ads = {
+        "nofile1": {"meta_ad_id": "nofile1", "is_video": True},
+        "nofile2": {"meta_ad_id": "nofile2", "is_video": True, "has_video_in_storage": False},
+        "hasfile": {"meta_ad_id": "hasfile", "is_video": True, "has_video_in_storage": True},
+    }
+    svc = _svc(ads)
+    dispatched = []
+
+    async def fake_classify(ad_id, *a, video_budget_remaining=0, **k):
+        dispatched.append((ad_id, video_budget_remaining))
+        return _cls("gemini_video")
+
+    svc.classify_ad = fake_classify
+    res = _run(svc, ids, max_new=2, max_video=1)
+    assert dispatched == [("hasfile", 1)]   # only the file-backed video dispatches
+    assert res.skipped_count == 2           # the two file-less ones counted, not dispatched
+    assert res.new_count == 1
+
+
+def test_hard_cap_attrs_set_for_dispatch(monkeypatch):
+    # classify_ad enforces the global cap via these attrs (race-free sync
+    # check/increment); classify_batch must arm them per batch.
+    monkeypatch.setenv("CLASSIFIER_MAX_CONCURRENCY", "2")
+    ids = ["a"]
+    svc = _svc({"a": {"meta_ad_id": "a", "is_video": False}})
+    svc.classify_ad = AsyncMock(side_effect=lambda *a, **k: _cls("gemini_image_deep"))
+    _run(svc, ids, max_new=5, max_video=7)
+    assert svc._video_slots_cap == 7
+    assert svc._video_slots_used == 0

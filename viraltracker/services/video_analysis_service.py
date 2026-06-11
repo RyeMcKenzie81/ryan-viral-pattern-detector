@@ -432,7 +432,11 @@ class VideoAnalysisService:
                 return None
 
             bucket, path = parts
-            content = self.supabase.storage.from_(bucket).download(path)
+            # Sync httpx download of a multi-MB file — run off the event loop so
+            # concurrent classify dispatch isn't serialized by storage I/O.
+            content = await asyncio.to_thread(
+                self.supabase.storage.from_(bucket).download, path
+            )
             return content
 
         except Exception as e:

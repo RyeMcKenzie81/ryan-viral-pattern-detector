@@ -36,3 +36,25 @@ def test_garbage_falls_back_to_default(monkeypatch):
 def test_zero_clamps_to_one(monkeypatch):
     monkeypatch.setenv("GEMINI_REQUESTS_PER_MINUTE", "0")
     assert _svc()._requests_per_minute == 1
+
+
+def test_rate_limit_serializes_concurrent_callers(monkeypatch):
+    """Review P1: the old check-then-act limiter let N concurrent callers burst
+    together. The reservation design must space them ~min_delay apart."""
+    import asyncio, time
+    monkeypatch.setenv("GEMINI_REQUESTS_PER_MINUTE", "600")  # min_delay = 0.1s
+    svc = _svc()
+
+    async def go():
+        times = []
+
+        async def one():
+            await svc._rate_limit()
+            times.append(time.monotonic())
+
+        await asyncio.gather(*(one() for _ in range(4)))
+        return sorted(times)
+
+    times = asyncio.run(go())
+    gaps = [b - a for a, b in zip(times, times[1:])]
+    assert all(g >= 0.08 for g in gaps), f"burst detected: gaps={gaps}"
