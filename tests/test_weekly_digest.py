@@ -120,6 +120,109 @@ class TestPercentile:
         assert _percentile([10.0, 20.0, 30.0, 40.0], 75) == 32.5
 
 
+class TestSampleVariants:
+    """Threshold variants behind the HTML report's filter buttons (1+/5+/10+)."""
+
+    def test_thresholds_filter_by_conversion_count(self):
+        from viraltracker.services.ad_intelligence.weekly_digest_service import _sample_variants
+        # (per-ad cost ratio, conversions): two lucky 1-purchase ads, two proven ads
+        samples = [(20.0, 1), (30.0, 1), (50.0, 5), (60.0, 12)]
+        v = _sample_variants(samples)
+        assert v["1"]["n"] == 4 and v["1"]["med"] == 40.0     # all converters
+        assert v["5"]["n"] == 2 and v["5"]["med"] == 55.0     # lucky singles drop out
+        assert v["10"]["n"] == 1 and v["10"]["med"] == 60.0
+        assert v["10"]["p25"] == 60.0                          # single-sample percentile
+        # filtering only ever RAISES (or holds) the med here — the lucky-ad bias
+        assert v["5"]["med"] > v["1"]["med"]
+
+    def test_empty_and_all_below_threshold(self):
+        from viraltracker.services.ad_intelligence.weekly_digest_service import _sample_variants
+        assert _sample_variants([]) == {
+            "1": {"med": None, "p25": None, "n": 0},
+            "5": {"med": None, "p25": None, "n": 0},
+            "10": {"med": None, "p25": None, "n": 0},
+        }
+        v = _sample_variants([(25.0, 2)])
+        assert v["1"]["n"] == 1 and v["5"]["n"] == 0 and v["5"]["med"] is None
+
+    def test_legacy_fields_equal_threshold_1(self):
+        # prod_med/p25 must stay identical to the "all converters" variant so the
+        # Slack renderer and stored expectations don't shift.
+        from viraltracker.services.ad_intelligence.weekly_digest_service import (
+            _percentile, _sample_variants,
+        )
+        samples = [(10.0, 1), (20.0, 3), (80.0, 7)]
+        v = _sample_variants(samples)
+        ratios = [r for r, _ in samples]
+        assert v["1"]["med"] == _percentile(ratios, 50)
+        assert v["1"]["p25"] == _percentile(ratios, 25)
+
+
+class TestHtmlFilterButtons:
+    def _variant_row(self):
+        return {
+            "level": "unaware", "ads": 4, "spend": 1200.0, "roas": 2.3, "cvr": 0.021,
+            "agg_cpa": 51.0, "prod_med_cpa": 40.0, "prod_p25_cpa": 25.0, "brand_med_cpa": 40.0,
+            "agg_catc": 24.0, "prod_med_catc": 22.0, "prod_p25_catc": 15.0,
+            "cpa_variants": {
+                "1": {"med": 40.0, "p25": 25.0, "n": 4},
+                "5": {"med": 55.0, "p25": 51.25, "n": 2},
+                "10": {"med": None, "p25": None, "n": 0},
+            },
+            "catc_variants": {
+                "1": {"med": 22.0, "p25": 15.0, "n": 4},
+                "5": {"med": 30.0, "p25": 30.0, "n": 1},
+                "10": {"med": None, "p25": None, "n": 0},
+            },
+        }
+
+    def test_buttons_and_data_attrs_present(self):
+        from viraltracker.services.ad_intelligence.digest_renderer import render_brand_digest_html
+        data = dict(_DATA)
+        data["products"] = [dict(_DATA["products"][0], awareness=[self._variant_row()])]
+        html_doc = render_brand_digest_html(data)
+        assert "5+ purchases" in html_doc and "10+ purchases" in html_doc
+        assert "vtFilter" in html_doc
+        assert 'data-v5="$55"' in html_doc      # filtered med embedded
+        assert 'data-n5="2"' in html_doc        # sample size embedded
+        assert 'data-v10=""' in html_doc        # empty bucket -> em-dash on toggle
+        assert 'title="4 ads in sample"' in html_doc
+
+    def test_legacy_rows_render_without_buttons(self):
+        # Rows without variants (older data) keep the static table, no filter bar.
+        from viraltracker.services.ad_intelligence.digest_renderer import render_brand_digest_html
+        html_doc = render_brand_digest_html(_DATA)
+        assert "vtFilter" not in html_doc and "5+ purchases" not in html_doc
+        assert "$38" in html_doc                # legacy prod_p25_cpa still renders
+
+    def test_low_sample_dims_on_first_paint(self):
+        # n<3 must dim server-side too, not only after a button click (review P2).
+        from viraltracker.services.ad_intelligence.digest_renderer import render_brand_digest_html
+        row = self._variant_row()
+        row["cpa_variants"]["1"] = {"med": 40.0, "p25": 25.0, "n": 2}
+        data = dict(_DATA)
+        data["products"] = [dict(_DATA["products"][0], awareness=[row])]
+        html_doc = render_brand_digest_html(data)
+        assert 'class="var thin"' in html_doc
+        assert 'title="2 ads in sample"' in html_doc
+
+    def test_pending_products_summon_no_buttons(self):
+        # awareness_pending suppresses the table, so variants on its rows must
+        # not render a dead filter bar (review P3).
+        from viraltracker.services.ad_intelligence.digest_renderer import render_brand_digest_html
+        data = dict(_DATA)
+        data["products"] = [dict(
+            _DATA["products"][0],
+            awareness=[self._variant_row()],
+            awareness_pending=True,
+            completeness={"classifiable_spend": 100.0, "current_pct": 0.4},
+        )]
+        html_doc = render_brand_digest_html(data)
+        # CSS class names always live in the static style block; the rendered
+        # controls (script + buttons) are what must be absent.
+        assert "vtFilter" not in html_doc and "<button" not in html_doc
+
+
 class _CovTable:
     def __init__(self, name, data_map):
         self.name = name

@@ -48,6 +48,32 @@ def _percentile(values: List[float], pct: float) -> Optional[float]:
     return round(vals[lo] * (1 - frac) + vals[hi] * frac, 2)
 
 
+# Per-ad sample thresholds for the HTML report's filter buttons: median/p25 are
+# recomputed over ads with >= N conversions (purchases for CPA, add-to-carts for
+# cost/ATC). "1" is the default view and feeds the legacy prod_med/p25 fields.
+SAMPLE_THRESHOLDS = (1, 5, 10)
+
+
+def _sample_variants(samples: List[tuple]) -> Dict[str, Dict[str, Any]]:
+    """med/p25/n of per-ad cost ratios at each conversion-count threshold.
+
+    ``samples`` is a list of (ratio, conversions) tuples — one per ad whose
+    denominator fired. Each ad counts once regardless of spend.
+    """
+    out: Dict[str, Dict[str, Any]] = {}
+    for t in SAMPLE_THRESHOLDS:
+        # t=1 is definitionally the FULL sample (the legacy prod_med/p25 view),
+        # not an n>=1 filter — keeps parity even if a source ever produced
+        # fractional conversion counts.
+        vals = [r for r, n in samples] if t == 1 else [r for r, n in samples if n >= t]
+        out[str(t)] = {
+            "med": _percentile(vals, 50),
+            "p25": _percentile(vals, 25),
+            "n": len(vals),
+        }
+    return out
+
+
 # Awareness stages, least-aware → most-aware, so the digest reads as a CPA
 # waterfall down the funnel. Anything off-ladder (unclassified/unknown) sorts last.
 _LEVEL_ORDER = {
@@ -319,8 +345,8 @@ class WeeklyDigestService:
         # line and EXCLUDED from the buckets, so the client mix is never built on the
         # unreliable old light-path labels.
         agg: Dict[str, List[float]] = {}
-        cpa_samples: Dict[str, List[float]] = {}   # per-ad $/purchase (purchases>0)
-        catc_samples: Dict[str, List[float]] = {}  # per-ad $/add-to-cart (add_to_carts>0)
+        cpa_samples: Dict[str, List[tuple]] = {}   # per-ad ($/purchase, purchases) (purchases>0)
+        catc_samples: Dict[str, List[tuple]] = {}  # per-ad ($/ATC, add_to_carts) (add_to_carts>0)
         comp = {CURRENT: 0.0, STALE: 0.0, LOW_RES: 0.0, UNCLASSIFIED: 0.0}
         for ad, (s, p, rev, atc, clk) in perf.items():
             state = awareness_state(
@@ -341,25 +367,28 @@ class WeeklyDigestService:
             # purchase / no add-to-cart have no defined CPA / cost-per-ATC, so they
             # don't enter the median/p25 samples.
             if p > 0:
-                cpa_samples.setdefault(lvl, []).append(s / p)
+                cpa_samples.setdefault(lvl, []).append((s / p, p))
             if atc > 0:
-                catc_samples.setdefault(lvl, []).append(s / atc)
+                catc_samples.setdefault(lvl, []).append((s / atc, atc))
 
         rows_out: List[Dict[str, Any]] = []
         for lvl, (ads, s, p, rev, atc, clk) in agg.items():
-            cpa_s = cpa_samples.get(lvl, [])
-            catc_s = catc_samples.get(lvl, [])
+            cpa_v = _sample_variants(cpa_samples.get(lvl, []))
+            catc_v = _sample_variants(catc_samples.get(lvl, []))
             rows_out.append({
                 "level": lvl, "ads": int(ads), "spend": round(s, 2),
                 "roas": round(rev / s, 2) if s else None,         # revenue ÷ spend (blended)
                 "cvr": round(p / clk, 4) if clk else None,        # purchases ÷ link-clicks
                 "agg_cpa": round(s / p, 2) if p else None,        # blended $/purchase
-                "prod_med_cpa": _percentile(cpa_s, 50),           # product median $/purchase
-                "prod_p25_cpa": _percentile(cpa_s, 25),           # product top-quartile target
+                "prod_med_cpa": cpa_v["1"]["med"],                # product median $/purchase
+                "prod_p25_cpa": cpa_v["1"]["p25"],                # product top-quartile target
                 "brand_med_cpa": baselines.get(lvl),              # brand-wide CPA benchmark
                 "agg_catc": round(s / atc, 2) if atc else None,   # blended $/add-to-cart
-                "prod_med_catc": _percentile(catc_s, 50),         # product median $/ATC
-                "prod_p25_catc": _percentile(catc_s, 25),         # product top-quartile $/ATC
+                "prod_med_catc": catc_v["1"]["med"],              # product median $/ATC
+                "prod_p25_catc": catc_v["1"]["p25"],              # product top-quartile $/ATC
+                # HTML report filter buttons: med/p25/n at 1+/5+/10+ conversions.
+                "cpa_variants": cpa_v,
+                "catc_variants": catc_v,
             })
         # Order by awareness stage (Unaware → Most Aware) so it reads as a CPA waterfall.
         rows_out.sort(key=lambda r: _LEVEL_ORDER.get(r["level"], 99))
