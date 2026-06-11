@@ -15,8 +15,10 @@ from ...core.config import Config
 
 logger = logging.getLogger(__name__)
 
-# Valid job types matching the scheduled_jobs CHECK constraint.
-# Keep in sync with the latest migration.
+# Job types the Ops Copilot can schedule/operate on. This is a curated SUBSET of
+# the scheduled_jobs CHECK constraint allowlist (some DB-valid types are created
+# only via migrations/UI, not the agent) — add a type here once the agent should
+# handle it.
 VALID_JOB_TYPES = {
     "ad_creation", "ad_creation_v2", "meta_sync", "scorecard",
     "template_scrape", "template_approval", "congruence_reanalysis",
@@ -27,7 +29,7 @@ VALID_JOB_TYPES = {
     "analytics_sync", "seo_status_sync", "iteration_auto_run",
     "size_variant", "smart_edit", "seo_content_eval", "seo_publish",
     "seo_auto_interlink", "demographic_backfill", "seo_opportunity_scan",
-    "token_refresh", "competitor_intel_analysis",
+    "token_refresh", "competitor_intel_analysis", "sync_health_check",
 }
 
 # Fallback estimates when no historical data exists (minutes)
