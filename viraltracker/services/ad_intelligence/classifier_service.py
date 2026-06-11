@@ -29,6 +29,7 @@ from urllib.parse import urlparse
 import json
 import logging
 import os
+import asyncio
 import tempfile
 import time as time_module
 from datetime import datetime, timedelta, timezone
@@ -521,6 +522,23 @@ class ClassifierService:
             low_res_marker_ids,
         ) = await self._batch_prefetch(brand_id, sorted_ids)
 
+        # Dispatch concurrency for the slow classify_ad calls. Default 1 preserves
+        # the exact sequential behavior; tier-3 Gemini accounts can raise it via
+        # CLASSIFIER_MAX_CONCURRENCY (pair with GEMINI_REQUESTS_PER_MINUTE).
+        try:
+            _concurrency = max(1, int(os.getenv("CLASSIFIER_MAX_CONCURRENCY", "1")))
+        except ValueError:
+            _concurrency = 1
+
+        # PHASE 1 (sequential, fast): cache/skip/cap decisions build the dispatch
+        # work list. Caps are enforced HERE so they stay deterministic regardless
+        # of dispatch concurrency: at most max_new ads are dispatched at all, and
+        # video-capable ads beyond the first max_video get a zero video budget
+        # (classify_ad then returns skipped_video_budget, same as sequentially).
+        # One conservative divergence from the old inline loop: a video slot freed
+        # by a failed video analysis is NOT reused by a later ad.
+        todo: List[tuple] = []  # (meta_ad_id, video_budget_for_this_ad)
+        _video_slots_left = max_video
         skipped_count = 0
         for i, meta_ad_id in enumerate(sorted_ids):
             try:
@@ -578,8 +596,10 @@ class ClassifierService:
                     cached_count += 1
                     continue
 
-                # Need new classification — check cap
-                if new_count >= max_new:
+                # Need new classification — check the dispatch cap (each dispatch
+                # is a potential billable Gemini call, which is what max_new exists
+                # to bound).
+                if len(todo) >= max_new:
                     remaining = len(sorted_ids) - i
                     logger.info(
                         f"Classification cap reached ({max_new}). "
@@ -588,36 +608,61 @@ class ClassifierService:
                     skipped_count += remaining
                     break
 
-                video_budget = max_video - video_classification_count
-                # force=True is REQUIRED here: we only reach this point after the
-                # prefetch cache decision above (which DOES apply the video/image
-                # staleness gates) decided this ad needs (re)classification. classify_ad
-                # has its OWN legacy input_hash cache (_find_existing_classification) that
-                # is NOT staleness-aware — with force=False it would re-serve the very
-                # stale light row we just decided to replace (e.g. an image ad whose
-                # cached classification has no image_analysis_id), and the deep path would
-                # never run. The prefetch cache above is the single source of truth.
-                classification = await self.classify_ad(
-                    meta_ad_id, brand_id, org_id, run_id,
-                    video_budget_remaining=video_budget,
-                    scrape_missing_lp=scrape_missing_lp,
-                    force=True,
-                )
-                classifications.append(classification)
-
-                # Track skip vs new vs video
-                if classification.source and classification.source.startswith("skipped_"):
-                    skipped_count += 1
-                elif classification.source == "gemini_video":
-                    new_count += 1
-                    video_classification_count += 1
+                # Pre-allocate a video slot when the prefetch says this is a video
+                # ad and budget remains; classify_ad makes the true routing decision.
+                _is_video = bool((prefetched_ads.get(meta_ad_id) or {}).get("is_video"))
+                if _is_video and _video_slots_left > 0:
+                    todo.append((meta_ad_id, 1))
+                    _video_slots_left -= 1
                 else:
-                    new_count += 1
+                    todo.append((meta_ad_id, 0 if _is_video else max_video))
 
             except Exception as e:
                 logger.error(f"Error classifying ad {meta_ad_id}: {e}")
                 error_count += 1
                 continue
+
+        # PHASE 2: dispatch the slow calls. force=True is REQUIRED here: we only
+        # reach dispatch after the prefetch cache decision above (which DOES apply
+        # the video/image staleness gates) decided the ad needs (re)classification.
+        # classify_ad has its OWN legacy input_hash cache that is NOT staleness-
+        # aware — with force=False it would re-serve the very stale row we just
+        # decided to replace. The prefetch cache above is the single source of truth.
+        async def _dispatch(ad_id: str, video_budget: int):
+            try:
+                return await self.classify_ad(
+                    ad_id, brand_id, org_id, run_id,
+                    video_budget_remaining=video_budget,
+                    scrape_missing_lp=scrape_missing_lp,
+                    force=True,
+                )
+            except Exception as e:
+                logger.error(f"Error classifying ad {ad_id}: {e}")
+                return e
+
+        if _concurrency <= 1:
+            results = [await _dispatch(ad_id, vb) for ad_id, vb in todo]
+        else:
+            _sem = asyncio.Semaphore(_concurrency)
+
+            async def _bounded(ad_id: str, vb: int):
+                async with _sem:
+                    return await _dispatch(ad_id, vb)
+
+            results = await asyncio.gather(*(_bounded(a, v) for a, v in todo))
+
+        for result in results:
+            if isinstance(result, Exception):
+                error_count += 1
+                continue
+            classifications.append(result)
+            if result.source and result.source.startswith("skipped_"):
+                skipped_count += 1
+            elif result.source == "gemini_video":
+                new_count += 1
+                video_classification_count += 1
+            else:
+                new_count += 1
 
         logger.info(
             f"Classified batch: {len(classifications)} total "
