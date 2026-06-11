@@ -53,9 +53,14 @@ _COOKIES_CHECKED_KEY = "_cookies_checked"
 # ============================================================================
 
 def _get_auth_client():
-    """Get Supabase client configured for auth (uses anon key)."""
-    from viraltracker.core.database import get_anon_client
-    return get_anon_client()
+    """Get a fresh Supabase client for a single auth operation (uses anon key).
+
+    A new instance per call (not the shared singleton) so concurrent browser
+    sessions can't clobber each other's session state, and with the background
+    auto-refresher disabled so refresh is driven explicitly from the cookie.
+    """
+    from viraltracker.core.database import create_auth_client
+    return create_auth_client()
 
 
 # ============================================================================
@@ -211,9 +216,77 @@ def _refresh_session(refresh_token: str) -> bool:
             logger.debug("Session refreshed successfully")
             return True
     except Exception as e:
-        logger.debug(f"Failed to refresh session: {e}")
+        # Log at WARNING (not debug) so silent refresh failures are visible. If
+        # the refresh token is definitively dead (rotated/used/revoked/not found),
+        # clear the cookie so we present a clean login instead of bouncing on a
+        # doomed retry every page load. Transient errors (network/5xx) keep the
+        # cookie so a later rerun can retry.
+        if _is_fatal_refresh_error(e):
+            logger.warning(f"Refresh token rejected, clearing session: {e}")
+            _clear_session_cookie()
+        else:
+            logger.warning(f"Failed to refresh session (will retry): {e}")
 
     return False
+
+
+# GoTrue terminal error codes: when refresh fails with one of these the refresh
+# token / session is permanently gone and retrying is pointless. Supabase
+# recommends matching on the structured code over message text.
+# Ref: https://supabase.com/docs/guides/auth/debugging/error-codes
+_FATAL_AUTH_CODES = frozenset({
+    "refresh_token_not_found",
+    "refresh_token_already_used",
+    "refresh_token_revoked",
+    "session_not_found",
+    "session_expired",
+})
+
+
+def _is_fatal_refresh_error(error: Exception) -> bool:
+    """True if a refresh failure means the refresh token / session is permanently
+    invalid (so retrying with the same cookie token is pointless), vs a transient
+    error (network/5xx) that should keep the cookie for a later retry.
+
+    Prefers the structured GoTrue code (AuthApiError.code) and falls back to
+    conservative message matching for plain exceptions. Anything ambiguous is
+    treated as transient so we never log a user out on a blip."""
+    code = getattr(error, "code", None)
+    if isinstance(code, str) and code.lower() in _FATAL_AUTH_CODES:
+        return True
+
+    msg = " ".join(
+        str(part).lower()
+        for part in (getattr(error, "message", None), error)
+        if part is not None
+    )
+    if any(c in msg for c in _FATAL_AUTH_CODES):
+        return True
+    if "refresh" in msg and any(
+        term in msg for term in ("already used", "not found", "revoked", "invalid")
+    ):
+        return True
+    if "session" in msg and any(
+        term in msg for term in ("not found", "expired", "revoked")
+    ):
+        return True
+    return False
+
+
+def _current_session_tokens() -> tuple[Optional[str], Optional[str]]:
+    """Return (access_token, refresh_token) for the current user — from the
+    in-memory Supabase session if present, else from the cookie. Either value may
+    be None. Used to load a session onto a fresh auth client before sign_out so
+    the server-side revocation actually targets this user's token."""
+    session = st.session_state.get(SESSION_KEY)
+    access_token = getattr(session, "access_token", None)
+    refresh_token = getattr(session, "refresh_token", None)
+    if access_token and refresh_token:
+        return access_token, refresh_token
+    cookie = _get_session_from_cookie()
+    if cookie:
+        return cookie.get("access_token"), cookie.get("refresh_token")
+    return access_token, refresh_token
 
 
 # ============================================================================
@@ -319,6 +392,13 @@ def sign_out() -> None:
     """Sign out the current user."""
     try:
         client = _get_auth_client()
+        # The fresh auth client starts with no session loaded, so load the current
+        # user's tokens onto it first — otherwise supabase-py's sign_out() finds no
+        # session and skips the server-side revocation, leaving the refresh token
+        # valid. Prefer the in-session tokens, fall back to the cookie.
+        access_token, refresh_token = _current_session_tokens()
+        if access_token and refresh_token:
+            client.auth.set_session(access_token, refresh_token)
         client.auth.sign_out()
     except Exception as e:
         logger.debug(f"Sign out API call failed (may be expected): {e}")
