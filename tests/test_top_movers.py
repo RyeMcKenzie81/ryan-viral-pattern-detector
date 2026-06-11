@@ -24,6 +24,7 @@ class FakeQuery:
         self.table = table
         self.store = store
         self.eqs = {}
+        self.neqs = {}
         self.ins = {}
         self.ranges = []          # (col, op, val)
         self.null_not = []        # cols that must be NOT null
@@ -41,6 +42,7 @@ class FakeQuery:
         return self
 
     def neq(self, col, val):
+        self.neqs[col] = val
         return self
 
     def in_(self, col, vals):
@@ -84,8 +86,12 @@ class FakeQuery:
 
 
 class FakeStore:
-    def __init__(self, articles, analytics):
-        self.data = {"seo_articles": articles, "seo_article_analytics": analytics}
+    def __init__(self, articles, analytics, internal_links=None):
+        self.data = {
+            "seo_articles": articles,
+            "seo_article_analytics": analytics,
+            "seo_internal_links": internal_links or [],
+        }
 
     def table(self, name):
         return FakeQuery(name, self)
@@ -95,6 +101,8 @@ class FakeStore:
         out = []
         for r in rows:
             if any(r.get(c) != v for c, v in q.eqs.items()):
+                continue
+            if any(r.get(c) == v for c, v in q.neqs.items()):
                 continue
             if any(r.get(c) not in vals for c, vals in q.ins.items()):
                 continue
@@ -146,8 +154,6 @@ def svc(monkeypatch):
     ]
     s = InterlinkingService(supabase_client=FakeStore(articles, analytics))
     monkeypatch.setattr(s, "_batch_count_inbound_links", lambda ids: {"A": 1, "F": 3})
-    monkeypatch.setattr(s, "_suggest_inbound_sources",
-                        lambda article, aid, max_n=15: [{"article_id": "S1"}, {"article_id": "S2"}])
     return s
 
 
@@ -171,12 +177,13 @@ class TestFindTopMovers:
         res = svc.find_top_movers("b1", "org1", days=7, min_impressions=50, min_improvement=0.5)
         assert [m["article_id"] for m in res["movers"]] == ["A", "F"]   # 7.0 before 2.0
 
-    def test_surfaces_inbound_count_and_opportunity_count(self, svc):
+    def test_surfaces_inbound_count_and_no_eager_opportunities(self, svc):
         res = svc.find_top_movers("b1", "org1", days=7, min_impressions=50, min_improvement=0.5)
         a = next(m for m in res["movers"] if m["article_id"] == "A")
         assert a["inbound_link_count"] == 1            # from patched _batch_count_inbound_links
-        assert a["opportunity_count"] == 2             # len(suggested_sources)
-        assert len(a["suggested_sources"]) == 2
+        # opportunities are now computed lazily on click (actionable matcher), not eagerly here
+        assert "opportunity_count" not in a
+        assert "suggested_sources" not in a
 
     def test_no_articles_returns_empty(self, monkeypatch):
         s = InterlinkingService(supabase_client=FakeStore([], []))
@@ -193,3 +200,48 @@ def test_paginate_loops_across_pages():
         lambda: store.table("seo_articles").select("id"), page_size=2
     )
     assert [r["id"] for r in out] == ["0", "1", "2", "3", "4"]   # all 5 despite page size 2
+
+
+class TestFindInboundLinkOpportunities:
+    """Only surface sources the Add action can ACTUALLY link from: ones whose body
+    already mentions the target's topic and don't link to it yet. This is the fix
+    for the 'no matching text' dead-ends (similarity-picked but non-mentioning)."""
+
+    def _store(self):
+        target = {"id": "T", "keyword": "blue widgets", "title": "Blue Widgets Guide",
+                  "published_url": "https://x.com/blue-widgets", "project_id": "p1",
+                  "status": "published", "content_html": "<p>about blue widgets</p>"}
+        s1 = {"id": "S1", "keyword": "widget care", "title": "Widget Care", "project_id": "p1",
+              "status": "published", "published_url": "https://x.com/widget-care",
+              "content_html": "<p>We sell blue widgets and red ones.</p>"}            # mentions -> actionable
+        s2 = {"id": "S2", "keyword": "green gadgets", "title": "Green Gadgets", "project_id": "p1",
+              "status": "published", "published_url": "https://x.com/green-gadgets",
+              "content_html": "<p>All about green gadgets.</p>"}                       # no mention -> excluded
+        s3 = {"id": "S3", "keyword": "widget tips", "title": "Widget Tips", "project_id": "p1",
+              "status": "published", "published_url": "https://x.com/widget-tips",
+              "content_html": "<p>Our blue widgets rock.</p>"}                         # mentions but already links
+        s4 = {"id": "S4", "keyword": "widget care 2", "title": "Widget Care 2", "project_id": "p1",
+              "status": "published", "published_url": "https://x.com/widget-care-2",
+              "content_locked": True,
+              "content_html": "<p>More blue widgets here.</p>"}                         # mentions but content_locked
+        s5 = {"id": "S5", "keyword": "widget care 3", "title": "Widget Care 3", "project_id": "p1",
+              "status": "published", "published_url": "https://x.com/widget-care-3",
+              "content_html": '<p>We discuss blue widgets here.</p>'
+                              '<p>See <a href="https://x.com/blue-widgets">the guide</a>.</p>'}
+        # ^ mentions the topic but the target URL already appears -> auto_link skips -> not actionable
+        links = [{"source_article_id": "S3", "target_article_id": "T", "status": "implemented"}]
+        return FakeStore([target, s1, s2, s3, s4, s5], [], internal_links=links)
+
+    def test_only_returns_actionable_sources(self):
+        svc = InterlinkingService(supabase_client=self._store())
+        out = svc.find_inbound_link_opportunities("T")
+        # S1 mentions + linkable; S2 no mention; S3 already links; S4 content_locked;
+        # S5 already references the target URL; T is self
+        assert [o["source_article_id"] for o in out] == ["S1"]
+        assert out[0]["mention_count"] == 1
+        assert out[0]["published_url"] == "https://x.com/widget-care"   # for the 'review the edited article' link
+
+    def test_no_project_returns_empty(self):
+        target = {"id": "T", "keyword": "x widgets", "title": "X Widgets", "project_id": None}
+        svc = InterlinkingService(supabase_client=FakeStore([target], []))
+        assert svc.find_inbound_link_opportunities("T") == []

@@ -1636,7 +1636,8 @@ class TestCodexFixesInc1:
 
     def test_project_articles_exclude_exempt_targets(self, service):
         chain = MagicMock()
-        for m in ["select", "eq", "neq", "is_", "not_", "order", "limit"]:
+        # _get_project_articles now paginates via _paginate (.order().range().execute())
+        for m in ["select", "eq", "neq", "is_", "not_", "order", "limit", "range"]:
             getattr(chain, m, MagicMock()).return_value = chain
         chain.not_ = chain
         chain.execute.return_value = MagicMock(data=[
