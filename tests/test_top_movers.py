@@ -30,6 +30,7 @@ class FakeQuery:
         self._order = None
         self._desc = False
         self._limit = None
+        self._page_range = None
         self._negate = False
 
     def select(self, *a, **k):
@@ -74,6 +75,10 @@ class FakeQuery:
         self._limit = n
         return self
 
+    def range(self, start, end):
+        self._page_range = (start, end)
+        return self
+
     def execute(self):
         return SimpleNamespace(data=self.store.resolve(self))
 
@@ -105,7 +110,9 @@ class FakeStore:
                 out.append(r)
         if q._order:
             out = sorted(out, key=lambda r: r.get(q._order) or "", reverse=q._desc)
-        if q._limit is not None:
+        if q._page_range is not None:
+            out = out[q._page_range[0]:q._page_range[1] + 1]
+        elif q._limit is not None:
             out = out[:q._limit]
         return out
 
@@ -153,10 +160,11 @@ class TestFindTopMovers:
     def test_position_delta_and_improvement_computed(self, svc):
         res = svc.find_top_movers("b1", "org1", days=7, min_impressions=50, min_improvement=0.5)
         a = next(m for m in res["movers"] if m["article_id"] == "A")
-        assert a["recent_position"] == 11.0   # (10 + 12) / 2
+        # impression-weighted: (10*60 + 12*40) / (60+40) = 10.8, not the plain mean 11.0
+        assert a["recent_position"] == 10.8
         assert a["prior_position"] == 18.0
-        assert a["position_delta"] == -7.0     # negative = improved
-        assert a["improvement"] == 7.0
+        assert a["position_delta"] == -7.2     # negative = improved
+        assert a["improvement"] == 7.2
         assert a["impressions"] == 100
 
     def test_sorted_by_improvement_desc(self, svc):
@@ -175,3 +183,13 @@ class TestFindTopMovers:
         monkeypatch.setattr(s, "_batch_count_inbound_links", lambda ids: {})
         res = s.find_top_movers("b1", "org1")
         assert res == {"movers": [], "total_scanned": 0, "last_synced_at": None}
+
+
+def test_paginate_loops_across_pages():
+    # _paginate must keep paging via .range() until a short page, so big result
+    # sets aren't truncated at the row cap.
+    store = FakeStore([{"id": str(i)} for i in range(5)], [])
+    out = InterlinkingService._paginate(
+        lambda: store.table("seo_articles").select("id"), page_size=2
+    )
+    assert [r["id"] for r in out] == ["0", "1", "2", "3", "4"]   # all 5 despite page size 2

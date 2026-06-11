@@ -259,6 +259,7 @@ class InterlinkingService:
                     "links_added": result["count"],
                 })
 
+        pushed_to_cms = False
         if total_links > 0:
             # Update article HTML in DB
             self._update_article_html(article_id, html)
@@ -272,14 +273,17 @@ class InterlinkingService:
                     status=LinkStatus.IMPLEMENTED,
                 )
 
-            # Push to CMS if requested
+            # Push to CMS if requested. Capture the result so callers don't report
+            # a "live" success when the push no-oped/failed (no CMS id, manual-edit
+            # lock, Shopify error) and only the DB copy changed.
             if push_to_cms and brand_id and organization_id:
-                self._push_html_to_cms(article_id, brand_id, organization_id, html)
+                pushed_to_cms = bool(self._push_html_to_cms(article_id, brand_id, organization_id, html))
 
         return {
             "article_id": article_id,
             "links_added": total_links,
             "linked_articles": linked_articles,
+            "pushed_to_cms": pushed_to_cms,
         }
 
     # =========================================================================
@@ -926,6 +930,21 @@ class InterlinkingService:
             "last_synced_at": last_sync,
         }
 
+    @staticmethod
+    def _paginate(build_query, page_size: int = 1000) -> List[Dict[str, Any]]:
+        """Page a filtered query (ordered by the stable `id` PK) so large result
+        sets aren't silently truncated at the PostgREST row cap. `build_query`
+        must return a FRESH builder each call (consumed by .range/.execute)."""
+        rows: List[Dict[str, Any]] = []
+        offset = 0
+        while True:
+            batch = (build_query().order("id").range(offset, offset + page_size - 1).execute().data) or []
+            rows.extend(batch)
+            if len(batch) < page_size:
+                break
+            offset += page_size
+        return rows
+
     def find_top_movers(
         self,
         brand_id: str,
@@ -960,14 +979,12 @@ class InterlinkingService:
         prior_start = (now - timedelta(days=2 * days)).isoformat()
         prior_end = recent_start
 
-        articles_result = (
+        articles = self._paginate(lambda: (
             self.supabase.table("seo_articles")
             .select("id, keyword, title, published_url, project_id")
             .eq("brand_id", brand_id)
             .not_.is_("published_url", "null")
-            .execute()
-        )
-        articles = articles_result.data or []
+        ))
         if not articles:
             return {"movers": [], "total_scanned": 0, "last_synced_at": None}
 
@@ -975,45 +992,54 @@ class InterlinkingService:
         article_ids = list(article_map.keys())
 
         def _agg(rows):
+            # Track BOTH an impression-weighted position (the correct GSC period
+            # average) and a simple mean as a fallback for rows with 0 impressions.
             stats: Dict[str, Dict[str, float]] = {}
             for row in rows or []:
                 aid = row["article_id"]
-                s = stats.setdefault(aid, {"pos_sum": 0.0, "pos_n": 0, "impressions": 0})
+                s = stats.setdefault(aid, {"wpos": 0.0, "w": 0, "pos_sum": 0.0, "pos_n": 0, "impressions": 0})
                 pos = row.get("average_position")
+                impr = row.get("impressions", 0) or 0
                 if pos:
+                    s["wpos"] += pos * impr
+                    s["w"] += impr
                     s["pos_sum"] += pos
                     s["pos_n"] += 1
-                s["impressions"] += row.get("impressions", 0) or 0
+                s["impressions"] += impr
             return stats
 
-        recent_stats = _agg((
-            self.supabase.table("seo_article_analytics")
-            .select("article_id, impressions, average_position")
-            .in_("article_id", article_ids)
-            .eq("source", "gsc").eq("search_type", "web")
-            .gte("date", recent_start)
-            .execute()
-        ).data)
-        prior_stats = _agg((
-            self.supabase.table("seo_article_analytics")
-            .select("article_id, impressions, average_position")
-            .in_("article_id", article_ids)
-            .eq("source", "gsc").eq("search_type", "web")
-            .gte("date", prior_start).lt("date", prior_end)
-            .execute()
-        ).data)
+        def _avg_pos(s):
+            if s and s["w"] > 0:
+                return s["wpos"] / s["w"]      # impression-weighted (preferred)
+            if s and s["pos_n"] > 0:
+                return s["pos_sum"] / s["pos_n"]  # fallback: simple mean
+            return None
+
+        def _analytics(start, end=None):
+            def _build():
+                q = (self.supabase.table("seo_article_analytics")
+                     .select("article_id, impressions, average_position")
+                     .in_("article_id", article_ids)
+                     .eq("source", "gsc").eq("search_type", "web")
+                     .gte("date", start))
+                if end:
+                    q = q.lt("date", end)
+                return q
+            return self._paginate(_build)
+
+        recent_stats = _agg(_analytics(recent_start))
+        prior_stats = _agg(_analytics(prior_start, prior_end))
 
         inbound_counts = self._batch_count_inbound_links(article_ids)
 
         movers = []
         for aid, rs in recent_stats.items():
-            ps = prior_stats.get(aid)
-            if rs["pos_n"] == 0 or not ps or ps["pos_n"] == 0:
+            recent_pos = _avg_pos(rs)
+            prior_pos = _avg_pos(prior_stats.get(aid))
+            if recent_pos is None or prior_pos is None:
                 continue  # need a measured position in BOTH windows
             if rs["impressions"] < min_impressions:
                 continue
-            recent_pos = rs["pos_sum"] / rs["pos_n"]
-            prior_pos = ps["pos_sum"] / ps["pos_n"]
             delta = recent_pos - prior_pos  # negative = moved up (improved)
             if delta > -min_improvement:
                 continue

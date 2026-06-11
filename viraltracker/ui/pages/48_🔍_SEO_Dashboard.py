@@ -418,6 +418,21 @@ _render_sync_status(brand_id)
 # depending on data computed further down the page.
 # =============================================================================
 
+def _paginate_rows(build_query, page_size: int = 1000):
+    """Page a filtered query (ordered by `id`) so large result sets aren't
+    silently capped at the PostgREST row limit. A 28-day analytics window over a
+    few dozen articles already exceeds 1000 rows, so the KPIs need this to be
+    accurate. `build_query` must return a FRESH builder each call."""
+    rows, offset = [], 0
+    while True:
+        batch = (build_query().order("id").range(offset, offset + page_size - 1).execute().data) or []
+        rows.extend(batch)
+        if len(batch) < page_size:
+            break
+        offset += page_size
+    return rows
+
+
 def _dashboard_kpis(brand_id: str, real_org_id: str) -> None:
     """KPI strip: GSC clicks/impressions, GA4 sessions (28d, Δ vs prior 28d),
     published article count, and a needs-attention count."""
@@ -430,19 +445,22 @@ def _dashboard_kpis(brand_id: str, real_org_id: str) -> None:
     prior_start = (now - _td(days=56)).isoformat()
     prior_end = cur_start
 
-    ids = [r["id"] for r in (
-        db.table("seo_articles").select("id").eq("brand_id", brand_id).execute().data or []
+    ids = [r["id"] for r in _paginate_rows(
+        lambda: db.table("seo_articles").select("id").eq("brand_id", brand_id)
     )]
 
     def _window(start, end=None):
         if not ids:
             return {"clicks": 0, "impressions": 0, "sessions": 0}
-        q = (db.table("seo_article_analytics")
-             .select("source, clicks, impressions, sessions")
-             .in_("article_id", ids).gte("date", start))
-        if end:
-            q = q.lt("date", end)
-        rows = q.execute().data or []
+
+        def _build():
+            q = (db.table("seo_article_analytics")
+                 .select("source, clicks, impressions, sessions")
+                 .in_("article_id", ids).gte("date", start))
+            if end:
+                q = q.lt("date", end)
+            return q
+        rows = _paginate_rows(_build)
         return {
             "clicks": sum((r.get("clicks") or 0) for r in rows if r.get("source") == "gsc"),
             "impressions": sum((r.get("impressions") or 0) for r in rows if r.get("source") == "gsc"),
@@ -537,7 +555,15 @@ def _render_inbound_suggestions(mover: dict, brand_id: str, real_org_id: str) ->
                     brand_id=brand_id, organization_id=real_org_id, push_to_cms=True,
                 )
                 added = res.get("links_added", 0)
-                st.success(f"Added {added} inbound link(s)." if added else "No link inserted (no matching text in the source).")
+                if not added:
+                    st.info("No link inserted — the source article has no text matching this topic.")
+                elif res.get("pushed_to_cms"):
+                    st.success(f"Added {added} inbound link(s) and pushed live.")
+                else:
+                    st.warning(
+                        f"Added {added} inbound link(s) to the article, but the live page wasn't "
+                        "updated. Re-publish the source article to push them live."
+                    )
             except Exception as e:
                 st.error(f"Failed to add link: {e}")
 
