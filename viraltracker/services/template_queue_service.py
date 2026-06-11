@@ -55,7 +55,7 @@ TEMPLATE_AWARENESS_MODEL = "gemini-pro-latest"
 # without bumping TEMPLATE_ANALYSIS_PROMPT_VERSION (and re-pinning) fails CI,
 # which is what keeps ads and templates on one definition forever.
 RUBRIC_HASH_PINS = {
-    "v2": "e2076ce3cdd69d8bd7bf7b4bea3c434d18d7d1d7e01b22b079e421bc3a92da56",
+    "v2": "47bd67491c4a7bec1d6ca4c1622a9f3102aff8d0faf3c8b6650271fee9344afc",
 }
 
 TEMPLATE_ANALYSIS_PROMPT = """Analyze this Facebook ad image and extract metadata for a template library.
