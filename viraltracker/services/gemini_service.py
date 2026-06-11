@@ -6,6 +6,7 @@ Handles all Gemini API interactions with intelligent rate limiting and retries.
 
 import logging
 import asyncio
+import os
 import time
 import json
 from typing import Optional
@@ -87,9 +88,17 @@ class GeminiService:
         # so a hung request can't freeze the scheduler.
         self.client = make_genai_client(self.api_key)
 
-        # Rate limiting
+        # Rate limiting. Default stays 9 req/min (safe under the 10 req/min free
+        # tier); paid tiers raise it via the GEMINI_REQUESTS_PER_MINUTE env var
+        # (e.g. 30 on tier 1+) without a code change. NOTE: the limiter is
+        # PER-INSTANCE — concurrent processes/instances each get this budget, so
+        # size the env value with total parallelism in mind.
         self._last_call_time = 0.0
-        self._requests_per_minute = 9  # Default: 9 req/min for safety (under 10 req/min free tier)
+        try:
+            rpm = int(os.getenv("GEMINI_REQUESTS_PER_MINUTE", "9"))
+        except ValueError:
+            rpm = 9
+        self._requests_per_minute = max(1, rpm)
         self._min_delay = 60.0 / self._requests_per_minute
 
         # Usage tracking (optional)
