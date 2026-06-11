@@ -7364,10 +7364,18 @@ async def execute_token_refresh_job(job: Dict) -> Dict[str, Any]:
 
         metadata = {"refreshed": refreshed, "failed": failed, "checked": len(expiring.data)}
         logs.append(f"Done: {refreshed} refreshed, {failed} failed out of {len(expiring.data)} checked")
+        if failed:
+            logger.warning(
+                f"Token refresh completed with {failed}/{len(expiring.data)} account(s) failing"
+            )
 
-        status = "completed" if failed == 0 else "completed_with_errors"
+        # The run finished; per-account failures live in metadata/logs. Status
+        # MUST be one of the scheduled_job_runs_status_check values
+        # (pending/running/completed/failed). The earlier code wrote a
+        # non-conforming value, so update_job_run silently failed, the run stayed
+        # 'running', and the stuck-run reaper re-queued it into a retry storm.
         update_job_run(run_id, {
-            "status": status,
+            "status": "completed",
             "completed_at": datetime.now(PST).isoformat(),
             "logs": "\n".join(logs),
             "metadata": metadata,
