@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID
 
-from .awareness_rubric import AWARENESS_RUBRIC
+from .awareness_rubric import AWARENESS_RUBRIC, STATIC_AWARENESS_TELLS
 
 logger = logging.getLogger(__name__)
 
@@ -26,30 +26,24 @@ logger = logging.getLogger(__name__)
 # ON-IMAGE text/visual only (creative awareness; the surrounding FB caption is judged
 # separately as copy awareness). Bumping this re-analyzes image ads onto the calibrated
 # rubric (the image-version staleness gate in the classifier keys on it).
-PROMPT_VERSION = "v2"
+# v3: STATIC_AWARENESS_TELLS corrections from the template-unification hand review
+# (2026-06-10): before/after with NO identifiable product is solution_aware (was
+# product_aware — a viewer cannot presume a product they cannot see); new tells for
+# multi-panel reading-order leads and risk-reversal (guarantee) leads = product_aware.
+PROMPT_VERSION = "v3"
 
 # Image awareness model. Was hardcoded gemini-2.5-flash; promoted to a named constant
 # and upgraded to gemini-pro-latest for consistency with the video path and to honor
 # the rubric calibration (which was hand-validated on pro-latest).
 IMAGE_ANALYSIS_MODEL = "gemini-pro-latest"
 
-# The 5 canonical Schwartz awareness levels — the ONLY values allowed by the
-# ad_image_analysis.awareness_level and ad_creative_classifications.creative_awareness_level
-# DB CHECK constraints. Gemini occasionally drifts off-format (e.g. "Product Aware",
-# a trailing space, a hallucinated 6th label); normalizing at the trust boundary keeps
-# the stored row valid (NULL on a miss) instead of throwing a CHECK violation — which
-# would otherwise drop the analysis row, leave analysis_id unset, and re-bill every run.
-VALID_AWARENESS_LEVELS = frozenset(
-    {"unaware", "problem_aware", "solution_aware", "product_aware", "most_aware"}
+# Shared awareness vocabulary moved to awareness_rubric (the one-definition home);
+# re-exported here for back-compat with existing callers/tests. The private alias
+# keeps the original name this module's call sites and tests use.
+from .awareness_rubric import (  # noqa: F401 (re-exports)
+    VALID_AWARENESS_LEVELS,
+    normalize_awareness_level as _normalize_awareness_level,
 )
-
-
-def _normalize_awareness_level(value):
-    """Lower/strip/space->underscore an awareness label; return None if not canonical."""
-    if not value or not isinstance(value, str):
-        return None
-    norm = value.strip().lower().replace(" ", "_")
-    return norm if norm in VALID_AWARENESS_LEVELS else None
 
 
 IMAGE_ANALYSIS_PROMPT = """Analyze this image advertisement and extract detailed structured data.
@@ -121,18 +115,7 @@ IMAGE_ANALYSIS_PROMPT = """Analyze this image advertisement and extract detailed
 **AWARENESS — how to set `awareness_level` (read carefully):**
 A static ad is a SINGLE moment (no opening/ending). Judge `awareness_level` by what the DOMINANT readable on-image element presumes the viewer knows — the headline / hero text / offer in its visual hierarchy, NOT every tiny text block weighted equally. Judge from the ON-IMAGE text + visual ONLY: the AD COPY above is the surrounding Facebook caption — use it for messaging_theme / persona context, but do NOT let it set `awareness_level` (caption awareness is judged separately). If the on-image text is too small or dense to read reliably, LOWER `awareness_confidence` and do NOT hallucinate text you cannot actually see.
 
-Static-format tells:
-- PROMINENT BRANDED PRODUCT (decisive): when the visual CENTER is a branded product shot (the bottle/pack is the hero, with a brand name or logo visible), tag product_aware — EVEN IF the headline is a problem hook ("Feeling tired?", "IBS?"), a solution mechanism ("reduce cortisol", "not a sleep pill"), or an educational listicle ("7 Reasons... this supplement"). Showing the specific branded bottle ties the problem/mechanism directly to THIS product instead of teaching the category, so it is the DOMINANT signal. Product-level proof (specific claims, a customer review like "Karen T., Ohio", authority markers like "Doctor-formulated" or a founder signature, competitor differentiation, or a listicle/"This [product]" reference) reinforces it, but the prominent branded product shot alone is enough. Scan the WHOLE frame for it: a prominent branded bottle/pack is decisive even when it sits ALONGSIDE a cartoon, before/after panels, or a lifestyle scene (a composite ad is still product_aware if it features the branded bottle). (Still not most_aware unless the LEAD is an explicit offer/price/urgency.)
-- COUNTER-EXAMPLES (no prominent branded product): the same mechanism/category message ("not a sleep pill", "natural cortisol supplement") on a LIFESTYLE image with NO bottle and no brand/logo stays solution_aware. A PURE SYMPTOM visual (a 3 AM clock, an exhausted person) with NO text, mechanism, or product/brand is problem_aware.
-- product-hero (product + name): only the product on a neutral background -> judge by visual context (paired with a PROBLEM visual = problem_aware; with a DESIRED-STATE visual or shown as the answer = product_aware; bare packshot led by a price/offer = most_aware).
-- before/after: if a prominent branded product/bottle appears anywhere in the frame, product_aware (the bottle overrides the before/after framing, per the decisive rule above). With NO product shown: a visual transformation alone = product_aware; a mechanism / explanatory lead = solution_aware.
-- pure offer (discount / %-off / urgency / "back in stock" as the LEAD) = most_aware.
-- listicle / article-style headline ("5 signs your gut is damaged", "the real reason you're tired") = problem_aware (or unaware if pure curiosity with no felt problem).
-- long advertorial / sales image: judge by the HEADLINE / lead, not the body.
-- review or testimonial screenshot: route by CONTENT — pain only = problem_aware; a category/ingredient = solution_aware; the BRAND named = product_aware.
-- blind hook (meme / relatable / emotional narrative — e.g. a bathroom-embarrassment sticky note — that explicitly NAMES a solution category or mechanism like "Probiotics" or "cortisol reducer" but shows NO brand, logo, or identifiable product packaging): solution_aware. The named category/mechanism overrides the emotional/symptom framing, and the hidden brand keeps it below product. (A meme that names NO category and shows no product stays problem_aware.)
-- objection-handling / hidden-product authority: if the copy's primary job is to DEFEND or DIFFERENTIATE a specific product — "what makes THIS one different?", unique authority / manufacturing claims ("crafted from 45 years of patient care by a real clinic", "doctor-formulated"), or pitting "this one" against the rest of the market — tag product_aware EVEN IF the brand, logo, and bottle are intentionally hidden (a curiosity / retargeting play). Distinguish from the blind hook above: a blind hook NAMES a category to sell the concept (-> solution); this DEFENDS a specific product's uniqueness/authority (-> product).
-- comparison chart (this product vs named rivals) = product_aware.
+""" + STATIC_AWARENESS_TELLS + """
 
 {awareness_rubric}
 

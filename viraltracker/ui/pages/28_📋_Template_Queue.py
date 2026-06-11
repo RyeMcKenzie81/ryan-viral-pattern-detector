@@ -22,6 +22,7 @@ st.set_page_config(
 
 # Authentication
 from viraltracker.ui.auth import require_auth
+from viraltracker.services.awareness_rubric import AWARENESS_LEVEL_LABELS
 require_auth()
 
 # Initialize session state
@@ -333,14 +334,8 @@ def get_sales_event_options() -> List[str]:
     ]
 
 def get_awareness_level_options() -> List[tuple]:
-    """Get awareness level options as (value, display_name) tuples."""
-    return [
-        (1, "1 - Unaware"),
-        (2, "2 - Problem Aware"),
-        (3, "3 - Solution Aware"),
-        (4, "4 - Product Aware"),
-        (5, "5 - Most Aware")
-    ]
+    """Get awareness level options as (value, display_name) tuples (shared vocabulary)."""
+    return [(i, f"{i} - {label}") for i, label in sorted(AWARENESS_LEVEL_LABELS.items())]
 
 def render_details_review():
     """Render the AI suggestions review form (step 2 of approval)."""
@@ -441,14 +436,19 @@ def render_details_review():
                 horizontal=True
             )
 
-            # Awareness Level
+            # Awareness Level. The suggestion may legitimately be ABSENT (the service
+            # never fabricates a default when the AI output is unusable). Guard the
+            # index: a None/string here used to crash on `value - 1`. Without a usable
+            # suggestion the selectbox renders empty and the human must pick.
             awareness_options = get_awareness_level_options()
-            suggested_awareness = suggestions.get("awareness_level", 3)
+            suggested_awareness = suggestions.get("awareness_level")
+            valid_suggestion = isinstance(suggested_awareness, int) and 1 <= suggested_awareness <= 5
             awareness_level = st.selectbox(
                 "Awareness Level",
                 options=[opt[0] for opt in awareness_options],
                 format_func=lambda x: next((opt[1] for opt in awareness_options if opt[0] == x), str(x)),
-                index=suggested_awareness - 1,
+                index=(suggested_awareness - 1) if valid_suggestion else None,
+                placeholder="AI could not grade — choose a level",
                 help=suggestions.get("awareness_level_reasoning", "")
             )
 

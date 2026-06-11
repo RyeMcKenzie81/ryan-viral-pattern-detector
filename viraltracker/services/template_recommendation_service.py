@@ -17,6 +17,8 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
+from .awareness_rubric import AWARENESS_LEVEL_LABELS
+
 from supabase import Client
 
 from ..core.database import get_supabase_client
@@ -337,13 +339,8 @@ class TemplateRecommendationService:
         gemini = GeminiService()
         candidates = []
 
-        awareness_names = {
-            1: "Unaware",
-            2: "Problem Aware",
-            3: "Solution Aware",
-            4: "Product Aware",
-            5: "Most Aware",
-        }
+        # Derived from the shared vocabulary (one definition)
+        awareness_names = AWARENESS_LEVEL_LABELS
 
         # Get product benefits and pain points
         benefits = product.get("benefits", [])

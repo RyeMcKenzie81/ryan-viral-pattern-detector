@@ -35,7 +35,11 @@ logger = logging.getLogger(__name__)
 # v3: awareness is now judged at the video's OPENING (entry temperature, first
 # ~10s past any pure attention-grab) and its ENDING is captured separately, so
 # top-funnel videos stop being filed by the most-aware stage they close on.
-PROMPT_VERSION = "v3"
+# v4: core AWARENESS_RUBRIC hardened by the 2026-06-10 adversarial review —
+# risk-reversal/guarantee leads = product_aware not most_aware; NEW/improved
+# announcements presume product familiarity = product_aware; identity hooks
+# never raise the stage by themselves.
+PROMPT_VERSION = "v4"
 
 # Deep video analysis model. Was hardcoded to gemini-3-flash-preview inline;
 # promoted to a named constant and upgraded to gemini-pro-latest (the repo's

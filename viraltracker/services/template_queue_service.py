@@ -19,6 +19,14 @@ from uuid import UUID
 from datetime import datetime
 
 from supabase import Client
+
+from .awareness_rubric import (
+    AWARENESS_RUBRIC,
+    AWARENESS_LEVEL_LABELS,
+    AWARENESS_LEVEL_ORDER,
+    STATIC_AWARENESS_TELLS,
+    normalize_awareness_level,
+)
 from ..core.database import get_supabase_client
 
 logger = logging.getLogger(__name__)
@@ -27,6 +35,28 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 # AI Analysis Prompt for Template Approval
 # =============================================================================
+
+# Versioned template-analysis prompt. v2 = awareness judged by the SHARED calibrated
+# AWARENESS_RUBRIC (one definition platform-wide; same judge model as the ads path).
+# scraped_templates.awareness_prompt_version records which version graded each row,
+# making stale templates queryable after future bumps
+# (WHERE awareness_prompt_version IS DISTINCT FROM <current>).
+TEMPLATE_ANALYSIS_PROMPT_VERSION = "v2"
+
+# Same judge model the rubric was hand-calibrated on (the ads path). Per-call only —
+# GeminiService's global default stays flash for unrelated callers.
+TEMPLATE_AWARENESS_MODEL = "gemini-pro-latest"
+
+# Awareness-definition hash pins, keyed by template prompt version (BYTE-stable on
+# purpose: even a whitespace edit must force a version bump). The pin covers BOTH
+# shared constants that define awareness judgment — AWARENESS_RUBRIC and
+# STATIC_AWARENESS_TELLS (sha256 of their concatenation). The tripwire test compares
+# the live hash against the pin for the CURRENT version — editing either constant
+# without bumping TEMPLATE_ANALYSIS_PROMPT_VERSION (and re-pinning) fails CI,
+# which is what keeps ads and templates on one definition forever.
+RUBRIC_HASH_PINS = {
+    "v2": "d1a61e0394535307c8cee51ffd21cc5a05664a72f6f67bab0013d5f0038f79e0",
+}
 
 TEMPLATE_ANALYSIS_PROMPT = """Analyze this Facebook ad image and extract metadata for a template library.
 
@@ -44,20 +74,22 @@ Analyze the visual content and return a JSON response with the following structu
   "format_type": "Choose ONE: testimonial | quote_card | before_after | product_showcase | ugc_style | meme | carousel_frame | story_format | other",
   "industry_niche": "Choose ONE: supplements | pets | skincare | fitness | fashion | tech | food_beverage | home_garden | finance | health_wellness | beauty | automotive | travel | education | other",
   "target_sex": "Choose ONE: male | female | unisex",
-  "awareness_level": <integer 1-5>,
-  "awareness_level_reasoning": "Brief explanation of why this awareness level (1=Unaware, 2=Problem Aware, 3=Solution Aware, 4=Product Aware, 5=Most Aware)",
+  "awareness_level": "Choose ONE: unaware | problem_aware | solution_aware | product_aware | most_aware",
+  "awareness_level_reasoning": "Brief explanation of why this awareness level, citing the rubric",
   "sales_event": null or "Choose if applicable: black_friday | cyber_monday | mothers_day | fathers_day | valentines_day | christmas | new_year | summer_sale | labor_day | memorial_day | other",
   "visual_notes": "Notable visual elements: colors, layout style, text placement, imagery type"
 }}
 
-AWARENESS LEVEL GUIDE:
-- Level 1 (Unaware): Educational content, story-driven, no direct product mention, pattern interrupts
-- Level 2 (Problem Aware): Focuses on the problem/pain point, agitates the issue, introduces concept that solutions exist
-- Level 3 (Solution Aware): Uses category nicknames ("Brain Fog Killer") not brand names, listicle hooks ("11 Reasons..."), shows results to differentiate the solution TYPE, explains unique mechanism. Before/after photos used to showcase the solution category, not a specific known product.
-- Level 4 (Product Aware): Mentions specific brand/product BY NAME, named customer testimonials for a KNOWN product, addresses objections about a product the reader has already heard of, retargeting-style ads
-- Level 5 (Most Aware): Direct offer, promotional, discount/sale focused, minimal persuasion, assumes reader is ready to buy
+AWARENESS — how to set `awareness_level`:
+A template is a STATIC single moment. Judge by what the DOMINANT readable on-image element
+(headline / hero text / offer in its visual hierarchy) PRESUMES the viewer knows, using the
+rubric below. Judge text AND visuals TOGETHER — never the text alone. If the on-image text
+is too small or dense to read reliably, judge what you can actually see and say so in the
+reasoning — do NOT hallucinate text.
 
-KEY DISTINCTION: Before/after photos showing transformation WITHOUT naming the specific product = Level 3 (differentiating a solution type). Before/after WITH product name and "I used [Brand X]" = Level 4 (building trust for known product).
+""" + STATIC_AWARENESS_TELLS + """
+
+{awareness_rubric}
 
 Return ONLY valid JSON, no additional text."""
 
@@ -619,13 +651,10 @@ class TemplateQueueService:
         ]
 
     def get_awareness_levels(self) -> List[Dict[str, Any]]:
-        """Get awareness level options for filtering."""
+        """Get awareness level options for filtering (derived from the shared vocabulary)."""
         return [
-            {"value": 1, "label": "1 - Unaware"},
-            {"value": 2, "label": "2 - Problem Aware"},
-            {"value": 3, "label": "3 - Solution Aware"},
-            {"value": 4, "label": "4 - Product Aware"},
-            {"value": 5, "label": "5 - Most Aware"},
+            {"value": i, "label": f"{i} - {label}"}
+            for i, label in sorted(AWARENESS_LEVEL_LABELS.items())
         ]
 
     def get_industry_niches(self) -> List[str]:
@@ -708,15 +737,21 @@ class TemplateQueueService:
     # AI-Enhanced Approval Methods (Two-Step Flow)
     # =========================================================================
 
-    async def analyze_template_for_approval(self, queue_id: UUID) -> Dict[str, Any]:
+    async def analyze_template_for_approval(self, queue_id: UUID, gemini=None) -> Dict[str, Any]:
         """
         Run AI analysis on a queued template image.
 
         Args:
             queue_id: UUID of the template_queue record
+            gemini: Optional shared GeminiService. Bulk callers MUST pass one shared
+                instance — the rate limiter is per-instance, so constructing a new
+                service per concurrent task silently bypasses it.
 
         Returns:
-            Dict with AI suggestions for template metadata
+            Dict with AI suggestions for template metadata (awareness_level is the
+            canonical INT 1-5, or ABSENT when the AI output was unusable; the rubric
+            enum string rides along as awareness_level_enum, and the suggestions
+            carry their own awareness_prompt_version).
         """
         from .gemini_service import GeminiService
 
@@ -762,14 +797,20 @@ class TemplateQueueService:
         # Convert to base64
         image_base64 = base64.b64encode(image_data).decode('utf-8')
 
-        # Build prompt with context
+        # Build prompt with context (the shared calibrated rubric is injected so
+        # templates and ads are judged by ONE awareness definition).
         prompt = TEMPLATE_ANALYSIS_PROMPT.format(
             page_name=page_name,
-            link_url=link_url or "Not available"
+            link_url=link_url or "Not available",
+            awareness_rubric=AWARENESS_RUBRIC,
         )
 
-        # Call Gemini for analysis
-        gemini = GeminiService()
+        # Call Gemini for analysis. pro-latest on purpose: the rubric was hand-
+        # calibrated on this model for the ads path — one definition AND one judge.
+        # NEVER change GeminiService's global default for this (other callers need
+        # flash). A shared instance may be passed in (bulk paths) so its rate
+        # limiter actually serializes calls.
+        gemini = gemini or GeminiService(model=TEMPLATE_AWARENESS_MODEL)
         response_text = await gemini.analyze_image(image_base64, prompt)
 
         # Parse JSON response
@@ -785,18 +826,42 @@ class TemplateQueueService:
             suggestions = json.loads(clean_response)
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse AI response: {e}\nResponse: {response_text[:500]}")
-            # Return default suggestions
+            # Default suggestions WITHOUT an awareness_level: a parse failure must
+            # never fabricate an awareness grade (the old hardcoded 3 silently became
+            # "Solution Aware"). Absent key => UI renders the selectbox without a
+            # default and bulk/auto-approval SKIPS the item.
             suggestions = {
                 "suggested_name": "Untitled Template",
                 "suggested_description": "Template from Facebook ad",
                 "format_type": "other",
                 "industry_niche": "other",
                 "target_sex": "unisex",
-                "awareness_level": 3,
-                "awareness_level_reasoning": "Could not determine",
+                "awareness_level_reasoning": "Could not determine (AI response unparseable)",
                 "sales_event": None,
                 "visual_notes": ""
             }
+
+        # Map awareness to the canonical INT at PARSE time. Everything downstream
+        # (approval UI selectbox `index = value - 1`, bulk auto-approval, the scorer,
+        # filters) consumes the INT — a string or None leaking past this point crashes
+        # the UI or writes garbage. The enum string is kept alongside for transparency.
+        raw_awareness = suggestions.pop("awareness_level", None)
+        enum_level = normalize_awareness_level(raw_awareness) if isinstance(raw_awareness, str) else None
+        if enum_level is not None:
+            suggestions["awareness_level"] = AWARENESS_LEVEL_ORDER[enum_level]
+            suggestions["awareness_level_enum"] = enum_level
+        else:
+            # Off-enum / missing / legacy-integer output -> NO awareness key. Never
+            # guess, never write a fake default. (A legacy int from a stale prompt is
+            # also rejected: v2 suggestions must come from the rubric's vocabulary.)
+            logger.warning(
+                f"Template {queue_id}: unusable awareness from AI ({raw_awareness!r}) — "
+                f"suggestion carries no awareness_level"
+            )
+
+        # The suggestions carry their OWN prompt version: finalize writes this (not
+        # "current"), so stale pending_details suggestions are stamped honestly.
+        suggestions["awareness_prompt_version"] = TEMPLATE_ANALYSIS_PROMPT_VERSION
 
         # Warn (don't rewrite) if the suggested name/description contain
         # words that commonly trip downstream Gemini/OpenAI safety filters.
@@ -848,7 +913,7 @@ class TemplateQueueService:
         category: str,
         industry_niche: str,
         target_sex: str,
-        awareness_level: int,
+        awareness_level: Optional[int],
         sales_event: Optional[str] = None,
         reviewed_by: str = "system"
     ) -> Dict:
@@ -869,14 +934,8 @@ class TemplateQueueService:
         Returns:
             Created template record
         """
-        # Awareness level names
-        awareness_names = {
-            1: "Unaware",
-            2: "Problem Aware",
-            3: "Solution Aware",
-            4: "Product Aware",
-            5: "Most Aware"
-        }
+        # Awareness level names — derived from the shared vocabulary (one definition)
+        awareness_names = AWARENESS_LEVEL_LABELS
 
         # Get queue item with asset and stored suggestions
         queue_result = self.supabase.table("template_queue").select(
@@ -920,7 +979,14 @@ class TemplateQueueService:
             "industry_niche": industry_niche,
             "target_sex": target_sex,
             "awareness_level": awareness_level,
-            "awareness_level_name": awareness_names.get(awareness_level, "Unknown"),
+            "awareness_level_name": awareness_names.get(awareness_level),  # None when ungraded
+            # The version the SUGGESTIONS were graded with (not "current"): stale
+            # pending_details finalized after a prompt bump are stamped honestly.
+            # Legacy suggestions without a version (or no awareness) -> NULL.
+            "awareness_prompt_version": (
+                ai_suggestions.get("awareness_prompt_version")
+                if awareness_level is not None else None
+            ),
             "sales_event": sales_event if sales_event else None,
             "ai_suggested_name": ai_suggestions.get("suggested_name", ""),
             "ai_suggested_description": ai_suggestions.get("suggested_description", ""),
@@ -978,10 +1044,16 @@ class TemplateQueueService:
             List of dicts with {queue_id, suggestions, success} for successful items
         """
         import asyncio
+        from .gemini_service import GeminiService
+
+        # ONE shared GeminiService across the whole gather: the rate limiter is
+        # per-instance, so a new instance per task (the old pattern) bypassed the
+        # req/min limit entirely and produced a rate-limit failure tail on big batches.
+        shared_gemini = GeminiService(model=TEMPLATE_AWARENESS_MODEL)
 
         async def analyze_one(qid: UUID) -> Dict[str, Any]:
             try:
-                suggestions = await self.analyze_template_for_approval(qid)
+                suggestions = await self.analyze_template_for_approval(qid, gemini=shared_gemini)
                 # Update status to pending_details
                 self.supabase.table("template_queue").update({
                     "status": "pending_details",
@@ -1017,6 +1089,16 @@ class TemplateQueueService:
             try:
                 queue_id = UUID(item["queue_id"])
                 s = item["suggestions"]
+                # Machine-paced path (scheduler auto-approve lands here): SKIP items
+                # without a usable awareness grade rather than writing NULL or a fake
+                # default — they stay pending_details for a human to grade.
+                awareness = s.get("awareness_level")
+                if not (isinstance(awareness, int) and 1 <= awareness <= 5):
+                    logger.warning(
+                        f"Bulk approval: skipping {queue_id} — no usable awareness_level "
+                        f"in suggestions ({awareness!r}); left pending_details for human review"
+                    )
+                    continue
                 template = self.finalize_approval(
                     queue_id=queue_id,
                     name=s.get("suggested_name", "Template"),
@@ -1024,7 +1106,7 @@ class TemplateQueueService:
                     category=s.get("format_type", "other"),
                     industry_niche=s.get("industry_niche", "other"),
                     target_sex=s.get("target_sex", "unisex"),
-                    awareness_level=s.get("awareness_level", 3),
+                    awareness_level=awareness,
                     sales_event=s.get("sales_event"),
                     reviewed_by=reviewed_by
                 )
