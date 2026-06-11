@@ -43,6 +43,25 @@ class InterlinkingService:
     # member publish can't accumulate unbounded links (Google dislikes
     # link-stuffing). Contextual = in-body <a>; related = footer block entries.
     MAX_CONTEXTUAL_LINKS_PER_ARTICLE = 5
+
+    # Link-text matching config (governs both finding inbound-link opportunities
+    # AND inserting links — they share _generate_match_patterns, so they stay in
+    # sync). Patterns are phrases from each article's title + keyword that a source
+    # paragraph must contain (whole-word) to be linkable.
+    #   STRIP_PUNCTUATION: normalize per-token leading/trailing punctuation, so a
+    #     keyword like "What Is Gaming Slang?" yields the clean phrase "gaming
+    #     slang" (the '?' no longer glues to the token). Internal apostrophes /
+    #     hyphens are kept, so "parent's" still matches the prose "parent's".
+    #   MIN_NGRAM: smallest keyword n-gram width. 3 (default) is conservative;
+    #     set to 2 to also match 2-word phrases like "gaming slang" — more links,
+    #     but it can link generic 2-word terms, so opt in deliberately.
+    LINK_MATCH_STRIP_PUNCTUATION = True
+    LINK_MATCH_MIN_NGRAM = 3
+    # Punctuation stripped from a token's EDGES when normalizing. Only
+    # sentence / bracket / quote marks — deliberately EXCLUDES ' (possessives:
+    # "parents'"), - (hyphenates: "self-care"), + (C++), &, #, / so those stay
+    # part of the token and keep matching real prose.
+    _EDGE_PUNCTUATION = '.,;:!?"“”()[]{}'
     MAX_RELATED_LINKS = 5
     # R4: an article published at least this many days that still has zero
     # inbound links is an orphan REGRESSION (the interlink machinery should
@@ -953,7 +972,6 @@ class InterlinkingService:
         min_impressions: int = 50,
         min_improvement: float = 0.5,
         limit: int = 10,
-        max_opportunities: int = 15,
     ) -> Dict[str, Any]:
         """Articles whose average GSC position IMPROVED most period-over-period,
         surfaced as inbound-link-building opportunities.
@@ -967,10 +985,11 @@ class InterlinkingService:
         reinforced.
 
         Returns {"movers": [...], "total_scanned": int, "last_synced_at": str|None}.
-        Each mover: article_id, keyword, title, published_url, recent_position,
-        prior_position, position_delta (negative = improved), improvement (positive
-        magnitude), impressions, inbound_link_count, opportunity_count,
-        suggested_sources[].
+        Each mover: article_id, project_id, keyword, title, published_url,
+        recent_position, prior_position, position_delta (negative = improved),
+        improvement (positive magnitude), impressions, inbound_link_count.
+        Inbound-link opportunities are computed lazily per mover via
+        find_inbound_link_opportunities() (the actionable matcher), not here.
         """
         from datetime import datetime, timedelta, timezone
 
@@ -1045,7 +1064,6 @@ class InterlinkingService:
                 continue
 
             article = article_map.get(aid, {})
-            suggested_sources = self._suggest_inbound_sources(article, aid, max_n=max_opportunities)
             movers.append({
                 "article_id": aid,
                 "project_id": article.get("project_id"),
@@ -1058,8 +1076,6 @@ class InterlinkingService:
                 "improvement": round(-delta, 1),
                 "impressions": rs["impressions"],
                 "inbound_link_count": inbound_counts.get(aid, 0),
-                "opportunity_count": len(suggested_sources),
-                "suggested_sources": suggested_sources,
             })
 
         movers.sort(key=lambda m: m["improvement"], reverse=True)
@@ -1117,6 +1133,73 @@ class InterlinkingService:
                 })
         sources.sort(key=lambda x: x["similarity"], reverse=True)
         return sources[:max_n]
+
+    def find_inbound_link_opportunities(
+        self, target_article_id: str, max_n: int = 20,
+    ) -> List[Dict[str, Any]]:
+        """Articles that ALREADY mention the target's topic in their body and don't
+        link to it yet — i.e. inbound-link opportunities the Add-link action can
+        actually fulfill.
+
+        This runs the SAME matcher as auto_link_article (_insert_links_in_paragraphs
+        with the target's match patterns), so a non-empty result guarantees the link
+        will insert. (Distinct from _suggest_inbound_sources, which ranks by keyword
+        similarity and can surface topically-related articles that never say the
+        phrase — the cause of the 'no matching text' dead-ends.)
+
+        Each opportunity: source_article_id, title, keyword, published_url,
+        mention_count (linkable spots in the source body).
+        """
+        target = self._get_article(target_article_id)
+        if not target or not target.get("project_id"):
+            return []
+
+        target_url = target.get("published_url") or ""
+        if not target_url:
+            kw = target.get("keyword", "")
+            if kw:
+                handle = re.sub(r"[^a-z0-9]+", "-", kw.lower()).strip("-")
+                target_url = f"/blogs/articles/{handle}"
+        patterns = self._generate_match_patterns(target)
+        if not patterns:
+            return []
+
+        existing_sources = set()
+        try:
+            existing = (
+                self.supabase.table("seo_internal_links")
+                .select("source_article_id")
+                .eq("target_article_id", target_article_id)
+                .eq("status", LinkStatus.IMPLEMENTED.value)
+                .execute()
+            )
+            existing_sources = {r["source_article_id"] for r in (existing.data or [])}
+        except Exception:
+            pass
+
+        opportunities = []
+        for src in self._get_project_articles(target["project_id"], exclude_id=target_article_id):
+            if src["id"] in existing_sources:
+                continue
+            if src.get("content_locked"):
+                continue  # auto_link_article skips human-owned bodies, so it's not actionable
+            html = src.get("content_html") or ""
+            if not html:
+                continue
+            if target_url and target_url in html:
+                continue  # mirrors auto_link_article: it skips a target whose URL already appears in the source
+            dry = self._insert_links_in_paragraphs(html, patterns, target_url)  # dry run: count only
+            if dry["count"] > 0:
+                opportunities.append({
+                    "source_article_id": src["id"],
+                    "title": src.get("title", ""),
+                    "keyword": src.get("keyword", ""),
+                    "published_url": src.get("published_url", ""),
+                    "mention_count": dry["count"],
+                })
+
+        opportunities.sort(key=lambda o: o["mention_count"], reverse=True)
+        return opportunities[:max_n]
 
     # =========================================================================
     # SIMILARITY & ANCHOR TEXT (from suggest.js)
@@ -1201,13 +1284,27 @@ class InterlinkingService:
     # AUTO-LINK HELPERS (from auto-link-existing-text.js)
     # =========================================================================
 
-    @staticmethod
-    def _generate_match_patterns(article: Dict[str, Any]) -> List[str]:
-        """
-        Generate text patterns to match for an article.
+    @classmethod
+    def _tokenize_for_match(cls, text: str) -> List[str]:
+        """Lowercase + split, optionally normalizing per-token punctuation
+        (strip leading/trailing, keep internal apostrophes/hyphens). See the
+        LINK_MATCH_* class config."""
+        words = (text or "").lower().split()
+        if cls.LINK_MATCH_STRIP_PUNCTUATION:
+            words = [w.strip(cls._EDGE_PUNCTUATION) for w in words]
+            words = [w for w in words if w]
+        return words
 
-        Creates variations from title and keyword: full text, without
-        "how to", without parentheticals, 3-4 word n-grams.
+    @classmethod
+    def _generate_match_patterns(cls, article: Dict[str, Any]) -> List[str]:
+        """
+        Generate text patterns to match for an article (phrases a source must
+        contain, whole-word, to be linkable).
+
+        From title and keyword: full text, keyword without "how to", title
+        without parentheticals, and N..4 word keyword n-grams (N = MIN_NGRAM).
+        Per-token punctuation is normalized when LINK_MATCH_STRIP_PUNCTUATION so
+        a keyword like "gaming slang?" yields the clean phrase "gaming slang".
         Minimum 10 characters per pattern.
         """
         patterns = set()
@@ -1215,25 +1312,27 @@ class InterlinkingService:
         keyword = (article.get("keyword") or "").lower()
 
         if title:
-            patterns.add(title)
-            # Without parentheticals
-            no_parens = re.sub(r'\([^)]*\)', '', title).strip()
-            if no_parens != title:
-                patterns.add(no_parens)
+            # Keep BOTH the full title and the parenthetical-stripped title
+            # (e.g. drop "(2026 Guide)") — old code kept both; don't silently
+            # drop the full one. The set dedupes when there's no parenthetical.
+            no_parens = re.sub(r"\([^)]*\)", "", title)
+            for variant in (title, no_parens):
+                toks = cls._tokenize_for_match(variant)
+                if toks:
+                    patterns.add(" ".join(toks))
 
         if keyword:
-            patterns.add(keyword)
-            # Without "how to"
-            if keyword.startswith("how to "):
-                patterns.add(keyword[7:])
-
-            # 3-4 word n-grams
-            words = keyword.split()
-            if len(words) >= 3:
-                for i in range(len(words) - 2):
-                    patterns.add(" ".join(words[i:i + 3]))
-                    if i <= len(words) - 4:
-                        patterns.add(" ".join(words[i:i + 4]))
+            kw = cls._tokenize_for_match(keyword)
+            if kw:
+                patterns.add(" ".join(kw))
+                # Without leading "how to"
+                if kw[:2] == ["how", "to"] and len(kw) > 2:
+                    patterns.add(" ".join(kw[2:]))
+                # N..4 word n-grams (N = MIN_NGRAM, default 3; 2 enables 2-word)
+                for n in range(max(2, cls.LINK_MATCH_MIN_NGRAM), 5):
+                    if len(kw) >= n:
+                        for i in range(len(kw) - n + 1):
+                            patterns.add(" ".join(kw[i:i + n]))
 
         # Dedupe and filter by min length
         return [p for p in patterns if len(p) >= 10]
@@ -1336,18 +1435,23 @@ class InterlinkingService:
         graph (R6), so standalone auto-link / related flows must not target
         them. Filtered in Python (not a PostgREST .eq) so a missing column
         (migration not applied) degrades to not-exempt instead of erroring.
+
+        Paginated so a large project's article set isn't silently truncated at
+        the PostgREST row cap (would hide link targets / opportunities).
         """
-        query = (
-            self.supabase.table("seo_articles")
-            .select("*")
-            .eq("project_id", project_id)
-            .neq("status", "discovered")
-            .not_.is_("published_url", "null")
-        )
-        if exclude_id:
-            query = query.neq("id", exclude_id)
-        result = query.execute()
-        return [a for a in (result.data or []) if not a.get("interlink_exempt")]
+        def _build():
+            q = (
+                self.supabase.table("seo_articles")
+                .select("*")
+                .eq("project_id", project_id)
+                .neq("status", "discovered")
+                .not_.is_("published_url", "null")
+            )
+            if exclude_id:
+                q = q.neq("id", exclude_id)
+            return q
+        rows = self._paginate(_build)
+        return [a for a in rows if not a.get("interlink_exempt")]
 
     def _save_suggestions(
         self,

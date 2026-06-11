@@ -240,6 +240,50 @@ class TestGenerateMatchPatterns:
         patterns = InterlinkingService._generate_match_patterns(article)
         assert patterns == []
 
+    def test_strips_trailing_punctuation(self):
+        # "Gaming Slang?" must not glue the '?' to the token (the bug that kept
+        # the clean phrase "gaming slang" from ever being a pattern).
+        article = {"title": "What Is Gaming Slang?", "keyword": "what is gaming slang?"}
+        patterns = InterlinkingService._generate_match_patterns(article)
+        assert "what is gaming slang" in patterns
+        assert all("?" not in p for p in patterns)
+
+    def test_keeps_internal_apostrophe(self):
+        # Internal apostrophes must survive so patterns still match prose possessives.
+        article = {"title": "", "keyword": "a parent's guide to gaming"}
+        patterns = InterlinkingService._generate_match_patterns(article)
+        assert any("parent's" in p for p in patterns)
+
+    def test_two_word_off_by_default(self):
+        article = {"title": "", "keyword": "gaming slang guide"}
+        patterns = InterlinkingService._generate_match_patterns(article)
+        assert "gaming slang" not in patterns   # 2-word n-grams off by default (MIN_NGRAM=3)
+
+    def test_min_ngram_config_enables_two_word(self, monkeypatch):
+        monkeypatch.setattr(InterlinkingService, "LINK_MATCH_MIN_NGRAM", 2)
+        article = {"title": "", "keyword": "gaming slang guide"}
+        patterns = InterlinkingService._generate_match_patterns(article)
+        assert "gaming slang" in patterns        # 2-word n-gram now generated (12 chars >= 10)
+
+    def test_does_not_overstrip_cpp(self):
+        # '+' must survive: 'C++' must NOT collapse to 'c' (would wrongly link 'C ...')
+        article = {"title": "", "keyword": "C++ programming guide"}
+        patterns = InterlinkingService._generate_match_patterns(article)
+        assert "c++ programming guide" in patterns
+        assert "c programming guide" not in patterns
+
+    def test_keeps_trailing_possessive_apostrophe(self):
+        # plural possessive: 'parents'' must keep its apostrophe to match prose
+        article = {"title": "", "keyword": "parents' guide to gaming"}
+        patterns = InterlinkingService._generate_match_patterns(article)
+        assert any("parents'" in p for p in patterns)
+
+    def test_keeps_full_title_with_parenthetical(self):
+        article = {"title": "Gaming PC Setup (Beginner Guide)", "keyword": ""}
+        patterns = InterlinkingService._generate_match_patterns(article)
+        assert "gaming pc setup" in patterns                 # parenthetical stripped
+        assert "gaming pc setup beginner guide" in patterns  # full title kept (normalized)
+
 
 # =============================================================================
 # PARAGRAPH LINK INSERTION
@@ -1636,7 +1680,8 @@ class TestCodexFixesInc1:
 
     def test_project_articles_exclude_exempt_targets(self, service):
         chain = MagicMock()
-        for m in ["select", "eq", "neq", "is_", "not_", "order", "limit"]:
+        # _get_project_articles now paginates via _paginate (.order().range().execute())
+        for m in ["select", "eq", "neq", "is_", "not_", "order", "limit", "range"]:
             getattr(chain, m, MagicMock()).return_value = chain
         chain.not_ = chain
         chain.execute.return_value = MagicMock(data=[

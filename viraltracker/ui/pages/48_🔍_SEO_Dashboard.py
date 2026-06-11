@@ -510,18 +510,17 @@ def _render_top_movers(brand_id: str, real_org_id: str) -> None:
     for m in movers:
         aid = m["article_id"]
         with st.container(border=True):
-            c1, c2, c3 = st.columns([4, 1, 1])
+            c1, c2 = st.columns([5, 1])
             with c1:
                 st.markdown(f"**{m['title'] or m['keyword'] or '(untitled)'}**")
                 st.caption(
                     f"position {m['prior_position']} → **{m['recent_position']}** "
                     f"(▲ {m['improvement']})  ·  {m['impressions']:,} impressions"
                 )
-            c2.metric("🔗 Inbound", m["inbound_link_count"])
-            c3.metric("📈 Opportunities", m["opportunity_count"])
+            c2.metric("🔗 Inbound links", m["inbound_link_count"])
 
             a1, a2 = st.columns(2)
-            if a1.button(f"🔗 Find inbound links ({m['opportunity_count']})", key=f"mv_links_{aid}"):
+            if a1.button("🔗 Find inbound links", key=f"mv_links_{aid}"):
                 st.session_state[f"_mv_links_{aid}"] = not st.session_state.get(f"_mv_links_{aid}", False)
             if a2.button("✍️ Grow this topic", key=f"mv_grow_{aid}"):
                 st.session_state[f"_mv_grow_{aid}"] = not st.session_state.get(f"_mv_grow_{aid}", False)
@@ -533,17 +532,32 @@ def _render_top_movers(brand_id: str, real_org_id: str) -> None:
 
 
 def _render_inbound_suggestions(mover: dict, brand_id: str, real_org_id: str) -> None:
-    """List source articles that could link to this riser, with one-click add."""
-    sources = mover.get("suggested_sources", [])
+    """Articles that ALREADY mention this riser's topic in their body and can link
+    to it. Uses the same matcher as the Add action, so every option will actually
+    insert. Cached per mover; one-click add + a link to review the edited article."""
     aid = mover["article_id"]
-    if not sources:
-        st.caption("No internal-link source candidates found in this project.")
+    cache_key = f"_mv_opps_{aid}"
+    if cache_key not in st.session_state:
+        with st.spinner("Scanning your articles for pages that mention this topic…"):
+            try:
+                st.session_state[cache_key] = get_interlinking_service().find_inbound_link_opportunities(aid)
+            except Exception as e:
+                st.error(f"Couldn't load inbound-link opportunities: {e}")
+                return
+    opps = st.session_state[cache_key]
+    if not opps:
+        st.caption(
+            "No published article mentions this topic in its body yet, so there's nothing to "
+            "anchor an inbound link to. Use **Grow this topic** below to create related content "
+            "that can link here."
+        )
         return
-    st.caption("Articles that could link to this one (adds an inbound link from each):")
-    for s in sources:
-        sid = s["article_id"]
+    st.caption(f"{len(opps)} article(s) already mention this topic and can link to it:")
+    for o in opps:
+        sid = o["source_article_id"]
         sc1, sc2 = st.columns([4, 1])
-        sc1.write(f"• {s.get('title') or s.get('keyword') or sid}  ·  sim {s.get('similarity')}")
+        label = o.get("title") or o.get("keyword") or sid
+        sc1.write(f"• {label}  ·  mentions it {o['mention_count']}×")
         if sc2.button("Add link", key=f"addlink_{aid}_{sid}"):
             try:
                 res = get_interlinking_service().auto_link_article(
@@ -555,15 +569,16 @@ def _render_inbound_suggestions(mover: dict, brand_id: str, real_org_id: str) ->
                     brand_id=brand_id, organization_id=real_org_id, push_to_cms=True,
                 )
                 added = res.get("links_added", 0)
+                st.session_state.pop(cache_key, None)  # refresh so the linked source drops off the list
                 if not added:
-                    st.info("No link inserted — the source article has no text matching this topic.")
-                elif res.get("pushed_to_cms"):
-                    st.success(f"Added {added} inbound link(s) and pushed live.")
+                    st.warning("No link inserted — that matching text may already be linked.")
                 else:
-                    st.warning(
-                        f"Added {added} inbound link(s) to the article, but the live page wasn't "
-                        "updated. Re-publish the source article to push them live."
-                    )
+                    tail = (" and pushed live." if res.get("pushed_to_cms")
+                            else ", but the live page wasn't updated — re-publish the source to push it live.")
+                    st.success(f"Added {added} inbound link(s){tail}")
+                    review = o.get("published_url")
+                    if review:
+                        st.markdown(f"[Review the edited article →]({review})")
             except Exception as e:
                 st.error(f"Failed to add link: {e}")
 
