@@ -170,6 +170,11 @@ def extend_token(existing_long_lived_token: str) -> Optional[Dict[str, Any]]:
             return None
 
         data = response.json()
+        # Meta omits expires_in when the refreshed token is a ~60-day long-lived
+        # (or effectively non-expiring) token. Callers expect the field, so
+        # default it to 60 days; without this the consumer raises KeyError and
+        # the whole token-refresh run is marked failed.
+        data.setdefault("expires_in", 5184000)
         logger.info(f"Meta token extended (expires_in={data.get('expires_in', 'unknown')}s)")
         return data
 
