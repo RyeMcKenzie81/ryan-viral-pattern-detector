@@ -117,6 +117,7 @@ JOB_TYPE_LABELS = {
     'seo_publish': 'SEO Publish',
     'seo_opportunity_scan': 'SEO Opportunity Scan',
     'token_refresh': 'Token Refresh',
+    'sync_health_check': 'Sync Health Check',
 }
 
 # Map job_type to page slug for deep linking (points to result pages, not scheduler)
@@ -148,6 +149,7 @@ JOB_TYPE_PAGE_SLUGS = {
     'seo_publish': 'content_policies',
     'seo_opportunity_scan': 'seo_dashboard',
     'token_refresh': 'ad_scheduler',
+    'sync_health_check': 'ad_scheduler',
 }
 
 
@@ -7387,6 +7389,96 @@ async def execute_token_refresh_job(job: Dict) -> Dict[str, Any]:
         error_msg = str(e)
         logs.append(f"Job failed: {error_msg}")
         logger.error(f"Token refresh job failed: {error_msg}")
+        update_job_run(run_id, {
+            "status": "failed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "error_message": error_msg,
+            "logs": "\n".join(logs),
+        })
+        _reschedule_after_failure(job, job_id, get_run_attempt_number(run_id))
+        return {"success": False, "error": error_msg}
+
+
+@register_job_handler('sync_health_check')
+async def execute_sync_health_check_job(job: Dict) -> Dict[str, Any]:
+    """Detect stale data syncs and Meta tokens nearing expiry, then alert.
+
+    A global (brand_id=null) ops monitor: scans every active recurring data-sync
+    job's last successful run and every Meta OAuth token, and emits ONE summary
+    activity event (which auto-Slacks on severity 'error') so a brand can't go
+    silently stale for weeks. Read-only; all logic lives in SyncHealthService.
+
+    Parameters (job['parameters']):
+        threshold_hours: int   - staleness cutoff (default 48)
+        token_warn_days: int   - Meta token expiry warning window (default 7)
+        job_types: list[str]   - override which sync job types to check
+    """
+    from viraltracker.services.sync_health_service import SyncHealthService
+
+    job_id = job['id']
+    params = job.get('parameters', {}) or {}
+    threshold_hours = int(params.get('threshold_hours', 48))
+    warn_days = int(params.get('token_warn_days', 7))
+    job_types = params.get('job_types') or None
+
+    assert job.get('_claimed'), (
+        "execute_sync_health_check_job called outside the claim path "
+        "(job.get('_claimed') is falsy). Pre-claimed run from claim_next_job required."
+    )
+    run_id = job['_run_id']
+    logs: List[str] = []
+
+    try:
+        service = SyncHealthService()
+        stale = service.check_sync_staleness(threshold_hours=threshold_hours, job_types=job_types)
+        tokens = service.check_meta_token_health(warn_days=warn_days)
+        summary = service.summarize(stale, tokens)
+
+        logs.append(summary["title"])
+        for s in stale:
+            age = f"{s['hours_stale']}h" if s["hours_stale"] is not None else "never"
+            logs.append(
+                f"  STALE: {s['brand_name']} / {s['job_type']} "
+                f"(last success {s['last_success_at'] or 'never'}, {age})"
+            )
+        for t in tokens:
+            logs.append(
+                f"  TOKEN {t['status']}: {t['brand_name']} meta {t['ad_account_id']} "
+                f"expires {t['expires_at']} ({t['days_until_expiry']}d)"
+            )
+
+        if summary["severity"]:
+            logger.warning(summary["title"])
+            _emit_activity_event(
+                event_type="sync_health_alert",
+                severity=summary["severity"],
+                title=summary["title"],
+                details=summary["details"],
+                source_id=run_id,
+                link_page="ad_scheduler",
+            )
+        else:
+            logger.info("Sync health check: all syncs fresh, no Meta token warnings")
+
+        metadata = {
+            "stale_count": len(stale),
+            "token_warnings": len(tokens),
+            "threshold_hours": threshold_hours,
+            "token_warn_days": warn_days,
+        }
+        update_job_run(run_id, {
+            "status": "completed",
+            "completed_at": datetime.now(PST).isoformat(),
+            "logs": "\n".join(logs),
+            "metadata": metadata,
+        })
+        _update_job_next_run(job, job_id)
+        return {"success": True, **metadata}
+
+    except Exception as e:
+        error_msg = str(e)
+        logs.append(f"Job failed: {error_msg}")
+        logger.error(f"Sync health check job failed: {error_msg}")
         update_job_run(run_id, {
             "status": "failed",
             "completed_at": datetime.now(PST).isoformat(),
