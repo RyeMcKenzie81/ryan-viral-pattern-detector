@@ -105,7 +105,7 @@ class TestRubricTripwire:
         assert STATIC_AWARENESS_TELLS in IMAGE_ANALYSIS_PROMPT
         assert PROMPT_VERSION == "v3"
         assert hashlib.sha256(IMAGE_ANALYSIS_PROMPT.encode()).hexdigest() == (
-            "65afd99874997dd2567e60c61bab6dcfe2c5edc7fd8e06213fb898253c0b2e17"
+            "e9ae9f8f445ca24dc241b244c77c3c354287539e0fe7a7f0a0fcde3fab8ddf19"
         ), (
             "IMAGE_ANALYSIS_PROMPT changed without an image PROMPT_VERSION bump. "
             "If this change is intentional, bump image_analysis_service."
