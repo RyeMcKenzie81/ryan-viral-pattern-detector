@@ -18,6 +18,7 @@ import logging
 import os
 import re
 import tempfile
+import asyncio
 import time as time_module
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -570,16 +571,20 @@ class VideoAnalysisService:
 
             client = make_genai_client(api_key)
             logger.info(f"Uploading video to Gemini Files API ({meta_ad_id})")
-            gemini_file = client.files.upload(file=str(temp_path))
+            # Sync SDK calls below run via to_thread: deep_analyze_video is async
+            # and each blocking call would otherwise freeze the event loop for its
+            # full duration, serializing CLASSIFIER_MAX_CONCURRENCY (same fix as
+            # the image path in PR #290).
+            gemini_file = await asyncio.to_thread(client.files.upload, file=str(temp_path))
             logger.info(f"Uploaded to Gemini: {gemini_file.uri}")
 
             # 7. Wait for processing (up to 180s for longer videos)
             max_wait = 180
             wait_time = 0
             while gemini_file.state.name == "PROCESSING" and wait_time < max_wait:
-                time_module.sleep(3)
+                await asyncio.sleep(3)
                 wait_time += 3
-                gemini_file = client.files.get(name=gemini_file.name)
+                gemini_file = await asyncio.to_thread(client.files.get, name=gemini_file.name)
 
             if gemini_file.state.name == "FAILED":
                 return VideoAnalysisResult(
@@ -608,7 +613,8 @@ class VideoAnalysisService:
                 ad_copy=ad_copy or "(no copy available)",
                 awareness_rubric=AWARENESS_RUBRIC,
             )
-            response = client.models.generate_content(
+            response = await asyncio.to_thread(
+                client.models.generate_content,
                 model=VIDEO_ANALYSIS_MODEL,
                 contents=[gemini_file, prompt],
             )
@@ -737,7 +743,7 @@ class VideoAnalysisService:
             # Cleanup: delete Gemini file
             if gemini_file and client:
                 try:
-                    client.files.delete(name=gemini_file.name)
+                    await asyncio.to_thread(client.files.delete, name=gemini_file.name)
                 except Exception:
                     pass
             # Cleanup: delete temp file
