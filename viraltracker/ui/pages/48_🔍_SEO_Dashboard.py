@@ -413,6 +413,171 @@ _render_sync_status(brand_id)
 
 
 # =============================================================================
+# OPERATOR DASHBOARD (top-of-page summary: KPIs + Top Movers)
+# Self-contained (does its own queries) so it can render at the top without
+# depending on data computed further down the page.
+# =============================================================================
+
+def _dashboard_kpis(brand_id: str, real_org_id: str) -> None:
+    """KPI strip: GSC clicks/impressions, GA4 sessions (28d, Δ vs prior 28d),
+    published article count, and a needs-attention count."""
+    from viraltracker.core.database import get_supabase_client
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+
+    db = get_supabase_client()
+    now = _dt.now(_tz.utc)
+    cur_start = (now - _td(days=28)).isoformat()
+    prior_start = (now - _td(days=56)).isoformat()
+    prior_end = cur_start
+
+    ids = [r["id"] for r in (
+        db.table("seo_articles").select("id").eq("brand_id", brand_id).execute().data or []
+    )]
+
+    def _window(start, end=None):
+        if not ids:
+            return {"clicks": 0, "impressions": 0, "sessions": 0}
+        q = (db.table("seo_article_analytics")
+             .select("source, clicks, impressions, sessions")
+             .in_("article_id", ids).gte("date", start))
+        if end:
+            q = q.lt("date", end)
+        rows = q.execute().data or []
+        return {
+            "clicks": sum((r.get("clicks") or 0) for r in rows if r.get("source") == "gsc"),
+            "impressions": sum((r.get("impressions") or 0) for r in rows if r.get("source") == "gsc"),
+            "sessions": sum((r.get("sessions") or 0) for r in rows if r.get("source") == "ga4"),
+        }
+
+    cur = _window(cur_start)
+    prior = _window(prior_start, prior_end)
+
+    published = (db.table("seo_articles").select("id", count="exact")
+                 .eq("brand_id", brand_id).not_.is_("published_url", "null").execute()).count or 0
+
+    # Needs attention: integrations not connected + articles in a failed state.
+    connected = {i["platform"] for i in (
+        db.table("brand_integrations").select("platform").eq("brand_id", brand_id).execute().data or []
+    )}
+    not_connected = len([p for p in ("gsc", "ga4", "shopify") if p not in connected])
+    failed = (db.table("seo_articles").select("id", count="exact")
+              .eq("brand_id", brand_id).eq("status", "eval_failed").execute()).count or 0
+    attention = not_connected + (failed or 0)
+
+    k1, k2, k3, k4, k5 = st.columns(5)
+    k1.metric("Clicks (28d)", f"{cur['clicks']:,}", delta=f"{cur['clicks'] - prior['clicks']:+,}")
+    k2.metric("Impressions (28d)", f"{cur['impressions']:,}", delta=f"{cur['impressions'] - prior['impressions']:+,}")
+    k3.metric("Sessions (28d)", f"{cur['sessions']:,}", delta=f"{cur['sessions'] - prior['sessions']:+,}")
+    k4.metric("Published", f"{published:,}")
+    k5.metric("Needs attention", attention, delta=None,
+              delta_color="inverse", help="Integrations not connected + articles in a failed state.")
+
+
+def _render_top_movers(brand_id: str, real_org_id: str) -> None:
+    """Articles whose GSC position improved most, as inbound-link opportunities."""
+    svc = get_interlinking_service()
+    try:
+        result = svc.find_top_movers(brand_id, real_org_id, limit=8)
+    except Exception as e:
+        st.caption(f"Top movers unavailable: {e}")
+        return
+    movers = result.get("movers", [])
+
+    st.markdown("#### 📈 Top Movers — articles climbing in Google (last 7d vs prior 7d)")
+    if not movers:
+        st.caption("No position risers yet. Run **Sync All** or wait for the daily GSC sync, "
+                   "then articles gaining rank will appear here as link-building opportunities.")
+        return
+
+    for m in movers:
+        aid = m["article_id"]
+        with st.container(border=True):
+            c1, c2, c3 = st.columns([4, 1, 1])
+            with c1:
+                st.markdown(f"**{m['title'] or m['keyword'] or '(untitled)'}**")
+                st.caption(
+                    f"position {m['prior_position']} → **{m['recent_position']}** "
+                    f"(▲ {m['improvement']})  ·  {m['impressions']:,} impressions"
+                )
+            c2.metric("🔗 Inbound", m["inbound_link_count"])
+            c3.metric("📈 Opportunities", m["opportunity_count"])
+
+            a1, a2 = st.columns(2)
+            if a1.button(f"🔗 Find inbound links ({m['opportunity_count']})", key=f"mv_links_{aid}"):
+                st.session_state[f"_mv_links_{aid}"] = not st.session_state.get(f"_mv_links_{aid}", False)
+            if a2.button("✍️ Grow this topic", key=f"mv_grow_{aid}"):
+                st.session_state[f"_mv_grow_{aid}"] = not st.session_state.get(f"_mv_grow_{aid}", False)
+
+            if st.session_state.get(f"_mv_links_{aid}"):
+                _render_inbound_suggestions(m, brand_id, real_org_id)
+            if st.session_state.get(f"_mv_grow_{aid}"):
+                _render_grow_topic(m, brand_id, real_org_id)
+
+
+def _render_inbound_suggestions(mover: dict, brand_id: str, real_org_id: str) -> None:
+    """List source articles that could link to this riser, with one-click add."""
+    sources = mover.get("suggested_sources", [])
+    aid = mover["article_id"]
+    if not sources:
+        st.caption("No internal-link source candidates found in this project.")
+        return
+    st.caption("Articles that could link to this one (adds an inbound link from each):")
+    for s in sources:
+        sid = s["article_id"]
+        sc1, sc2 = st.columns([4, 1])
+        sc1.write(f"• {s.get('title') or s.get('keyword') or sid}  ·  sim {s.get('similarity')}")
+        if sc2.button("Add link", key=f"addlink_{aid}_{sid}"):
+            try:
+                res = get_interlinking_service().auto_link_article(
+                    article_id=sid,
+                    candidate_articles=[{
+                        "id": aid, "keyword": mover.get("keyword", ""),
+                        "title": mover.get("title", ""), "published_url": mover.get("published_url", ""),
+                    }],
+                    brand_id=brand_id, organization_id=real_org_id, push_to_cms=True,
+                )
+                added = res.get("links_added", 0)
+                st.success(f"Added {added} inbound link(s)." if added else "No link inserted (no matching text in the source).")
+            except Exception as e:
+                st.error(f"Failed to add link: {e}")
+
+
+def _render_grow_topic(mover: dict, brand_id: str, real_org_id: str) -> None:
+    """Create a new draft article on a related topic to deepen the cluster."""
+    aid = mover["article_id"]
+    if not mover.get("project_id"):
+        st.caption("This article has no SEO project, so a sibling draft can't be created.")
+        return
+    kw = st.text_input("New article keyword / topic", value=mover.get("keyword", ""), key=f"grow_kw_{aid}")
+    if st.button("Create draft", key=f"grow_create_{aid}"):
+        if not kw.strip():
+            st.warning("Enter a keyword first.")
+            return
+        try:
+            from viraltracker.services.seo_pipeline.services.content_generation_service import ContentGenerationService
+            ContentGenerationService().create_article(
+                project_id=mover["project_id"], brand_id=brand_id,
+                organization_id=real_org_id, keyword=kw.strip(),
+            )
+            st.success(f"Created draft for '{kw.strip()}'. It will enter the content pipeline; "
+                       "publish it to add another internal-link source for this topic.")
+        except Exception as e:
+            st.error(f"Failed to create draft: {e}")
+
+
+def render_operator_dashboard(brand_id: str, real_org_id: str) -> None:
+    try:
+        _dashboard_kpis(brand_id, real_org_id)
+        _render_top_movers(brand_id, real_org_id)
+    except Exception as e:
+        st.caption(f"Dashboard summary unavailable: {e}")
+    st.divider()
+
+
+render_operator_dashboard(brand_id, _real_org_id)
+
+
+# =============================================================================
 # KPIs
 # =============================================================================
 

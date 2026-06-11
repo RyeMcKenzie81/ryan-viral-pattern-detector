@@ -1022,6 +1022,7 @@ class InterlinkingService:
             suggested_sources = self._suggest_inbound_sources(article, aid, max_n=max_opportunities)
             movers.append({
                 "article_id": aid,
+                "project_id": article.get("project_id"),
                 "keyword": article.get("keyword", ""),
                 "title": article.get("title", ""),
                 "published_url": article.get("published_url", ""),
