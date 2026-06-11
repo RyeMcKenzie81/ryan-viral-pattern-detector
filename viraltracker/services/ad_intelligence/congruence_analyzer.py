@@ -384,7 +384,11 @@ class CongruenceAnalyzer:
                 raise ValueError("GEMINI_API_KEY not set")
 
             client = make_genai_client(api_key)
-            response = client.models.generate_content(
+            # Sync SDK call inside an async method — to_thread keeps the event
+            # loop free under concurrent classify dispatch (same as PR #290).
+            import asyncio as _asyncio
+            response = await _asyncio.to_thread(
+                client.models.generate_content,
                 model="gemini-2.5-flash",
                 contents=prompt,
             )

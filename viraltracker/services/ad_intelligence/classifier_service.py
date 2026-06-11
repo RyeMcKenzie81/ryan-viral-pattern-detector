@@ -274,14 +274,24 @@ class ClassifierService:
         # because the video may be marked not_downloadable (e.g. Reels without source URL)
         has_video_in_storage = ad_data.get("has_video_in_storage", False)
         if not classification_data and is_video and has_video_in_storage and video_budget_remaining > 0:
-            logger.info(f"Attempting video classification for {meta_ad_id} (video_id={video_id})")
-            video_result = await self._classify_video_with_gemini(
-                video_id, ad_copy, ad_data.get("lp_data"),
-                meta_ad_id=meta_ad_id, brand_id=brand_id, org_id=org_id,
-            )
-            if video_result:
-                classification_data = video_result
-                source = "gemini_video"
+            # Global hard cap (set by classify_batch under concurrent dispatch;
+            # absent for direct classify_ad callers -> unlimited, as before).
+            _cap = getattr(self, "_video_slots_cap", None)
+            if _cap is not None and self._video_slots_used >= _cap:
+                video_budget_remaining = 0  # fall through to the budget-exhausted skip
+            else:
+                if _cap is not None:
+                    self._video_slots_used += 1  # claim BEFORE the await (race-free)
+                logger.info(f"Attempting video classification for {meta_ad_id} (video_id={video_id})")
+                video_result = await self._classify_video_with_gemini(
+                    video_id, ad_copy, ad_data.get("lp_data"),
+                    meta_ad_id=meta_ad_id, brand_id=brand_id, org_id=org_id,
+                )
+                if video_result:
+                    classification_data = video_result
+                    source = "gemini_video"
+                elif _cap is not None:
+                    self._video_slots_used -= 1  # failed analysis frees its slot
 
         # 2b. Skip video ads that can't be properly classified (don't pollute data with copy-only)
         if not classification_data and is_video:
@@ -615,12 +625,26 @@ class ClassifierService:
                     break
 
                 # Pre-allocate a video slot when the prefetch says this is a video
-                # ad and budget remains; classify_ad makes the true routing decision.
-                _is_video = bool((prefetched_ads.get(meta_ad_id) or {}).get("is_video"))
+                # ad WITH a stored file; classify_ad makes the true routing decision
+                # under the global hard cap (_video_slots_used) below.
+                _ad_data = prefetched_ads.get(meta_ad_id) or {}
+                _is_video = bool(_ad_data.get("is_video"))
+                _has_vid_file = bool(_ad_data.get("has_video_in_storage"))
+                if _is_video and not _has_vid_file:
+                    # Guaranteed skipped_missing_video_file: dispatching would burn
+                    # a max_new slot (and previously a video slot) on an ad that
+                    # cannot classify. Count it skipped without dispatch — it stays
+                    # unclassified exactly as the sequential path left it.
+                    skipped_count += 1
+                    continue
                 if _is_video and _video_slots_left > 0:
                     todo.append((meta_ad_id, 1))
                     _video_slots_left -= 1
                 else:
+                    # Non-video ads keep a permissive per-ad budget: the prefetch
+                    # is_video flag can be wrong (perf-row truncation), so the HARD
+                    # cap is enforced globally in classify_ad via _video_slots_used;
+                    # the per-ad budget is advisory ordering only.
                     todo.append((meta_ad_id, 0 if _is_video else max_video))
 
             except Exception as e:
@@ -634,6 +658,16 @@ class ClassifierService:
         # classify_ad has its OWN legacy input_hash cache that is NOT staleness-
         # aware — with force=False it would re-serve the very stale row we just
         # decided to replace. The prefetch cache above is the single source of truth.
+        # Global HARD cap on actual video deep-analyses for this batch. Per-ad
+        # budgets above are advisory (mis-flagged ads could otherwise each carry
+        # budget and overrun max_video under concurrent dispatch). classify_ad
+        # checks/increments synchronously (no await between check and increment,
+        # so it is race-free within the event loop) and decrements on failure so
+        # a failed analysis frees its slot, matching the old sequential
+        # only-count-successes semantics as closely as concurrency allows.
+        self._video_slots_cap = max_video
+        self._video_slots_used = 0
+
         async def _dispatch(ad_id: str, video_budget: int):
             try:
                 return await self.classify_ad(
@@ -723,42 +757,56 @@ class ClassifierService:
         # --- Query 1: meta_ads_performance (bulk) ---
         # Limit high enough to cover all ads (we only keep the latest per ad).
         # Supabase defaults to 1000 rows; with many dates per ad we may need more.
-        perf_limit = max(1000, len(meta_ad_ids) * 5)
         try:
-            perf_result = self.supabase.table("meta_ads_performance").select(
-                "meta_ad_id, thumbnail_url, ad_name, ad_copy, meta_campaign_id, "
-                "meta_video_id, is_video, video_views, object_type, date"
-            ).eq(
-                "brand_id", brand_str
-            ).in_(
-                "meta_ad_id", meta_ad_ids
-            ).order("date", desc=True).limit(perf_limit).execute()
-
-            # Keep only the most recent row per ad (ordered by date desc)
+            # PAGINATED: a single .limit() is silently capped at PostgREST's server
+            # max-rows (1000). Ordered date-desc, 1000 rows is only ~2 days of a
+            # busy brand's perf data — ads not active that recently got NO row, so
+            # is_video defaulted wrong (review finding: mis-flagged ads could
+            # bypass the video budget). Page (stable date+id ordering) until every
+            # requested ad has its most-recent row, or rows run out.
             seen = set()
-            for row in (perf_result.data or []):
-                ad_id = row.get("meta_ad_id")
-                if ad_id in seen:
-                    continue
-                seen.add(ad_id)
+            _page, _offset = 1000, 0
+            while len(seen) < len(meta_ad_ids):
+                perf_result = self.supabase.table("meta_ads_performance").select(
+                    "meta_ad_id, thumbnail_url, ad_name, ad_copy, meta_campaign_id, "
+                    "meta_video_id, is_video, video_views, object_type, date"
+                ).eq(
+                    "brand_id", brand_str
+                ).in_(
+                    "meta_ad_id", meta_ad_ids
+                ).order("date", desc=True).order("id", desc=True).range(
+                    _offset, _offset + _page - 1
+                ).execute()
+                rows = perf_result.data or []
 
-                data = ad_data_map.get(ad_id, {})
-                data["thumbnail_url"] = row.get("thumbnail_url", "")
-                data["ad_name"] = row.get("ad_name", "")
-                data["ad_copy"] = row.get("ad_copy") or ""
-                data["campaign_id"] = row.get("meta_campaign_id", "")
-                data["meta_video_id"] = row.get("meta_video_id")
-                data["is_video"] = row.get("is_video", False)
-                data["object_type"] = row.get("object_type", "unknown")
+                # Keep only the most recent row per ad (ordered by date desc)
+                for row in rows:
+                    ad_id = row.get("meta_ad_id")
+                    if ad_id in seen:
+                        continue
+                    seen.add(ad_id)
 
-                video_views = _safe_numeric(row.get("video_views"))
-                if not data["meta_video_id"] and video_views and video_views > 0:
-                    data["is_video"] = True
+                    data = ad_data_map.get(ad_id, {})
+                    data["thumbnail_url"] = row.get("thumbnail_url", "")
+                    data["ad_name"] = row.get("ad_name", "")
+                    data["ad_copy"] = row.get("ad_copy") or ""
+                    data["campaign_id"] = row.get("meta_campaign_id", "")
+                    data["meta_video_id"] = row.get("meta_video_id")
+                    data["is_video"] = row.get("is_video", False)
+                    data["object_type"] = row.get("object_type", "unknown")
 
-                if not data.get("ad_copy"):
-                    data["ad_copy"] = data.get("ad_name", "")
+                    video_views = _safe_numeric(row.get("video_views"))
+                    if not data["meta_video_id"] and video_views and video_views > 0:
+                        data["is_video"] = True
 
-                ad_data_map[ad_id] = data
+                    if not data.get("ad_copy"):
+                        data["ad_copy"] = data.get("ad_name", "")
+
+                    ad_data_map[ad_id] = data
+
+                if len(rows) < _page:
+                    break
+                _offset += _page
         except Exception as e:
             logger.warning(f"Batch prefetch perf failed: {e}")
 

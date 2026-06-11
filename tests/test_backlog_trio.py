@@ -40,13 +40,37 @@ class TestShutdownHygiene:
         like.assert_called_once_with("worker_id", f"{boot_id()}:%")
         like.return_value.eq.assert_called_once_with("status", "running")
 
-    def test_handle_shutdown_invokes_hygiene_and_sets_flag(self):
+    def test_handle_shutdown_spawns_hygiene_off_signal_frame_and_sets_flag(self):
         from viraltracker.worker import scheduler_worker as sw
-        with patch.object(sw, "_fail_runs_for_this_boot") as hygiene:
+
+        class _SyncThread:  # run the target inline so the assertion is deterministic
+            def __init__(self, target=None, **kw):
+                self._target = target
+                assert kw.get("daemon") is True, "hygiene thread must be daemon"
+            def start(self):
+                self._target()
+
+        with patch.object(sw, "_fail_runs_for_this_boot") as hygiene, \
+             patch.object(sw.threading, "Thread", _SyncThread):
             sw.handle_shutdown(15, None)
         hygiene.assert_called_once()
         assert sw.shutdown_requested is True
         sw.shutdown_requested = False  # reset module state for other tests
+
+    def test_hygiene_rearms_parent_jobs(self):
+        # Job handlers NULL next_run_at at start and claim_next_job requires it
+        # NOT NULL — without the re-arm, a deploy-killed job is permanently dead.
+        from viraltracker.worker import scheduler_worker as sw
+        db = MagicMock()
+        runs_update = db.table.return_value.update.return_value.like.return_value.eq.return_value
+        runs_update.execute.return_value = MagicMock(
+            data=[{"id": "r1", "scheduled_job_id": "j1"}, {"id": "r2", "scheduled_job_id": "j2"}]
+        )
+        with patch.object(sw, "get_supabase_client", return_value=db):
+            sw._fail_runs_for_this_boot()
+        rearm_in = db.table.return_value.update.return_value.in_
+        rearm_in.assert_called_once()
+        assert sorted(rearm_in.call_args.args[1]) == ["j1", "j2"]
 
     def test_hygiene_never_raises(self):
         from viraltracker.worker import scheduler_worker as sw
