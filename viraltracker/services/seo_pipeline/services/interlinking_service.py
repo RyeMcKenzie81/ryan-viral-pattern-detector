@@ -43,6 +43,25 @@ class InterlinkingService:
     # member publish can't accumulate unbounded links (Google dislikes
     # link-stuffing). Contextual = in-body <a>; related = footer block entries.
     MAX_CONTEXTUAL_LINKS_PER_ARTICLE = 5
+
+    # Link-text matching config (governs both finding inbound-link opportunities
+    # AND inserting links — they share _generate_match_patterns, so they stay in
+    # sync). Patterns are phrases from each article's title + keyword that a source
+    # paragraph must contain (whole-word) to be linkable.
+    #   STRIP_PUNCTUATION: normalize per-token leading/trailing punctuation, so a
+    #     keyword like "What Is Gaming Slang?" yields the clean phrase "gaming
+    #     slang" (the '?' no longer glues to the token). Internal apostrophes /
+    #     hyphens are kept, so "parent's" still matches the prose "parent's".
+    #   MIN_NGRAM: smallest keyword n-gram width. 3 (default) is conservative;
+    #     set to 2 to also match 2-word phrases like "gaming slang" — more links,
+    #     but it can link generic 2-word terms, so opt in deliberately.
+    LINK_MATCH_STRIP_PUNCTUATION = True
+    LINK_MATCH_MIN_NGRAM = 3
+    # Punctuation stripped from a token's EDGES when normalizing. Only
+    # sentence / bracket / quote marks — deliberately EXCLUDES ' (possessives:
+    # "parents'"), - (hyphenates: "self-care"), + (C++), &, #, / so those stay
+    # part of the token and keep matching real prose.
+    _EDGE_PUNCTUATION = '.,;:!?"“”()[]{}'
     MAX_RELATED_LINKS = 5
     # R4: an article published at least this many days that still has zero
     # inbound links is an orphan REGRESSION (the interlink machinery should
@@ -1265,13 +1284,27 @@ class InterlinkingService:
     # AUTO-LINK HELPERS (from auto-link-existing-text.js)
     # =========================================================================
 
-    @staticmethod
-    def _generate_match_patterns(article: Dict[str, Any]) -> List[str]:
-        """
-        Generate text patterns to match for an article.
+    @classmethod
+    def _tokenize_for_match(cls, text: str) -> List[str]:
+        """Lowercase + split, optionally normalizing per-token punctuation
+        (strip leading/trailing, keep internal apostrophes/hyphens). See the
+        LINK_MATCH_* class config."""
+        words = (text or "").lower().split()
+        if cls.LINK_MATCH_STRIP_PUNCTUATION:
+            words = [w.strip(cls._EDGE_PUNCTUATION) for w in words]
+            words = [w for w in words if w]
+        return words
 
-        Creates variations from title and keyword: full text, without
-        "how to", without parentheticals, 3-4 word n-grams.
+    @classmethod
+    def _generate_match_patterns(cls, article: Dict[str, Any]) -> List[str]:
+        """
+        Generate text patterns to match for an article (phrases a source must
+        contain, whole-word, to be linkable).
+
+        From title and keyword: full text, keyword without "how to", title
+        without parentheticals, and N..4 word keyword n-grams (N = MIN_NGRAM).
+        Per-token punctuation is normalized when LINK_MATCH_STRIP_PUNCTUATION so
+        a keyword like "gaming slang?" yields the clean phrase "gaming slang".
         Minimum 10 characters per pattern.
         """
         patterns = set()
@@ -1279,25 +1312,27 @@ class InterlinkingService:
         keyword = (article.get("keyword") or "").lower()
 
         if title:
-            patterns.add(title)
-            # Without parentheticals
-            no_parens = re.sub(r'\([^)]*\)', '', title).strip()
-            if no_parens != title:
-                patterns.add(no_parens)
+            # Keep BOTH the full title and the parenthetical-stripped title
+            # (e.g. drop "(2026 Guide)") — old code kept both; don't silently
+            # drop the full one. The set dedupes when there's no parenthetical.
+            no_parens = re.sub(r"\([^)]*\)", "", title)
+            for variant in (title, no_parens):
+                toks = cls._tokenize_for_match(variant)
+                if toks:
+                    patterns.add(" ".join(toks))
 
         if keyword:
-            patterns.add(keyword)
-            # Without "how to"
-            if keyword.startswith("how to "):
-                patterns.add(keyword[7:])
-
-            # 3-4 word n-grams
-            words = keyword.split()
-            if len(words) >= 3:
-                for i in range(len(words) - 2):
-                    patterns.add(" ".join(words[i:i + 3]))
-                    if i <= len(words) - 4:
-                        patterns.add(" ".join(words[i:i + 4]))
+            kw = cls._tokenize_for_match(keyword)
+            if kw:
+                patterns.add(" ".join(kw))
+                # Without leading "how to"
+                if kw[:2] == ["how", "to"] and len(kw) > 2:
+                    patterns.add(" ".join(kw[2:]))
+                # N..4 word n-grams (N = MIN_NGRAM, default 3; 2 enables 2-word)
+                for n in range(max(2, cls.LINK_MATCH_MIN_NGRAM), 5):
+                    if len(kw) >= n:
+                        for i in range(len(kw) - n + 1):
+                            patterns.add(" ".join(kw[i:i + n]))
 
         # Dedupe and filter by min length
         return [p for p in patterns if len(p) >= 10]
