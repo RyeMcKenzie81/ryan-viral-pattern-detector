@@ -159,7 +159,7 @@ def _run_analyze(gemini_text):
     fake_gemini = MagicMock()
     async def fake_analyze_image(b64, prompt):
         return gemini_text
-    fake_gemini.analyze_image = fake_analyze_image
+    fake_gemini.analyze_image_async = fake_analyze_image
     return asyncio.run(svc.analyze_template_for_approval("q1", gemini=fake_gemini))
 
 
