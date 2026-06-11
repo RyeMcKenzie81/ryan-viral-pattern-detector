@@ -2706,6 +2706,15 @@ else:
                             det_col1, det_col2 = st.columns(2)
 
                             with det_col1:
+                                edit_name = st.text_input(
+                                    "Product Name",
+                                    value=product.get('name', '') or '',
+                                    help="Renaming is safe: attribution, spend history, and "
+                                         "scheduled jobs key on the product ID. The slug, product "
+                                         "code, and URLs are NOT changed by a rename.",
+                                    key=f"det_name_{product_id}"
+                                )
+
                                 edit_current_offer = st.text_input(
                                     "Current Offer",
                                     value=product.get('current_offer', '') or '',
@@ -2838,6 +2847,11 @@ else:
                                     "results_timeline": parsed_timeline,
                                     "faq_items": parsed_faq,
                                 }
+                                new_name = edit_name.strip()
+                                if new_name:
+                                    updates["name"] = new_name
+                                else:
+                                    st.warning("Product name cannot be empty — kept previous value.")
                                 if save_product_details(product_id, updates):
                                     st.success("Product details saved!")
                                     st.session_state[edit_details_key] = False
