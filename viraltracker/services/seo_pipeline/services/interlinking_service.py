@@ -876,37 +876,8 @@ class InterlinkingService:
 
             article = article_map.get(aid, {})
 
-            # Find top 5 source articles that could link to this target
-            project_id = article.get("project_id")
-            suggested_sources = []
-            if project_id:
-                project_articles = self._get_project_articles(project_id, exclude_id=aid)
-                # Exclude articles already linking to target
-                existing_sources = set()
-                try:
-                    existing = (
-                        self.supabase.table("seo_internal_links")
-                        .select("source_article_id")
-                        .eq("target_article_id", aid)
-                        .eq("status", LinkStatus.IMPLEMENTED.value)
-                        .execute()
-                    )
-                    existing_sources = {r["source_article_id"] for r in (existing.data or [])}
-                except Exception:
-                    pass
-
-                for pa in project_articles:
-                    if pa["id"] in existing_sources:
-                        continue
-                    sim = self._jaccard_similarity(article.get("keyword", ""), pa.get("keyword", ""))
-                    if sim > 0.1:
-                        suggested_sources.append({
-                            "article_id": pa["id"],
-                            "keyword": pa.get("keyword", ""),
-                            "similarity": round(sim, 3),
-                        })
-                suggested_sources.sort(key=lambda x: x["similarity"], reverse=True)
-                suggested_sources = suggested_sources[:5]
+            # Source articles that could link to this target (top 5 by similarity).
+            suggested_sources = self._suggest_inbound_sources(article, aid, max_n=5)
 
             # Composite score: (1/position) * impressions * (1 + wow_growth)
             score = (
@@ -954,6 +925,171 @@ class InterlinkingService:
             "total_scanned": len(articles),
             "last_synced_at": last_sync,
         }
+
+    def find_top_movers(
+        self,
+        brand_id: str,
+        organization_id: str,
+        days: int = 7,
+        min_impressions: int = 50,
+        min_improvement: float = 0.5,
+        limit: int = 10,
+        max_opportunities: int = 15,
+    ) -> Dict[str, Any]:
+        """Articles whose average GSC position IMPROVED most period-over-period,
+        surfaced as inbound-link-building opportunities.
+
+        Compares avg position over the last `days` vs the prior `days` window
+        (source gsc, search_type web). An article "moved up" when its recent avg
+        position is lower (better) than prior by at least `min_improvement`. Both
+        windows must have data, or movement can't be measured. For each riser we
+        also return its current inbound link count and the source articles that
+        could link TO it (the link-building opportunity) so a climbing page can be
+        reinforced.
+
+        Returns {"movers": [...], "total_scanned": int, "last_synced_at": str|None}.
+        Each mover: article_id, keyword, title, published_url, recent_position,
+        prior_position, position_delta (negative = improved), improvement (positive
+        magnitude), impressions, inbound_link_count, opportunity_count,
+        suggested_sources[].
+        """
+        from datetime import datetime, timedelta, timezone
+
+        now = datetime.now(timezone.utc)
+        recent_start = (now - timedelta(days=days)).isoformat()
+        prior_start = (now - timedelta(days=2 * days)).isoformat()
+        prior_end = recent_start
+
+        articles_result = (
+            self.supabase.table("seo_articles")
+            .select("id, keyword, title, published_url, project_id")
+            .eq("brand_id", brand_id)
+            .not_.is_("published_url", "null")
+            .execute()
+        )
+        articles = articles_result.data or []
+        if not articles:
+            return {"movers": [], "total_scanned": 0, "last_synced_at": None}
+
+        article_map = {a["id"]: a for a in articles}
+        article_ids = list(article_map.keys())
+
+        def _agg(rows):
+            stats: Dict[str, Dict[str, float]] = {}
+            for row in rows or []:
+                aid = row["article_id"]
+                s = stats.setdefault(aid, {"pos_sum": 0.0, "pos_n": 0, "impressions": 0})
+                pos = row.get("average_position")
+                if pos:
+                    s["pos_sum"] += pos
+                    s["pos_n"] += 1
+                s["impressions"] += row.get("impressions", 0) or 0
+            return stats
+
+        recent_stats = _agg((
+            self.supabase.table("seo_article_analytics")
+            .select("article_id, impressions, average_position")
+            .in_("article_id", article_ids)
+            .eq("source", "gsc").eq("search_type", "web")
+            .gte("date", recent_start)
+            .execute()
+        ).data)
+        prior_stats = _agg((
+            self.supabase.table("seo_article_analytics")
+            .select("article_id, impressions, average_position")
+            .in_("article_id", article_ids)
+            .eq("source", "gsc").eq("search_type", "web")
+            .gte("date", prior_start).lt("date", prior_end)
+            .execute()
+        ).data)
+
+        inbound_counts = self._batch_count_inbound_links(article_ids)
+
+        movers = []
+        for aid, rs in recent_stats.items():
+            ps = prior_stats.get(aid)
+            if rs["pos_n"] == 0 or not ps or ps["pos_n"] == 0:
+                continue  # need a measured position in BOTH windows
+            if rs["impressions"] < min_impressions:
+                continue
+            recent_pos = rs["pos_sum"] / rs["pos_n"]
+            prior_pos = ps["pos_sum"] / ps["pos_n"]
+            delta = recent_pos - prior_pos  # negative = moved up (improved)
+            if delta > -min_improvement:
+                continue
+
+            article = article_map.get(aid, {})
+            suggested_sources = self._suggest_inbound_sources(article, aid, max_n=max_opportunities)
+            movers.append({
+                "article_id": aid,
+                "keyword": article.get("keyword", ""),
+                "title": article.get("title", ""),
+                "published_url": article.get("published_url", ""),
+                "recent_position": round(recent_pos, 1),
+                "prior_position": round(prior_pos, 1),
+                "position_delta": round(delta, 1),
+                "improvement": round(-delta, 1),
+                "impressions": rs["impressions"],
+                "inbound_link_count": inbound_counts.get(aid, 0),
+                "opportunity_count": len(suggested_sources),
+                "suggested_sources": suggested_sources,
+            })
+
+        movers.sort(key=lambda m: m["improvement"], reverse=True)
+        movers = movers[:limit]
+
+        last_sync = None
+        try:
+            sync_result = (
+                self.supabase.table("seo_article_analytics")
+                .select("date").in_("article_id", article_ids[:1])
+                .eq("source", "gsc").order("date", desc=True).limit(1).execute()
+            )
+            if sync_result.data:
+                last_sync = sync_result.data[0].get("date")
+        except Exception:
+            pass
+
+        return {"movers": movers, "total_scanned": len(articles), "last_synced_at": last_sync}
+
+    def _suggest_inbound_sources(
+        self, article: Dict[str, Any], target_id: str, max_n: int = 5
+    ) -> List[Dict[str, Any]]:
+        """Project articles that could link TO `target_id` and don't already,
+        ranked by keyword similarity. The inbound link-building opportunity set
+        shared by find_linking_opportunities and find_top_movers."""
+        project_id = article.get("project_id")
+        if not project_id:
+            return []
+
+        project_articles = self._get_project_articles(project_id, exclude_id=target_id)
+        existing_sources = set()
+        try:
+            existing = (
+                self.supabase.table("seo_internal_links")
+                .select("source_article_id")
+                .eq("target_article_id", target_id)
+                .eq("status", LinkStatus.IMPLEMENTED.value)
+                .execute()
+            )
+            existing_sources = {r["source_article_id"] for r in (existing.data or [])}
+        except Exception:
+            pass
+
+        sources = []
+        for pa in project_articles:
+            if pa["id"] in existing_sources:
+                continue
+            sim = self._jaccard_similarity(article.get("keyword", ""), pa.get("keyword", ""))
+            if sim > 0.1:
+                sources.append({
+                    "article_id": pa["id"],
+                    "keyword": pa.get("keyword", ""),
+                    "title": pa.get("title", ""),
+                    "similarity": round(sim, 3),
+                })
+        sources.sort(key=lambda x: x["similarity"], reverse=True)
+        return sources[:max_n]
 
     # =========================================================================
     # SIMILARITY & ANCHOR TEXT (from suggest.js)
