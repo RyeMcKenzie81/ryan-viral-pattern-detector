@@ -340,7 +340,13 @@ class ClassifierService:
             # ad_copy is empty, and judging an ad name's awareness is noise. None here
             # means "no caption" -> copy awareness is skipped, congruence not computed.
             caption = self._get_latest_caption(meta_ad_id, brand_id)
-            image_result = self._classify_image_with_analysis_service(
+            # The deep image helper is synchronous end-to-end (sync Gemini SDK call
+            # inside ImageAnalysisService); running it inline blocks the event loop
+            # for the whole ~30s analysis and would serialize
+            # CLASSIFIER_MAX_CONCURRENCY. to_thread frees the loop so concurrent
+            # dispatch actually overlaps Gemini calls.
+            image_result = await asyncio.to_thread(
+                self._classify_image_with_analysis_service,
                 meta_ad_id, brand_id, org_id, caption,
             )
             if image_result and image_result != "low_res":
@@ -2285,7 +2291,7 @@ class ClassifierService:
         # 4. Classify with image
         import base64
         image_b64 = base64.b64encode(image_bytes).decode("utf-8")
-        result_text = await gemini.analyze_image(image_b64, prompt)
+        result_text = await gemini.analyze_image_async(image_b64, prompt)
 
         # Parse JSON response
         parsed = self._parse_gemini_response(result_text)

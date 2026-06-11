@@ -811,7 +811,7 @@ class TemplateQueueService:
         # flash). A shared instance may be passed in (bulk paths) so its rate
         # limiter actually serializes calls.
         gemini = gemini or GeminiService(model=TEMPLATE_AWARENESS_MODEL)
-        response_text = await gemini.analyze_image(image_base64, prompt)
+        response_text = await gemini.analyze_image_async(image_base64, prompt)
 
         # Parse JSON response
         try:
