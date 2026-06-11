@@ -77,8 +77,15 @@ Analyze the visual content and return a JSON response with the following structu
   "awareness_level": "Choose ONE: unaware | problem_aware | solution_aware | product_aware | most_aware",
   "awareness_level_reasoning": "Brief explanation of why this awareness level, citing the rubric",
   "sales_event": null or "Choose if applicable: black_friday | cyber_monday | mothers_day | fathers_day | valentines_day | christmas | new_year | summer_sale | labor_day | memorial_day | other",
-  "visual_notes": "Notable visual elements: colors, layout style, text placement, imagery type"
+  "visual_notes": "Notable visual elements: colors, layout style, text placement, imagery type",
+  "has_product_placement": true or false
 }}
+
+PRODUCT PLACEMENT — how to set `has_product_placement`:
+true when an identifiable product pack/bottle/jar appears ANYWHERE in the frame — hero,
+co-hero, OR a small corner signature. This is a layout attribute and is INDEPENDENT of
+awareness: a corner pack-shot sets has_product_placement=true even though it does not
+raise the awareness stage. false only when no product container is visible at all.
 
 AWARENESS — how to set `awareness_level`:
 A template is a STATIC single moment. Judge by what the DOMINANT readable on-image element
@@ -428,6 +435,7 @@ class TemplateQueueService:
         limit: int = 50,
         source_brand: Optional[str] = None,
         sort_by: str = "most_used",
+        has_product_placement: Optional[bool] = None,
     ) -> List[Dict]:
         """
         Get approved templates from library.
@@ -461,6 +469,10 @@ class TemplateQueueService:
             query = query.eq("category", category)
         if awareness_level:
             query = query.eq("awareness_level", awareness_level)
+        if has_product_placement is not None:
+            # Layout filter, orthogonal to awareness: "problem-aware templates WITH
+            # a product slot" = awareness_level=2 + has_product_placement=True.
+            query = query.eq("has_product_placement", has_product_placement)
         if industry_niche:
             query = query.eq("industry_niche", industry_niche)
         if target_sex:
@@ -859,6 +871,12 @@ class TemplateQueueService:
                 f"suggestion carries no awareness_level"
             )
 
+        # has_product_placement: coerce to a real bool (orthogonal to awareness —
+        # a corner signature counts here even though it never raises the stage).
+        # Absent/garbage -> None (unknown), never a fabricated False.
+        hpp = suggestions.get("has_product_placement")
+        suggestions["has_product_placement"] = hpp if isinstance(hpp, bool) else None
+
         # The suggestions carry their OWN prompt version: finalize writes this (not
         # "current"), so stale pending_details suggestions are stamped honestly.
         suggestions["awareness_prompt_version"] = TEMPLATE_ANALYSIS_PROMPT_VERSION
@@ -988,6 +1006,11 @@ class TemplateQueueService:
                 if awareness_level is not None else None
             ),
             "sales_event": sales_event if sales_event else None,
+            # Layout attribute, independent of awareness (None = unknown/legacy)
+            "has_product_placement": (
+                ai_suggestions.get("has_product_placement")
+                if isinstance(ai_suggestions.get("has_product_placement"), bool) else None
+            ),
             "ai_suggested_name": ai_suggestions.get("suggested_name", ""),
             "ai_suggested_description": ai_suggestions.get("suggested_description", ""),
             "ai_analysis_raw": ai_suggestions

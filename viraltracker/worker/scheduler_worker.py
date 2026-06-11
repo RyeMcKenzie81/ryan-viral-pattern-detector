@@ -66,11 +66,46 @@ def get_max_ads_per_scheduled_run() -> int:
     return DEFAULT_MAX_ADS_PER_SCHEDULED_RUN
 
 
+def _fail_runs_for_this_boot():
+    """Mark THIS process's running runs failed so a deploy kill leaves no zombies.
+
+    Railway sends SIGTERM then SIGKILLs after a short grace window — long jobs
+    can't finish in time, and their 'running' rows would otherwise hold the job
+    type's concurrency slot hostage until the reaper's runtime cutoff (hours).
+    Marking them failed immediately is safe in both outcomes: if the process IS
+    killed, the row is already truthful; if a job somehow completes during the
+    grace window, its own update_job_run overwrites this with 'completed'
+    (last write wins). worker_id is '<boot_id>:<slot>', so the LIKE prefix
+    scopes the update to runs claimed by this boot only.
+    """
+    try:
+        from .scheduler_concurrency import boot_id
+        db = get_supabase_client()
+        result = (
+            db.table("scheduled_job_runs")
+            .update({
+                "status": "failed",
+                "completed_at": datetime.now(PST).isoformat(),
+                "error_message": "worker shutdown (SIGTERM/deploy restart) — marked failed to free the concurrency slot",
+            })
+            .like("worker_id", f"{boot_id()}:%")
+            .eq("status", "running")
+            .execute()
+        )
+        n = len(result.data or [])
+        if n:
+            logger.info(f"Shutdown hygiene: marked {n} in-flight run(s) failed")
+    except Exception as e:
+        logger.warning(f"Shutdown hygiene failed (non-fatal): {e}")
+
+
 def handle_shutdown(signum, frame):
     """Handle shutdown signals gracefully."""
     global shutdown_requested
     logger.info(f"Received signal {signum}, initiating graceful shutdown...")
     shutdown_requested = True
+    # Free this boot's concurrency slots immediately — see _fail_runs_for_this_boot.
+    _fail_runs_for_this_boot()
 
 
 # Register signal handlers (only when running as main entry point,
