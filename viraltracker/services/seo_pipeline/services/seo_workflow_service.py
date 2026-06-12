@@ -91,11 +91,17 @@ class SEOWorkflowService:
         cluster_context: Optional[str] = None,
         content_fingerprints: Optional[str] = None,
         article_role: Optional[str] = None,
+        link_to_spoke: bool = True,
     ) -> str:
         """
         Validate, create job record, spawn background thread. Returns job_id.
 
         Raises ValueError for validation failures (duplicate job, bad keyword).
+
+        link_to_spoke=False disables the keyword-based auto-link to a cluster spoke.
+        The cluster-batch path sets this when it links the generated article to a
+        specific spoke by id itself (authoritative), avoiding a keyword-text match
+        that could attach the article to the wrong same-text spoke.
         """
         # Resolve real org_id for superuser mode
         organization_id = self._resolve_org_id(organization_id, brand_id)
@@ -118,6 +124,7 @@ class SEOWorkflowService:
             "cluster_context": cluster_context,
             "content_fingerprints": content_fingerprints,
             "article_role": article_role,
+            "link_to_spoke": link_to_spoke,
         }
 
         try:
@@ -416,11 +423,13 @@ class SEOWorkflowService:
                 article_result = sb.table("seo_articles").insert(article_data).execute()
                 article_id = article_result.data[0]["id"]
 
-                # Link article to cluster spoke if keyword matches (non-fatal)
-                try:
-                    cluster_svc.link_article_to_spoke(keyword_id, article_id)
-                except Exception as e:
-                    logger.debug(f"Spoke link skipped: {e}")
+                # Link article to cluster spoke if keyword matches (non-fatal).
+                # Skipped when the caller links by spoke id itself (cluster batch).
+                if config.get("link_to_spoke", True):
+                    try:
+                        cluster_svc.link_article_to_spoke(keyword_id, article_id)
+                    except Exception as e:
+                        logger.debug(f"Spoke link skipped: {e}")
 
             # Store article_id in job config for later reference
             self._update_job_config(job_id, {"article_id": article_id, "keyword_id": keyword_id, "project_id": project_id})
@@ -1383,8 +1392,15 @@ class SEOWorkflowService:
         cluster_id: str,
         brand_id: str,
         organization_id: str,
+        skip_pillar: bool = False,
     ) -> str:
-        """Create batch job and process all spokes. Returns job_id."""
+        """Create batch job and process all spokes. Returns job_id.
+
+        skip_pillar=True (Cluster Builder): the pillar is an EXISTING winning
+        article (cluster.pillar_article_id) — do not regenerate it; only generate
+        spokes that don't yet have an article, link each back to its spoke row, and
+        use the existing pillar for cluster context + interlinking.
+        """
         # Resolve real org_id for superuser mode
         organization_id = self._resolve_org_id(organization_id, brand_id)
 
@@ -1410,16 +1426,24 @@ class SEOWorkflowService:
             .execute()
         ).data or []
 
-        # Filter out the pillar spoke (generated separately)
+        # Filter out the pillar spoke (generated separately). In skip_pillar mode
+        # also skip spokes that already have an article, so a re-run only fills the
+        # gaps (and never regenerates an existing spoke article).
         spoke_only = [
             s for s in spokes
             if s.get("role") != "pillar"
+            and not (skip_pillar and s.get("article_id"))
         ]
+
+        pillar_spoke = next((s for s in spokes if s.get("role") == "pillar"), None)
 
         config = {
             "cluster_id": cluster_id,
             "brand_id": brand_id,
             "pillar_keyword": cluster_data.get("pillar_keyword", ""),
+            "skip_pillar": skip_pillar,
+            "pillar_article_id": cluster_data.get("pillar_article_id"),
+            "pillar_spoke_id": (pillar_spoke or {}).get("id"),
             "spokes": [
                 {
                     "keyword": (s.get("seo_keywords") or {}).get("keyword", ""),
@@ -1439,9 +1463,10 @@ class SEOWorkflowService:
                 "progress": {
                     "current_step": "validate",
                     "current_step_label": "Starting batch...",
-                    "total_steps": 2 + len(spoke_only),  # pillar + spokes + linking
+                    # pillar (unless skipped) + spokes + linking
+                    "total_steps": (1 if skip_pillar else 2) + len(spoke_only),
                     "current_article_index": 0,
-                    "total_articles": 1 + len(spoke_only),
+                    "total_articles": (0 if skip_pillar else 1) + len(spoke_only),
                     "per_article_results": [],
                     "percent": 0,
                 },
@@ -1489,41 +1514,85 @@ class SEOWorkflowService:
         org_id = job["organization_id"]
         pillar_keyword = config.get("pillar_keyword", "")
         spokes = config.get("spokes", [])
+        skip_pillar = config.get("skip_pillar", False)
 
         self._update_job(job_id, status="running")
 
-        # 1. Generate pillar article
-        pillar_result = None
-        try:
-            self._update_batch_progress(
-                job_id, 0, 1 + len(spokes), [],
-                label=f"Generating pillar: {pillar_keyword}",
-            )
-            pillar_job_id = self.start_one_off(
-                keyword=pillar_keyword,
-                brand_id=brand_id,
-                organization_id=org_id,
-                article_role="pillar",
-            )
-            # Wait for pillar to complete
-            pillar_result = await self._wait_for_job(pillar_job_id, timeout=1200)
-            if not pillar_result or pillar_result.get("status") != "completed":
-                self._update_job(job_id, status="failed",
-                                 error="Pillar article generation failed — aborting batch")
+        # 1. Generate pillar article — UNLESS skip_pillar, where the pillar is an
+        #    existing winning article we must never regenerate (Cluster Builder).
+        if skip_pillar:
+            pillar_article_id = config.get("pillar_article_id") or ""
+            per_article_results = []
+            # Parent-pillar clusters have a pillar keyword but NO article yet (the
+            # winner is a spoke). Generate that pillar once — never an existing one.
+            # If it fails, abort: a cluster with spokes but no pillar is exactly the
+            # bad state we are avoiding. Spokes only generate once the pillar exists.
+            if not pillar_article_id and pillar_keyword:
+                try:
+                    self._update_batch_progress(
+                        job_id, 0, 1 + len(spokes), [],
+                        label=f"Generating pillar: {pillar_keyword}",
+                    )
+                    p_job = self.start_one_off(
+                        keyword=pillar_keyword, brand_id=brand_id,
+                        organization_id=org_id, article_role="pillar",
+                        link_to_spoke=False,  # we link the pillar spoke by id below
+                    )
+                    p_res = await self._wait_for_job(p_job, timeout=1200)
+                    p_article = (p_res.get("result") or {}).get("article_id") if p_res else None
+                    if p_res and p_res.get("status") == "completed" and p_article:
+                        pillar_article_id = p_article
+                        per_article_results.append({
+                            "keyword": pillar_keyword,
+                            "article_id": pillar_article_id,
+                            "published_url": (p_res.get("result") or {}).get("published_url", ""),
+                            "role": "pillar", "status": "completed",
+                        })
+                        if config.get("pillar_spoke_id"):
+                            self._link_spoke_article(config["pillar_spoke_id"], pillar_article_id)
+                        self.supabase.table("seo_clusters").update(
+                            {"pillar_article_id": pillar_article_id}
+                        ).eq("id", config.get("cluster_id")).execute()
+                    else:
+                        self._update_job(job_id, status="failed",
+                                         error="Pillar generation failed — aborting batch")
+                        return
+                except Exception as e:
+                    self._update_job(job_id, status="failed",
+                                     error=f"Pillar generation failed: {str(e)[:200]}")
+                    return
+        else:
+            pillar_result = None
+            try:
+                self._update_batch_progress(
+                    job_id, 0, 1 + len(spokes), [],
+                    label=f"Generating pillar: {pillar_keyword}",
+                )
+                pillar_job_id = self.start_one_off(
+                    keyword=pillar_keyword,
+                    brand_id=brand_id,
+                    organization_id=org_id,
+                    article_role="pillar",
+                )
+                # Wait for pillar to complete
+                pillar_result = await self._wait_for_job(pillar_job_id, timeout=1200)
+                if not pillar_result or pillar_result.get("status") != "completed":
+                    self._update_job(job_id, status="failed",
+                                     error="Pillar article generation failed — aborting batch")
+                    return
+            except Exception as e:
+                self._update_job(job_id, status="failed", error=f"Pillar failed: {e}")
                 return
-        except Exception as e:
-            self._update_job(job_id, status="failed", error=f"Pillar failed: {e}")
-            return
 
-        pillar_article_id = (pillar_result.get("result") or {}).get("article_id", "")
-        pillar_url = (pillar_result.get("result") or {}).get("published_url", "")
-        per_article_results = [{
-            "keyword": pillar_keyword,
-            "article_id": pillar_article_id,
-            "published_url": pillar_url,
-            "role": "pillar",
-            "status": "completed",
-        }]
+            pillar_article_id = (pillar_result.get("result") or {}).get("article_id", "")
+            pillar_url = (pillar_result.get("result") or {}).get("published_url", "")
+            per_article_results = [{
+                "keyword": pillar_keyword,
+                "article_id": pillar_article_id,
+                "published_url": pillar_url,
+                "role": "pillar",
+                "status": "completed",
+            }]
 
         # 2. Generate spokes
         all_article_ids = [pillar_article_id] if pillar_article_id else []
@@ -1554,6 +1623,9 @@ class SEOWorkflowService:
                     article_role="spoke",
                     cluster_context=cluster_ctx,
                     content_fingerprints=fingerprints,
+                    # skip_pillar links each spoke by id below (authoritative); the
+                    # normal batch keeps the existing keyword-based auto-link.
+                    link_to_spoke=not skip_pillar,
                 )
                 spoke_result = await self._wait_for_job(spoke_job_id, timeout=1200)
                 spoke_article_id = (spoke_result.get("result") or {}).get("article_id", "")
@@ -1569,6 +1641,12 @@ class SEOWorkflowService:
                     })
                     if spoke_article_id:
                         all_article_ids.append(spoke_article_id)
+                        # Link the generated article back to its spoke row so cluster
+                        # health + interlink_cluster (which reads spoke.article_id) see
+                        # it. Only in skip_pillar mode, where spokes are pre-created
+                        # rows that carry their own id.
+                        if skip_pillar and spoke.get("id"):
+                            self._link_spoke_article(spoke["id"], spoke_article_id)
                     content_fingerprints_parts.append(f"Spoke '{spoke_kw}' has been written.")
                 else:
                     per_article_results.append({
@@ -1602,9 +1680,11 @@ class SEOWorkflowService:
         except Exception as e:
             logger.warning(f"Cross-cluster interlinking failed (non-fatal): {e}")
 
-        # 4. Complete
+        # 4. Complete. Without a pillar in the batch, one completed spoke is already
+        #    a success; the normal pillar+spoke batch needs >= 2.
         completed_count = sum(1 for r in per_article_results if r.get("status") == "completed")
-        final_status = "completed" if completed_count >= 2 else "failed"
+        min_ok = 1 if skip_pillar else 2
+        final_status = "completed" if completed_count >= min_ok else "failed"
 
         self._update_job(
             job_id,
@@ -1616,6 +1696,29 @@ class SEOWorkflowService:
                 "failed": len(per_article_results) - completed_count,
             },
         )
+
+    def _link_spoke_article(self, spoke_id: str, article_id: str) -> None:
+        """Link a generated article back to its cluster spoke (non-fatal).
+
+        interlink_cluster + cluster health both read seo_cluster_spokes.article_id,
+        so a generated spoke that isn't linked would be invisible to them. Guarded on
+        article_id IS NULL: a long-running generation must not clobber a spoke that
+        was manually reassigned (or already linked) while the job was in flight.
+        """
+        try:
+            res = (
+                self.supabase.table("seo_cluster_spokes")
+                .update({"article_id": article_id, "status": "writing"})
+                .eq("id", spoke_id)
+                .is_("article_id", "null")
+                .execute()
+            )
+            if not res.data:
+                logger.info(
+                    f"Spoke {spoke_id} already linked/changed; left as-is (article {article_id})"
+                )
+        except Exception as e:
+            logger.warning(f"Failed to link spoke {spoke_id} -> article {article_id}: {e}")
 
     # =========================================================================
     # JOB QUERY METHODS

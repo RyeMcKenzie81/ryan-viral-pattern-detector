@@ -1898,10 +1898,12 @@ class ClusterManagementService:
             logger.info(f"Linked article {article_id} to spoke {spoke_id} via keyword_id {keyword_id}")
             return True
 
-        # Fallback: match by keyword text (handles duplicate keyword entries)
+        # Fallback: match by keyword text (handles duplicate keyword entries),
+        # SCOPED to the keyword's project — a cross-project/tenant text match is
+        # never correct and would leak a spoke link across tenants.
         kw_result = (
             self.supabase.table("seo_keywords")
-            .select("keyword")
+            .select("keyword, project_id")
             .eq("id", keyword_id)
             .limit(1)
             .execute()
@@ -1910,20 +1912,26 @@ class ClusterManagementService:
             return False
 
         keyword_text = kw_result.data[0]["keyword"]
-        # Find spokes whose keyword text matches
+        project_id = kw_result.data[0].get("project_id")
+        if not project_id:
+            # Can't scope safely — refuse rather than risk a cross-tenant text match.
+            return False
+        # Find unassigned spokes whose keyword text matches, within the same project.
         spokes = (
             self.supabase.table("seo_cluster_spokes")
-            .select("id, seo_keywords(keyword)")
+            .select("id, seo_keywords(keyword, project_id)")
             .is_("article_id", "null")
             .execute()
         )
         for spoke in (spokes.data or []):
-            spoke_kw = (spoke.get("seo_keywords") or {}).get("keyword", "")
-            if spoke_kw.lower().strip() == keyword_text.lower().strip():
+            sk = spoke.get("seo_keywords") or {}
+            if sk.get("project_id") != project_id:
+                continue  # never link across projects/tenants
+            if (sk.get("keyword") or "").lower().strip() == keyword_text.lower().strip():
                 self.assign_article_to_spoke(spoke["id"], article_id)
                 logger.info(
                     f"Linked article {article_id} to spoke {spoke['id']} "
-                    f"via keyword text match '{keyword_text}'"
+                    f"via keyword text match '{keyword_text}' (project {project_id})"
                 )
                 return True
 
