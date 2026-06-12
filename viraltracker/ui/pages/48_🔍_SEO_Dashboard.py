@@ -88,6 +88,11 @@ def get_interlinking_service():
     return InterlinkingService()
 
 
+def get_cluster_build_service():
+    from viraltracker.services.seo_pipeline.services.cluster_build_service import ClusterBuildService
+    return ClusterBuildService()
+
+
 ALL_PROJECTS_SENTINEL = "__all__"
 
 # Friendly labels for Google's technical coverage state strings
@@ -519,16 +524,20 @@ def _render_top_movers(brand_id: str, real_org_id: str) -> None:
                 )
             c2.metric("🔗 Inbound links", m["inbound_link_count"])
 
-            a1, a2 = st.columns(2)
+            a1, a2, a3 = st.columns(3)
             if a1.button("🔗 Find inbound links", key=f"mv_links_{aid}"):
                 st.session_state[f"_mv_links_{aid}"] = not st.session_state.get(f"_mv_links_{aid}", False)
             if a2.button("✍️ Grow this topic", key=f"mv_grow_{aid}"):
                 st.session_state[f"_mv_grow_{aid}"] = not st.session_state.get(f"_mv_grow_{aid}", False)
+            if a3.button("🏛️ Build out this cluster", key=f"mv_cluster_{aid}"):
+                st.session_state[f"_mv_cluster_{aid}"] = not st.session_state.get(f"_mv_cluster_{aid}", False)
 
             if st.session_state.get(f"_mv_links_{aid}"):
                 _render_inbound_suggestions(m, brand_id, real_org_id)
             if st.session_state.get(f"_mv_grow_{aid}"):
                 _render_grow_topic(m, brand_id, real_org_id)
+            if st.session_state.get(f"_mv_cluster_{aid}"):
+                _render_cluster_builder(m, brand_id, real_org_id)
 
 
 def _render_inbound_suggestions(mover: dict, brand_id: str, real_org_id: str) -> None:
@@ -604,6 +613,102 @@ def _render_grow_topic(mover: dict, brand_id: str, real_org_id: str) -> None:
                        "publish it to add another internal-link source for this topic.")
         except Exception as e:
             st.error(f"Failed to create draft: {e}")
+
+
+def _render_cluster_builder(mover: dict, brand_id: str, real_org_id: str) -> None:
+    """Turn a winning article into a pillar+spoke cluster: propose spoke topics
+    (AI or an entity-list template), let the operator edit/pick, then create the
+    cluster + spoke keywords. Article generation is a separate later step."""
+    aid = mover["article_id"]
+    if not mover.get("project_id"):
+        st.caption("This article has no SEO project, so a cluster can't be built.")
+        return
+    svc = get_cluster_build_service()
+    plan_key = f"_cl_plan_{aid}"
+
+    st.markdown("**🏛️ Build a topic cluster from this winner**")
+    mode_label = st.radio(
+        "How should we find spoke topics?",
+        ["Let AI propose spokes", "Expand a list (advanced)"],
+        key=f"cl_mode_{aid}", horizontal=True,
+    )
+    pillar_label = st.radio(
+        "Which is the pillar?",
+        ["This article is the pillar", "This article is a spoke under a broader pillar"],
+        key=f"cl_pillarmode_{aid}",
+    )
+    mode = "entity" if mode_label.startswith("Expand") else "llm"
+    pillar_mode = "spoke" if "spoke under" in pillar_label else "pillar"
+
+    entities = template = None
+    if mode == "entity":
+        template = st.text_input(
+            "Template (must contain {entity})",
+            value=f"{{entity}} {mover.get('keyword', '')}".strip(),
+            key=f"cl_template_{aid}",
+            help="Each entity is substituted into {entity}, e.g. 'Common {entity} gaming slang'.",
+        )
+        ent_raw = st.text_area(
+            "Entities (one per line)", key=f"cl_entities_{aid}",
+            placeholder="Fortnite\nRoblox\nMinecraft",
+        )
+        entities = [e.strip() for e in ent_raw.splitlines() if e.strip()]
+
+    if st.button("Propose spokes", key=f"cl_propose_{aid}"):
+        with st.spinner("Planning the cluster…"):
+            try:
+                st.session_state[plan_key] = svc.plan_cluster_from_article(
+                    aid, brand_id, organization_id=real_org_id, mode=mode,
+                    pillar_mode=pillar_mode, entities=entities, template=template,
+                )
+            except Exception as e:
+                st.error(f"Couldn't plan the cluster: {e}")
+                return
+
+    plan = st.session_state.get(plan_key)
+    if not plan:
+        return
+    for w in plan.get("warnings", []):
+        st.caption(f"⚠️ {w}")
+
+    pillar_note = "" if plan["pillar_mode"] == "pillar" else "  _(this article becomes a spoke under it)_"
+    st.write(f"**Pillar:** {plan['pillar_keyword']}{pillar_note}")
+    edited = st.text_area(
+        "Spoke topics to create (edit or remove freely, one per line)",
+        value="\n".join(plan.get("proposed_spokes", [])),
+        key=f"cl_spokes_{aid}", height=160,
+    )
+    chosen = [s.strip() for s in edited.splitlines() if s.strip()]
+    st.caption(
+        f"{len(chosen)} spoke(s) will be created as keywords (max {svc.MAX_SPOKES}). "
+        "They're drafted as topics now; generating the articles is a separate step."
+    )
+
+    if st.button("🏛️ Create cluster", key=f"cl_create_{aid}", type="primary"):
+        if not chosen:
+            st.warning("Add at least one spoke topic first.")
+            return
+        with st.spinner("Creating the cluster + spokes…"):
+            try:
+                res = svc.create_cluster_from_plan(
+                    article_id=aid, pillar_keyword=plan["pillar_keyword"],
+                    spoke_keywords=chosen, brand_id=brand_id,
+                    organization_id=real_org_id, pillar_mode=plan["pillar_mode"],
+                )
+            except Exception as e:
+                st.error(f"Failed to create the cluster: {e}")
+                return
+        st.session_state.pop(plan_key, None)
+        nc, ns, nf = (len(res["spokes_created"]), len(res["spokes_skipped"]), len(res["spokes_failed"]))
+        verb = "Reused existing cluster" if res["reused_cluster"] else "Created cluster"
+        msg = f"{verb}: {nc} new spoke(s)"
+        if ns:
+            msg += f", {ns} already existed"
+        if nf:
+            msg += f", {nf} failed"
+        st.success(msg + ". Review the spokes on the **Topic Clusters** page, then generate the articles.")
+        if nf:
+            st.caption("Failed: " + ", ".join(f["keyword"] for f in res["spokes_failed"]))
 
 
 def render_operator_dashboard(brand_id: str, real_org_id: str) -> None:

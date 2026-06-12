@@ -64,6 +64,8 @@ class ClusterManagementService:
         intent: str = ClusterIntent.INFORMATIONAL.value,
         description: Optional[str] = None,
         target_spoke_count: int = 0,
+        source: Optional[str] = None,
+        created_from_article_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Create a new topic cluster.
@@ -75,6 +77,9 @@ class ClusterManagementService:
             intent: Search intent (informational, commercial, etc.)
             description: Optional cluster description
             target_spoke_count: Target number of spoke articles
+            source: Provenance marker (e.g. 'cluster_builder'). Optional.
+            created_from_article_id: Seed article this cluster was built from.
+                Used for idempotent re-runs of the Cluster Builder. Optional.
 
         Returns:
             Created cluster record
@@ -97,6 +102,10 @@ class ClusterManagementService:
         }
         if description:
             data["description"] = description
+        if source:
+            data["source"] = source
+        if created_from_article_id:
+            data["created_from_article_id"] = created_from_article_id
 
         result = self.supabase.table("seo_clusters").insert(data).execute()
         logger.info(f"Created cluster '{name}' in project {project_id}")
