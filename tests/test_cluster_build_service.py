@@ -37,6 +37,7 @@ class FakeQ:
         self.s = store
         self.flt = []
         self._ilike = None
+        self._is_null = []
         self._limit = None
         self._mode = "select"
         self._data = None
@@ -65,6 +66,11 @@ class FakeQ:
 
     def ilike(self, col, val):
         self._ilike = (col, val)
+        return self
+
+    def is_(self, col, val):
+        if val == "null":
+            self._is_null.append(col)
         return self
 
     def limit(self, n):
@@ -103,6 +109,9 @@ class FakeStore:
             if q._ilike:
                 c, v = q._ilike
                 if not re.match(_like_to_regex(str(v)), str(r.get(c) or ""), re.IGNORECASE):
+                    return False
+            for c in q._is_null:
+                if r.get(c) is not None:
                     return False
             return True
 
@@ -180,6 +189,20 @@ class FakeKeywordService:
         }).execute().data[0]
 
 
+class FakeWorkflowService:
+    """Records start_cluster_batch calls; stands in for SEOWorkflowService."""
+
+    def __init__(self):
+        self.calls = []
+
+    def start_cluster_batch(self, cluster_id, brand_id, organization_id, skip_pillar=False):
+        self.calls.append({
+            "cluster_id": cluster_id, "brand_id": brand_id,
+            "organization_id": organization_id, "skip_pillar": skip_pillar,
+        })
+        return "job-123"
+
+
 class FakeAnthropic:
     """Returns canned payloads per .create() call (last payload repeats)."""
 
@@ -214,6 +237,7 @@ def _svc(article_overrides=None, llm=""):
         cluster_service=FakeClusterService(store),
         keyword_service=FakeKeywordService(store),
         anthropic_client=FakeAnthropic(llm),
+        workflow_service=FakeWorkflowService(),
     )
     svc._track_usage = lambda **kw: None  # keep UsageTracker out of the unit
     return svc, store
@@ -467,3 +491,129 @@ class TestCreate:
 
         svc.create_cluster_from_plan("art-1", "video game slang", ["Fortnite slang"], "b1", pillar_mode="spoke")
         assert clu["pillar_article_id"] is None  # cleared - discovered pillar has no article yet
+
+
+class TestGenerateSpokes:
+    def test_kicks_off_batch_for_pending_spokes(self):
+        svc, store = _svc()
+        store.tables["seo_cluster_spokes"] = [
+            {"id": "sp0", "cluster_id": "cl1", "role": "pillar", "article_id": "art-1"},
+            {"id": "sp1", "cluster_id": "cl1", "role": "spoke", "article_id": None},
+            {"id": "sp2", "cluster_id": "cl1", "role": "spoke", "article_id": None},
+            {"id": "sp3", "cluster_id": "cl1", "role": "spoke", "article_id": "art-9"},  # done
+        ]
+        res = svc.generate_spokes("cl1", "b1", "all")
+        assert res["job_id"] == "job-123"
+        assert res["spokes_to_generate"] == 2  # pillar + already-generated excluded
+        call = svc.workflow_service.calls[0]
+        assert call["skip_pillar"] is True
+        assert call["organization_id"] == "org-1"  # resolved from "all"
+
+    def test_parent_mode_counts_pillar_without_article(self):
+        # Parent-pillar cluster: the discovered pillar has no article yet (the winner
+        # is a spoke). It must be counted/generated, the winner-spoke must not.
+        svc, store = _svc()
+        store.tables["seo_cluster_spokes"] = [
+            {"id": "sp0", "cluster_id": "cl1", "role": "pillar", "article_id": None},
+            {"id": "sp1", "cluster_id": "cl1", "role": "spoke", "article_id": "art-1"},  # winner
+            {"id": "sp2", "cluster_id": "cl1", "role": "spoke", "article_id": None},
+        ]
+        res = svc.generate_spokes("cl1", "b1", "all")
+        assert res["job_id"] == "job-123"
+        assert res["spokes_to_generate"] == 2  # pillar(no article) + sp2; winner excluded
+
+    def test_noop_when_all_spokes_have_articles(self):
+        svc, store = _svc()
+        store.tables["seo_cluster_spokes"] = [
+            {"id": "sp0", "cluster_id": "cl1", "role": "pillar", "article_id": "art-1"},
+            {"id": "sp1", "cluster_id": "cl1", "role": "spoke", "article_id": "art-2"},
+        ]
+        res = svc.generate_spokes("cl1", "b1", "all")
+        assert res["job_id"] is None
+        assert res["spokes_to_generate"] == 0
+        assert svc.workflow_service.calls == []  # batch never started
+
+    def test_org_fail_closed(self):
+        svc, store = _svc()
+        store.tables["brands"] = []
+        store.tables["seo_cluster_spokes"] = [
+            {"id": "sp1", "cluster_id": "cl1", "role": "spoke", "article_id": None},
+        ]
+        with pytest.raises(ValueError):
+            svc.generate_spokes("cl1", "b1", "all")
+
+
+class TestStartClusterBatchSkipPillar:
+    """The skip_pillar config the Cluster Builder relies on: exclude the pillar AND
+    already-generated spokes, carry the existing pillar article + flag."""
+
+    def test_skip_pillar_config_excludes_pillar_and_done_spokes(self, monkeypatch):
+        from viraltracker.services.seo_pipeline.services import seo_workflow_service as wfmod
+
+        store = FakeStore()
+        store.tables["brands"] = [{"id": "b1", "organization_id": "org-1"}]
+        store.tables["seo_clusters"] = [
+            {"id": "cl1", "pillar_keyword": "gaming slang", "pillar_article_id": "art-1"}
+        ]
+        store.tables["seo_cluster_spokes"] = [
+            {"id": "sp0", "cluster_id": "cl1", "role": "pillar", "article_id": "art-1",
+             "priority": 1, "seo_keywords": {"keyword": "gaming slang"}},
+            {"id": "sp1", "cluster_id": "cl1", "role": "spoke", "article_id": None,
+             "priority": 2, "seo_keywords": {"keyword": "Roblox slang"}},
+            {"id": "sp2", "cluster_id": "cl1", "role": "spoke", "article_id": "art-2",
+             "priority": 2, "seo_keywords": {"keyword": "Fortnite slang"}},  # already done
+        ]
+        wf = wfmod.SEOWorkflowService(supabase_client=store)
+        monkeypatch.setattr(wf, "_run_batch_thread", lambda job_id: None)  # no real threads
+
+        job_id = wf.start_cluster_batch("cl1", "b1", "all", skip_pillar=True)
+
+        job = next(j for j in store.tables["seo_workflow_jobs"] if j["id"] == job_id)
+        cfg = job["config"]
+        assert cfg["skip_pillar"] is True
+        assert cfg["pillar_article_id"] == "art-1"
+        assert cfg["pillar_spoke_id"] == "sp0"
+        assert {s["keyword"] for s in cfg["spokes"]} == {"Roblox slang"}
+        assert job["organization_id"] == "org-1"  # 'all' resolved from the brand
+
+
+class TestLinkArticleToSpokeScoping:
+    """link_article_to_spoke's keyword-text fallback must never cross tenants."""
+
+    def _cm(self):
+        from viraltracker.services.seo_pipeline.services.cluster_management_service import (
+            ClusterManagementService,
+        )
+        store = FakeStore()
+        return ClusterManagementService(store), store
+
+    def test_keyword_id_match_links_that_spoke(self):
+        cm, store = self._cm()
+        store.tables["seo_keywords"] = [{"id": "K", "keyword": "roblox slang", "project_id": "p1"}]
+        store.tables["seo_cluster_spokes"] = [{"id": "sp1", "keyword_id": "K", "article_id": None}]
+        assert cm.link_article_to_spoke("K", "art-1") is True
+        assert store.tables["seo_cluster_spokes"][0]["article_id"] == "art-1"
+
+    def test_text_fallback_stays_within_project(self):
+        cm, store = self._cm()
+        store.tables["seo_keywords"] = [{"id": "K2", "keyword": "roblox slang", "project_id": "p1"}]
+        store.tables["seo_cluster_spokes"] = [
+            {"id": "spOther", "keyword_id": "KX", "article_id": None,
+             "seo_keywords": {"keyword": "roblox slang", "project_id": "p2"}},   # other tenant
+            {"id": "spMine", "keyword_id": "KY", "article_id": None,
+             "seo_keywords": {"keyword": "roblox slang", "project_id": "p1"}},   # same project
+        ]
+        assert cm.link_article_to_spoke("K2", "art-9") is True
+        by_id = {s["id"]: s for s in store.tables["seo_cluster_spokes"]}
+        assert by_id["spMine"]["article_id"] == "art-9"
+        assert by_id["spOther"]["article_id"] is None  # never linked across tenants
+
+    def test_null_project_fails_closed(self):
+        cm, store = self._cm()
+        store.tables["seo_keywords"] = [{"id": "K3", "keyword": "roblox slang", "project_id": None}]
+        store.tables["seo_cluster_spokes"] = [
+            {"id": "spX", "keyword_id": "KZ", "article_id": None,
+             "seo_keywords": {"keyword": "roblox slang", "project_id": "p1"}},
+        ]
+        assert cm.link_article_to_spoke("K3", "art-1") is False
+        assert store.tables["seo_cluster_spokes"][0]["article_id"] is None

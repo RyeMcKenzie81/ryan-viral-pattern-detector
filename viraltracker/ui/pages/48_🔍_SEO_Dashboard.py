@@ -626,6 +626,11 @@ def _render_cluster_builder(mover: dict, brand_id: str, real_org_id: str) -> Non
     svc = get_cluster_build_service()
     plan_key = f"_cl_plan_{aid}"
 
+    # After a cluster is created, switch to the review + generate view.
+    if f"_cl_created_{aid}" in st.session_state:
+        _render_cluster_generate(svc, mover, brand_id, real_org_id)
+        return
+
     st.markdown("**🏛️ Build a topic cluster from this winner**")
     mode_label = st.radio(
         "How should we find spoke topics?",
@@ -699,16 +704,64 @@ def _render_cluster_builder(mover: dict, brand_id: str, real_org_id: str) -> Non
                 st.error(f"Failed to create the cluster: {e}")
                 return
         st.session_state.pop(plan_key, None)
-        nc, ns, nf = (len(res["spokes_created"]), len(res["spokes_skipped"]), len(res["spokes_failed"]))
-        verb = "Reused existing cluster" if res["reused_cluster"] else "Created cluster"
-        msg = f"{verb}: {nc} new spoke(s)"
-        if ns:
-            msg += f", {ns} already existed"
-        if nf:
-            msg += f", {nf} failed"
-        st.success(msg + ". Review the spokes on the **Topic Clusters** page, then generate the articles.")
-        if nf:
-            st.caption("Failed: " + ", ".join(f["keyword"] for f in res["spokes_failed"]))
+        st.session_state[f"_cl_created_{aid}"] = {
+            "cluster_id": res["cluster_id"],
+            "created": len(res["spokes_created"]),
+            "skipped": len(res["spokes_skipped"]),
+            "failed": len(res["spokes_failed"]),
+            "failed_kw": [f["keyword"] for f in res["spokes_failed"]],
+            "reused": res["reused_cluster"],
+        }
+        st.rerun()  # drop into the post-create view (review summary + Generate)
+
+
+def _render_cluster_generate(svc, mover: dict, brand_id: str, real_org_id: str) -> None:
+    """Post-create view: show what was created, then kick off (async) generation of
+    the spoke articles via the existing batch pipeline (pillar is never regenerated)."""
+    aid = mover["article_id"]
+    key = f"_cl_created_{aid}"
+    state = st.session_state[key]
+
+    verb = "Reused cluster" if state["reused"] else "Created cluster"
+    parts = [f"{state['created']} new spoke(s)"]
+    if state["skipped"]:
+        parts.append(f"{state['skipped']} already existed")
+    if state["failed"]:
+        parts.append(f"{state['failed']} failed")
+    st.success(f"🏛️ {verb}: " + ", ".join(parts) + ".")
+    if state.get("failed_kw"):
+        st.caption("Failed: " + ", ".join(state["failed_kw"]))
+
+    if state.get("job_id"):
+        st.info(
+            f"✍️ Generating {state.get('to_generate', 'the')} spoke article(s) in the "
+            f"background (job `{state['job_id'][:8]}`). The pillar is left untouched. "
+            "Track progress on the **SEO Workflow** page; articles interlink automatically."
+        )
+    else:
+        st.caption(
+            "Spokes are created as topics. Generate the articles now (runs in the "
+            "background, the winning pillar is never regenerated), or generate them later "
+            "from the Topic Clusters page."
+        )
+        if st.button("🚀 Generate the spoke articles", key=f"cl_gen_{aid}", type="primary"):
+            with st.spinner("Starting generation…"):
+                try:
+                    g = svc.generate_spokes(state["cluster_id"], brand_id, real_org_id)
+                except Exception as e:
+                    st.error(f"Couldn't start generation: {e}")
+                    return
+            if not g["job_id"]:
+                st.info("Every spoke already has an article — nothing to generate.")
+            else:
+                state["job_id"] = g["job_id"]
+                state["to_generate"] = g["spokes_to_generate"]
+                st.session_state[key] = state
+                st.rerun()
+
+    if st.button("Build another cluster", key=f"cl_reset_{aid}"):
+        st.session_state.pop(key, None)
+        st.rerun()
 
 
 def render_operator_dashboard(brand_id: str, real_org_id: str) -> None:

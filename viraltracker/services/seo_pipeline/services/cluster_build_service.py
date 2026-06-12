@@ -81,11 +81,13 @@ class ClusterBuildService:
         cluster_service=None,
         keyword_service=None,
         anthropic_client=None,
+        workflow_service=None,
     ):
         self._supabase = supabase_client
         self._cluster_service = cluster_service
         self._keyword_service = keyword_service
         self._anthropic = anthropic_client
+        self._workflow_service = workflow_service
 
     # -------------------------------------------------------------------------
     # Lazy dependencies
@@ -114,6 +116,15 @@ class ClusterBuildService:
             )
             self._keyword_service = KeywordDiscoveryService(self.supabase)
         return self._keyword_service
+
+    @property
+    def workflow_service(self):
+        if self._workflow_service is None:
+            from viraltracker.services.seo_pipeline.services.seo_workflow_service import (
+                SEOWorkflowService,
+            )
+            self._workflow_service = SEOWorkflowService(self.supabase)
+        return self._workflow_service
 
     @property
     def anthropic_client(self):
@@ -326,6 +337,42 @@ class ClusterBuildService:
             "spokes_failed": failed,
             "warnings": warnings,
         }
+
+    # =========================================================================
+    # PHASE 3 - GENERATE (async; reuses the existing batch pipeline)
+    # =========================================================================
+    def generate_spokes(
+        self, cluster_id: str, brand_id: str, organization_id: str = "all"
+    ) -> Dict[str, Any]:
+        """Kick off article generation for the cluster's not-yet-written spokes.
+
+        Thin wrapper over the existing SEOWorkflowService.start_cluster_batch in
+        skip_pillar mode: it generates each spoke with pillar + sibling context,
+        links the article back to its spoke, and interlinks the cluster - WITHOUT
+        regenerating the pillar (an existing winning article). Async: returns a
+        job_id to poll on the SEO Workflow page.
+
+        Returns { job_id, spokes_to_generate }; job_id is None when there is
+        nothing left to generate.
+        """
+        org_id = self._resolve_org_id(organization_id, brand_id)
+        spokes = (
+            self.supabase.table("seo_cluster_spokes")
+            .select("id, role, article_id")
+            .eq("cluster_id", cluster_id)
+            .execute()
+        ).data or []
+        # Anything without an article needs generating — including a parent-mode
+        # pillar that has no article yet (the winner is a spoke). Members that
+        # already have an article (e.g. the winning pillar) are skipped downstream.
+        pending = [s for s in spokes if not s.get("article_id")]
+        if not pending:
+            return {"job_id": None, "spokes_to_generate": 0}
+
+        job_id = self.workflow_service.start_cluster_batch(
+            cluster_id, brand_id, org_id, skip_pillar=True
+        )
+        return {"job_id": job_id, "spokes_to_generate": len(pending)}
 
     # =========================================================================
     # SEED GENERATION
