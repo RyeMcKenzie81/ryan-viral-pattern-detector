@@ -7,6 +7,7 @@ Handles all Gemini API interactions with intelligent rate limiting and retries.
 import logging
 import asyncio
 import os
+import random
 import time
 import json
 from typing import Optional
@@ -686,7 +687,11 @@ Generate the article now:"""
                 if aspect_ratio:
                     image_config_kwargs["aspect_ratio"] = aspect_ratio
 
-                response = self.client.models.generate_content(
+                # Sync SDK call via to_thread: image generation runs 10-60s and a
+                # bare call would freeze the event loop, serializing every other
+                # coroutine in the worker (same bug class as PR #290's analysis fix).
+                response = await asyncio.to_thread(
+                    self.client.models.generate_content,
                     model="gemini-3-pro-image-preview",
                     contents=contents,
                     config=types.GenerateContentConfig(
@@ -772,9 +777,14 @@ Generate the article now:"""
                     retry_count += 1
                     total_retries += 1
                     if retry_count <= max_retries:
-                        retry_delay = 15 * (2 ** (retry_count - 1))
-                        logger.warning(f"Retryable error ({type(e).__name__}). Retry {retry_count}/{max_retries} after {retry_delay}s: {e}")
+                        # Jitter de-synchronizes N concurrent callers that 429'd
+                        # together (otherwise they all sleep exactly 15s and
+                        # retry as one unmetered burst); re-claiming a limiter
+                        # slot meters the retry itself like any other call.
+                        retry_delay = 15 * (2 ** (retry_count - 1)) * random.uniform(0.75, 1.25)
+                        logger.warning(f"Retryable error ({type(e).__name__}). Retry {retry_count}/{max_retries} after {retry_delay:.1f}s: {e}")
                         await asyncio.sleep(retry_delay)
+                        await self._rate_limit()
                         continue
                     else:
                         logger.error("Max retries exceeded for image generation")

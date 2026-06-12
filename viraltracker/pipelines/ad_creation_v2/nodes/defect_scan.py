@@ -17,7 +17,7 @@ from uuid import UUID
 from pydantic_graph import BaseNode, GraphRunContext
 
 from ..state import AdCreationPipelineState
-from ..utils import stringify_uuids
+from ..utils import bounded_gather, pipeline_concurrency, stringify_uuids
 from ....agent.dependencies import AgentDependencies
 from ...metadata import NodeMetadata
 
@@ -58,7 +58,9 @@ class DefectScanNode(BaseNode[AdCreationPipelineState]):
         logger.info(f"Step 6b: Scanning {len(ctx.state.generated_ads)} ads for defects...")
         ctx.state.current_step = "defect_scan"
 
-        scan_service = DefectScanService()
+        # Share the pipeline's GeminiService so concurrent scans go through ONE
+        # rate limiter (a per-call instance has its own limiter and never waits).
+        scan_service = DefectScanService(gemini_service=ctx.deps.gemini)
         defect_passed = []
         defect_rejected = []
         scan_results = []
@@ -67,13 +69,19 @@ class DefectScanNode(BaseNode[AdCreationPipelineState]):
         if ctx.state.product_dict:
             product_name = ctx.state.product_dict.get("name", "")
 
-        for ad_data in ctx.state.generated_ads:
+        async def _scan_one(ad_data):
+            """Scan one ad. Returns (outcome, ad_data, scan_result_dict, reviewed_entry).
+
+            outcome: 'gen_failed' | 'passed' | 'rejected'. List/state appends happen
+            in a single ordered pass AFTER the gather, so concurrency never reorders
+            defect_passed/scan_results/reviewed_ads relative to the sequential code.
+            """
             prompt_index = ad_data.get("prompt_index", 0)
 
             # Skip generation-failed ads (they have no image to scan)
             if ad_data.get("final_status") == "generation_failed":
                 # Pass through to reviewed_ads for CompileResults to count
-                ctx.state.reviewed_ads.append({
+                return ("gen_failed", ad_data, None, {
                     "prompt_index": prompt_index,
                     "prompt": None,
                     "storage_path": None,
@@ -83,7 +91,6 @@ class DefectScanNode(BaseNode[AdCreationPipelineState]):
                     "final_status": "generation_failed",
                     "error": ad_data.get("error"),
                 })
-                continue
 
             storage_path = ad_data.get("storage_path", "")
 
@@ -93,13 +100,11 @@ class DefectScanNode(BaseNode[AdCreationPipelineState]):
             except Exception as e:
                 logger.warning(f"  Failed to download image for scan (variation {prompt_index}): {e}")
                 # Can't scan → treat as passed
-                defect_passed.append(ad_data)
-                scan_results.append({
+                return ("passed", ad_data, {
                     "prompt_index": prompt_index,
                     "passed": True,
                     "error": str(e),
-                })
-                continue
+                }, None)
 
             # Run defect scan
             result = await scan_service.scan_for_defects(
@@ -125,72 +130,85 @@ class DefectScanNode(BaseNode[AdCreationPipelineState]):
 
             scan_result_dict = result.to_dict()
             scan_result_dict["prompt_index"] = prompt_index
-            scan_results.append(scan_result_dict)
 
             if result.passed:
                 # No defects → pass to Stage 2-3 review
                 ad_data["defect_scan_result"] = scan_result_dict
-                defect_passed.append(ad_data)
+                return ("passed", ad_data, scan_result_dict, None)
+
+            # Defect found → reject immediately
+            logger.info(
+                f"  Variation {prompt_index} REJECTED by defect scan: "
+                f"{[d.type for d in result.defects]}"
+            )
+
+            # Save to DB with rejected status + defect scan result
+            hook = ad_data.get("hook", {})
+            if ctx.state.content_source == "hooks":
+                hook_id = UUID(hook["hook_id"]) if hook.get("hook_id") else None
             else:
-                # Defect found → reject immediately
-                logger.info(
-                    f"  Variation {prompt_index} REJECTED by defect scan: "
-                    f"{[d.type for d in result.defects]}"
-                )
+                hook_id = None
 
-                # Save to DB with rejected status + defect scan result
-                hook = ad_data.get("hook", {})
-                if ctx.state.content_source == "hooks":
-                    hook_id = UUID(hook["hook_id"]) if hook.get("hook_id") else None
-                else:
-                    hook_id = None
+            generated_ad = ad_data.get("generated_ad", {}) or {}
+            prompt = ad_data.get("prompt", {}) or {}
+            ad_uuid_str = ad_data.get("ad_uuid")
+            ad_uuid = UUID(ad_uuid_str) if ad_uuid_str else None
 
-                generated_ad = ad_data.get("generated_ad", {}) or {}
-                prompt = ad_data.get("prompt", {}) or {}
-                ad_uuid_str = ad_data.get("ad_uuid")
-                ad_uuid = UUID(ad_uuid_str) if ad_uuid_str else None
+            await ctx.deps.ad_creation.save_generated_ad(
+                ad_run_id=UUID(ctx.state.ad_run_id),
+                prompt_index=prompt_index,
+                prompt_text=prompt.get("full_prompt", ""),
+                prompt_spec=stringify_uuids(prompt.get("json_prompt", {})),
+                hook_id=hook_id,
+                hook_text=hook.get("adapted_text", ""),
+                storage_path=storage_path,
+                final_status="rejected",
+                model_requested=generated_ad.get("model_requested"),
+                model_used=generated_ad.get("model_used"),
+                generation_time_ms=generated_ad.get("generation_time_ms"),
+                generation_retries=generated_ad.get("generation_retries", 0),
+                ad_id=ad_uuid,
+                canvas_size=ad_data.get("canvas_size"),
+                color_mode=ad_data.get("color_mode"),
+                defect_scan_result=scan_result_dict,
+                prompt_version=ctx.state.prompt_version,
+                # Phase 6: Creative Genome element tags + pre-gen score
+                element_tags=ad_data.get("element_tags"),
+                pre_gen_score=ad_data.get("pre_gen_score"),
+                # Blueprint-aware generation
+                blueprint_id=UUID(ctx.state.blueprint_id) if ctx.state.blueprint_id else None,
+            )
 
-                await ctx.deps.ad_creation.save_generated_ad(
-                    ad_run_id=UUID(ctx.state.ad_run_id),
-                    prompt_index=prompt_index,
-                    prompt_text=prompt.get("full_prompt", ""),
-                    prompt_spec=stringify_uuids(prompt.get("json_prompt", {})),
-                    hook_id=hook_id,
-                    hook_text=hook.get("adapted_text", ""),
-                    storage_path=storage_path,
-                    final_status="rejected",
-                    model_requested=generated_ad.get("model_requested"),
-                    model_used=generated_ad.get("model_used"),
-                    generation_time_ms=generated_ad.get("generation_time_ms"),
-                    generation_retries=generated_ad.get("generation_retries", 0),
-                    ad_id=ad_uuid,
-                    canvas_size=ad_data.get("canvas_size"),
-                    color_mode=ad_data.get("color_mode"),
-                    defect_scan_result=scan_result_dict,
-                    prompt_version=ctx.state.prompt_version,
-                    # Phase 6: Creative Genome element tags + pre-gen score
-                    element_tags=ad_data.get("element_tags"),
-                    pre_gen_score=ad_data.get("pre_gen_score"),
-                    # Blueprint-aware generation
-                    blueprint_id=UUID(ctx.state.blueprint_id) if ctx.state.blueprint_id else None,
-                )
+            return ("rejected", ad_data, scan_result_dict, {
+                "prompt_index": prompt_index,
+                "prompt": prompt,
+                "storage_path": storage_path,
+                "claude_review": None,
+                "gemini_review": None,
+                "reviewers_agree": None,
+                "final_status": "rejected",
+                "defect_rejected": True,
+                "defect_scan_result": scan_result_dict,
+                "ad_uuid": ad_uuid_str,
+                "canvas_size": ad_data.get("canvas_size"),
+                "color_mode": ad_data.get("color_mode"),
+                "hook_list_index": ad_data.get("hook_list_index"),
+            })
 
-                # Append to reviewed_ads immediately (visible to RetryRejected + CompileResults)
-                ctx.state.reviewed_ads.append({
-                    "prompt_index": prompt_index,
-                    "prompt": prompt,
-                    "storage_path": storage_path,
-                    "claude_review": None,
-                    "gemini_review": None,
-                    "reviewers_agree": None,
-                    "final_status": "rejected",
-                    "defect_rejected": True,
-                    "defect_scan_result": scan_result_dict,
-                    "ad_uuid": ad_uuid_str,
-                    "canvas_size": ad_data.get("canvas_size"),
-                    "color_mode": ad_data.get("color_mode"),
-                    "hook_list_index": ad_data.get("hook_list_index"),
-                })
+        concurrency = pipeline_concurrency()
+        outcomes = await bounded_gather(ctx.state.generated_ads, _scan_one, concurrency)
+
+        # Single ordered pass: partition + state appends in original ad order.
+        for outcome, ad_data, scan_result_dict, reviewed_entry in outcomes:
+            if outcome == "gen_failed":
+                ctx.state.reviewed_ads.append(reviewed_entry)
+            elif outcome == "passed":
+                defect_passed.append(ad_data)
+                if scan_result_dict is not None:
+                    scan_results.append(scan_result_dict)
+            else:  # rejected
+                scan_results.append(scan_result_dict)
+                ctx.state.reviewed_ads.append(reviewed_entry)
                 defect_rejected.append(ad_data)
 
         ctx.state.defect_passed_ads = defect_passed

@@ -17,6 +17,7 @@ from uuid import UUID
 from pydantic_graph import BaseNode, GraphRunContext
 
 from ..state import AdCreationPipelineState
+from ..utils import AD_PIPELINE_CONCURRENCY_ENV, bounded_gather, pipeline_concurrency
 from ....agent.dependencies import AgentDependencies
 from ...metadata import NodeMetadata
 
@@ -108,7 +109,6 @@ class GenerateAdsNode(BaseNode[AdCreationPipelineState]):
 
         generation_service = AdGenerationService()
         selected_image_paths = [img["storage_path"] for img in ctx.state.selected_images]
-        generated_ads = []
         variant_counter = 0
 
         # Phase 3: Collect selected_image_tags as union of asset_tags from selected images
@@ -143,133 +143,156 @@ class GenerateAdsNode(BaseNode[AdCreationPipelineState]):
                     except Exception as e:
                         logger.warning(f"Smart logo: failed to download logo_dark, using default: {e}")
 
+        # Flatten the (hook x size x color) triple loop into an ordered combo list
+        # so variants can generate concurrently while keeping the historical
+        # prompt_index numbering.
+        combos = []
         for i, selected_hook in enumerate(ctx.state.selected_hooks, start=1):
             hook_list_index = i - 1  # 0-based index for congruence lookup
             for canvas_size in ctx.state.canvas_sizes:
                 for color_mode in ctx.state.color_modes:
                     variant_counter += 1
-                    logger.info(f"  Generating variation {variant_counter}/{total_variants} "
-                                f"(hook {i}, {canvas_size}, {color_mode})...")
+                    combos.append((variant_counter, i, hook_list_index,
+                                   selected_hook, canvas_size, color_mode))
 
+        # Same value for every variation — fetch once, not once per combo. A
+        # failure here must not abort the run (the old per-variant call sat
+        # inside the try/except): upload_generated_ad handles product_id=None
+        # via legacy naming.
+        try:
+            product_id_for_naming = await ctx.deps.ad_creation.get_product_id_for_run(
+                UUID(ctx.state.ad_run_id)
+            )
+        except Exception as e:
+            logger.warning(f"get_product_id_for_run failed, using legacy ad naming: {e}")
+            product_id_for_naming = None
+
+        async def _generate_one(combo):
+            variant_idx, hook_num, hook_list_index, selected_hook, canvas_size, color_mode = combo
+            logger.info(f"  Generating variation {variant_idx}/{total_variants} "
+                        f"(hook {hook_num}, {canvas_size}, {color_mode})...")
+
+            try:
+                # Generate Pydantic prompt (Phase 3: pass asset state fields)
+                prompt = generation_service.generate_prompt(
+                    prompt_index=variant_idx,
+                    selected_hook=selected_hook,
+                    product=ctx.state.product_dict,
+                    ad_analysis=ctx.state.ad_analysis,
+                    ad_brief_instructions=ctx.state.ad_brief_instructions,
+                    reference_ad_path=ctx.state.reference_ad_path,
+                    product_image_paths=selected_image_paths,
+                    color_mode=color_mode,
+                    brand_colors=ctx.state.brand_colors,
+                    brand_fonts=ctx.state.brand_fonts,
+                    num_variations=total_variants,
+                    canvas_size=canvas_size,
+                    prompt_version=ctx.state.prompt_version,
+                    template_elements=ctx.state.template_elements,
+                    brand_asset_info=ctx.state.brand_asset_info,
+                    selected_image_tags=selected_image_tags,
+                    performance_context=ctx.state.performance_context,
+                    logo_image_base64=logo_b64_override,
+                    blueprint_context=ctx.state.blueprint_context,
+                    persona_data=ctx.state.persona_data,
+                )
+
+                # Pass skip_template_reference flag from state
+                prompt["skip_template_reference"] = ctx.state.skip_template_reference
+                prompt["generation_temperature"] = ctx.state.generation_temperature
+
+                # Execute generation
+                generated_ad = await generation_service.execute_generation(
+                    nano_banana_prompt=prompt,
+                    ad_creation_service=ctx.deps.ad_creation,
+                    gemini_service=ctx.deps.gemini,
+                    image_resolution=ctx.state.image_resolution,
+                )
+
+                # Pop logo blob to prevent ~400KB x N duplicate data in memory
+                prompt.pop('logo_image_base64', None)
+
+                # Upload image with structured naming
+                ad_uuid = uuid_module.uuid4()
+
+                storage_path, _ = await ctx.deps.ad_creation.upload_generated_ad(
+                    ad_run_id=UUID(ctx.state.ad_run_id),
+                    prompt_index=variant_idx,
+                    image_base64=generated_ad['image_base64'],
+                    product_id=product_id_for_naming,
+                    ad_id=ad_uuid,
+                    canvas_size=canvas_size,
+                )
+
+                # Phase 6: Build element tags for Creative Genome tracking
+                element_tags = {
+                    "hook_type": selected_hook.get("persuasion_type") or selected_hook.get("category"),
+                    "persona_id": ctx.state.persona_id,
+                    "color_mode": color_mode,
+                    "template_category": (ctx.state.ad_analysis or {}).get("format_type"),
+                    "awareness_stage": (ctx.state.product_dict or {}).get("awareness_stage"),
+                    "canvas_size": canvas_size,
+                    "template_id": ctx.state.template_id,
+                    "prompt_version": ctx.state.prompt_version,
+                    "content_source": ctx.state.content_source,
+                    "creative_direction": ctx.state.creative_direction,
+                    "logo_variant": logo_variant_used,
+                }
+
+                # Phase 6: Pre-gen score from genome posteriors (non-fatal)
+                pre_gen_score = None
+                if ctx.state.performance_context and ctx.state.product_dict:
                     try:
-                        # Generate Pydantic prompt (Phase 3: pass asset state fields)
-                        prompt = generation_service.generate_prompt(
-                            prompt_index=variant_counter,
-                            selected_hook=selected_hook,
-                            product=ctx.state.product_dict,
-                            ad_analysis=ctx.state.ad_analysis,
-                            ad_brief_instructions=ctx.state.ad_brief_instructions,
-                            reference_ad_path=ctx.state.reference_ad_path,
-                            product_image_paths=selected_image_paths,
-                            color_mode=color_mode,
-                            brand_colors=ctx.state.brand_colors,
-                            brand_fonts=ctx.state.brand_fonts,
-                            num_variations=total_variants,
-                            canvas_size=canvas_size,
-                            prompt_version=ctx.state.prompt_version,
-                            template_elements=ctx.state.template_elements,
-                            brand_asset_info=ctx.state.brand_asset_info,
-                            selected_image_tags=selected_image_tags,
-                            performance_context=ctx.state.performance_context,
-                            logo_image_base64=logo_b64_override,
-                            blueprint_context=ctx.state.blueprint_context,
-                            persona_data=ctx.state.persona_data,
-                        )
+                        from viraltracker.services.creative_genome_service import CreativeGenomeService
+                        genome_svc = CreativeGenomeService()
+                        brand_id = ctx.state.product_dict.get("brand_id")
+                        if brand_id:
+                            pre_gen_score = await genome_svc.get_pre_gen_score(
+                                UUID(brand_id) if isinstance(brand_id, str) else brand_id,
+                                element_tags,
+                            )
+                    except Exception as pgs_err:
+                        logger.debug(f"Pre-gen score failed (non-fatal): {pgs_err}")
 
-                        # Pass skip_template_reference flag from state
-                        prompt["skip_template_reference"] = ctx.state.skip_template_reference
-                        prompt["generation_temperature"] = ctx.state.generation_temperature
+                ctx.state.ads_generated += 1
+                logger.info(f"  Variation {variant_idx} generated and uploaded: {storage_path}")
 
-                        # Execute generation
-                        generated_ad = await generation_service.execute_generation(
-                            nano_banana_prompt=prompt,
-                            ad_creation_service=ctx.deps.ad_creation,
-                            gemini_service=ctx.deps.gemini,
-                            image_resolution=ctx.state.image_resolution,
-                        )
+                return {
+                    "prompt_index": variant_idx,
+                    "prompt": prompt,
+                    "generated_ad": generated_ad,
+                    "storage_path": storage_path,
+                    "ad_uuid": str(ad_uuid),
+                    "hook": selected_hook,
+                    "canvas_size": canvas_size,
+                    "color_mode": color_mode,
+                    "prompt_version": prompt.get("prompt_version", ctx.state.prompt_version),
+                    "element_tags": element_tags,
+                    "pre_gen_score": pre_gen_score,
+                    "hook_list_index": hook_list_index,
+                }
 
-                        # Pop logo blob to prevent ~400KB x N duplicate data in memory
-                        prompt.pop('logo_image_base64', None)
+            except Exception as gen_error:
+                logger.error(f"  Generation failed for variation {variant_idx}: {gen_error}")
+                return {
+                    "prompt_index": variant_idx,
+                    "prompt": None,
+                    "generated_ad": None,
+                    "storage_path": None,
+                    "ad_uuid": None,
+                    "hook": selected_hook,
+                    "canvas_size": canvas_size,
+                    "color_mode": color_mode,
+                    "error": str(gen_error),
+                    "final_status": "generation_failed",
+                    "hook_list_index": hook_list_index,
+                }
 
-                        # Upload image with structured naming
-                        ad_uuid = uuid_module.uuid4()
-
-                        product_id_for_naming = await ctx.deps.ad_creation.get_product_id_for_run(
-                            UUID(ctx.state.ad_run_id)
-                        )
-
-                        storage_path, _ = await ctx.deps.ad_creation.upload_generated_ad(
-                            ad_run_id=UUID(ctx.state.ad_run_id),
-                            prompt_index=variant_counter,
-                            image_base64=generated_ad['image_base64'],
-                            product_id=product_id_for_naming,
-                            ad_id=ad_uuid,
-                            canvas_size=canvas_size,
-                        )
-
-                        # Phase 6: Build element tags for Creative Genome tracking
-                        element_tags = {
-                            "hook_type": selected_hook.get("persuasion_type") or selected_hook.get("category"),
-                            "persona_id": ctx.state.persona_id,
-                            "color_mode": color_mode,
-                            "template_category": (ctx.state.ad_analysis or {}).get("format_type"),
-                            "awareness_stage": (ctx.state.product_dict or {}).get("awareness_stage"),
-                            "canvas_size": canvas_size,
-                            "template_id": ctx.state.template_id,
-                            "prompt_version": ctx.state.prompt_version,
-                            "content_source": ctx.state.content_source,
-                            "creative_direction": ctx.state.creative_direction,
-                            "logo_variant": logo_variant_used,
-                        }
-
-                        # Phase 6: Pre-gen score from genome posteriors (non-fatal)
-                        pre_gen_score = None
-                        if ctx.state.performance_context and ctx.state.product_dict:
-                            try:
-                                from viraltracker.services.creative_genome_service import CreativeGenomeService
-                                genome_svc = CreativeGenomeService()
-                                brand_id = ctx.state.product_dict.get("brand_id")
-                                if brand_id:
-                                    pre_gen_score = await genome_svc.get_pre_gen_score(
-                                        UUID(brand_id) if isinstance(brand_id, str) else brand_id,
-                                        element_tags,
-                                    )
-                            except Exception as pgs_err:
-                                logger.debug(f"Pre-gen score failed (non-fatal): {pgs_err}")
-
-                        generated_ads.append({
-                            "prompt_index": variant_counter,
-                            "prompt": prompt,
-                            "generated_ad": generated_ad,
-                            "storage_path": storage_path,
-                            "ad_uuid": str(ad_uuid),
-                            "hook": selected_hook,
-                            "canvas_size": canvas_size,
-                            "color_mode": color_mode,
-                            "prompt_version": prompt.get("prompt_version", ctx.state.prompt_version),
-                            "element_tags": element_tags,
-                            "pre_gen_score": pre_gen_score,
-                            "hook_list_index": hook_list_index,
-                        })
-
-                        ctx.state.ads_generated += 1
-                        logger.info(f"  Variation {variant_counter} generated and uploaded: {storage_path}")
-
-                    except Exception as gen_error:
-                        logger.error(f"  Generation failed for variation {variant_counter}: {gen_error}")
-                        generated_ads.append({
-                            "prompt_index": variant_counter,
-                            "prompt": None,
-                            "generated_ad": None,
-                            "storage_path": None,
-                            "ad_uuid": None,
-                            "hook": selected_hook,
-                            "canvas_size": canvas_size,
-                            "color_mode": color_mode,
-                            "error": str(gen_error),
-                            "final_status": "generation_failed",
-                            "hook_list_index": hook_list_index,
-                        })
+        concurrency = pipeline_concurrency()
+        if concurrency > 1:
+            logger.info(f"  Generating with concurrency={concurrency} "
+                        f"({AD_PIPELINE_CONCURRENCY_ENV})")
+        generated_ads = await bounded_gather(combos, _generate_one, concurrency)
 
         ctx.state.generated_ads = generated_ads
         ctx.state.mark_step_complete("generate_ads")
