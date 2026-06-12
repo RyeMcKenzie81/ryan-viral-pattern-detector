@@ -248,6 +248,14 @@ td.lvl{font-weight:700;text-transform:capitalize}
 .roas-low{color:var(--pink-deep);font-weight:700}
 .roas-good{color:var(--blue-deep);font-weight:700}
 .muted{color:#a7adba}
+.fbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:0 0 16px;font-size:13px}
+.flabel{font:700 12px/1 'Space Grotesk',sans-serif;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-2)}
+.fbtn{border:2px solid var(--ink);background:#fff;border-radius:999px;padding:5px 14px;
+ font:600 12.5px/1 Inter,sans-serif;cursor:pointer;color:var(--ink);box-shadow:2px 2px 0 var(--ink)}
+.fbtn.active{background:var(--blue);color:#fff}
+.fnote{color:var(--ink-2);font-size:11.5px;opacity:.8}
+td.thin{opacity:.55}
+@media print{.fbar{display:none}}
 .insight{margin:14px 0 0;padding:11px 14px;background:var(--pink-soft);border:2px solid var(--ink);
  border-radius:12px;font-size:13px;font-weight:600}
 .dark{color:var(--ink-2);font-style:italic;margin:6px 0 0}
@@ -277,6 +285,45 @@ def _c(v: Optional[float], cls: str = "") -> str:
     inner = "—" if v is None else _cpa0(v)
     attr = f' class="{klass}"' if klass else ""
     return f"<td{attr}>{inner}</td>"
+
+
+def _vc(variants: Optional[Dict[str, Dict[str, Any]]], stat: str, cls: str = "") -> str:
+    """A filterable Med/P25 cell carrying every threshold variant as data attrs.
+
+    Shows the 1+ (all converters) value by default; the report's filter buttons
+    swap in the 5+/10+ values client-side without a server round-trip. ``n`` per
+    threshold rides along for the tooltip / low-sample dimming.
+    """
+    if not variants:
+        return _c(None, cls)
+    attrs = ""
+    for t, v in variants.items():
+        if not str(t).isdigit():  # attr-name position: digits only, ever
+            continue
+        val = v.get(stat)
+        attrs += (
+            f' data-v{t}="{_cpa0(val) if val is not None else ""}"'
+            f' data-n{t}="{int(v.get("n") or 0)}"'
+        )
+    base = variants.get("1") or {}
+    val = base.get(stat)
+    n = int(base.get("n") or 0)
+    klass = " ".join(x for x in (
+        "var", cls,
+        "muted" if val is None else "",
+        "thin" if val is not None and n < 3 else "",  # match the JS dimming rule
+    ) if x)
+    inner = _cpa0(val) if val is not None else "—"
+    return f'<td class="{klass}"{attrs} title="{n} ad{"" if n == 1 else "s"} in sample">{inner}</td>'
+
+
+def _med_p25_cells(r: Dict[str, Any], variants_key: str, med_key: str, p25_key: str) -> str:
+    """Med + P25 cells: filterable when the row carries threshold variants,
+    plain legacy cells otherwise (older persisted digest data)."""
+    variants = r.get(variants_key)
+    if variants:
+        return _vc(variants, "med") + _vc(variants, "p25", "tgt")
+    return _c(r.get(med_key)) + _c(r.get(p25_key), "tgt")
 
 
 def _html_product(p: Dict[str, Any], currency: str) -> str:
@@ -315,8 +362,8 @@ def _html_product(p: Dict[str, Any], currency: str) -> str:
             body += (
                 f"<tr><td class='lvl'>{lvl}</td><td>{r.get('ads', 0)}</td><td>{spend_s}</td>"
                 f"{_roas_cell(r)}<td>{_pct(r.get('cvr'))}</td>"
-                f"{_c(r.get('agg_cpa'), 'grp')}{_c(r.get('prod_med_cpa'))}{_c(r.get('prod_p25_cpa'), 'tgt')}"
-                f"{_c(r.get('agg_catc'), 'grp')}{_c(r.get('prod_med_catc'))}{_c(r.get('prod_p25_catc'), 'tgt')}"
+                f"{_c(r.get('agg_cpa'), 'grp')}{_med_p25_cells(r, 'cpa_variants', 'prod_med_cpa', 'prod_p25_cpa')}"
+                f"{_c(r.get('agg_catc'), 'grp')}{_med_p25_cells(r, 'catc_variants', 'prod_med_catc', 'prod_p25_catc')}"
                 f"{_c(r.get('brand_med_cpa'), 'grp muted')}</tr>"
             )
         table = (
@@ -374,6 +421,44 @@ def render_brand_digest_html(data: Dict[str, Any]) -> str:
         for p in products if not p.get("no_ads")
     )
 
+    # Filter buttons only when a row that will actually RENDER its table carries
+    # threshold variants (pending/error/no-ads products suppress their tables, so
+    # they must not summon dead buttons; older stored digests stay static).
+    thresholds = sorted({
+        int(t)
+        for p in products
+        if not (p.get("no_ads") or p.get("error") or p.get("awareness_pending"))
+        for r in (p.get("awareness") or [])
+        for t in list(r.get("cpa_variants") or {}) + list(r.get("catc_variants") or {})
+        if str(t).isdigit()
+    })
+    has_variants = bool(thresholds)
+    buttons = "".join(
+        f"<button type='button' class='fbtn{' active' if t == 1 else ''}' data-t='{t}' "
+        f"aria-pressed='{'true' if t == 1 else 'false'}' onclick='vtFilter({t})'>"
+        f"{'All converters' if t == 1 else f'{t}+ purchases'}</button>"
+        for t in thresholds
+    )
+    filter_bar = (
+        "<div class='fbar'>"
+        "<span class='flabel'>Med / P25 sample:</span>"
+        f"{buttons}"
+        "<span class='fnote'>ATC columns filter by add-to-carts · Agg stays blended over all spend "
+        "· hover a value for sample size</span>"
+        "</div>"
+    ) if has_variants else ""
+    filter_js = (
+        "<script>function vtFilter(t){"
+        "document.querySelectorAll('td.var').forEach(function(c){"
+        "var v=c.getAttribute('data-v'+t)||'',n=c.getAttribute('data-n'+t)||'0';"
+        "c.textContent=v||'\\u2014';c.title=n+(n==='1'?' ad':' ads')+' in sample';"
+        "c.classList.toggle('muted',!v);c.classList.toggle('thin',!!v&&+n<3);});"
+        "document.querySelectorAll('.fbtn').forEach(function(b){"
+        "var on=b.getAttribute('data-t')===String(t);"
+        "b.classList.toggle('active',on);b.setAttribute('aria-pressed',on?'true':'false');});}"
+        "</script>"
+    ) if has_variants else ""
+
     cov_pct = coverage.get("pct")
     cov = f"<b>Coverage:</b> {cov_pct:.0f}% of captured spend attributed" if cov_pct is not None else "<b>Coverage:</b> n/a"
     if unmapped:
@@ -392,6 +477,11 @@ def render_brand_digest_html(data: Dict[str, Any]) -> str:
         "brand-wide median benchmark. Cost figures over ads that converted; ~30-day "
         "window, paused-but-spent ads included."
     )
+    if has_variants:
+        fineprint += (
+            " Med/P25 follow the active sample filter (each ad counts once, "
+            "regardless of spend); dimmed values rest on fewer than 3 ads."
+        )
     # Logo sits centered ABOVE the blue header band (on the paper background).
     logo_html = (
         f"<div class='logo-top'><img class='logo' src='{_h(logo_url)}' alt='{brand} logo'></div>"
@@ -414,8 +504,9 @@ def render_brand_digest_html(data: Dict[str, Any]) -> str:
         f"<h1>{brand}</h1>"
         f"<div class='sub'>{date_range} · all spend in {currency} · {len(products)} product(s)</div>"
         "</header>"
+        f"{filter_bar}"
         f"{sections}"
         f"<div class='footer'>{cov}</div>"
         f"<p class='fineprint'>{fineprint}</p>"
-        "</div></body></html>"
+        f"</div>{filter_js}</body></html>"
     )
