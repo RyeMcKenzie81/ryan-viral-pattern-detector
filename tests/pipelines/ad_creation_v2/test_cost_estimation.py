@@ -115,7 +115,7 @@ class TestBackendCap:
         import asyncio
 
         with pytest.raises(ValueError, match="must be between 1 and 50"):
-            asyncio.get_event_loop().run_until_complete(
+            asyncio.run(
                 run_ad_creation_v2(
                     product_id="test",
                     reference_ad_base64="dGVzdA==",
@@ -151,7 +151,7 @@ class TestBackendCap:
             # Will raise the wrapped Exception from graph.run — that's fine,
             # it proves we got past validation.
             with pytest.raises(Exception, match=_SENTINEL):
-                asyncio.get_event_loop().run_until_complete(
+                asyncio.run(
                     run_ad_creation_v2(
                         product_id="test",
                         reference_ad_base64="dGVzdA==",

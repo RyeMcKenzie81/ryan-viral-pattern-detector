@@ -65,7 +65,21 @@ class DefectScanResult:
 
 
 class DefectScanService:
-    """Stage 1 defect scan using Gemini Flash vision."""
+    """Stage 1 defect scan using Gemini Flash vision.
+
+    Pass the pipeline's shared GeminiService so concurrent scans (the node runs
+    ads in parallel under AD_PIPELINE_MAX_CONCURRENCY) share ONE rate limiter;
+    a fresh per-call instance has its own limiter and never waits.
+    """
+
+    def __init__(self, gemini_service=None):
+        self._gemini = gemini_service
+
+    def _get_gemini(self):
+        if self._gemini is None:
+            from viraltracker.services.gemini_service import GeminiService
+            self._gemini = GeminiService()
+        return self._gemini
 
     async def scan_for_defects(
         self,
@@ -83,13 +97,11 @@ class DefectScanService:
         Returns:
             DefectScanResult with pass/fail and any defects found.
         """
-        from viraltracker.services.gemini_service import GeminiService
-
         start_time = time.time()
         model_name = "gemini-flash-latest"
 
         try:
-            gemini = GeminiService()
+            gemini = self._get_gemini()
             prompt = self._build_scan_prompt(product_name)
 
             response = await gemini.analyze_image(
@@ -130,13 +142,11 @@ class DefectScanService:
         Returns:
             DefectScanResult with OFFER_HALLUCINATION defects if found.
         """
-        from viraltracker.services.gemini_service import GeminiService
-
         start_time = time.time()
         model_name = "gemini-flash-latest"
 
         try:
-            gemini = GeminiService()
+            gemini = self._get_gemini()
             prompt = self._build_offer_hallucination_prompt(product_name, provided_offer)
 
             response = await gemini.analyze_image(

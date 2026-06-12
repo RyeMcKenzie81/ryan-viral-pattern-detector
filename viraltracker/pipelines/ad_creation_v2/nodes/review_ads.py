@@ -14,7 +14,7 @@ from uuid import UUID
 from pydantic_graph import BaseNode, GraphRunContext
 
 from ..state import AdCreationPipelineState
-from ..utils import stringify_uuids
+from ..utils import bounded_gather, pipeline_concurrency, stringify_uuids
 from ....agent.dependencies import AgentDependencies
 from ...metadata import NodeMetadata
 
@@ -87,22 +87,19 @@ class ReviewAdsNode(BaseNode[AdCreationPipelineState]):
         # Extract current_offer once for all reviews
         current_offer = ctx.state.product_dict.get('current_offer') if ctx.state.product_dict else None
 
-        reviewed_ads = []
-
-        for ad_data in ads_to_review:
+        async def _review_one(ad_data):
             prompt_index = ad_data["prompt_index"]
 
             # Skip failed generations
             if ad_data.get("final_status") == "generation_failed":
-                reviewed_ads.append({
+                return {
                     "prompt_index": prompt_index,
                     "prompt": None,
                     "storage_path": None,
                     "review_check_scores": None,
                     "final_status": "generation_failed",
                     "error": ad_data.get("error")
-                })
-                continue
+                }
 
             storage_path = ad_data["storage_path"]
             hook = ad_data["hook"]
@@ -224,7 +221,9 @@ class ReviewAdsNode(BaseNode[AdCreationPipelineState]):
                 blueprint_id=UUID(ctx.state.blueprint_id) if ctx.state.blueprint_id else None,
             )
 
-            reviewed_ads.append({
+            ctx.state.ads_reviewed += 1
+
+            return {
                 "prompt_index": prompt_index,
                 "prompt": prompt,
                 "storage_path": storage_path,
@@ -236,9 +235,9 @@ class ReviewAdsNode(BaseNode[AdCreationPipelineState]):
                 "weighted_score": review_result.get("weighted_score") if review_result else None,
                 "congruence_score": congruence_score,
                 "hook_list_index": ad_data.get("hook_list_index"),
-            })
+            }
 
-            ctx.state.ads_reviewed += 1
+        reviewed_ads = await bounded_gather(ads_to_review, _review_one, pipeline_concurrency())
 
         # Phase 4: Append to reviewed_ads (defect-rejected ads already there from DefectScanNode)
         ctx.state.reviewed_ads.extend(reviewed_ads)
