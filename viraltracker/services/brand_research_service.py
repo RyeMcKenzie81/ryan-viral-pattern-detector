@@ -778,8 +778,9 @@ class BrandResearchService:
             # Initialize Gemini client
             client = make_genai_client(api_key)
             
-            # Video analysis uses gemini-3-pro-preview (not image-preview)
-            model_name = "gemini-3-pro-preview"
+            # Video analysis. Pinned to an explicit version: gemini-3-pro-preview
+            # was retired by Google on 2026-06-12 (404 on every call).
+            model_name = "gemini-3.1-pro-preview"
 
             logger.info(f"Analyzing video with model: {model_name}")
 

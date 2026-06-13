@@ -114,6 +114,8 @@ class Config:
         "gemini-2.5-flash": (0.15, 0.60),
         "gemini-2.5-pro": (1.25, 5.00),
         "gemini-3-pro": (1.25, 5.00),
+        "gemini-3.1-pro-preview": (1.25, 5.00),
+        "models/gemini-3.1-pro-preview": (1.25, 5.00),
         "gemini-3-flash": (0.15, 0.60),
         "models/gemini-2.0-flash": (0.10, 0.40),
         "models/gemini-2.5-pro": (1.25, 5.00),
@@ -199,10 +201,16 @@ class Config:
     # BUT standard google-genai client fails with it.
     CREATIVE_MODEL = "claude-opus-4-7"  # Opus 4.7 for copy/creative writing
     AD_AGENT_MODEL = "google-gla:models/gemini-3-pro-image-preview"  # Gemini 3 Pro for main ad agent
-    # Vision analysis (image → JSON) uses gemini-pro-latest. The Nano Banana 3
-    # variant (gemini-3-pro-image-preview) is for image GENERATION only and
-    # was returning malformed/empty responses for vision-analysis prompts.
-    VISION_MODEL = "google-gla:models/gemini-pro-latest"
+    # Vision analysis (image → JSON). PINNED to an explicit version, never the
+    # floating "gemini-pro-latest" alias: on 2026-06-12 Google retired
+    # gemini-3-pro-preview and repointed the alias to 3.1, which grades the ad
+    # review rubric ~2.3 points harsher on a compressed scale — every ad fell
+    # below the pass threshold and exports broke. Quality thresholds
+    # (quality_scoring_config + DEFAULT_QUALITY_CONFIG) are calibrated to THIS
+    # model; bump model and thresholds together, never separately.
+    # (The Nano Banana variant gemini-3-pro-image-preview is for image
+    # GENERATION only and returns malformed responses for vision analysis.)
+    VISION_MODEL = "google-gla:models/gemini-3.1-pro-preview"
     VISION_BACKUP_MODEL = "openai:gpt-5.2-2025-12-11"
     BASIC_MODEL = "google-gla:models/gemini-3-flash-preview"
 

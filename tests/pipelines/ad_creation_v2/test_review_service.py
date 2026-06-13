@@ -230,8 +230,8 @@ class TestReviewAdStaged:
     @pytest.mark.asyncio
     async def test_borderline_triggers_stage3(self):
         """Borderline Stage 2 score → triggers Stage 3 Gemini."""
-        borderline_scores = {k: 8.0 for k in RUBRIC_CHECKS}
-        borderline_scores["V3"] = 6.0  # In borderline range [5, 7]
+        # Weighted score in the borderline band [4.9, 5.5) triggers Stage 3
+        borderline_scores = {k: 5.2 for k in RUBRIC_CHECKS}
 
         gemini_scores = {k: 9.0 for k in RUBRIC_CHECKS}
 
@@ -267,8 +267,8 @@ class TestReviewAdStaged:
     @pytest.mark.asyncio
     async def test_stage3_failure_non_fatal(self):
         """Stage 3 failure → falls back to Stage 2 score."""
-        borderline_scores = {k: 8.0 for k in RUBRIC_CHECKS}
-        borderline_scores["C2"] = 6.5  # Borderline
+        # Weighted in-band so Stage 3 fires (and then fails, non-fatally)
+        borderline_scores = {k: 5.3 for k in RUBRIC_CHECKS}
 
         with patch.object(self.service, "_run_rubric_review_claude", new_callable=AsyncMock) as mock_claude:
             mock_claude.return_value = borderline_scores
@@ -288,7 +288,7 @@ class TestReviewAdStaged:
     @pytest.mark.asyncio
     async def test_or_logic_stage3_better(self):
         """Stage 3 scores better → uses Stage 3 for final decision."""
-        stage2_scores = {k: 6.0 for k in RUBRIC_CHECKS}  # All borderline
+        stage2_scores = {k: 5.2 for k in RUBRIC_CHECKS}  # All borderline (band 4.9-5.5)
         stage3_scores = {k: 8.5 for k in RUBRIC_CHECKS}  # All good
 
         with patch.object(self.service, "_run_rubric_review_claude", new_callable=AsyncMock) as mc:

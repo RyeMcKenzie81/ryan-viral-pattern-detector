@@ -972,7 +972,7 @@ class WinnerEvolutionService:
         # Call Gemini 3 Pro for narrative analysis
         try:
             from viraltracker.services.gemini_service import GeminiService
-            gemini = GeminiService(model="gemini-3-pro")
+            gemini = GeminiService(model="gemini-3.1-pro-preview")  # 3-pro retired by Google 2026-06-12 (404)
 
             hook_context = f"\nCurrent hook text: '{hook_text}'" if hook_text else ""
             prompt = (

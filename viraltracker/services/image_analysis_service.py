@@ -35,7 +35,11 @@ PROMPT_VERSION = "v3"
 # Image awareness model. Was hardcoded gemini-2.5-flash; promoted to a named constant
 # and upgraded to gemini-pro-latest for consistency with the video path and to honor
 # the rubric calibration (which was hand-validated on pro-latest).
-IMAGE_ANALYSIS_MODEL = "gemini-pro-latest"
+# Pinned to an explicit version: the floating "gemini-pro-latest"
+# alias repointed to 3.1 when Google retired 3-pro (2026-06-12 incident, PR
+# #300). The certified rubric was re-validated on 3.1 via the anchor suite
+# (scripts/anchor_suite.py, 6/6) — re-run it before ANY future model bump.
+IMAGE_ANALYSIS_MODEL = "gemini-3.1-pro-preview"
 
 # Shared awareness vocabulary moved to awareness_rubric (the one-definition home);
 # re-exported here for back-compat with existing callers/tests. The private alias
