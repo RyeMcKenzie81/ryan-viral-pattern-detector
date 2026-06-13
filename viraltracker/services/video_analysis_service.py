@@ -49,7 +49,13 @@ PROMPT_VERSION = "v4"
 # the pricing table. NOTE: bare "gemini-3-pro" 404s for generateContent and the
 # "-image" variants are image-generation only. Change here to swap the model
 # everywhere this service (and the classifier's legacy fallback) uses it.
-VIDEO_ANALYSIS_MODEL = "gemini-pro-latest"
+# Pinned to an explicit version: the floating "gemini-pro-latest"
+# alias repointed to 3.1 when Google retired 3-pro (2026-06-12 incident, PR
+# #300). The certified rubric was re-validated on 3.1 via the anchor suite
+# (scripts/anchor_suite.py, 6/6) — re-run it before ANY future model bump.
+# (No video anchor set exists yet; the alias already resolved to 3.1, so this
+# pin is drift prevention, not a behavior change.)
+VIDEO_ANALYSIS_MODEL = "gemini-3.1-pro-preview"
 
 # Deep video analysis prompt - extracts comprehensive structured data
 DEEP_VIDEO_ANALYSIS_PROMPT = """Analyze this video advertisement and extract detailed structured data.

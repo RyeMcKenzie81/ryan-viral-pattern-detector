@@ -45,7 +45,11 @@ TEMPLATE_ANALYSIS_PROMPT_VERSION = "v2"
 
 # Same judge model the rubric was hand-calibrated on (the ads path). Per-call only —
 # GeminiService's global default stays flash for unrelated callers.
-TEMPLATE_AWARENESS_MODEL = "gemini-pro-latest"
+# Pinned to an explicit version: the floating "gemini-pro-latest"
+# alias repointed to 3.1 when Google retired 3-pro (2026-06-12 incident, PR
+# #300). The certified rubric was re-validated on 3.1 via the anchor suite
+# (scripts/anchor_suite.py, 6/6) — re-run it before ANY future model bump.
+TEMPLATE_AWARENESS_MODEL = "gemini-3.1-pro-preview"
 
 # Awareness-definition hash pins, keyed by template prompt version (BYTE-stable on
 # purpose: even a whitespace edit must force a version bump). The pin covers BOTH

@@ -132,7 +132,10 @@ class TestPromptContract:
         assert "<integer 1-5>" not in rendered        # the old bare scale is gone
 
     def test_model_is_the_calibrated_judge(self):
-        assert TEMPLATE_AWARENESS_MODEL == "gemini-pro-latest"
+        # Pinned after the 2026-06-12 gemini-pro-latest repoint incident; the
+        # rubric was re-validated on 3.1 via scripts/anchor_suite.py (6/6).
+        # Bumping this model requires re-running the anchor suite FIRST.
+        assert TEMPLATE_AWARENESS_MODEL == "gemini-3.1-pro-preview"
 
 
 # ---------------------------------------------------------------------------

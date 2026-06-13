@@ -35,6 +35,19 @@ class TestModelPin:
         assert "gemini-3-pro-preview" not in Config.VISION_MODEL.replace("3.1", ""), \
             "gemini-3-pro-preview was retired by Google on 2026-06-12"
 
+    def test_awareness_classifier_models_are_pinned(self):
+        # The certified awareness rubric (template v2 / image v3 / video v4)
+        # must never ride a floating alias: the 2026-06-12 repoint would have
+        # silently re-judged new classifications under unchanged version keys.
+        # Re-validated on 3.1 via scripts/anchor_suite.py (6/6).
+        from viraltracker.services.template_queue_service import TEMPLATE_AWARENESS_MODEL
+        from viraltracker.services.image_analysis_service import IMAGE_ANALYSIS_MODEL
+        from viraltracker.services.video_analysis_service import VIDEO_ANALYSIS_MODEL
+        for name, value in [("TEMPLATE_AWARENESS_MODEL", TEMPLATE_AWARENESS_MODEL),
+                            ("IMAGE_ANALYSIS_MODEL", IMAGE_ANALYSIS_MODEL),
+                            ("VIDEO_ANALYSIS_MODEL", VIDEO_ANALYSIS_MODEL)]:
+            assert "-latest" not in value, f"{name} must be pinned, got {value!r}"
+
     def test_stage3_and_thresholds_share_one_pinned_model(self):
         # Stage-3 scores flow through the calibrated gate via OR-logic, so it
         # must run on the SAME pinned model as Stage 2 — a floating-alias
