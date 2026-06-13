@@ -81,7 +81,7 @@ Return JSON matching this exact schema:
 Be specific and evidence-based. Quote actual words from the video where possible. Do not fabricate information - if something is unclear, use null."""
 
 PROMPT_VERSION = "v1"
-MODEL_VERSION = "gemini-3-pro-preview"
+MODEL_VERSION = "gemini-3.1-pro-preview"  # 3-pro retired by Google 2026-06-12 (404)
 
 
 # ---------------------------------------------------------------------------

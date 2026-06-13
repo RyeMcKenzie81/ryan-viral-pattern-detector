@@ -22,15 +22,24 @@ RUBRIC_CHECKS = [
     "G1", "G2",
 ]
 
+# Thresholds are CALIBRATED TO Config.VISION_MODEL (gemini-3.1-pro-preview).
+# 3.1 scores the same ads ~2.3 points lower than the retired 3-pro on a
+# compressed ~4.5-6.3 scale: a 12-ad calibration set (May ads with known
+# outcomes) re-reviewed under 3.1 put old-approved at 5.40-6.22 and
+# old-rejected at 4.54-4.99. pass>=5.5 / borderline 4.9-5.5 reproduces the old
+# gate on the new scale. If the model is ever bumped, re-run the calibration
+# BEFORE touching these numbers (see VISION_MODEL note in core/config.py).
+# NOTE: the active quality_scoring_config DB row overrides these defaults and
+# must be updated in lockstep.
 DEFAULT_QUALITY_CONFIG: Dict[str, Any] = {
-    "pass_threshold": 7.0,
+    "pass_threshold": 5.5,
     "check_weights": {
         "V1": 1.5, "V2": 1.5, "V3": 1.0, "V4": 0.8, "V5": 0.8,
         "V6": 1.0, "V7": 1.0, "V8": 0.8, "V9": 1.2,
         "C1": 1.0, "C2": 0.8, "C3": 0.8, "C4": 0.8, "C5": 1.5,
         "G1": 1.0, "G2": 0.8,
     },
-    "borderline_range": {"low": 5.0, "high": 7.0},
+    "borderline_range": {"low": 4.9, "high": 5.5},
     "auto_reject_checks": ["V9", "C5"],
 }
 
@@ -232,9 +241,13 @@ class AdReviewService:
             config = DEFAULT_QUALITY_CONFIG
 
         check_weights = config.get("check_weights", DEFAULT_QUALITY_CONFIG["check_weights"])
-        pass_threshold = config.get("pass_threshold", 7.0)
-        borderline_range = config.get("borderline_range", {"low": 5.0, "high": 7.0})
-        auto_reject_checks = config.get("auto_reject_checks", ["V9"])
+        pass_threshold = config.get("pass_threshold", DEFAULT_QUALITY_CONFIG["pass_threshold"])
+        borderline_range = config.get("borderline_range", DEFAULT_QUALITY_CONFIG["borderline_range"])
+        auto_reject_checks = config.get("auto_reject_checks", DEFAULT_QUALITY_CONFIG["auto_reject_checks"])
+        # Configurable so the floor can be recalibrated with the model (the 3.1
+        # scale compresses scores; <3.0 is near-unreachable there and the floor
+        # needs real V9/C5-vs-human data before it can be raised safely).
+        auto_reject_floor = config.get("auto_reject_floor", 3.0)
 
         # Stage 2: Claude Vision
         try:
@@ -258,8 +271,8 @@ class AdReviewService:
         # Check auto-reject
         for check_name in auto_reject_checks:
             score = stage2_scores.get(check_name, 10.0)
-            if score < 3.0:
-                logger.info(f"Auto-reject: {check_name}={score} < 3.0")
+            if score < auto_reject_floor:
+                logger.info(f"Auto-reject: {check_name}={score} < {auto_reject_floor}")
                 return {
                     "review_check_scores": stage2_scores,
                     "weighted_score": stage2_weighted,
@@ -269,13 +282,14 @@ class AdReviewService:
                     "auto_rejected_check": check_name,
                 }
 
-        # Determine if Stage 3 needed (borderline detection)
-        borderline_low = borderline_range.get("low", 5.0)
-        borderline_high = borderline_range.get("high", 7.0)
-        has_borderline = any(
-            borderline_low <= stage2_scores.get(k, 10.0) <= borderline_high
-            for k in RUBRIC_CHECKS
-        )
+        # Determine if Stage 3 needed: the WEIGHTED score is in the borderline
+        # band. (The old per-check trigger fired on ~97% of reviews under the
+        # compressed 3.1 scale — almost every ad has SOME check in-band — which
+        # made the "conditional" stage unconditional at 2x vision cost. The
+        # weighted score is the decision variable, so gate on it.)
+        borderline_low = borderline_range.get("low", DEFAULT_QUALITY_CONFIG["borderline_range"]["low"])
+        borderline_high = borderline_range.get("high", DEFAULT_QUALITY_CONFIG["borderline_range"]["high"])
+        has_borderline = borderline_low <= stage2_weighted < borderline_high
 
         stage3_result = None
         final_scores = stage2_scores
@@ -349,14 +363,26 @@ class AdReviewService:
         exemplar_context: Optional[str] = None,
         current_offer: Optional[str] = None,
     ) -> Dict[str, float]:
-        """Run 16-check rubric review with Gemini Vision."""
+        """Run 16-check rubric review with Gemini Vision (Stage-3 tie-break).
+
+        Pinned to the SAME model the thresholds are calibrated to: Stage-3
+        scores flow through the pass gate via use-the-better-score OR-logic,
+        so an uncalibrated (or floating-alias) model here silently becomes the
+        binding reviewer — measured live on 2026-06-12: flash-latest scored
+        higher than the calibrated pro in 24/25 reviews and flipped 5/8
+        sub-threshold ads to approved.
+        """
+        from viraltracker.core.config import Config
         from viraltracker.services.gemini_service import GeminiService
         import base64
 
         prompt = _build_rubric_prompt(product_name, hook_text, ad_analysis, exemplar_context, current_offer=current_offer)
         image_b64 = base64.b64encode(image_data).decode("utf-8")
 
-        gemini = GeminiService()
+        # Config.VISION_MODEL is pydantic-ai format ("google-gla:models/<id>");
+        # GeminiService takes the bare model id.
+        vision_model = Config.get_model("vision").split("models/")[-1]
+        gemini = GeminiService(model=vision_model)
         result = await gemini.analyze_image(
             image_base64=image_b64,
             prompt=prompt,

@@ -797,17 +797,28 @@ Generate the article now:"""
 
     async def analyze_image(
         self,
-        image_data: str,
-        prompt: str,
-        max_retries: int = 3
+        image_data: str = None,
+        prompt: str = "",
+        max_retries: int = 3,
+        *,
+        model: Optional[str] = None,
+        media_type: Optional[str] = None,
+        image_base64: Optional[str] = None,
     ) -> str:
         """
         Analyze an image using Gemini Vision API.
 
         Args:
-            image_data: Base64-encoded image data
+            image_data: Base64-encoded image data (or raw bytes).
             prompt: Analysis prompt/question about the image
             max_retries: Maximum retries on rate limit or server errors
+            model: Optional model override for this call (defaults to the
+                instance's model). Added so the defect-scan / Stage-3 review
+                call sites work — they passed this for months while the old
+                signature raised TypeError, silently disabling both (PR #208).
+            media_type: Accepted for caller compatibility; informational only
+                (the image format is auto-detected from the decoded bytes).
+            image_base64: Alias for image_data (legacy call sites).
 
         Returns:
             JSON string with analysis results
@@ -815,6 +826,10 @@ Generate the article now:"""
         Raises:
             Exception: If all retries fail or non-retryable error occurs
         """
+        if image_data is None:
+            image_data = image_base64
+        if image_data is None:
+            raise ValueError("analyze_image requires image_data (or image_base64)")
         self._check_usage_limit()
 
         # Wait for rate limit
@@ -853,9 +868,13 @@ Generate the article now:"""
                     image_bytes = base64.b64decode(clean_data.encode('ascii'))
                 image = Image.open(BytesIO(image_bytes))
 
-                # Call Gemini Vision API
-                response = self.client.models.generate_content(
-                    model=self.model_name,
+                # Call Gemini Vision API. Sync SDK via to_thread: a bare call
+                # blocks the event loop for the full request (same bug class as
+                # generate_image, PR #299) — load-bearing now that defect scans
+                # and reviews run concurrently.
+                response = await asyncio.to_thread(
+                    self.client.models.generate_content,
+                    model=model or self.model_name,
                     contents=[prompt, image]
                 )
 
@@ -888,10 +907,11 @@ Generate the article now:"""
 
                 logger.debug(f"Image analysis complete")
 
-                # Track usage (fire-and-forget)
+                # Track usage (fire-and-forget) — attribute the EFFECTIVE model,
+                # not the instance default, when a per-call override was used.
                 self._track_usage(
                     operation="analyze_image",
-                    model=self.model_name,
+                    model=model or self.model_name,
                     response=response,
                     duration_ms=int((time.time() - self._last_call_time) * 1000) if self._last_call_time else None,
                 )
